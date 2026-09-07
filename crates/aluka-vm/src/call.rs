@@ -399,6 +399,20 @@ impl Vm {
             return Ok(Value::Undefined);
         }
         let tmpl = self.module_functions[func_idx].clone();
+        if std::env::var("ALUKA_REQ_DEBUG").is_ok()
+            && tmpl.name == "eehaslisteners"
+            && args.is_empty()
+        {
+            let caller_name = self
+                .module_functions
+                .get(self.current_func_idx.max(0) as usize)
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "<entry>".to_owned());
+            eprintln!(
+                "[req-dbg] zero-arg into eehaslisteners, caller func={} ({caller_name:?}) pc={}",
+                self.current_func_idx, self.last_pc
+            );
+        }
         if tmpl.is_generator {
             return Ok(self.make_generator(&tmpl, func_idx, this_val, args, upvalues));
         }
