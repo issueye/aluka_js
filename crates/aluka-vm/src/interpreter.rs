@@ -1638,9 +1638,11 @@ impl Vm {
                 Op::LoadGlobal => {
                     // 操作数是常量池索引，解引用出全局对象名（对齐 Go 版 OpLoadGlobal）
                     let name = constant_string(&constants, instr.operand as usize);
-                    if std::env::var("ALUKA_REQ_DEBUG").is_ok() && name == "module" {
+                    if std::env::var("ALUKA_REQ_DEBUG").is_ok()
+                        && (name == "module" || name == "process")
+                    {
                         let v = self.resolve_global(&name);
-                        eprintln!("[req-debug] LoadGlobal module -> {v:?}");
+                        eprintln!("[req-debug] LoadGlobal {name} (func={}) -> {v:?}", self.current_func_idx);
                         self.stack.push(v);
                         pc += 1;
                         continue;

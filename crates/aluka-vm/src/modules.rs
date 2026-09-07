@@ -262,7 +262,26 @@ impl Vm {
 
         if let Err(err) = &invoke_result {
             if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
-                eprintln!("[req-debug] module {resolved:?} 执行失败: {err:?}");
+                let detail = match err {
+                    VmError::Thrown(exc) => {
+                        let name = self
+                            .get_property(*exc, "name")
+                            .ok()
+                            .map(|v| self.format_value(v))
+                            .unwrap_or_default();
+                        let msg = self
+                            .get_property(*exc, "message")
+                            .ok()
+                            .map(|v| self.format_value(v))
+                            .unwrap_or_default();
+                        format!(
+                            "{name}: {msg} (last_pc={})",
+                            self.last_pc
+                        )
+                    }
+                    other => format!("{other:?}"),
+                };
+                eprintln!("[req-debug] module {resolved:?} 执行失败: {detail}");
             }
         }
         invoke_result?;
