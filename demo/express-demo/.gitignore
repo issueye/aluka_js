@@ -17,3 +17,15 @@ po_st/
 po_se/
 po_he/
 *.bc
+depd/
+inherits/
+setprototypeof/
+statuses/
+toidentifier/
+mid_d.js
+top_d.js
+one_*.js
+p3*.js
+t1.js
+t2.js
+mt_*.js

@@ -266,6 +266,12 @@ impl Vm {
             }
         }
         invoke_result?;
+        if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+            eprintln!(
+                "[req-debug] module done fn_base={} name={:?}",
+                fn_base, resolved
+            );
+        }
         self.unpin_module(&module_obj);
         let final_exports = self.get_property(module_obj, "exports")?;
         if std::env::var("ALUKA_REQ_DEBUG").is_ok() {

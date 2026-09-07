@@ -145,7 +145,7 @@ impl Vm {
             }
             // Number(value)/Boolean(value)：转换为原始值（不加 new 语义）
             if ctor_name.as_deref() == Some("Number") {
-                return Ok(Value::Number(crate::ops::to_number(
+                return Ok(Value::Number(self.to_number_value(
                     args.first().copied().unwrap_or(Value::Undefined),
                 )));
             }
@@ -274,7 +274,7 @@ impl Vm {
                     "Proxy" => return self.construct_proxy(args),
                     "Function" => return self.construct_function(args),
                     "Number" => {
-                        return Ok(Value::Number(crate::ops::to_number(
+                        return Ok(Value::Number(self.to_number_value(
                             args.first().copied().unwrap_or(Value::Undefined),
                         )));
                     }

@@ -821,6 +821,23 @@ impl Vm {
         )
     }
 
+    /// 堆感知的 ToNumber：堆字符串/BigInt 按内容转数值（裸 `ops::to_number`
+    /// 无法读取堆，字符串一律 NaN——真实包大量依赖 `"404"` 参与算术）。
+    pub(crate) fn to_number_value(&self, val: Value) -> f64 {
+        if let Value::Object(r) = val {
+            match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(s)) => {
+                    return s.trim().parse::<f64>().unwrap_or(f64::NAN);
+                }
+                Some(HeapObject::BigInt(b)) => {
+                    return b.trim().parse::<f64>().unwrap_or(f64::NAN);
+                }
+                _ => {}
+            }
+        }
+        to_number(val)
+    }
+
     /// 判断值是否为 BigInt 堆对象。
     pub(crate) fn is_bigint_value(&self, val: Value) -> bool {
         matches!(
@@ -1437,8 +1454,9 @@ impl Vm {
                 Op::Mul => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Number(to_number(left) * to_number(right)));
+                    self.stack.push(Value::Number(
+                        self.to_number_value(left) * self.to_number_value(right),
+                    ));
                 }
                 Op::Div => {
                     let right = self.pop()?;
