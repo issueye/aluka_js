@@ -7,7 +7,7 @@ use aluka_bytecode::{
     Op, UpvalueCapture,
 };
 use aluka_parser::ast::{
-    ClassMethodDef, Expr, FunctionDef, Program, PropKey, PropValue, Stmt, VarPattern,
+    ClassMethodDef, Expr, FunctionDef, Program, PropKey, PropValue, Stmt, VarKind, VarPattern,
 };
 
 /// 编译整个 AST 语法树模块，生成包含函数模板与类模板的完整字节码模块。
@@ -41,6 +41,8 @@ pub struct ModuleCompiler {
     pub preserve_completion_value: bool,
     /// 隐式全局模式（eval 全局作用域求值用）：转发至顶层编译单元。
     pub implicit_globals: bool,
+    /// ESM import 声明计数（合成命名空间绑定名的唯一性）
+    pub esm_import_counter: usize,
 }
 
 fn collect_ident_uses_in_expr(expr: &Expr, uses: &mut Vec<String>) {
@@ -313,6 +315,32 @@ impl ModuleCompiler {
             }
         }
         for stmt in optimized_program.body.iter() {
+            // 隐式全局模式（eval）：var/function 顶层绑定落全局表，
+            // 不预注册局部槽位（let/const/解构保持局部语义）
+            if top_unit.implicit_globals {
+                match stmt {
+                    Stmt::Function(func_def) => {
+                        let s = top_unit.locals;
+                        top_unit.locals += 1;
+                        top_unit.symbol_map.insert(func_def.name.clone(), s);
+                    }
+                    Stmt::VarDecl { name, kind, .. } if *kind == VarKind::Var => {}
+                    Stmt::MultiVarDecl { decls, kind, .. } if *kind == VarKind::Var => {}
+                    Stmt::VarDecl { name, .. } => {
+                        ensure_slot(&mut top_unit, name);
+                    }
+                    Stmt::MultiVarDecl { decls, .. } => {
+                        for (name, _) in decls {
+                            ensure_slot(&mut top_unit, name);
+                        }
+                    }
+                    Stmt::DestructureDecl { pattern, .. } => {
+                        ensure_pattern_slots(&mut top_unit, pattern);
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             match stmt {
                 Stmt::Function(func_def) => {
                     ensure_slot(&mut top_unit, &func_def.name);
@@ -637,7 +665,7 @@ impl ModuleCompiler {
         unit.code.push(Instr::new(Op::PushTrue, 0));
         unit.code.push(Instr::new(Op::SetProp, key));
         unit.code.push(Instr::new(Op::Pop, 0));
-        unit.code.push(Instr::new(Op::ReturnUndef, 0));
+        // 此处不提前 RETURN_UNDEF：wrapper 以 exports 收口（见下方 Return）
         // 递归回填闭包表达式占位指令（与 Script/CJS 路径同款）
         while let Some((instr_idx, closure_def, mut parent_info)) = unit.closure_backpatches.pop() {
             for (k, v) in &unit.symbol_map {
@@ -649,12 +677,23 @@ impl ModuleCompiler {
             let child_idx = self.compile_function_with_parent(&closure_def, Some(&parent_info));
             unit.code[instr_idx].operand = child_idx as u32;
         }
+        // wrapper 以 exports 对象收口：异步完成（TLA/await import）时
+        // 完成值即 exports，加载器的 import promise 链以此兑现依赖命名空间
+        unit.code
+            .push(Instr::new(Op::LoadLocal, exports_slot as u32));
+        unit.code.push(Instr::new(Op::Return, 0));
         let wrapper_idx = self.functions.len();
         let had_direct_eval = unit.has_direct_eval;
         let symbol_map = unit.symbol_map.clone();
+        let upvalue_map = unit.upvalue_map.clone();
         let mut wrapper_tpl = unit.to_func_template("main");
+        // ESM wrapper 常态 async：顶层 await（TLA）与 import 的 await 挂起
+        // 依赖异步帧收割/恢复；无挂起时函数体同步执行完，require(esm) 的
+        // 同步 exports 可见性不受影响
+        wrapper_tpl.is_async = true;
         if had_direct_eval {
             attach_direct_eval_marker(&mut wrapper_tpl, &symbol_map);
+            attach_direct_eval_upvalue_marker(&mut wrapper_tpl, &upvalue_map);
         }
         self.functions.push(wrapper_tpl);
         self.header_extras.push(FuncHeaderExtras {
@@ -756,6 +795,54 @@ impl ModuleCompiler {
             }
             Stmt::Export(ExportDecl::All { .. }) => {
                 // 命名空间重导出暂不支持：静默忽略（不会错误绑定）
+            }
+            Stmt::Import(decl) => {
+                // M2.2 异步模块加载器 DAG：import 编译为
+                //   var __ns_N = await __aluka_import__(source);
+                //   var <local> = __ns_N.<imported>;   （快照绑定）
+                // wrapper 常态 async（见 compile_esm）——依赖模块含 TLA 时
+                // __aluka_import__ 返回其完成 Promise，await 挂起导入方帧，
+                // 由 promise resume 链在依赖完成后继续（DAG 涌现于事件循环）
+                let ns = format!("__aluka_ns_{}", self.esm_import_counter);
+                self.esm_import_counter += 1;
+                let ns_decl = Stmt::VarDecl {
+                    name: ns.clone(),
+                    init: Some(Expr::Await(Box::new(Expr::Call {
+                        callee: Box::new(Expr::Ident("__aluka_import__".to_owned())),
+                        args: vec![Expr::String(decl.source.clone())],
+                    }))),
+                    kind: VarKind::Var,
+                };
+                compile_stmt(&ns_decl, unit, false);
+                for spec in &decl.specifiers {
+                    let (local, imported) = match spec {
+                        aluka_parser::ast::ImportSpecifier::Named { local, imported } => {
+                            (local.clone(), imported.clone())
+                        }
+                        aluka_parser::ast::ImportSpecifier::Default(name) => {
+                            (name.clone(), "default".to_owned())
+                        }
+                        aluka_parser::ast::ImportSpecifier::Namespace(name) => {
+                            // 整包导入：ns 即命名空间对象
+                            let bind = Stmt::VarDecl {
+                                name: name.clone(),
+                                init: Some(Expr::Ident(ns.clone())),
+                                kind: VarKind::Var,
+                            };
+                            compile_stmt(&bind, unit, false);
+                            continue;
+                        }
+                    };
+                    let bind = Stmt::VarDecl {
+                        name: local,
+                        init: Some(Expr::Member {
+                            obj: Box::new(Expr::Ident(ns.clone())),
+                            prop: imported,
+                        }),
+                        kind: VarKind::Var,
+                    };
+                    compile_stmt(&bind, unit, false);
+                }
             }
             other => {
                 compile_stmt(other, unit, false);

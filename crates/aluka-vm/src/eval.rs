@@ -227,6 +227,14 @@ impl Vm {
         }
         let module = self.compile_dynamic(&src)?;
         let main_idx = self.append_module(&module);
+        if std::env::var("ALUKA_EVAL_DEBUG").is_ok() {
+            let ops: Vec<_> = self.module_functions[main_idx]
+                .code
+                .iter()
+                .map(|i| (i.op, i.operand))
+                .collect();
+            eprintln!("[eval-dbg] src={src:?} ops={ops:?}");
+        }
         let run_res = self.run_func(&self.module_functions[main_idx].clone());
         // 写回 + 恢复（无论求值成败都必须执行，避免全局表被快照污染）
         let writeback = |vm: &mut Vm| {

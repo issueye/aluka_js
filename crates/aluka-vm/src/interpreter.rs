@@ -170,6 +170,9 @@ pub struct Vm {
     /// 运行时编译器 Hook（eval / new Function 动态求值；宿主经
     /// `set_eval_provider` 装配，后端仅接收字节码，保持 ISA 解耦）
     pub(crate) eval_provider: Option<crate::eval::EvalProvider>,
+    /// 最近一次模块入口异步完成时的未完成 Promise（`__aluka_import__`
+    /// 依赖完成链用；M2.2）
+    pub(crate) last_entry_async_promise: Option<Value>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
@@ -296,6 +299,7 @@ impl Vm {
             proxy_ctor: None,
             reflect_object: None,
             eval_provider: None,
+            last_entry_async_promise: None,
             process_object: None,
             path_module: None,
             os_module: None,
@@ -765,6 +769,11 @@ impl Vm {
             }
             // import.meta 元属性（CJS 内联形态经全局解析；ESM wrapper 形态
             // 由 invoke_cjs_entry 注入实例）
+            // ESM import 加载器（M2.2）：__aluka_import__(source)
+            "__aluka_import__" => {
+                let f = self.alloc_native_fn("moduleLoader.import");
+                Value::Object(f)
+            }
             "__importMeta" => Value::Object(
                 self.build_import_meta(
                     self.entry_file.clone(),
@@ -3474,7 +3483,10 @@ impl Vm {
                             self.stack.push(ret);
                         }
                     } else {
-                        self.stack.push(Value::Undefined);
+                        // 非对象 callee（undefined/null/原始值）：JS 语义抛
+                        // TypeError（此前静默返回 undefined，掩盖调用错误）
+                        let ret = self.invoke_callable(callee, Value::Undefined, args)?;
+                        self.stack.push(ret);
                     }
                 }
                 Op::CallWithThis => {

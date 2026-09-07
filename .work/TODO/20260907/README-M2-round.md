@@ -55,10 +55,12 @@ resolved ends dep.js: true
 ```
 - 产物：`crates/aluka-parser/src/parser.rs`（`import.meta` 元属性解析）、`crates/aluka-vm/src/modules.rs`（`build_import_meta` + wrapper 注入 + `resolve_module_for_meta`）、`crates/aluka-vm/src/builtins/module.rs`（`importMeta.resolve` 处理器）。
 
-### M2.2 · TLA 现状核验
-**结论**：部分达成（缺口登记）　**证据类型**：命令证据
-- 单模块顶层 await：`const v = await Promise.resolve(42); console.log(v)` → `42` ✓；
-- 跨模块 TLA：`export const value = await ...` 的导入方读取时序早于异步完成 → `undefined`（node 为 7）。**缺口**：需要异步模块加载器 DAG（ awaiting module graph ），登记为 M2.2 后续主任务，不在本轮强推。
+### M2.2 · TLA 跨模块异步 DAG（第二轮补齐）
+**结论**：达成　**证据类型**：命令证据 + 产物证据
+- 设计：ESM wrapper 常态 async + import 编译为 `await __aluka_import__(source)` 快照绑定 + wrapper 以 exports 收口；依赖为 TLA 时加载器返回其完成 Promise，导入方帧挂起并经 `promise_resumes` 自动恢复——DAG 由既有事件循环涌现；
+- 顺带修复：编译器 `MemberAssign`/`IndexAssign` 上值捕获遗漏（闭包内对象属性赋值静默失效）、`Op::Call` 对非对象 callee 静默返回 undefined（规范应抛 TypeError）、eval 多语句 var 声明完成值（implicit_globals 下 var 不再预注册局部槽）；
+- 对拍：`tests/conformance/node22/cases/18-tla-dag.mjs`（三层依赖链 base←mid←app，含 setTimeout 真异步）aluka 与 node 输出逐字一致 `dag: 1 2 3`；conformance_node22_test → `PASS 18-tla-dag.mjs`；
+- M1.6 补齐：eval/Function 专项用例 10 → 52 例（≥50 达标），全部通过。
 
 ### M2.3 · createRequire
 **结论**：既有实现核验可用（`module.createRequire` 已在 builtins/module.rs，含 `node:` 前缀与文件模块解析）。
@@ -82,4 +84,4 @@ cargo test --workspace --all-features
 
 - **`git diff` 复审**：变更集中在 aluka-module（解析库）、aluka-vm（require/import.meta）、alukac build（依赖图）、aluka-cli Cargo.toml（aluka-module 依赖），与 M2 目标一致；
 - **依赖方向修正**：aluka-module 移除对 aluka-vm/aluka-compiler 的未使用反向依赖，改为 aluka-vm/aluka-cli 依赖 aluka-module（纯解析库下沉）；
-- **后续主任务**：M2.2 异步模块加载器 DAG（跨模块 TLA）；M2.4 Express 真实依赖树构建与 e2e（需先以 alukac build 预编译 express 依赖树并逐包排障）。
+- **后续主任务**：M2.4 Express 真实依赖树构建与 e2e（需先安装 express 依赖树并以 alukac build 预编译后逐包排障）。

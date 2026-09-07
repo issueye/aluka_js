@@ -102,7 +102,7 @@
   - 支持 `imports` 内部子路径别名解析（`#internal/utils`）；
   - 支持 `type: "module"` 作用域自动判定与扩展名补全策略；
   - 验收：现代 npm 模块加载用例 100% 通过。
-- [ ] **M2.2 Top-Level Await (TLA) 规范支持**
+- [x] **M2.2 Top-Level Await (TLA) 规范支持**
   - 编译器支持 AST 顶层 `await` 语法检测与阶段标记；
   - 模块加载器基于 DAG 拓扑排序实现异步模块加载与微任务推进；
   - 验收：TLA 模块加载依赖测试全绿。

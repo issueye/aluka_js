@@ -148,6 +148,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "module", "registerVirtualModule", noop);
     // import.meta.resolve(specifier)：模块说明符 → 绝对路径（M2.3）
     register_handler(registry, "importMeta", "resolve", import_meta_resolve);
+    // __aluka_import__(source)：ESM import 加载器（M2.2 异步 DAG）
+    register_handler(registry, "moduleLoader", "import", module_import);
 
     // builtinModules：Node 22 完整列表（数组元素为堆字符串）
     let elems: Vec<Value> = BUILTIN_MODULES
@@ -268,6 +270,16 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// URL 对象（带 `href`）仅接受 `file:` scheme（Node ERR_INVALID_URL_SCHEME，
 /// 错误消息与 Go 逐字一致）；父路径仅作兼容保留——内置模块与相对文件模块
 /// 的解析复用 VM 既有 CJS 基准目录（`Vm::call_require`）。
+/// `__aluka_import__(source)`：ESM import 的运行时加载器。
+///
+/// 经 CJS 链路解析并执行依赖模块：同步完成（无 TLA）直接返回 exports
+/// 对象；异步完成（TLA）返回该模块的完成 Promise——导入方 wrapper 的
+/// `await __aluka_import__(...)` 挂起至依赖完成，DAG 由事件循环涌现。
+fn module_import(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let spec = args.first().copied().unwrap_or(Value::Undefined);
+    vm.import_module_entry(spec)
+}
+
 /// `import.meta.resolve(specifier)`：相对 meta 对象的 `_metaDir` 解析。
 fn import_meta_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();

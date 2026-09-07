@@ -368,6 +368,58 @@ fn scan_requires(src: &str) -> Vec<String> {
             i += 1;
             continue;
         }
+        if c == 'f'
+            && b[i..].starts_with(&['f', 'r', 'o', 'm'][..])
+            && (i == 0 || !is_ident_char(b[i - 1]))
+        {
+            // ESM `from "spec"`：import ... from / export ... from 的依赖扫描
+            let mut j = i + 4;
+            while j < n && b[j].is_whitespace() {
+                j += 1;
+            }
+            if j < n && (b[j] == '\'' || b[j] == '"') {
+                let q = b[j];
+                j += 1;
+                let start = j;
+                while j < n && b[j] != q {
+                    j += 1;
+                }
+                if j < n {
+                    let spec: String = b[start..j].iter().collect();
+                    out.push(spec);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            i += 1;
+            continue;
+        }
+        if c == 'i'
+            && b[i..].starts_with(&['i', 'm', 'p', 'o', 'r', 't'][..])
+            && (i == 0 || !is_ident_char(b[i - 1]))
+        {
+            // 裸副作用导入：import "spec";
+            let mut j = i + 6;
+            while j < n && b[j].is_whitespace() {
+                j += 1;
+            }
+            if j < n && (b[j] == '\'' || b[j] == '"') {
+                let q = b[j];
+                j += 1;
+                let start = j;
+                while j < n && b[j] != q {
+                    j += 1;
+                }
+                if j < n {
+                    let spec: String = b[start..j].iter().collect();
+                    out.push(spec);
+                    i = j + 1;
+                    continue;
+                }
+            }
+            i += 1;
+            continue;
+        }
         if c == 'r'
             && b[i..].starts_with(&['r', 'e', 'q', 'u', 'i', 'r', 'e'][..])
             && (i == 0 || !is_ident_char(b[i - 1]))

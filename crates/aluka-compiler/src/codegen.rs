@@ -112,6 +112,22 @@ pub(crate) fn compile_stmt(stmt: &Stmt, unit: &mut CompiledUnit, is_last: bool) 
             init,
             kind: var_kind,
         } => {
+            // 隐式全局模式（eval 全局作用域求值）：var 声明直接落全局表，
+            // 不注册局部符号——后续标识符引用经 LoadGlobal 命中同一绑定
+            // （let/const 不走此路径：eval 内块级声明保持求值域局部）
+            if unit.implicit_globals && *var_kind == VarKind::Var {
+                if let Some(init_expr) = init {
+                    compile_expr(init_expr, unit);
+                } else {
+                    unit.code.push(Instr::new(Op::PushUndefined, 0));
+                }
+                let name_idx = add_constant(unit, Constant::String(name.clone()));
+                unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
+                if is_last {
+                    unit.code.push(Instr::new(Op::PushUndefined, 0));
+                }
+                return;
+            }
             let slot = if *var_kind != VarKind::Var && unit.block_depth > 0 {
                 // let/const 在嵌套块级作用域中：分配新槽并记录遮蔽
                 let s = unit.locals;
@@ -136,15 +152,6 @@ pub(crate) fn compile_stmt(stmt: &Stmt, unit: &mut CompiledUnit, is_last: bool) 
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
             }
 
-            // 隐式全局模式（eval）：main 层 var 声明直接落全局表
-            if unit.implicit_globals {
-                let name_idx = add_constant(unit, Constant::String(name.clone()));
-                unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
-                if is_last {
-                    unit.code.push(Instr::new(Op::PushUndefined, 0));
-                }
-                return;
-            }
             unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
             if is_last {
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
@@ -1030,6 +1037,19 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                         unit.code.push(Instr::new(Op::Dup, 0));
                         unit.code.push(Instr::new(update_op, 0));
                         unit.code.push(Instr::new(Op::StoreUpvalue, uv_idx as u32));
+                    }
+                } else if unit.implicit_globals {
+                    // 隐式全局模式（eval）：未声明/全局绑定经 LoadGlobal/StoreGlobal
+                    let name_idx = add_constant(unit, Constant::String(name.clone()));
+                    unit.code.push(Instr::new(Op::LoadGlobal, name_idx));
+                    if *prefix {
+                        unit.code.push(Instr::new(update_op, 0));
+                        unit.code.push(Instr::new(Op::Dup, 0));
+                        unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
+                    } else {
+                        unit.code.push(Instr::new(Op::Dup, 0));
+                        unit.code.push(Instr::new(update_op, 0));
+                        unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
                     }
                 } else {
                     let slot = unit.locals;

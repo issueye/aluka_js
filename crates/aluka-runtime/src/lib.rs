@@ -98,8 +98,13 @@ impl Runtime {
         optimize: bool,
     ) -> Result<Value, RuntimeError> {
         let path_str = path.to_string_lossy();
+        // 按扩展名推断模块种类：.mjs/.mts → ESM（alukac 同款判定）
+        let module_kind = match path.extension().and_then(|e| e.to_str()) {
+            Some("mjs") | Some("mts") => ModuleKind::Esm,
+            _ => ModuleKind::Script,
+        };
         let mut unit = LanguageRegistry::global()
-            .parse_file(&path_str, ModuleKind::Script)
+            .parse_file(&path_str, module_kind)
             .map_err(|e| match e {
                 SourceUnitError::ReadError { message, .. } => RuntimeError::Io(message),
                 other => RuntimeError::Parse(other.to_string()),

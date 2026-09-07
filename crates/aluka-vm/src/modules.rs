@@ -207,7 +207,7 @@ impl Vm {
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from(".")),
             );
-            self.invoke_function(
+            let wrapper_ret = self.invoke_function(
                 func_idx,
                 Value::Undefined,
                 &[
@@ -221,6 +221,20 @@ impl Vm {
                 ],
                 upvalues,
             )?;
+            // 异步 wrapper（TLA / await import）：记录未完成 Promise，
+            // 供 `__aluka_import__` 挂接依赖完成链（M2.2）
+            self.last_entry_async_promise = if matches!(
+                wrapper_ret,
+                Value::Object(r)
+                    if matches!(
+                        self.heap.get(r.0 as usize),
+                        Some(HeapObject::Promise { pending: true, .. })
+                    )
+            ) {
+                Some(wrapper_ret)
+            } else {
+                None
+            };
             self.get_property(module_obj, "exports")
         })();
 
@@ -269,6 +283,17 @@ impl Vm {
             .or_else(|| self.base_dir.clone())
             .unwrap_or_else(|| PathBuf::from("."));
         self.resolve_specifier_from(&base, specifier)
+    }
+
+    /// `__aluka_import__(source)` 加载器入口：同步完成返回 exports；
+    /// 依赖模块为异步完成（TLA）时返回其完成 Promise（M2.2）。
+    pub(crate) fn import_module_entry(&mut self, spec_val: Value) -> Result<Value, VmError> {
+        self.last_entry_async_promise = None;
+        let exports = self.call_require(spec_val)?;
+        match self.last_entry_async_promise.take() {
+            None => Ok(exports),
+            Some(promise) => Ok(promise),
+        }
     }
 
     /// `import.meta.resolve(specifier)` 的路径计算入口（纯解析，不改状态）。
