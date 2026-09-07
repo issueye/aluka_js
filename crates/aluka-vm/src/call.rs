@@ -143,6 +143,24 @@ impl Vm {
             if ctor_name.as_deref() == Some("Proxy") {
                 return self.construct_proxy(args);
             }
+            // Number(value)/Boolean(value)：转换为原始值（不加 new 语义）
+            if ctor_name.as_deref() == Some("Number") {
+                return Ok(Value::Number(crate::ops::to_number(
+                    args.first().copied().unwrap_or(Value::Undefined),
+                )));
+            }
+            if ctor_name.as_deref() == Some("Boolean") {
+                return Ok(Value::Boolean(
+                    args.first()
+                        .copied()
+                        .unwrap_or(Value::Undefined)
+                        .is_truthy(),
+                ));
+            }
+            // Date(value) 无 new 直调等价 new Date(value)
+            if ctor_name.as_deref() == Some("Date") {
+                return self.construct_date(args);
+            }
             // eval / Function 动态求值拦截（直接/间接形态与动态函数模板）
             if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
                 if name == "eval" || name == "eval.direct" {
@@ -255,6 +273,20 @@ impl Vm {
                     "URL" => return Ok(self.url_constructor(args)),
                     "Proxy" => return self.construct_proxy(args),
                     "Function" => return self.construct_function(args),
+                    "Number" => {
+                        return Ok(Value::Number(crate::ops::to_number(
+                            args.first().copied().unwrap_or(Value::Undefined),
+                        )));
+                    }
+                    "Boolean" => {
+                        return Ok(Value::Boolean(
+                            args.first()
+                                .copied()
+                                .unwrap_or(Value::Undefined)
+                                .is_truthy(),
+                        ));
+                    }
+                    "Date" => return self.construct_date(args),
                     "ArrayBuffer" => return self.construct_array_buffer(args, false),
                     "SharedArrayBuffer" => return self.construct_array_buffer(args, true),
                     "DataView" => return self.construct_data_view(args),

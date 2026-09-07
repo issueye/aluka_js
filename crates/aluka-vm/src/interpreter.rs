@@ -173,6 +173,8 @@ pub struct Vm {
     /// 最近一次模块入口异步完成时的未完成 Promise（`__aluka_import__`
     /// 依赖完成链用；M2.2）
     pub(crate) last_entry_async_promise: Option<Value>,
+    /// GC 钉扎句柄（require 进行中的 module 对象；防嵌套加载期间被回收）
+    pub(crate) gc_pinned: Vec<u32>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
@@ -300,6 +302,7 @@ impl Vm {
             reflect_object: None,
             eval_provider: None,
             last_entry_async_promise: None,
+            gc_pinned: Vec::new(),
             process_object: None,
             path_module: None,
             os_module: None,
@@ -627,7 +630,7 @@ impl Vm {
         self.resolve_global(name)
     }
 
-    fn resolve_global(&mut self, name: &str) -> Value {
+    pub(crate) fn resolve_global(&mut self, name: &str) -> Value {
         if let Some(v) = self.globals.get(name) {
             return *v;
         }
@@ -818,6 +821,14 @@ impl Vm {
             args.first().copied().unwrap_or(Value::Undefined),
             args.get(1).copied().unwrap_or(Value::Undefined),
         )
+    }
+
+    /// 内容相等（字符串按内容、其余按值/句柄），数组 indexOf 族使用。
+    pub(crate) fn values_content_eq(&self, a: Value, b: Value) -> bool {
+        if a == b {
+            return true;
+        }
+        crate::ops::string_values_eq(&a, &b, &self.heap)
     }
 
     /// 读取数组堆对象的元素快照（非数组返回空集）。
@@ -1594,6 +1605,13 @@ impl Vm {
                 Op::LoadGlobal => {
                     // 操作数是常量池索引，解引用出全局对象名（对齐 Go 版 OpLoadGlobal）
                     let name = constant_string(&constants, instr.operand as usize);
+                    if std::env::var("ALUKA_REQ_DEBUG").is_ok() && name == "module" {
+                        let v = self.resolve_global(&name);
+                        eprintln!("[req-debug] LoadGlobal module -> {v:?}");
+                        self.stack.push(v);
+                        pc += 1;
+                        continue;
+                    }
                     let val = self.resolve_global(&name);
                     self.stack.push(val);
                 }
@@ -3117,7 +3135,7 @@ impl Vm {
                                     let from = from.max(0.0) as usize;
                                     let pos = elems[from..]
                                         .iter()
-                                        .position(|e| *e == needle)
+                                        .position(|e| self.values_content_eq(*e, needle))
                                         .map(|p| p + from)
                                         .map(|p| p as f64)
                                         .unwrap_or(-1.0);
@@ -3128,7 +3146,7 @@ impl Vm {
                                     let needle = args.first().copied().unwrap_or(Value::Undefined);
                                     let pos = elems
                                         .iter()
-                                        .rposition(|e| *e == needle)
+                                        .rposition(|e| self.values_content_eq(*e, needle))
                                         .map(|p| p as f64)
                                         .unwrap_or(-1.0);
                                     self.stack.push(Value::Number(pos));

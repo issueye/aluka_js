@@ -666,7 +666,7 @@ impl Vm {
                 let elems = self.ta_to_values(ta)?;
                 let pos = elems
                     .iter()
-                    .position(|e| *e == needle)
+                    .position(|e| self.values_content_eq(*e, needle))
                     .map(|p| p as f64)
                     .unwrap_or(-1.0);
                 Ok(Value::Number(pos))
@@ -676,7 +676,7 @@ impl Vm {
                 let elems = self.ta_to_values(ta)?;
                 let pos = elems
                     .iter()
-                    .rposition(|e| *e == needle)
+                    .rposition(|e| self.values_content_eq(*e, needle))
                     .map(|p| p as f64)
                     .unwrap_or(-1.0);
                 Ok(Value::Number(pos))

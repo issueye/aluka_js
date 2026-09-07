@@ -240,6 +240,10 @@ impl Vm {
         for v in self.module_exports.values() {
             out.push(*v);
         }
+        // 钉扎句柄（require 进行中的 module 对象；M2.4 排障补钉）
+        for &h in &self.gc_pinned {
+            out.push(Value::Object(aluka_core::ObjectRef(h)));
+        }
         for r in self.builtin_registry.module_handles() {
             out.push(Value::Object(r));
         }

@@ -29,6 +29,7 @@ pub mod domain;
 pub mod events;
 pub mod fs;
 pub mod fs_promises;
+pub mod global_fns;
 pub mod http;
 pub mod http2;
 pub mod https;
@@ -173,6 +174,7 @@ pub struct BuiltinRegistry {
 macro_rules! builtin_modules {
     () => {
         &[
+            crate::builtins::global_fns::MODULE,
             crate::builtins::constants::MODULE,
             crate::builtins::path_posix::MODULE,
             crate::builtins::path_win32::MODULE,

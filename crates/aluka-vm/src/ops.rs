@@ -22,6 +22,22 @@ pub fn to_boolean(val: Value) -> bool {
     val.is_truthy()
 }
 
+/// 字符串值相等：两个堆字符串按内容比较（JS 语义；句柄相同或内容相同）。
+pub fn string_values_eq(a: &Value, b: &Value, heap: &[HeapObject]) -> bool {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            if x == y {
+                return true;
+            }
+            match (heap.get(x.0 as usize), heap.get(y.0 as usize)) {
+                (Some(HeapObject::String(sa)), Some(HeapObject::String(sb))) => sa == sb,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 fn get_string_repr<'a>(
     idx: usize,
     heap: &'a [HeapObject],

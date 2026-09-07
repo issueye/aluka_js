@@ -173,6 +173,12 @@ impl Vm {
                 return self.proxy_get(r, key, obj);
             }
         }
+        // globalThis：属性读取直通全局变量表与内建全局
+        if let Value::Object(r) = obj {
+            if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
+                return Ok(self.resolve_global(key));
+            }
+        }
         // 内置对象的方法按需物化（process.nextTick 等属性访问先于调用）
         if key == "env" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             // process.env：物化为环境变量对象
@@ -457,10 +463,20 @@ impl Vm {
 
     /// 设置属性（含数组下标写入、闭包对象属性写入与 Setter 访问器触发）。
     pub fn set_property(&mut self, obj: Value, key: &str, val: Value) -> Result<(), VmError> {
+        if std::env::var("ALUKA_REQ_DEBUG").is_ok() && key == "exports" {
+            eprintln!("[req-debug] set_property exports on {obj:?} <- {val:?}");
+        }
         // Proxy 对象：经 set trap 派发（假值返回抛 TypeError）
         if let Value::Object(r) = obj {
             if self.proxy_parts(r).is_some() {
                 return self.proxy_set(r, key, val, obj);
+            }
+        }
+        // globalThis：属性写入直通全局变量表
+        if let Value::Object(r) = obj {
+            if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
+                self.globals.insert(key.to_owned(), val);
+                return Ok(());
             }
         }
         // RegExp 实例的 lastIndex：写线程局部状态表（堆对象无可变属性）

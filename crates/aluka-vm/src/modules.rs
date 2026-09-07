@@ -112,6 +112,10 @@ impl Vm {
         // 预建模块上下文（exports 先进缓存：循环依赖方拿到未完成 exports）
         let exports = Value::Object(self.alloc_ordinary());
         let module_obj = Value::Object(self.alloc_ordinary());
+        // 加载期间钉扎 module 对象（其 exports 指针在收尾读取时仍需有效）
+        if let Value::Object(r) = module_obj {
+            self.gc_pinned.push(r.0);
+        }
         self.set_property(module_obj, "exports", exports)?;
         self.module_exports.insert(key.clone(), exports);
 
@@ -185,7 +189,13 @@ impl Vm {
 
         let invoke_result = (|| -> Result<Value, VmError> {
             let main_idx = fn_base as usize;
-            let closure = self.run_func(&self.module_functions[main_idx].clone())?;
+            // 操作数栈隔离：嵌套模块体在共享栈上执行，收尾截断回基线，
+            // 防止模块体完成值/残留泄漏污染外层调用帧的栈序（真实包
+            // `module.exports = <表达式>` 为末语句时必现）
+            let stack_base = self.stack.len();
+            let closure = self.run_func(&self.module_functions[main_idx].clone());
+            self.stack.truncate(stack_base);
+            let closure = closure?;
 
             let (func_idx, upvalues) = match closure {
                 Value::Object(r) => match self.heap.get(r.0 as usize) {
@@ -256,15 +266,34 @@ impl Vm {
             }
         }
         invoke_result?;
+        self.unpin_module(&module_obj);
         let final_exports = self.get_property(module_obj, "exports")?;
         if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+            let obj_handle = match module_obj {
+                Value::Object(r) => Some(r.0),
+                _ => None,
+            };
+            let is_free = obj_handle
+                .map(|h| matches!(self.heap.get(h as usize), Some(HeapObject::Free)))
+                .unwrap_or(false);
+            let is_ord = obj_handle
+                .map(|h| matches!(self.heap.get(h as usize), Some(HeapObject::Ordinary { .. })))
+                .unwrap_or(false);
             eprintln!(
-                "[req-debug] spec={spec:?} final_exports={:?}",
-                final_exports
+                "[req-debug] spec={spec:?} module_obj={module_obj:?} is_free={is_free} is_ord={is_ord} final={final_exports:?}"
             );
         }
-        self.module_exports.insert(key, final_exports);
+        self.module_exports.insert(key.clone(), final_exports);
+        // 同步缓存重绑定后的 module.exports（module.exports 重赋值语义）
+        let _ = key;
         Ok(final_exports)
+    }
+
+    /// 解除 module 对象钉扎（call_require 收尾）。
+    fn unpin_module(&mut self, module_obj: &Value) {
+        if let Value::Object(r) = module_obj {
+            self.gc_pinned.retain(|&h| h != r.0);
+        }
     }
 
     /// 解析 `specifier` 为字节码文件路径。

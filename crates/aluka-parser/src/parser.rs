@@ -642,8 +642,11 @@ impl<'src> Parser<'src> {
             return Stmt::DestructureDecl { pattern, init };
         }
 
+        // `from` 为上下文关键字（import ... from），可作合法变量名
+        // （mime-types 等真实包存在 `var from = ...`）
         let name = match self.advance().kind {
             TokenKind::Ident(id) => id,
+            TokenKind::Keyword(kw) if kw == "from" => kw,
             other => {
                 let message = format!("var/let/const 声明缺少变量名，实为 {other:?}");
                 self.record_error(message);
@@ -661,6 +664,7 @@ impl<'src> Parser<'src> {
         while self.match_punct(",") {
             let extra_name = match self.advance().kind {
                 TokenKind::Ident(id) => id,
+                TokenKind::Keyword(kw) if kw == "from" => kw,
                 other => {
                     let message = format!("var/let/const 声明缺少变量名，实为 {other:?}");
                     self.record_error(message);
