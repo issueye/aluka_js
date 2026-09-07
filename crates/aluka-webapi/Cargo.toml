@@ -1,0 +1,15 @@
+[package]
+name = "aluka-webapi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Web API 与 Aluka（Bun 兼容）全局：fetch/Streams/Intl/crypto 等。"
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-vm = { workspace = true }
+
+[lints]
+workspace = true

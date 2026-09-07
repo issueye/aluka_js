@@ -1,0 +1,10 @@
+const x = 10, y = "10", z = 20;
+const r1 = (x == y);
+const r2 = (x === y);
+const r3 = (x != y);
+const r4 = (x !== y);
+const r5 = (x < z);
+const r6 = (x <= z);
+const r7 = (x > z);
+const r8 = (x >= z);
+console.log(r1, r2, r3, r4, r5, r6, r7, r8);

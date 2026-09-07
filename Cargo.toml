@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/aluka-core",
+    "crates/aluka-parser",
+    "crates/aluka-bytecode",
+    "crates/aluka-compiler",
+    "crates/aluka-vm",
+    "crates/aluka-regex",
+    "crates/aluka-module",
+    "crates/aluka-builtins",
+    "crates/aluka-webapi",
+    "crates/aluka-runtime",
+    "crates/aluka-cli",
+    "crates/alisp",
+    "crates/aluka-jit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/issueye/aluka_lang"
+
+[workspace.dependencies]
+aluka-core = { path = "crates/aluka-core" }
+aluka-parser = { path = "crates/aluka-parser" }
+aluka-bytecode = { path = "crates/aluka-bytecode" }
+aluka-compiler = { path = "crates/aluka-compiler" }
+aluka-vm = { path = "crates/aluka-vm" }
+aluka-regex = { path = "crates/aluka-regex" }
+aluka-jit = { path = "crates/aluka-jit" }
+aluka-module = { path = "crates/aluka-module" }
+aluka-builtins = { path = "crates/aluka-builtins" }
+aluka-webapi = { path = "crates/aluka-webapi" }
+aluka-runtime = { path = "crates/aluka-runtime" }
+
+[workspace.lints.rust]
+# 业务 crate 默认禁 unsafe；仅 aluka-core 的分配器/GC 与未来 JIT 后端可显式解禁
+# （见 aluka_r/docs/rust-reimplementation-plan.md §6.4 unsafe 收口策略）。
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# 基准/性能剖析用：保留符号与帧指针
+[profile.bench]
+inherits = "release"
+debug = true

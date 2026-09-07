@@ -1,0 +1,42 @@
+[package]
+name = "aluka-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "aluka 命令行入口：alukac 独立编译器与 aluka 运行时。"
+
+[features]
+default = []
+runtime = ["dep:aluka-runtime", "dep:aluka-builtins"]
+
+[[bin]]
+name = "alukac"
+path = "src/bin/alukac/main.rs"
+
+[[bin]]
+name = "aluvm"
+path = "src/bin/aluvm.rs"
+
+[[bin]]
+name = "aluka"
+path = "src/main.rs"
+required-features = ["runtime"]
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-bytecode = { workspace = true }
+aluka-vm = { workspace = true }
+aluka-parser = { workspace = true }
+aluka-compiler = { workspace = true }
+
+aluka-runtime = { workspace = true, optional = true }
+aluka-builtins = { workspace = true, optional = true }
+
+[dev-dependencies]
+aluka-runtime = { workspace = true }
+
+[lints]
+workspace = true
+

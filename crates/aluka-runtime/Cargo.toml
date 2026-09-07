@@ -1,0 +1,22 @@
+[package]
+name = "aluka-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "运行时装配：引擎实例、事件循环、全局与内置注册的编排入口。"
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-parser = { workspace = true }
+aluka-compiler = { workspace = true }
+aluka-vm = { workspace = true }
+aluka-module = { workspace = true }
+aluka-builtins = { workspace = true }
+aluka-webapi = { workspace = true }
+aluka-regex = { workspace = true }
+aluka-bytecode = { workspace = true }
+
+[lints]
+workspace = true

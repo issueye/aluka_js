@@ -1,0 +1,16 @@
+[package]
+name = "aluka-compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AST → 字节码，含 TS 注解剥离与指令生成。"
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-parser = { workspace = true }
+aluka-bytecode = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "aluka-bytecode"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "字节码指令集、序列化与优化 pass。"
+
+[dependencies]
+aluka-core = { workspace = true }
+
+[lints]
+workspace = true

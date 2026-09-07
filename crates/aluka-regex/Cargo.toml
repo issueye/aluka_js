@@ -1,0 +1,14 @@
+[package]
+name = "aluka-regex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RegExp 引擎：RE2 风格快路径 + 回溯 fallback（UTF-16 语义）。"
+
+[dependencies]
+aluka-core = { workspace = true }
+
+[lints]
+workspace = true

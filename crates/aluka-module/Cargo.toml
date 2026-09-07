@@ -1,0 +1,16 @@
+[package]
+name = "aluka-module"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ESM/CJS 模块系统与 Node 解析算法（package.json exports/imports）。"
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-compiler = { workspace = true }
+aluka-vm = { workspace = true }
+
+[lints]
+workspace = true

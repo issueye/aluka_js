@@ -1,0 +1,8 @@
+let x = 5;
+let y = x++;
+let z = ++x;
+let w = x--;
+let v = --x;
+let big = 10n;
+big++;
+console.log(x, y, z, w, v, big);

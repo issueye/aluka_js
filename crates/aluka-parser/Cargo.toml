@@ -1,0 +1,14 @@
+[package]
+name = "aluka-parser"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "词法与语法分析：token 流、AST 定义、TypeScript 类型注解剥离。"
+
+[dependencies]
+aluka-core = { workspace = true }
+
+[lints]
+workspace = true

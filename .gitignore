@@ -1,0 +1,12 @@
+# Rust 构建产物
+/target/
+
+# 环境与临时文件
+*.pdb
+*.log
+.DS_Store
+Thumbs.db
+m1_io.txt
+# 依赖与临时缓存
+node_modules/
+.aluka/

@@ -1,0 +1,16 @@
+[package]
+name = "aluka-builtins"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "node:* 内置模块注册表与标准实现。"
+
+[dependencies]
+aluka-core = { workspace = true }
+aluka-module = { workspace = true }
+aluka-vm = { workspace = true }
+
+[lints]
+workspace = true

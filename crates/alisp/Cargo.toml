@@ -1,0 +1,18 @@
+[package]
+name = "alisp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "M4 玩具 DSL 前端：极简 Lisp → Aluka ISA 字节码（只依赖 aluka-bytecode 公共 API）。"
+
+[dependencies]
+aluka-bytecode = { workspace = true }
+
+[[bin]]
+name = "alisp"
+path = "src/main.rs"
+
+[lints]
+workspace = true

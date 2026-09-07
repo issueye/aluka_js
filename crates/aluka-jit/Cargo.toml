@@ -1,0 +1,31 @@
+[package]
+name = "aluka-jit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "M5 JIT：字节码数值子集 → Cranelift 机器码（J1 阶段，ADR 0005）。"
+
+[dependencies]
+aluka-bytecode = { workspace = true }
+aluka-core = { workspace = true }
+# Cranelift 纯 Rust 后端（x64/aarch64），无 C 依赖（ADR 0005 决定 1）
+cranelift = "0.115"
+cranelift-jit = "0.115"
+cranelift-module = "0.115"
+cranelift-native = "0.115"
+
+# JIT 是 AGENTS 明文的 unsafe 解禁例外（机器码发射），无法继承 workspace
+# 的 unsafe_code=deny，故本地显式声明 lint 集（覆盖 + 保持其余一致）。
+[dev-dependencies]
+aluka-vm = { workspace = true }
+
+[lints.rust]
+unsafe_code = "allow"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+

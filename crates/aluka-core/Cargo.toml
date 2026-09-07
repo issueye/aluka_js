@@ -1,0 +1,14 @@
+[package]
+name = "aluka-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "值系统、堆与隐藏类：Value 表示、对象盒、Shape 树、GC 接口。"
+
+[dependencies]
+
+
+[lints]
+workspace = true
