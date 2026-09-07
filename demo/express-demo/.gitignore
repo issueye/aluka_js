@@ -5,3 +5,15 @@ po29/
 node_modules/
 mt_*.js
 probe*.js
+po_*/
+po20/
+po21/
+p30/
+p31/
+p32/
+po28/
+po29/
+po_st/
+po_se/
+po_he/
+*.bc

@@ -102,6 +102,60 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     }
     vm.globals.insert("Date".to_owned(), Value::Object(date));
 
+    // ===== Object 静态方法面（真实包硬需求）=====
+    if let Some(octor) = vm.object_ctor {
+        vm.builtin_registry.register_module_object("Object", octor);
+        for method in [
+            "defineProperty",
+            "defineProperties",
+            "getOwnPropertyDescriptor",
+            "getOwnPropertyNames",
+            "setPrototypeOf",
+            "getPrototypeOf",
+            "assign",
+            "freeze",
+            "seal",
+            "isFrozen",
+            "isSealed",
+            "values",
+            "entries",
+            "fromEntries",
+        ] {
+            let f = vm.alloc_native_fn(&format!("Object.{method}"));
+            let _ = vm.set_property(Value::Object(octor), method, Value::Object(f));
+            register_handler(registry, "Object", method, object_static);
+        }
+    }
+
+    // ===== Error 静态面：captureStackTrace / stackTraceLimit =====
+    if let Some(ector) = vm.error_ctor {
+        vm.builtin_registry.register_module_object("Error", ector);
+        let cap = vm.alloc_native_fn("Error.captureStackTrace");
+        let _ = vm.set_property(
+            Value::Object(ector),
+            "captureStackTrace",
+            Value::Object(cap),
+        );
+        register_handler(
+            registry,
+            "Error",
+            "captureStackTrace",
+            error_capture_stack_trace,
+        );
+        let _ = vm.set_property(Value::Object(ector), "stackTraceLimit", Value::Number(10.0));
+    }
+
+    // 调用点对象方法（Error.captureStackTrace 生成的 stack 元素）
+    for method in [
+        "getFileName",
+        "getLineNumber",
+        "getColumnNumber",
+        "toString",
+        "isNative",
+    ] {
+        register_handler(registry, "callsite", method, callsite_method);
+    }
+
     // globalThis：属性读写直通全局变量表
     let this_obj = vm.alloc_ordinary();
     let marker = vm.alloc_string("_isGlobalThis".to_owned());
@@ -483,5 +537,171 @@ fn date_to_iso_string(t: f64, ms_precision: bool) -> String {
         )
     } else {
         format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mth, d, h, m, sec)
+    }
+}
+
+/// Object 静态方法统一分派。
+fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let method = match receiver {
+        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+            Some(HeapObject::NativeFn { name, .. }) => {
+                name.clone().split('.').next_back().unwrap_or("").to_owned()
+            }
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let target = args.first().copied().unwrap_or(Value::Undefined);
+    match method.as_str() {
+        "defineProperty" => {
+            let key = args
+                .get(1)
+                .map(|v| vm.to_property_key(*v))
+                .unwrap_or_default();
+            let desc = args.get(2).copied().unwrap_or(Value::Undefined);
+            if let Value::Object(r) = target {
+                if vm.proxy_parts(r).is_some() {
+                    let ok = vm.proxy_define_property(r, &key, desc)?;
+                    return Ok(Value::Boolean(ok));
+                }
+            }
+            vm.ordinary_define_property(target, &key, desc)?;
+            Ok(target)
+        }
+        "defineProperties" => {
+            // 逐描述符定义（描述符对象的自有键 → defineProperty）
+            if let Some(props) = args.get(1).copied() {
+                let items = vm.own_properties(props);
+                for (k, desc) in items {
+                    vm.ordinary_define_property(target, &k, desc)?;
+                }
+            }
+            Ok(target)
+        }
+        "getOwnPropertyDescriptor" => {
+            let key = args
+                .get(1)
+                .map(|v| vm.to_property_key(*v))
+                .unwrap_or_default();
+            vm.ordinary_property_descriptor(target, &key)
+        }
+        "getOwnPropertyNames" | "keys" => {
+            let items: Vec<Value> = vm
+                .own_properties(target)
+                .into_iter()
+                .map(|(k, _)| Value::Object(vm.alloc_string(k)))
+                .collect();
+            Ok(Value::Object(vm.alloc_array(items)))
+        }
+        "setPrototypeOf" => {
+            let proto = args.get(1).copied().unwrap_or(Value::Undefined);
+            let p = match proto {
+                Value::Object(pr) => Some(pr),
+                _ => None,
+            };
+            vm.set_prototype_of(target, p);
+            Ok(target)
+        }
+        "getPrototypeOf" => Ok(vm
+            .get_prototype(target)
+            .map(Value::Object)
+            .unwrap_or(Value::Null)),
+        "assign" => {
+            let out = target;
+            for src in args.get(1..).unwrap_or(&[]) {
+                for (k, v) in vm.own_properties(*src) {
+                    vm.set_property(out, &k, v)?;
+                }
+            }
+            Ok(out)
+        }
+        "freeze" | "seal" => Ok(target),
+        "isFrozen" | "isSealed" => Ok(Value::Boolean(false)),
+        "values" | "entries" => {
+            let mut items = vm.own_properties(target);
+            items.sort_by(|a, b| a.0.cmp(&b.0));
+            let out = match method.as_str() {
+                "values" => items.into_iter().map(|(_, v)| v).collect(),
+                _ => items
+                    .into_iter()
+                    .map(|(k, v)| {
+                        let key_str = vm.alloc_string(k);
+                        Value::Object(vm.alloc_array(vec![Value::Object(key_str), v]))
+                    })
+                    .collect(),
+            };
+            Ok(Value::Object(vm.alloc_array(out)))
+        }
+        "fromEntries" => {
+            let list = args
+                .first()
+                .copied()
+                .map(|v| vm.to_array_values(v))
+                .unwrap_or_default();
+            let out = vm.alloc_ordinary();
+            for pair in list {
+                let vals = vm.to_array_values(pair);
+                if vals.len() >= 2 {
+                    let key = vm.to_property_key(vals[0]);
+                    vm.set_property(Value::Object(out), &key, vals[1])?;
+                }
+            }
+            Ok(Value::Object(out))
+        }
+        _ => Ok(Value::Undefined),
+    }
+}
+
+/// `Error.captureStackTrace(obj[, ctorOpt])`：以通用调用点数组填充
+/// `obj.stack`（文件名取入口文件，行号为已登记的降级 0）。
+fn error_capture_stack_trace(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(target) = args.first().copied() else {
+        return Ok(Value::Undefined);
+    };
+    let mut frames = Vec::with_capacity(CALLSITE_FRAMES);
+    for _ in 0..CALLSITE_FRAMES {
+        let site = vm.alloc_ordinary();
+        let ns = vm.alloc_string("callsite".to_owned());
+        let _ = vm.set_property(Value::Object(site), "_builtinNs", Value::Object(ns));
+        let file = vm.alloc_string(vm.entry_file.clone());
+        let _ = vm.set_property(Value::Object(site), "_file", Value::Object(file));
+        frames.push(Value::Object(site));
+    }
+    let stack_arr = Value::Object(vm.alloc_array(frames));
+    vm.set_property(target, "stack", stack_arr)?;
+    Ok(Value::Undefined)
+}
+
+/// 单帧数量（getStack().slice(1) 后仍需 stack[1] 有效）。
+const CALLSITE_FRAMES: usize = 12;
+
+/// 调用点对象方法（getFileName/getLineNumber/getColumnNumber/toString）。
+fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let method = match receiver {
+        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+            Some(HeapObject::NativeFn { name, .. }) => {
+                name.clone().split('.').next_back().unwrap_or("").to_owned()
+            }
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let file = match receiver {
+        Value::Object(r) => vm
+            .own_value(r.0 as usize, "_file")
+            .map(|v| vm.format_value(v))
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    match method.as_str() {
+        "getFileName" => Ok(Value::Object(vm.alloc_string(file))),
+        "getLineNumber" | "getColumnNumber" => Ok(Value::Number(0.0)),
+        "isNative" => Ok(Value::Boolean(false)),
+        "toString" => Ok(Value::Object(
+            vm.alloc_string(format!("at <anonymous> ({file})")),
+        )),
+        _ => Ok(Value::Undefined),
     }
 }

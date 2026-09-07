@@ -378,7 +378,22 @@ impl Vm {
         vm.map_ctor = Some(vm.alloc_native_ctor("Map", obj_proto));
         vm.set_ctor = Some(vm.alloc_native_ctor("Set", obj_proto));
         // Proxy 构造器单例（静态面挂接在 register_all 之后，避免注册表被整体替换）
-        vm.process_object = Some(vm.alloc_ordinary());
+        // process 对象：事件面（listenerCount/listeners/on 等；depd、
+        // on-finished 等真实包在模块顶层调用）
+        let process_obj = vm.alloc_ordinary();
+        for method in [
+            "listenerCount",
+            "listeners",
+            "on",
+            "once",
+            "removeListener",
+            "removeAllListeners",
+            "emit",
+        ] {
+            let f = vm.alloc_native_fn(&format!("process.{method}"));
+            let _ = vm.set_property(Value::Object(process_obj), method, Value::Object(f));
+        }
+        vm.process_object = Some(process_obj);
         // path 内置模块（方法经 CALL_METHOD 拦截求值）
         let path_mod = vm.alloc_ordinary();
         let join_fn = vm.alloc_native_fn("path.join");

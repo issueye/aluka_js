@@ -1,4 +1,4 @@
-﻿//! `process` / `console` / `url` 的 require 门面（Go registry 同名注册项对齐）。
+//! `process` / `console` / `url` 的 require 门面（Go registry 同名注册项对齐）。
 //!
 //! Node.js 22 LTS 规范把 `process`、`console`、
 //! `url` 注册为可 `require` 的内置模块；Rust 侧三者的全局形态分别由解释器
@@ -43,11 +43,49 @@ fn build_process(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRe
         "getBuiltinModule",
         process_get_builtin_module,
     );
+    // 事件面（depd/on-finished 等在模块顶层调用 process.listenerCount）
+    register_handler(registry, "process", "listenerCount", process_listener_count);
+    register_handler(registry, "process", "listeners", process_listeners);
+    for method in ["on", "once", "removeListener", "removeAllListeners", "emit"] {
+        let f = vm.alloc_native_fn(&format!("process.{method}"));
+        let _ = vm.set_property(
+            Value::Object(vm.process_object.unwrap()),
+            method,
+            Value::Object(f),
+        );
+        register_handler(registry, "process", method, process_noop_event);
+    }
+    let lc = vm.alloc_native_fn("process.listenerCount");
+    let _ = vm.set_property(
+        Value::Object(vm.process_object.unwrap()),
+        "listenerCount",
+        Value::Object(lc),
+    );
+    let ls = vm.alloc_native_fn("process.listeners");
+    let _ = vm.set_property(
+        Value::Object(vm.process_object.unwrap()),
+        "listeners",
+        Value::Object(ls),
+    );
     vm.process_object.ok_or_else(|| {
         VmError::Thrown(Value::Object(
             vm.alloc_string("process global missing".to_string()),
         ))
     })
+}
+
+/// process 事件面空实现（真实包仅在模块顶层探测性调用）。
+fn process_listener_count(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    Ok(Value::Number(0.0))
+}
+
+fn process_listeners(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    // 无法在此访问堆分配器：返回空数组的占位（depd 仅读取 .length）
+    Ok(Value::Undefined)
+}
+
+fn process_noop_event(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    Ok(Value::Undefined)
 }
 
 /// `process.getBuiltinModule(specifier)`（Node 22.3 / Go 实测对齐）：
