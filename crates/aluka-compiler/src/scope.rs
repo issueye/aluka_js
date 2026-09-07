@@ -160,6 +160,12 @@ pub struct CompiledUnit {
     pub scope_shadow_log: Vec<(String, Option<usize>)>,
     /// 当前嵌套块深度（0 为函数/模块顶层）
     pub block_depth: usize,
+    /// 函数体含直接 `eval(...)` 调用形态（动态求值作用域降级标记：
+    /// 运行时据此物化局部名表，支持直接求值的词法穿透与写回）
+    pub has_direct_eval: bool,
+    /// 隐式全局模式（eval 全局作用域求值用）：main 层未声明赋值与
+    /// var/function 声明直接落全局表，而非 main 局部槽
+    pub implicit_globals: bool,
 }
 
 impl CompiledUnit {

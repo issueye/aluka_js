@@ -46,6 +46,7 @@ pub mod punycode;
 pub mod querystring;
 pub mod readline;
 pub mod readline_promises;
+pub mod reflect;
 pub mod repl;
 pub mod require_aliases;
 pub mod sqlite;
@@ -301,6 +302,12 @@ impl BuiltinRegistry {
     #[must_use]
     pub fn module(&self, name: &str) -> Option<ObjectRef> {
         self.modules.get(name).copied()
+    }
+
+    /// 注册既有堆对象为具名模块对象（`register_all` 之外的补挂场景，
+    /// 如 Proxy 构造器静态面），供 `try_dispatch` 形态二反查分派键。
+    pub fn register_module_object(&mut self, key: &'static str, r: ObjectRef) {
+        self.modules.insert(key, r);
     }
 
     /// 反查句柄所属模块名。

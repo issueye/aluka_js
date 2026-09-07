@@ -5,6 +5,7 @@
 pub mod builtins;
 pub mod call;
 pub mod class;
+pub mod eval;
 pub mod exception;
 pub mod gc;
 pub mod generator;
@@ -18,13 +19,16 @@ pub mod modules;
 pub mod ops;
 pub mod prims;
 pub mod property;
+pub mod proxy;
 pub mod symbol;
 
 // TLS spike（T10 评估，仅测试编译）
 #[cfg(test)]
 mod tls_spike;
+pub mod typed_array;
 pub mod value;
 
+pub use eval::empty_eval_module;
 pub use heap::HeapObject;
 pub use interpreter::{Vm, VmError};
 pub use jit_hot::JIT_HOT_THRESHOLD;

@@ -119,6 +119,7 @@ impl Runtime {
             .map_err(|e| RuntimeError::Verify(e.to_string()))?;
 
         let mut vm = Vm::new(0);
+        install_eval_provider(&mut vm);
         inject_process_argv(&mut vm, path, args);
         vm.setup_cjs(path);
 
@@ -161,6 +162,7 @@ impl Runtime {
         let path_buf = Path::new(path);
 
         let mut vm = Vm::new(0);
+        install_eval_provider(&mut vm);
         inject_process_argv(&mut vm, path_buf, args);
         vm.setup_cjs(path_buf);
 
@@ -249,6 +251,32 @@ impl Default for Runtime {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 装配动态求值编译器 Hook（eval / new Function）：源码 → 编译 → 字节码。
+/// 动态产物在 VM 侧仍强制 Verifier 校验（compile_dynamic 门禁）。
+fn install_eval_provider(vm: &mut Vm) {
+    vm.set_eval_provider(|src: &str| {
+        // 空源码：求值结果为 undefined（规范），无需编译
+        if src.trim().is_empty() {
+            return Ok(aluka_vm::empty_eval_module());
+        }
+        let mut unit = LanguageRegistry::global()
+            .parse_source(src, "<eval>", ModuleKind::Script)
+            .map_err(|e| e.to_string())?;
+        let Some(program) = unit.program.take() else {
+            return Err("unexpected end of input".to_owned());
+        };
+        // eval 以脚本完成值语义求值：完整编译管线 + 保留末语句值开关
+        // （闭包回填/类/提升等完整语言特性可用）
+        let mut compiler = aluka_compiler::ModuleCompiler {
+            preserve_completion_value: true,
+            implicit_globals: true,
+            ..Default::default()
+        };
+        let module = compiler.compile(&program);
+        Ok(module)
+    });
 }
 
 /// 把脚本路径与命令行参数注入 `process.argv`（argv[0]=脚本路径，对齐 Node 语义）。

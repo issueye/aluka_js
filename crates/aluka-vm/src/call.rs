@@ -107,6 +107,10 @@ impl Vm {
         args: &[Value],
     ) -> Result<Value, VmError> {
         if let Value::Object(r) = callee {
+            // Proxy 对象：经 apply trap 派发（未安装时转发 target 调用）
+            if self.proxy_parts(r).is_some() {
+                return self.proxy_apply(r, this_val, args);
+            }
             let resolver = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::PromiseResolver { promise, resolve }) => {
                     Some((*promise, *resolve))
@@ -135,6 +139,29 @@ impl Vm {
             if ctor_name.as_deref() == Some("RegExp") {
                 return self.construct_regexp(args);
             }
+            // `Proxy(t, h)` 可调用形态等价 `new Proxy(t, h)`（规范 [[Call]] 拦截）
+            if ctor_name.as_deref() == Some("Proxy") {
+                return self.construct_proxy(args);
+            }
+            // eval / Function 动态求值拦截（直接/间接形态与动态函数模板）
+            if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
+                if name == "eval" || name == "eval.direct" {
+                    return self.call_eval(name == "eval.direct", args);
+                }
+                if name == "Function" {
+                    return self.construct_function(args);
+                }
+            }
+            // `revoke()`：捕获的撤销闭包面（自有属性 `_revokes` 存 proxy 句柄；
+            // 处理器签名无法拿到自身 fn 对象，故在此特判）
+            if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
+                if name == "Proxy.revoke" {
+                    if let Some(Value::Object(pr)) = self.get_native_fn_property(r, "_revokes") {
+                        self.revoke_proxy(pr);
+                    }
+                    return Ok(Value::Undefined);
+                }
+            }
             let handler = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::NativeFn { name, .. }) => self.builtin_registry.lookup(name),
                 _ => None,
@@ -161,6 +188,10 @@ impl Vm {
     /// 调用构造器；构造器返回对象则采用之，否则采用实例。原生构造器由解释器拦截。
     pub(crate) fn do_construct(&mut self, callee: Value, args: &[Value]) -> Result<Value, VmError> {
         if let Value::Object(r) = callee {
+            // Proxy 对象：经 construct trap 派发（未安装时转发 target 构造）
+            if self.proxy_parts(r).is_some() {
+                return self.proxy_construct(r, args);
+            }
             let ctor_name = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
                 Some(HeapObject::NativeFn { name, .. }) => Some(name.clone()),
@@ -222,6 +253,16 @@ impl Vm {
                         return Ok(Value::Object(self.alloc_map(entries)));
                     }
                     "URL" => return Ok(self.url_constructor(args)),
+                    "Proxy" => return self.construct_proxy(args),
+                    "Function" => return self.construct_function(args),
+                    "ArrayBuffer" => return self.construct_array_buffer(args, false),
+                    "SharedArrayBuffer" => return self.construct_array_buffer(args, true),
+                    "DataView" => return self.construct_data_view(args),
+                    _ if crate::typed_array::TypedKind::by_ctor_name(name.as_str()).is_some() => {
+                        let kind = crate::typed_array::TypedKind::by_ctor_name(name.as_str())
+                            .expect("上方已确认命中");
+                        return self.construct_typed_array(kind, args);
+                    }
                     _ => {}
                 }
                 if let Some(handler) = self.builtin_registry.lookup(name) {

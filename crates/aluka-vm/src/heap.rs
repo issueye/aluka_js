@@ -142,6 +142,50 @@ pub enum HeapObject {
         /// 标志字符串（如 `i`、`g`）
         flags: String,
     },
+    /// Proxy 对象（ES2015 反射代理；13 种 traps 经 handler 属性动态调用）。
+    /// 目标与处理器恒为对象句柄（构造时已校验），撤销后任何操作抛 TypeError。
+    Proxy {
+        /// 被代理的目标对象句柄
+        target: ObjectRef,
+        /// 处理器对象句柄（trap 方法所在）
+        handler: ObjectRef,
+        /// 是否已撤销（`Proxy.revocable` 的 `revoke()` 置位）
+        revoked: bool,
+    },
+    /// ArrayBuffer / SharedArrayBuffer 底层字节缓冲（TypedArray/DataView 共享）。
+    ArrayBuffer {
+        /// 字节缓冲
+        data: Vec<u8>,
+        /// 是否共享（SharedArrayBuffer 标记）
+        shared: bool,
+        /// 是否可调整大小（`resizable: true` 构造）
+        resizable: bool,
+        /// 可调整时的最大字节长度（不可调整为 0）
+        max_byte_length: usize,
+        /// 是否已分离（transfer/detach 后置位，此后全部访问抛 TypeError）
+        detached: bool,
+    },
+    /// 类型化数组视图（11 种元素类型；视图长度以元素计，区间固定于
+    /// `[byte_offset, byte_offset + length * elem_size)`）。
+    TypedArray {
+        /// 元素类型
+        kind: crate::typed_array::TypedKind,
+        /// 底层 buffer 句柄（ArrayBuffer 变体）
+        buffer: ObjectRef,
+        /// 起始字节偏移
+        byte_offset: usize,
+        /// 元素个数
+        length: usize,
+    },
+    /// DataView 字节视图（显式字节序的整数/浮点读写）。
+    DataView {
+        /// 底层 buffer 句柄
+        buffer: ObjectRef,
+        /// 起始字节偏移
+        byte_offset: usize,
+        /// 视图字节长度
+        byte_length: usize,
+    },
     /// 原生函数（`require` 等宿主注入的可调用对象，调用由解释器拦截求值）
     NativeFn {
         /// 函数名（分派键）
@@ -371,6 +415,62 @@ impl Vm {
         ObjectRef(idx)
     }
 
+    /// 在堆上分配 Proxy 对象，返回句柄。
+    pub fn alloc_proxy(&mut self, target: ObjectRef, handler: ObjectRef) -> ObjectRef {
+        self.push_object(HeapObject::Proxy {
+            target,
+            handler,
+            revoked: false,
+        })
+    }
+
+    /// 在堆上分配 ArrayBuffer（`shared` 为 true 时为 SharedArrayBuffer 形态）。
+    pub fn alloc_array_buffer(
+        &mut self,
+        data: Vec<u8>,
+        shared: bool,
+        resizable: bool,
+        max_byte_length: usize,
+    ) -> ObjectRef {
+        self.push_object(HeapObject::ArrayBuffer {
+            data,
+            shared,
+            resizable,
+            max_byte_length,
+            detached: false,
+        })
+    }
+
+    /// 在堆上分配类型化数组视图。
+    pub fn alloc_typed_array(
+        &mut self,
+        kind: crate::typed_array::TypedKind,
+        buffer: ObjectRef,
+        byte_offset: usize,
+        length: usize,
+    ) -> ObjectRef {
+        self.push_object(HeapObject::TypedArray {
+            kind,
+            buffer,
+            byte_offset,
+            length,
+        })
+    }
+
+    /// 在堆上分配 DataView 视图。
+    pub fn alloc_data_view(
+        &mut self,
+        buffer: ObjectRef,
+        byte_offset: usize,
+        byte_length: usize,
+    ) -> ObjectRef {
+        self.push_object(HeapObject::DataView {
+            buffer,
+            byte_offset,
+            byte_length,
+        })
+    }
+
     /// 在堆上分配 Map 对象，返回句柄。
     pub fn alloc_map(&mut self, entries: Vec<(String, Value)>) -> ObjectRef {
         self.push_object(HeapObject::Map {
@@ -514,7 +614,17 @@ impl HeapObject {
                     }
                 }
             }
-            // 叶子对象：无堆引用
+            HeapObject::Proxy {
+                target, handler, ..
+            } => {
+                f(target.0);
+                f(handler.0);
+            }
+            HeapObject::TypedArray { buffer, .. } | HeapObject::DataView { buffer, .. } => {
+                f(buffer.0);
+            }
+            // ArrayBuffer 为字节缓冲叶子对象；其余叶子对象：无堆引用
+            HeapObject::ArrayBuffer { .. } => {}
             HeapObject::String(_)
             | HeapObject::BigInt(_)
             | HeapObject::Symbol { .. }

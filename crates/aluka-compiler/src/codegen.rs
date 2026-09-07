@@ -136,6 +136,15 @@ pub(crate) fn compile_stmt(stmt: &Stmt, unit: &mut CompiledUnit, is_last: bool) 
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
             }
 
+            // 隐式全局模式（eval）：main 层 var 声明直接落全局表
+            if unit.implicit_globals {
+                let name_idx = add_constant(unit, Constant::String(name.clone()));
+                unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
+                if is_last {
+                    unit.code.push(Instr::new(Op::PushUndefined, 0));
+                }
+                return;
+            }
             unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
             if is_last {
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
@@ -891,6 +900,11 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             } else if let Some(&uv_idx) = unit.upvalue_map.get(name) {
                 unit.code.push(Instr::new(Op::Dup, 0));
                 unit.code.push(Instr::new(Op::StoreUpvalue, uv_idx as u32));
+            } else if unit.implicit_globals {
+                // 隐式全局模式（eval）：未声明赋值落全局表（JS 脚本语义）
+                let name_idx = add_constant(unit, Constant::String(name.clone()));
+                unit.code.push(Instr::new(Op::Dup, 0));
+                unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
             } else {
                 let slot = unit.locals;
                 unit.locals += 1;
@@ -1221,7 +1235,18 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                     unit.code.push(Instr::new(Op::CallWithThisArgs, 0));
                 }
             } else {
-                compile_expr(callee, unit);
+                // 直接求值标记：裸标识符 `eval(...)` 的调用形态改经专管
+                // 全局名分派（运行时区分直接/间接求值），并给当前函数
+                // 单元打 has_direct_eval 降级标记
+                let is_direct_eval = matches!(callee.as_ref(), Expr::Ident(id) if id == "eval");
+                if is_direct_eval {
+                    unit.has_direct_eval = true;
+                    let idx =
+                        add_constant(unit, Constant::String("%aluka_direct_eval%".to_owned()));
+                    unit.code.push(Instr::new(Op::LoadGlobal, idx));
+                } else {
+                    compile_expr(callee, unit);
+                }
                 if !has_spread {
                     for arg in args {
                         compile_expr(arg, unit);

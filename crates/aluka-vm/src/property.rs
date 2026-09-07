@@ -1,4 +1,4 @@
-﻿//! 对象属性读写、访问器触发、原型链遍历与 Instanceof 语义。
+//! 对象属性读写、访问器触发、原型链遍历与 Instanceof 语义。
 
 use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::{Vm, VmError};
@@ -76,8 +76,15 @@ impl Vm {
 
     /// 删除 Ordinary 对象的自有属性（快速模式清槽 + 记入删除集 + 代数递增，
     /// 字典模式直接移除；shape 语义与哈希语义统一为「删除后不可见」）。
-    /// 非 Ordinary 或无该属性时为无操作。
+    /// 非 Ordinary 或无该属性时为无操作。Proxy 对象经 deleteProperty trap 派发。
     pub(crate) fn delete_property(&mut self, obj: Value, key: &str) {
+        // Proxy 对象：经 deleteProperty trap 派发（假值抛 TypeError 由 trap 层处理）
+        if let Value::Object(r) = obj {
+            if self.proxy_parts(r).is_some() {
+                let _ = self.proxy_delete(r, key);
+                return;
+            }
+        }
         if let Value::Object(r) = obj {
             if let Some(HeapObject::Ordinary {
                 props,
@@ -160,6 +167,12 @@ impl Vm {
 
     /// 读取属性（含原型链查找、getter 触发与数组元素读取）。
     pub fn get_property(&mut self, obj: Value, key: &str) -> Result<Value, VmError> {
+        // Proxy 对象：经 get trap 派发（含 revoked 校验与 target 回退）
+        if let Value::Object(r) = obj {
+            if self.proxy_parts(r).is_some() {
+                return self.proxy_get(r, key, obj);
+            }
+        }
         // 内置对象的方法按需物化（process.nextTick 等属性访问先于调用）
         if key == "env" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             // process.env：物化为环境变量对象
@@ -337,6 +350,87 @@ impl Vm {
                 }
             }
         }
+        // TypedArray / DataView / ArrayBuffer 实例表面（length/buffer 等按需合成）
+        if let Value::Object(r) = obj {
+            // 先快照堆字段（避免可变借用与堆读取冲突）
+            let ta_info = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::TypedArray {
+                    kind,
+                    buffer,
+                    byte_offset,
+                    length,
+                }) => Some((*kind, *buffer, *byte_offset, *length)),
+                _ => None,
+            };
+            if let Some((kind, buffer, byte_offset, length)) = ta_info {
+                // 数值下标 → 元素读取（越界 undefined）
+                if let Ok(i) = key.parse::<usize>() {
+                    if i < length {
+                        let off = byte_offset + i * kind.elem_size();
+                        self.check_detached(buffer)?;
+                        let Some(HeapObject::ArrayBuffer { data, .. }) =
+                            self.heap.get(buffer.0 as usize)
+                        else {
+                            return Ok(Value::Undefined);
+                        };
+                        let elem = kind.read_le(data, off);
+                        return Ok(self.decode_element(kind, elem));
+                    }
+                    return Ok(Value::Undefined);
+                }
+                let synthesized = match key {
+                    "length" => Some(Value::Number(length as f64)),
+                    "byteLength" => Some(Value::Number((length * kind.elem_size()) as f64)),
+                    "byteOffset" => Some(Value::Number(byte_offset as f64)),
+                    "buffer" => Some(Value::Object(buffer)),
+                    _ => None,
+                };
+                if let Some(v) = synthesized {
+                    return Ok(v);
+                }
+            }
+            let dv_info = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::DataView {
+                    buffer,
+                    byte_offset,
+                    byte_length,
+                }) => Some((*buffer, *byte_offset, *byte_length)),
+                _ => None,
+            };
+            if let Some((buffer, byte_offset, byte_length)) = dv_info {
+                let synthesized = match key {
+                    "byteLength" => Some(Value::Number(byte_length as f64)),
+                    "byteOffset" => Some(Value::Number(byte_offset as f64)),
+                    "buffer" => Some(Value::Object(buffer)),
+                    _ => None,
+                };
+                if let Some(v) = synthesized {
+                    return Ok(v);
+                }
+            }
+            let ab_info = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::ArrayBuffer {
+                    data,
+                    resizable,
+                    max_byte_length,
+                    detached,
+                    ..
+                }) => Some((data.len(), *resizable, *max_byte_length, *detached)),
+                _ => None,
+            };
+            if let Some((len, resizable, max_len, detached)) = ab_info {
+                let synthesized = match key {
+                    "byteLength" => Some(Value::Number(len as f64)),
+                    "detached" => Some(Value::Boolean(detached)),
+                    "resizable" => Some(Value::Boolean(resizable)),
+                    "maxByteLength" => Some(Value::Number(max_len.max(len) as f64)),
+                    _ => None,
+                };
+                if let Some(v) = synthesized {
+                    return Ok(v);
+                }
+            }
+        }
         // Object.prototype.hasOwnProperty：不落于原型对象（保持零自有
         // 属性，for-in 口径对齐 Node.js 22 LTS 标准），属性链查不到时在此合成
         if key == "hasOwnProperty" {
@@ -363,12 +457,29 @@ impl Vm {
 
     /// 设置属性（含数组下标写入、闭包对象属性写入与 Setter 访问器触发）。
     pub fn set_property(&mut self, obj: Value, key: &str, val: Value) -> Result<(), VmError> {
+        // Proxy 对象：经 set trap 派发（假值返回抛 TypeError）
+        if let Value::Object(r) = obj {
+            if self.proxy_parts(r).is_some() {
+                return self.proxy_set(r, key, val, obj);
+            }
+        }
         // RegExp 实例的 lastIndex：写线程局部状态表（堆对象无可变属性）
         if key == "lastIndex" {
             if let Value::Object(r) = obj {
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::RegExp { .. })) {
                     crate::interpreter::set_regex_last_index(r.0, to_number(val).max(0.0) as usize);
                     return Ok(());
+                }
+            }
+        }
+        // TypedArray 数值下标写入：按元素类型收窄/钳制后落盘（越界忽略）
+        if let Value::Object(r) = obj {
+            if let Ok(i) = key.parse::<usize>() {
+                if matches!(
+                    self.heap.get(r.0 as usize),
+                    Some(HeapObject::TypedArray { .. })
+                ) {
+                    return self.ta_set(r, i, val);
                 }
             }
         }
@@ -466,6 +577,12 @@ impl Vm {
 
     /// 判断属性（自有或沿原型链）是否存在于对象上（`in` 运算符语义）。
     pub fn has_property(&mut self, obj: Value, key: &str) -> bool {
+        // Proxy 对象：经 has trap 派发
+        if let Value::Object(r) = obj {
+            if self.proxy_parts(r).is_some() {
+                return self.proxy_has(r, key).unwrap_or(false);
+            }
+        }
         let mut cur = obj;
         let mut depth = 0;
         while let Value::Object(r) = cur {
@@ -519,8 +636,22 @@ impl Vm {
 
     /// 枚举对象自有属性（键 + 值），供 `{ ...src }` 展开使用。
     ///
-    /// 普通对象取属性字典；数组产出索引键与 `length`。其余类型为空集。
-    pub(crate) fn own_properties(&self, obj: Value) -> Vec<(String, Value)> {
+    /// 普通对象取属性字典；数组产出索引键与 `length`；Proxy 经 ownKeys +
+    /// get trap 派发。其余类型为空集。
+    pub(crate) fn own_properties(&mut self, obj: Value) -> Vec<(String, Value)> {
+        // Proxy 对象：ownKeys trap 列键、get trap 取值（规范 [[OwnPropertyKeys]]）
+        if let Value::Object(r) = obj {
+            if self.proxy_parts(r).is_some() {
+                let keys = self.proxy_own_keys(r).unwrap_or_default();
+                return keys
+                    .into_iter()
+                    .map(|k| {
+                        let v = self.get_property(obj, &k).unwrap_or(Value::Undefined);
+                        (k, v)
+                    })
+                    .collect();
+            }
+        }
         if let Value::Object(r) = obj {
             let idx = r.0 as usize;
             if idx < self.heap.len() {
@@ -633,6 +764,173 @@ impl Vm {
         }
     }
 
+    /// 写入对象的内部原型 [[Prototype]]（`Object.setPrototypeOf` 底层语义；
+    /// Proxy 由 [`crate::proxy`] 的 trap 路径先行拦截，此处仅处理普通容器）。
+    /// 非 Ordinary/Array/Closure 对象为无操作。
+    pub(crate) fn set_prototype_of(&mut self, obj: Value, proto: Option<ObjectRef>) {
+        if let Value::Object(r) = obj {
+            if let Some(
+                HeapObject::Ordinary { proto: p, .. }
+                | HeapObject::Closure { proto: p, .. }
+                | HeapObject::Array { proto: p, .. },
+            ) = self.heap.get_mut(r.0 as usize)
+            {
+                *p = proto;
+            }
+        }
+    }
+
+    /// 合成对象属性的特性描述对象（`Object.getOwnPropertyDescriptor` 底层）。
+    ///
+    /// 本运行时数据属性恒为可写/可枚举/可配置（无属性位存储）；访问器经
+    /// Ordinary 的 getter/setter 表判定。属性不存在时返回 undefined。
+    pub(crate) fn ordinary_property_descriptor(
+        &mut self,
+        obj: Value,
+        key: &str,
+    ) -> Result<Value, VmError> {
+        if !self.has_property(obj, key) {
+            return Ok(Value::Undefined);
+        }
+        // 访问器描述优先（getter/setter 表命中即访问器属性）。getter/setter
+        // 表存函数模板索引（非堆闭包），描述面以占位 NativeFn 暴露函数性
+        // （typeof desc.get === "function"）。
+        if let Value::Object(r) = obj {
+            if let Some(HeapObject::Ordinary {
+                getters, setters, ..
+            }) = self.heap.get(r.0 as usize)
+            {
+                let g = getters.get(key).copied();
+                let s = setters.get(key).copied();
+                if g.is_some() || s.is_some() {
+                    let desc = self.alloc_ordinary();
+                    if let Some(gf) = g {
+                        let placeholder = self.alloc_native_fn("accessor.getter");
+                        self.set_native_fn_property(
+                            placeholder,
+                            "_template_index",
+                            Value::Number(gf as f64),
+                        );
+                        let _ = self.set_property(
+                            Value::Object(desc),
+                            "get",
+                            Value::Object(placeholder),
+                        );
+                    }
+                    if let Some(sf) = s {
+                        let placeholder = self.alloc_native_fn("accessor.setter");
+                        self.set_native_fn_property(
+                            placeholder,
+                            "_template_index",
+                            Value::Number(sf as f64),
+                        );
+                        let _ = self.set_property(
+                            Value::Object(desc),
+                            "set",
+                            Value::Object(placeholder),
+                        );
+                    }
+                    let _ =
+                        self.set_property(Value::Object(desc), "enumerable", Value::Boolean(true));
+                    let _ = self.set_property(
+                        Value::Object(desc),
+                        "configurable",
+                        Value::Boolean(true),
+                    );
+                    return Ok(Value::Object(desc));
+                }
+            }
+        }
+        let value = self.get_property(obj, key)?;
+        let desc = self.alloc_ordinary();
+        let _ = self.set_property(Value::Object(desc), "value", value);
+        let _ = self.set_property(Value::Object(desc), "writable", Value::Boolean(true));
+        let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(true));
+        let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
+        Ok(Value::Object(desc))
+    }
+
+    /// 按描述对象定义属性（`Object.defineProperty` 底层语义）。
+    ///
+    /// 支持 value/writable（数据属性）与 get/set（访问器属性）；enumerable/
+    /// configurable 位无存储（忽略）。目标为 Proxy 时经 trap 派发由调用方处理。
+    pub(crate) fn ordinary_define_property(
+        &mut self,
+        obj: Value,
+        key: &str,
+        desc: Value,
+    ) -> Result<(), VmError> {
+        let get_v = |vm: &mut Vm, k: &str| -> Result<Value, VmError> { vm.get_property(desc, k) };
+        let has_get = self.has_property(desc, "get") && {
+            let g = get_v(self, "get")?;
+            !matches!(g, Value::Undefined)
+        };
+        let has_set = self.has_property(desc, "set") && {
+            let s = get_v(self, "set")?;
+            !matches!(s, Value::Undefined)
+        };
+        if has_get || has_set {
+            // 访问器属性：注册 getter/setter 到 Ordinary 访问器表
+            // （表存函数模板索引；函数值经 func_template_index_of 解析）
+            let Value::Object(r) = obj else {
+                return Ok(());
+            };
+            let idx = r.0 as usize;
+            let g_idx = if has_get {
+                let g = get_v(self, "get")?;
+                self.func_template_index_of(g)
+            } else {
+                None
+            };
+            let s_idx = if has_set {
+                let s = get_v(self, "set")?;
+                self.func_template_index_of(s)
+            } else {
+                None
+            };
+            if let Some(HeapObject::Ordinary {
+                getters,
+                setters,
+                has_accessors,
+                ..
+            }) = self.heap.get_mut(idx)
+            {
+                if let Some(g) = g_idx {
+                    getters.insert(key.to_owned(), g);
+                }
+                if let Some(s) = s_idx {
+                    setters.insert(key.to_owned(), s);
+                }
+                *has_accessors = 1;
+            }
+            return Ok(());
+        }
+        let value = get_v(self, "value")?;
+        self.set_property(obj, key, value)
+    }
+
+    /// 解析函数值为函数模板索引（Ordinary 访问器表存储形态）。
+    ///
+    /// 闭包直接取模板索引；访问器描述占位 NativeFn 经 `_template_index`
+    /// 属性还原；其余形态（原生函数等）不可注册，返回 `None` 忽略。
+    pub(crate) fn func_template_index_of(&self, val: Value) -> Option<usize> {
+        match val {
+            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::Closure { func_idx, .. }) => Some(*func_idx),
+                Some(HeapObject::NativeFn { .. }) => {
+                    match self.get_native_fn_property(r, "_template_index") {
+                        Some(Value::Number(n)) => Some(n as usize),
+                        _ => None,
+                    }
+                }
+                // 裸函数模板句柄（heap index == 模板索引的历史形态）
+                _ if (r.0 as usize) < self.module_functions.len() => Some(r.0 as usize),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// 检查 l instanceof r（沿着 l 的原型链查找 r.prototype）。
     pub fn check_instanceof(&mut self, l: Value, r: Value) -> bool {
         // RegExp 实例（无原型链字段的堆形态）对 RegExp 构造器特判
@@ -650,7 +948,16 @@ impl Vm {
             Ok(Value::Object(p)) => p,
             _ => return false,
         };
-        let mut cur = self.get_prototype(l);
+        // 原型链遍历对 Proxy 感知：链上 Proxy 经 getPrototypeOf trap 解析
+        let mut cur = match l {
+            Value::Object(lr) if self.proxy_parts(lr).is_some() => {
+                match self.proxy_get_prototype_of(lr) {
+                    Ok(Value::Object(p)) => Some(p),
+                    _ => None,
+                }
+            }
+            other => self.get_prototype(other),
+        };
         let mut depth = 0;
         while let Some(proto_ref) = cur {
             if depth > 100 {

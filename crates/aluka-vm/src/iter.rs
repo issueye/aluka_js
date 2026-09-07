@@ -24,12 +24,24 @@ impl Vm {
     }
 
     /// 为数组物化迭代器对象（标记 `_isArrayIterator`，持有源数组引用）。
-    pub(crate) fn alloc_array_iterator(&mut self, arr: ObjectRef) -> Value {
+    ///
+    /// `kind`：`"values"` 产出元素、`"keys"` 产出下标、`"entries"` 产出
+    /// `[下标, 元素]` 对（`Array.prototype.keys/values/entries` 共用）。
+    pub(crate) fn alloc_array_iterator_kind(&mut self, arr: ObjectRef, kind: &str) -> Value {
         let obj = self.alloc_ordinary();
         let _ = self.set_property(Value::Object(obj), "_isArrayIterator", Value::Boolean(true));
         let _ = self.set_property(Value::Object(obj), "_iterArray", Value::Object(arr));
+        if kind != "values" {
+            let flag = self.alloc_string(kind.to_owned());
+            let _ = self.set_property(Value::Object(obj), "_iterKind", Value::Object(flag));
+        }
         ARRAY_ITER_POS.lock().unwrap().insert(obj.0, 0);
         Value::Object(obj)
+    }
+
+    /// 为数组物化迭代器对象（默认 values 形态；`for...of` 使用）。
+    pub(crate) fn alloc_array_iterator(&mut self, arr: ObjectRef) -> Value {
+        self.alloc_array_iterator_kind(arr, "values")
     }
 
     /// `iter.next()`：产出 `{ value, done }` 结果对象；耗尽后恒 `{ undefined, true }`。
@@ -43,24 +55,39 @@ impl Vm {
             }
             _ => return self.make_iterator_result(Value::Undefined, true),
         };
+        let kind = match self.own_value(iter.0 as usize, "_iterKind") {
+            Some(Value::Object(k)) => match self.heap.get(k.0 as usize) {
+                Some(HeapObject::String(text)) => text.clone(),
+                _ => "values".to_owned(),
+            },
+            _ => "values".to_owned(),
+        };
         let pos = ARRAY_ITER_POS
             .lock()
             .unwrap()
             .get(&iter.0)
             .copied()
             .unwrap_or(0);
-        let (value, done) = match self.heap.get(arr.0 as usize) {
+        let result = match self.heap.get(arr.0 as usize) {
             Some(HeapObject::Array { elements, .. }) => {
                 if pos < elements.len() {
-                    (elements[pos], false)
+                    match kind.as_str() {
+                        "keys" => self.make_iterator_result(Value::Number(pos as f64), false)?,
+                        "entries" => {
+                            let pair =
+                                self.alloc_array(vec![Value::Number(pos as f64), elements[pos]]);
+                            self.make_iterator_result(Value::Object(pair), false)?
+                        }
+                        _ => self.make_iterator_result(elements[pos], false)?,
+                    }
                 } else {
-                    (Value::Undefined, true)
+                    self.make_iterator_result(Value::Undefined, true)?
                 }
             }
-            _ => (Value::Undefined, true),
+            _ => self.make_iterator_result(Value::Undefined, true)?,
         };
         ARRAY_ITER_POS.lock().unwrap().insert(iter.0, pos + 1);
-        self.make_iterator_result(value, done)
+        Ok(result)
     }
 
     /// 物化迭代结果对象 `{ value, done }`。

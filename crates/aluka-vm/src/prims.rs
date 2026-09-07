@@ -395,6 +395,7 @@ impl Vm {
             let msg = self.alloc_string(e.to_string());
             VmError::Thrown(Value::Object(msg))
         })?;
+        let group_names: Vec<Option<String>> = compiled.group_names().to_vec();
         let cs: Vec<char> = text.chars().collect();
         let mut out = String::new();
         let mut consumed = 0usize;
@@ -413,7 +414,14 @@ impl Vm {
                 .iter()
                 .map(|g| g.map(|(a, b)| (consumed + a, consumed + b)))
                 .collect();
-            out.push_str(&expand_replacement(to, &cs, abs_start, abs_end, &groups));
+            out.push_str(&expand_replacement(
+                to,
+                &cs,
+                abs_start,
+                abs_end,
+                &groups,
+                &group_names,
+            ));
             consumed = if abs_end == abs_start {
                 abs_end + 1
             } else {
@@ -431,13 +439,14 @@ impl Vm {
 }
 
 /// 展开替换串中的 `$` 模式（`$&` 全匹配、`` $` `` 前文、`$'` 后文、
-/// `$$` 字面 `$`、`$1..$9` 捕获组；未参与的组替换为空）。
+/// `$$` 字面 `$`、`$1..$9` 捕获组、`$<name>` 命名捕获组；未参与的组替换为空）。
 fn expand_replacement(
     to: &str,
     subject: &[char],
     start: usize,
     end: usize,
     groups: &[Option<(usize, usize)>],
+    group_names: &[Option<String>],
 ) -> String {
     let slice = |a: usize, b: usize| -> String { subject[a..b].iter().collect() };
     let cs: Vec<char> = to.chars().collect();
@@ -465,6 +474,20 @@ fn expand_replacement(
                     out.push_str(&slice(end, subject.len()));
                     i += 2;
                     continue;
+                }
+                // `$<name>`：命名捕获组（组未参与或名字不存在 → 空串）
+                '<' => {
+                    if let Some(close) = cs[i + 2..].iter().position(|&c| c == '>') {
+                        let name: String = cs[i + 2..i + 2 + close].iter().collect();
+                        let gi = group_names
+                            .iter()
+                            .position(|n| n.as_deref() == Some(name.as_str()));
+                        if let Some(Some((a, b))) = gi.and_then(|n| groups.get(n)) {
+                            out.push_str(&slice(*a, *b));
+                        }
+                        i += 2 + close + 1;
+                        continue;
+                    }
                 }
                 d if d.is_ascii_digit() && d != '0' => {
                     let n = d.to_digit(10).unwrap_or(1) as usize - 1;

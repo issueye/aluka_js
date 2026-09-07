@@ -3,8 +3,8 @@
 use crate::codegen::{compile_expr, compile_stmt};
 use crate::scope::{CompiledUnit, ParentScopeInfo};
 use aluka_bytecode::{
-    BytecodeModule, ClassMethod, ClassTemplate, FuncHeaderExtras, FuncTemplate, Instr, Op,
-    UpvalueCapture,
+    BytecodeModule, ClassMethod, ClassTemplate, Constant, FuncHeaderExtras, FuncTemplate, Instr,
+    Op, UpvalueCapture,
 };
 use aluka_parser::ast::{
     ClassMethodDef, Expr, FunctionDef, Program, PropKey, PropValue, Stmt, VarPattern,
@@ -36,6 +36,11 @@ pub struct ModuleCompiler {
     pub header_extras: Vec<FuncHeaderExtras>,
     /// 以 ESM 包装形态编译（CJS 7 参闭包 + exports 绑定）
     pub is_esm: bool,
+    /// 保留脚本完成值（eval 动态求值用）：main 以 `Return` 收口返回末语句值，
+    /// 而非恒 `ReturnUndef`。默认 false（require/入口模块语义不变）。
+    pub preserve_completion_value: bool,
+    /// 隐式全局模式（eval 全局作用域求值用）：转发至顶层编译单元。
+    pub implicit_globals: bool,
 }
 
 fn collect_ident_uses_in_expr(expr: &Expr, uses: &mut Vec<String>) {
@@ -64,6 +69,17 @@ fn collect_ident_uses_in_expr(expr: &Expr, uses: &mut Vec<String>) {
         }
         Expr::Member { obj, .. } | Expr::OptionalMember { obj, .. } => {
             collect_ident_uses_in_expr(obj, uses);
+        }
+        // 属性/下标赋值：目标对象与下标都是标识符使用点（遗漏会把
+        // 闭包捕获退化为 LoadGlobal，赋值静默落到错误的作用域）
+        Expr::MemberAssign { obj, value, .. } => {
+            collect_ident_uses_in_expr(obj, uses);
+            collect_ident_uses_in_expr(value, uses);
+        }
+        Expr::IndexAssign { obj, index, value } => {
+            collect_ident_uses_in_expr(obj, uses);
+            collect_ident_uses_in_expr(index, uses);
+            collect_ident_uses_in_expr(value, uses);
         }
         Expr::Index { obj, index } | Expr::OptionalIndex { obj, index } => {
             collect_ident_uses_in_expr(obj, uses);
@@ -277,7 +293,10 @@ impl ModuleCompiler {
             try_table: Vec::new(),
         });
 
-        let mut top_unit = CompiledUnit::default();
+        let mut top_unit = CompiledUnit {
+            implicit_globals: self.implicit_globals,
+            ..Default::default()
+        };
 
         // 顶层函数声明提升（JS hoisting）：function 声明的闭包绑定必须
         // 先于其余语句求值（真实包在声明位置之前引用函数）。
@@ -331,7 +350,15 @@ impl ModuleCompiler {
                 top_unit
                     .code
                     .push(Instr::new(Op::MakeClosure, fn_idx as u32));
-                top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                if top_unit.implicit_globals {
+                    let name_idx = crate::codegen::add_constant(
+                        &mut top_unit,
+                        Constant::String(func_def.name.clone()),
+                    );
+                    top_unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
+                } else {
+                    top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                }
             }
         }
 
@@ -356,7 +383,15 @@ impl ModuleCompiler {
                     top_unit
                         .code
                         .push(Instr::new(Op::MakeClosure, fn_idx as u32));
-                    top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    if top_unit.implicit_globals {
+                        let name_idx = crate::codegen::add_constant(
+                            &mut top_unit,
+                            Constant::String(func_def.name.clone()),
+                        );
+                        top_unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
+                    } else {
+                        top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    }
                 }
                 Stmt::Class {
                     name,
@@ -486,13 +521,29 @@ impl ModuleCompiler {
                 Some(Op::Return | Op::ReturnUndef)
             )
         {
-            top_unit.code.push(Instr::new(Op::ReturnUndef, 0));
+            // eval 动态求值需要脚本完成值：末语句为表达式语句时以
+            // `Return` 收口（值已在栈顶）；其余维持 `ReturnUndef`
+            let ends_with_expr = self.preserve_completion_value
+                && matches!(optimized_program.body.last(), Some(Stmt::Expr(_)));
+            top_unit.code.push(Instr::new(
+                if ends_with_expr {
+                    Op::Return
+                } else {
+                    Op::ReturnUndef
+                },
+                0,
+            ));
         }
 
+        let had_direct_eval_top = top_unit.has_direct_eval;
+        let top_symbol_map = top_unit.symbol_map.clone();
         let mut top_func = top_unit.to_func_template("main");
         // 槽 0 保留给 this：顶层 `this` 表达式编译为 LoadLocal 0，
         // 即使无其余局部也至少需要 1 个槽位（与 ESM 路径一致）
         top_func.num_locals = top_func.num_locals.max(1);
+        if had_direct_eval_top {
+            attach_direct_eval_marker(&mut top_func, &top_symbol_map);
+        }
         self.functions[0] = top_func;
         // main 不经过 compile_method_function，补一条默认扩展标量头（无 arguments）
         self.header_extras.insert(
@@ -599,7 +650,13 @@ impl ModuleCompiler {
             unit.code[instr_idx].operand = child_idx as u32;
         }
         let wrapper_idx = self.functions.len();
-        self.functions.push(unit.to_func_template("main"));
+        let had_direct_eval = unit.has_direct_eval;
+        let symbol_map = unit.symbol_map.clone();
+        let mut wrapper_tpl = unit.to_func_template("main");
+        if had_direct_eval {
+            attach_direct_eval_marker(&mut wrapper_tpl, &symbol_map);
+        }
+        self.functions.push(wrapper_tpl);
         self.header_extras.push(FuncHeaderExtras {
             arguments_slot: -1,
             no_arguments_object: true,
@@ -936,9 +993,46 @@ impl ModuleCompiler {
         {
             unit.code.push(Instr::new(Op::ReturnUndef, 0));
         }
+        // 直接求值词法槽位降级：函数体含裸 `eval(...)` 时，强制把父级
+        // 全部局部捕获为上值（未被代码引用的绑定也保留地址），使求值体
+        // 可经上值外溢访问外层词法绑定（对齐引擎的 scope degradation）
+        if unit.has_direct_eval {
+            if let Some(parent) = parent_scope {
+                for (name, &slot) in &parent.locals {
+                    if unit.symbol_map.contains_key(name) || unit.upvalue_map.contains_key(name) {
+                        continue;
+                    }
+                    let uv_idx = unit.upvalues.len();
+                    unit.upvalues.push(UpvalueCapture {
+                        is_local: true,
+                        index: slot as u32,
+                    });
+                    unit.upvalue_map.insert(name.clone(), uv_idx);
+                }
+                // 父级已存在的上值链继续透传（祖父级绑定可达）
+                for (name, &uv) in &parent.upvalues {
+                    if unit.upvalue_map.contains_key(name) {
+                        continue;
+                    }
+                    let idx = unit.upvalues.len();
+                    unit.upvalues.push(UpvalueCapture {
+                        is_local: false,
+                        index: uv as u32,
+                    });
+                    unit.upvalue_map.insert(name.clone(), idx);
+                }
+            }
+        }
+        let had_direct_eval = unit.has_direct_eval;
+        let symbol_map = unit.symbol_map.clone();
+        let upvalue_map = unit.upvalue_map.clone();
         let mut func_tpl = unit.to_func_template(&def.name);
         func_tpl.is_async = def.is_async;
         func_tpl.is_generator = def.is_generator;
+        if had_direct_eval {
+            attach_direct_eval_marker(&mut func_tpl, &symbol_map);
+            attach_direct_eval_upvalue_marker(&mut func_tpl, &upvalue_map);
+        }
         let idx = self.functions.len();
         self.functions.push(func_tpl);
         self.header_extras.push(FuncHeaderExtras {
@@ -1041,4 +1135,51 @@ fn ensure_pattern_slots(unit: &mut CompiledUnit, pattern: &VarPattern) {
             }
         }
     }
+}
+
+/// 直接求值降级标记：把局部名表按槽位序编码进模板常量池。
+///
+/// 仅当函数体含裸标识符 `eval(...)` 调用形态时调用（`has_direct_eval`）。
+/// 编码格式：`__aluka_locals__\u{1}` 前缀 + `\u{1}` 分隔的名字序列，
+/// 序列第 i 项对应局部槽位 `i + 1`（slot 0 = this 不入表；空洞为空串）。
+/// 运行时直接求值据此物化当前帧词法作用域，实现穿透与写回。
+/// 直接求值降级标记（上值面）：把上值名表按 Upvalue 索引序编码进模板
+/// 常量池（`__aluka_upvals__` 前缀 + SEP 分隔）。嵌套函数内的直接求值
+/// 经此外溢捕获外层词法绑定（读与写回均经上值句柄共享）。
+fn attach_direct_eval_upvalue_marker(
+    func_tpl: &mut FuncTemplate,
+    upvalue_map: &std::collections::HashMap<String, usize>,
+) {
+    const SEP: char = '\u{1}';
+    let max_idx = upvalue_map.values().copied().max().unwrap_or(0);
+    let mut names = vec![String::new(); max_idx + 1];
+    for (name, &idx) in upvalue_map {
+        if idx < names.len() {
+            names[idx] = name.clone();
+        }
+    }
+    let marker = format!(
+        "__aluka_upvals__{}{}",
+        SEP,
+        names.join(SEP.to_string().as_str())
+    );
+    func_tpl.constants.push(Constant::String(marker));
+}
+
+fn attach_direct_eval_marker(
+    func_tpl: &mut FuncTemplate,
+    symbol_map: &std::collections::HashMap<String, usize>,
+) {
+    let max_slot = symbol_map.values().copied().max().unwrap_or(0);
+    let mut names = vec![String::new(); max_slot];
+    for (name, &slot) in symbol_map {
+        if slot >= 1 {
+            let i = slot - 1;
+            if i < names.len() {
+                names[i] = name.clone();
+            }
+        }
+    }
+    let marker = format!("__aluka_locals__\u{1}{}", names.join("\u{1}"));
+    func_tpl.constants.push(Constant::String(marker));
 }

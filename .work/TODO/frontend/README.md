@@ -10,14 +10,14 @@
 
 ### 1. 语法解析与 AST 扩展 (`aluka-parser`)
 - [ ] **Proxy & Reflect 语法层面适配**：确保相关的构造与成员调用无歧义；
-- [ ] **RegExp 进阶语法解析**：支持 Lookbehind 正反向断言 `(?<=...)` / `(?<!...)`、命名组引用 `\k<name>`；
+- [x] **RegExp 进阶语法解析**：支持 Lookbehind 正反向断言 `(?<=...)` / `(?<!...)`、命名组引用 `\k<name>`；
 - [ ] **Top-Level Await (TLA) 解析支持**：
   - 识别模块顶层 `await` 语法；
   - 在 `SourceUnit` 正确打上 `has_tla: true` 阶段位；
 - [ ] **现代语法边界完善**：
   - 严格模式（Strict Mode）全语法检查；
   - 增强对象/数组深度解构与默认值赋值；
-- [ ] **动态代码求值语法支持 (eval & Function)**：
+- [x] **动态代码求值语法支持 (eval & Function)**：
   - 静态识别直接 `eval(...)` 调用形态，在 AST 作用域打上 `has_direct_eval` 标记；
   - 提供 `Function` 构造器形参列表与函数体字符串的专属解析通道。
 

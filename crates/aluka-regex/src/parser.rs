@@ -53,6 +53,20 @@ pub(crate) enum Node {
         /// 组内子模式
         node: Box<Node>,
     },
+    /// 后行断言 `(?<=...)` / `(?<!...)`：要求子模式匹配恰好终止于当前位置
+    Lookbehind {
+        /// `true` 为负向后行 `(?<!...)`
+        negated: bool,
+        /// 断言子模式
+        node: Box<Node>,
+    },
+    /// 捕获组反向引用 `\k<name>` 与 `\1..`\9`
+    Backref(usize),
+    /// 词边界断言 `\b` / `\B`（词字符 = 字母数字或 `_`）
+    WordBoundary {
+        /// `true` 为非词边界 `\B`
+        negated: bool,
+    },
     /// 顺序连接
     Concat(Vec<Node>),
     /// 选择分支（按序尝试）
@@ -243,15 +257,33 @@ impl Parser {
         }
     }
 
-    /// `group := '(' '?:'? alt ')'`（捕获组编号按 `(` 出现顺序）
+    /// `group := '(' '?:'? alt ')'`（捕获组编号按 `(` 出现顺序）。
+    ///
+    /// 支持命名捕获组 `(?<name>...)` 与后行断言 `(?<=...)` / `(?<!...)`。
     fn parse_group(&mut self) -> Result<Node, RegexError> {
         let index = if self.peek() == Some('?') {
-            // 仅支持 (?:...) 非捕获语法；(?<= 等语料外特性报语法错误
             self.pos += 1;
-            match self.bump() {
-                Some(':') => None,
+            match self.peek() {
+                Some(':') => {
+                    self.pos += 1;
+                    None
+                }
                 // 命名捕获组 `(?<name>...)`：命名组同样占用组号
-                Some('<') if self.peek() != Some('=') && self.peek() != Some('!') => {
+                Some('<') if self.peek_ahead_is(Some('=')) || self.peek_ahead_is(Some('!')) => {
+                    // 后行断言 `(?<=...)` / `(?<!...)`
+                    let negated = self.peek_ahead_is(Some('!'));
+                    self.pos += 2; // 吃掉 '<' 与 '='/'!'
+                    let node = self.parse_alt()?;
+                    if !self.eat(')') {
+                        return Err(self.err("unbalanced parenthesis"));
+                    }
+                    return Ok(Node::Lookbehind {
+                        negated,
+                        node: Box::new(node),
+                    });
+                }
+                Some('<') => {
+                    self.pos += 1; // 吃掉 '<'
                     let mut name = String::new();
                     loop {
                         match self.bump() {
@@ -285,6 +317,11 @@ impl Parser {
             index,
             node: Box::new(node),
         })
+    }
+
+    /// 判断当前位置后第 2 个字符是否为 `c`（调用点已确认 `pos` 处为 `<`）。
+    fn peek_ahead_is(&self, c: Option<char>) -> bool {
+        self.chars.get(self.pos + 1).copied() == c
     }
 
     /// 字符类成员直到 `]`（调用方已消费 `[` 与可选 `^`）。
@@ -352,7 +389,8 @@ impl Parser {
         })
     }
 
-    /// 类外转义：`\d \D \w \W \s \S` 展开为单成员字符类，其余为字面字符
+    /// 类外转义：`\d \D \w \W \s \S` 展开为单成员字符类；`\k<name>` 命名组
+    /// 反向引用与 `\1..\9` 数字反向引用；其余为字面字符
     /// （`\b`/`\B` 词边界语料外，显式报语法错误）。
     fn parse_escape_node(&mut self) -> Result<Node, RegexError> {
         use ClassItem::{Digit, NotSpace, NotWord, Space, Word};
@@ -385,7 +423,44 @@ impl Parser {
                 negated: true,
                 items: vec![NotSpace],
             },
-            'b' | 'B' => return Err(self.err("word boundary assertion is not supported")),
+            // `\k<name>`：命名组反向引用（组须已定义）
+            'k' if self.peek() == Some('<') => {
+                self.pos += 1; // 吃掉 '<'
+                let mut name = String::new();
+                loop {
+                    match self.bump() {
+                        Some('>') => break,
+                        Some(ch) => name.push(ch),
+                        None => return Err(self.err("unterminated group name")),
+                    }
+                }
+                let gi = self
+                    .group_names
+                    .iter()
+                    .position(|n| n.as_deref() == Some(name.as_str()))
+                    .map(|i| i + 1)
+                    .ok_or_else(|| self.err(&format!("group name '{name}' not defined")))?;
+                Node::Backref(gi)
+            }
+            // `\1..`\9`：数字反向引用（组须已存在；多位数字一并解析）
+            '1'..='9' => {
+                let mut num = c.to_digit(10).ok_or_else(|| self.err("bad backref"))? as usize;
+                while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
+                    num = num * 10
+                        + (self
+                            .bump()
+                            .expect("peek 已确认")
+                            .to_digit(10)
+                            .expect("digit") as usize);
+                }
+                if num > self.group_names.len() {
+                    return Err(self.err(&format!("backreference to nonexistent group {num}")));
+                }
+                Node::Backref(num)
+            }
+            // `\b` / `\B`：词边界断言（类内 `\b` 由 parse_class_escape 处理为字面量）
+            'b' => Node::WordBoundary { negated: false },
+            'B' => Node::WordBoundary { negated: true },
             other => Node::Char(other),
         })
     }

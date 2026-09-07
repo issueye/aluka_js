@@ -233,6 +233,57 @@ impl Regex {
                 }
                 false
             }
+            // 后行断言：尝试全部起点 s ≤ pos，要求子模式匹配恰好终止于 pos。
+            // 起点按升序尝试（最左起点 = 贪婪量词最长语义，对齐 V8 观测）；
+            // 成功尝试的捕获状态对断言之后可见（JS 语义）。
+            Node::Lookbehind { negated, node } => {
+                let mut hit_caps: Option<Caps> = None;
+                for s in 0..=pos {
+                    let mut try_caps = caps.clone();
+                    if self.match_node(node, s, ctx, &mut try_caps, &|p, _| p == pos) {
+                        hit_caps = Some(try_caps);
+                        break;
+                    }
+                    if ctx.exceeded.get() {
+                        return false;
+                    }
+                }
+                match (hit_caps, negated) {
+                    (Some(found), false) => {
+                        *caps = found;
+                        cont(pos, caps)
+                    }
+                    (Some(_), true) => false,
+                    (None, false) => false,
+                    (None, true) => cont(pos, caps),
+                }
+            }
+            // 反向引用：组已参与时逐字符（含 i 折叠）重放组文本；
+            // 组未参与时按规范匹配空串成功。
+            Node::Backref(gi) => match caps.get(*gi).copied().flatten() {
+                None => cont(pos, caps),
+                Some((s, e)) => {
+                    let text: Vec<char> = ctx.input[s..e].to_vec();
+                    for (off, ch) in text.iter().enumerate() {
+                        if !self.char_eq(ctx.input.get(pos + off).copied(), *ch) {
+                            return false;
+                        }
+                    }
+                    cont(pos + text.len(), caps)
+                }
+            },
+            // 词边界：前一字符与后一字符的词性不同即为边界（输入首/尾按
+            // 非词字符计）。
+            Node::WordBoundary { negated } => {
+                let is_word = |c: char| c.is_alphanumeric() || c == '_';
+                let before = pos > 0 && is_word(ctx.input[pos - 1]);
+                let after = ctx.input.get(pos).copied().is_some_and(is_word);
+                if (before != after) != *negated {
+                    cont(pos, caps)
+                } else {
+                    false
+                }
+            }
             Node::Repeat {
                 node,
                 min,
@@ -459,10 +510,38 @@ mod tests {
     }
 
     #[test]
-    fn lookbehind_still_unsupported() {
-        assert!(matches!(
-            Regex::compile("(?<=a)b", ""),
-            Err(RegexError::Syntax(_))
-        ));
+    fn lookbehind_positive_and_negative() {
+        // 正向后行：前置字符约束
+        let pos = Regex::compile(r"(?<=a)b", "").expect("compile");
+        assert!(pos.test("ab").expect("run"));
+        assert!(!pos.test("cb").expect("run"));
+        // 负向后行：前置字符否定约束
+        let neg = Regex::compile(r"(?<!a)b", "").expect("compile");
+        assert!(neg.test("cb").expect("run"));
+        assert!(!neg.test("ab").expect("run"));
+        // 断言不消耗字符：匹配区间不包含前置文本
+        let m = pos.find("xab").expect("run").expect("match");
+        assert_eq!((m.start, m.end), (2, 3));
+        // 多字符后行与量词（贪婪取最长捕获，对齐 V8 观测）
+        let greedy = Regex::compile(r"(?<=(a+))b", "").expect("compile");
+        let m = greedy.find("aaab").expect("run").expect("match");
+        let (gs, ge) = m.groups[0].expect("group1");
+        let text: String = "aaab".chars().collect::<Vec<_>>()[gs..ge].iter().collect();
+        assert_eq!(text, "aaa");
+    }
+
+    #[test]
+    fn backreferences_match_repeated_text() {
+        // 数字反向引用：重复词匹配
+        let re = Regex::compile(r"(\w+)\s\1", "").expect("compile");
+        let m = re.find("hello hello world").expect("run").expect("match");
+        assert_eq!((m.start, m.end), (0, 11));
+        // 命名反向引用 `\k<name>`
+        let named = Regex::compile(r"(?<w>\d)x\k<w>", "").expect("compile");
+        assert!(named.test("5x5").expect("run"));
+        assert!(!named.test("5x6").expect("run"));
+        // 未参与匹配的组：反向引用按空串成功
+        let opt = Regex::compile(r"(?:(x)|y)\1z", "").expect("compile");
+        assert!(opt.test("yz").expect("run"));
     }
 }

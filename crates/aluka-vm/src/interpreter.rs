@@ -1,4 +1,4 @@
-﻿//! 虚拟机核心解释器：执行状态定义与操作码分派循环。
+//! 虚拟机核心解释器：执行状态定义与操作码分派循环。
 
 use crate::exception::{Completion, FinallyOutcome, PHASE_TRY, TryExitOutcome, TryHandler};
 use crate::generator::GeneratorState;
@@ -49,7 +49,7 @@ impl std::fmt::Display for VmError {
 impl std::error::Error for VmError {}
 
 /// 一次执行的状态：操作数栈与局部槽位。
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct Vm {
     /// 操作数栈
     pub stack: Vec<Value>,
@@ -163,6 +163,13 @@ pub struct Vm {
     pub map_ctor: Option<ObjectRef>,
     /// `Set` 原生构造器单例
     pub set_ctor: Option<ObjectRef>,
+    /// `Proxy` 原生构造器单例（revocable/isProxy 静态面挂接于其上）
+    pub proxy_ctor: Option<ObjectRef>,
+    /// `Reflect` 全局对象单例（延迟物化）
+    pub reflect_object: Option<ObjectRef>,
+    /// 运行时编译器 Hook（eval / new Function 动态求值；宿主经
+    /// `set_eval_provider` 装配，后端仅接收字节码，保持 ISA 解耦）
+    pub(crate) eval_provider: Option<crate::eval::EvalProvider>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
@@ -286,6 +293,9 @@ impl Vm {
             promise_ctor: None,
             map_ctor: None,
             set_ctor: None,
+            proxy_ctor: None,
+            reflect_object: None,
+            eval_provider: None,
             process_object: None,
             path_module: None,
             os_module: None,
@@ -360,6 +370,7 @@ impl Vm {
         vm.promise_ctor = Some(vm.alloc_native_ctor("Promise", obj_proto));
         vm.map_ctor = Some(vm.alloc_native_ctor("Map", obj_proto));
         vm.set_ctor = Some(vm.alloc_native_ctor("Set", obj_proto));
+        // Proxy 构造器单例（静态面挂接在 register_all 之后，避免注册表被整体替换）
         vm.process_object = Some(vm.alloc_ordinary());
         // path 内置模块（方法经 CALL_METHOD 拦截求值）
         let path_mod = vm.alloc_ordinary();
@@ -424,6 +435,33 @@ impl Vm {
             "hasOwnProperty",
             objproto_has_own_property,
         );
+        // Proxy 构造器静态面与 Reflect 全局对象（register_all 之后的注册才存活）
+        vm.proxy_ctor = Some(vm.alloc_native_ctor("Proxy", obj_proto));
+        if let Some(pctor) = vm.proxy_ctor {
+            crate::builtins::reflect::setup_proxy_ctor(&mut vm, pctor);
+        }
+        vm.reflect_object = Some(crate::builtins::reflect::materialize(&mut vm));
+        // 类型化数组体系构造器（11 种 TypedArray + ArrayBuffer/
+        // SharedArrayBuffer/DataView；静态面 BYTES_PER_ELEMENT 挂构造器）
+        for kind in crate::typed_array::TypedKind::all() {
+            let ctor = vm.alloc_native_ctor(kind.ctor_name(), obj_proto);
+            let _ = vm.set_property(
+                Value::Object(ctor),
+                "BYTES_PER_ELEMENT",
+                Value::Number(kind.elem_size() as f64),
+            );
+            vm.globals
+                .insert(kind.ctor_name().to_owned(), Value::Object(ctor));
+        }
+        let ab_ctor = vm.alloc_native_ctor("ArrayBuffer", obj_proto);
+        vm.globals
+            .insert("ArrayBuffer".to_owned(), Value::Object(ab_ctor));
+        let sab_ctor = vm.alloc_native_ctor("SharedArrayBuffer", obj_proto);
+        vm.globals
+            .insert("SharedArrayBuffer".to_owned(), Value::Object(sab_ctor));
+        let dv_ctor = vm.alloc_native_ctor("DataView", obj_proto);
+        vm.globals
+            .insert("DataView".to_owned(), Value::Object(dv_ctor));
         vm
     }
 
@@ -460,6 +498,11 @@ impl Vm {
             }
             Value::Object(r) => {
                 let idx = r.0 as usize;
+                // Proxy：格式化透传 target（对齐 String(proxy) 经 get/toString trap 的语义）
+                if let Some(HeapObject::Proxy { target, .. }) = self.heap.get(idx) {
+                    let target = *target;
+                    return self.format_value(Value::Object(target));
+                }
                 if idx < self.heap.len() {
                     match &self.heap[idx] {
                         HeapObject::String(s) => s.clone(),
@@ -478,6 +521,11 @@ impl Vm {
                         | HeapObject::Map { .. }
                         | HeapObject::Readable { .. }
                         | HeapObject::EventEmitter { .. } => "[object Object]".to_owned(),
+                        // Proxy 已在 match 前透传 target 格式化；兜底防不可达
+                        HeapObject::Proxy { .. } => "[object Object]".to_owned(),
+                        HeapObject::TypedArray { .. } => "[object Object]".to_owned(),
+                        HeapObject::DataView { .. } => "[object Object]".to_owned(),
+                        HeapObject::ArrayBuffer { .. } => "[object Object]".to_owned(),
                         HeapObject::Closure { .. }
                         | HeapObject::NativeCtor { .. }
                         | HeapObject::NativeFn { .. }
@@ -544,10 +592,13 @@ impl Vm {
                 Some(HeapObject::String(_)) => "string".to_owned(),
                 Some(HeapObject::BigInt(_)) => "bigint".to_owned(),
                 Some(HeapObject::Symbol { .. }) => "symbol".to_owned(),
+                Some(HeapObject::Proxy { .. }) => self.proxy_typeof(r),
+                // PromiseResolver（resolve/reject 函数）可调用，typeof 为 function
                 Some(
                     HeapObject::Closure { .. }
                     | HeapObject::NativeCtor { .. }
-                    | HeapObject::NativeFn { .. },
+                    | HeapObject::NativeFn { .. }
+                    | HeapObject::PromiseResolver { .. },
                 ) => "function".to_owned(),
                 _ => "object".to_owned(),
             },
@@ -632,6 +683,16 @@ impl Vm {
                 .unwrap_or(Value::Undefined),
             "Map" => self.map_ctor.map(Value::Object).unwrap_or(Value::Undefined),
             "Set" => self.set_ctor.map(Value::Object).unwrap_or(Value::Undefined),
+            // Proxy 构造器（`new Proxy(t, h)`；可调用形态同语义）
+            "Proxy" => self
+                .proxy_ctor
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            // Reflect 全局对象（13 个规范静态方法；`Vm::new` 预物化单例）
+            "Reflect" => self
+                .reflect_object
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
             "process" => self
                 .process_object
                 .map(Value::Object)
@@ -687,6 +748,21 @@ impl Vm {
                 .require_fn
                 .map(Value::Object)
                 .unwrap_or(Value::Undefined),
+            // eval：间接求值入口（直接调用形态经专管名改写，见 eval 模块）
+            "eval" => {
+                let f = self.alloc_native_fn("eval");
+                Value::Object(f)
+            }
+            // 编译器改写的直接求值形态（%aluka_direct_eval%）
+            crate::eval::DIRECT_EVAL_GLOBAL => {
+                let f = self.alloc_native_fn("eval.direct");
+                Value::Object(f)
+            }
+            // Function 构造器（动态函数模板）
+            "Function" => {
+                let f = self.alloc_native_fn("Function");
+                Value::Object(f)
+            }
             _ => Value::Undefined,
         }
     }
@@ -708,12 +784,46 @@ impl Vm {
         )
     }
 
+    /// 判断值是否为 BigInt 堆对象。
+    pub(crate) fn is_bigint_value(&self, val: Value) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::BigInt(_)))
+        )
+    }
+
     /// 数组回调上下文：`(回调, thisArg)`（thisArg 为第二参数，未传为 undefined）。
     fn array_cb_ctx(&self, args: &[Value]) -> (Value, Value) {
         (
             args.first().copied().unwrap_or(Value::Undefined),
             args.get(1).copied().unwrap_or(Value::Undefined),
         )
+    }
+
+    /// 读取数组堆对象的元素快照（非数组返回空集）。
+    pub(crate) fn array_elements(&self, idx: usize) -> Vec<Value> {
+        match self.heap.get(idx) {
+            Some(HeapObject::Array { elements, .. }) => elements.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// 数组 `flat(depth)`：按深度递归展开嵌套数组。
+    fn flat_array(&self, elems: Vec<Value>, depth: f64) -> Vec<Value> {
+        let mut out = Vec::with_capacity(elems.len());
+        for e in elems {
+            if depth >= 1.0 {
+                if let Value::Object(ar) = e {
+                    if let Some(HeapObject::Array { elements, .. }) = self.heap.get(ar.0 as usize) {
+                        out.extend(self.flat_array(elements.clone(), depth - 1.0));
+                        continue;
+                    }
+                }
+            }
+            out.push(e);
+        }
+        out
     }
 
     /// 调用数组原型方法的回调：this=thisArg，实参按 JS 规范 `(elem, idx, arr)`。
@@ -1305,6 +1415,21 @@ impl Vm {
                 }
                 Op::Neg => {
                     let top = self.pop()?;
+                    // BigInt 取负：按十进制字符串取负生成新 BigInt（数值族走 f64）
+                    if let Value::Object(r) = top {
+                        if let Some(HeapObject::BigInt(text)) = self.heap.get(r.0 as usize) {
+                            let text = text.clone();
+                            let neg = if let Some(stripped) = text.strip_prefix('-') {
+                                stripped.to_owned()
+                            } else {
+                                format!("-{text}")
+                            };
+                            let out = self.alloc_bigint(neg);
+                            self.stack.push(Value::Object(out));
+                            pc += 1;
+                            continue;
+                        }
+                    }
                     self.stack.push(Value::Number(-to_number(top)));
                 }
                 Op::UnaryPlus => {
@@ -1521,8 +1646,30 @@ impl Vm {
                     let receiver = self.pop()?;
                     // 通用调用协议（优先于内置分派）：fn.call(thisArg, ...args) /
                     // fn.apply(thisArg, argsArray)——Function.prototype 语义，
-                    // 不可被「模块名.方法名」拼接劫持
+                    // 不可被「模块名.方法名」拼接劫持。例外：解析出的方法值是
+                    // Reflect./Proxy. 前缀原生函数时（如 Reflect.apply 本身即
+                    // 规范静态方法），内置分派优先于通用协议
                     if matches!(method_name.as_ref(), "call" | "apply") {
+                        let method_val = self.get_property(receiver, &method_name)?;
+                        let is_reflect_like = match &method_val {
+                            Value::Object(mr) => match self.heap.get(mr.0 as usize) {
+                                Some(HeapObject::NativeFn { name, .. }) => {
+                                    name.starts_with("Reflect.") || name.starts_with("Proxy.")
+                                }
+                                _ => false,
+                            },
+                            _ => false,
+                        };
+                        if is_reflect_like {
+                            if let Some(res) =
+                                crate::builtins::try_dispatch(self, receiver, &method_name, args)
+                            {
+                                let val = res?;
+                                self.stack.push(val);
+                                pc += 1;
+                                continue;
+                            }
+                        }
                         let this_arg = args.first().copied().unwrap_or(Value::Undefined);
                         let call_args: Vec<Value> = if method_name.as_ref() == "call" {
                             if args.is_empty() {
@@ -1540,6 +1687,24 @@ impl Vm {
                         self.stack.push(ret);
                         pc += 1;
                         continue;
+                    }
+                    if let Value::Object(r) = receiver {
+                        let is_reflect_like = match self.heap.get(r.0 as usize) {
+                            Some(HeapObject::NativeFn { name, .. }) => {
+                                name.starts_with("Reflect.") || name.starts_with("Proxy.")
+                            }
+                            _ => false,
+                        };
+                        if is_reflect_like {
+                            if let Some(res) =
+                                crate::builtins::try_dispatch(self, receiver, &method_name, args)
+                            {
+                                let val = res?;
+                                self.stack.push(val);
+                                pc += 1;
+                                continue;
+                            }
+                        }
                     }
                     if let Some(res) =
                         crate::builtins::try_dispatch(self, receiver, &method_name, args)
@@ -1630,6 +1795,39 @@ impl Vm {
                             Some(Err(e)) => return Err(e),
                             None => self.stack.push(Value::Undefined),
                         }
+                    } else if self.is_bigint_value(receiver) {
+                        // BigInt 原型表面：toString/toLocaleString/valueOf
+                        let text = match &receiver {
+                            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::BigInt(t)) => t.clone(),
+                                _ => String::new(),
+                            },
+                            _ => String::new(),
+                        };
+                        match method_name.as_ref() {
+                            "toString" => {
+                                // toString(radix)：2~36 进制（默认 10）
+                                let radix = args
+                                    .first()
+                                    .map(|v| crate::ops::to_number(*v))
+                                    .unwrap_or(10.0);
+                                let out = if radix == 10.0 || radix.is_nan() {
+                                    text
+                                } else {
+                                    match text.parse::<i128>() {
+                                        Ok(n) => format_radix(n, radix as u32),
+                                        Err(_) => text,
+                                    }
+                                };
+                                let s = self.alloc_string(out);
+                                self.stack.push(Value::Object(s));
+                            }
+                            "toLocaleString" | "valueOf" => {
+                                let s = self.alloc_string(text);
+                                self.stack.push(Value::Object(s));
+                            }
+                            _ => self.stack.push(Value::Undefined),
+                        }
                     } else if self.is_string_value(receiver) {
                         // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
                         let text = match &receiver {
@@ -1668,8 +1866,11 @@ impl Vm {
                             .is_some_and(|c| receiver == Value::Object(c))
                     {
                         // Object.keys(obj)：自有可枚举键（数组为下标键；
-                        // 字典序输出保证确定性）
+                        // 字典序输出保证确定性；Proxy 经 ownKeys/get trap 派发）
                         let mut keys: Vec<String> = match args.first() {
+                            Some(Value::Object(r)) if self.proxy_parts(*r).is_some() => {
+                                self.proxy_own_keys(*r).unwrap_or_default()
+                            }
                             Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
                                 Some(HeapObject::Ordinary { .. }) => self
                                     .own_entries(r.0 as usize)
@@ -2563,6 +2764,19 @@ impl Vm {
                         };
                         let obj = self.alloc_ordinary_with_exact_proto(proto);
                         self.stack.push(Value::Object(obj));
+                    } else if let Some(ta_res) =
+                        self.typed_array_dispatch(receiver, &method_name, args)
+                    {
+                        // 类型化数组 / DataView / ArrayBuffer 实例方法
+                        // （返回 None 表示非本体系对象，走既有路径）
+                        let val = ta_res?;
+                        self.stack.push(val);
+                    } else if let Some(st_res) =
+                        self.typed_array_statics(receiver, &method_name, args)
+                    {
+                        // TypedArray 构造器静态方法（from/of/isTypedArray）
+                        let val = st_res?;
+                        self.stack.push(val);
                     } else if let Value::Object(r) = receiver {
                         let idx = r.0 as usize;
                         if idx < self.heap.len()
@@ -2817,6 +3031,298 @@ impl Vm {
                                         *elements = elems;
                                     }
                                     self.stack.push(receiver);
+                                }
+                                "at" => {
+                                    // arr.at(i)：负下标从尾部计数（越界 → undefined）
+                                    let elems = self.array_elements(idx);
+                                    let len = elems.len() as f64;
+                                    let n = args
+                                        .first()
+                                        .map(|v| crate::ops::to_number(*v))
+                                        .unwrap_or(f64::NAN);
+                                    let i = if n < 0.0 { len + n } else { n };
+                                    let out = if i.is_nan() || i < 0.0 || i >= len {
+                                        Value::Undefined
+                                    } else {
+                                        elems.get(i as usize).copied().unwrap_or(Value::Undefined)
+                                    };
+                                    self.stack.push(out);
+                                }
+                                "concat" => {
+                                    let mut elems = self.array_elements(idx);
+                                    for a in args {
+                                        if let Value::Object(ar) = a {
+                                            if let Some(HeapObject::Array { elements, .. }) =
+                                                self.heap.get(ar.0 as usize)
+                                            {
+                                                elems.extend(elements.iter().copied());
+                                                continue;
+                                            }
+                                        }
+                                        elems.push(*a);
+                                    }
+                                    let new_arr = self.alloc_array(elems);
+                                    self.stack.push(Value::Object(new_arr));
+                                }
+                                "includes" => {
+                                    let elems = self.array_elements(idx);
+                                    let needle = args.first().copied().unwrap_or(Value::Undefined);
+                                    let mut from = args
+                                        .get(1)
+                                        .and_then(|v| match v {
+                                            Value::Number(n) => Some(*n),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(0.0);
+                                    if from < 0.0 {
+                                        from += elems.len() as f64;
+                                    }
+                                    let from = from.max(0.0) as usize;
+                                    let found =
+                                        elems[from..].iter().any(|e| values_same_zero(*e, needle));
+                                    self.stack.push(Value::Boolean(found));
+                                }
+                                "indexOf" => {
+                                    let elems = self.array_elements(idx);
+                                    let needle = args.first().copied().unwrap_or(Value::Undefined);
+                                    let mut from = args
+                                        .get(1)
+                                        .and_then(|v| match v {
+                                            Value::Number(n) => Some(*n),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(0.0);
+                                    if from < 0.0 {
+                                        from += elems.len() as f64;
+                                    }
+                                    let from = from.max(0.0) as usize;
+                                    let pos = elems[from..]
+                                        .iter()
+                                        .position(|e| *e == needle)
+                                        .map(|p| p + from)
+                                        .map(|p| p as f64)
+                                        .unwrap_or(-1.0);
+                                    self.stack.push(Value::Number(pos));
+                                }
+                                "lastIndexOf" => {
+                                    let elems = self.array_elements(idx);
+                                    let needle = args.first().copied().unwrap_or(Value::Undefined);
+                                    let pos = elems
+                                        .iter()
+                                        .rposition(|e| *e == needle)
+                                        .map(|p| p as f64)
+                                        .unwrap_or(-1.0);
+                                    self.stack.push(Value::Number(pos));
+                                }
+                                "reverse" => {
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        elements.reverse();
+                                    }
+                                    self.stack.push(receiver);
+                                }
+                                "every" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(args);
+                                    let elems = self.array_elements(idx);
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut all = true;
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let ok = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if !ok.is_truthy() {
+                                            all = false;
+                                            break;
+                                        }
+                                    }
+                                    self.stack.push(Value::Boolean(all));
+                                }
+                                "findIndex" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(args);
+                                    let elems = self.array_elements(idx);
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut found = -1.0;
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let ok = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if ok.is_truthy() {
+                                            found = elem_idx as f64;
+                                            break;
+                                        }
+                                    }
+                                    self.stack.push(Value::Number(found));
+                                }
+                                "findLast" | "findLastIndex" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(args);
+                                    let elems = self.array_elements(idx);
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut hit: Option<usize> = None;
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let ok = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if ok.is_truthy() {
+                                            hit = Some(elem_idx);
+                                        }
+                                    }
+                                    let out = match hit {
+                                        Some(i) if method_name.as_ref() == "findLast" => elems[i],
+                                        Some(i) => Value::Number(i as f64),
+                                        None if method_name.as_ref() == "findLast" => {
+                                            Value::Undefined
+                                        }
+                                        None => Value::Number(-1.0),
+                                    };
+                                    self.stack.push(out);
+                                }
+                                "fill" => {
+                                    let fill = args.first().copied().unwrap_or(Value::Undefined);
+                                    let elems = self.array_elements(idx);
+                                    let len = elems.len();
+                                    let (s, e) = normalize_slice_range(args, len);
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        for slot in elements.iter_mut().take(e).skip(s) {
+                                            *slot = fill;
+                                        }
+                                    }
+                                    self.stack.push(receiver);
+                                }
+                                "copyWithin" => {
+                                    let elems = self.array_elements(idx);
+                                    let len = elems.len();
+                                    let target = slice_index(
+                                        args.first().map(|v| crate::ops::to_number(*v)),
+                                        len,
+                                    );
+                                    let start = slice_index(
+                                        args.get(1).map(|v| crate::ops::to_number(*v)),
+                                        len,
+                                    );
+                                    let end = args.get(2).map(|v| crate::ops::to_number(*v));
+                                    let end = match end {
+                                        Some(n) => slice_index(Some(n), len),
+                                        None => len,
+                                    };
+                                    let count = (end - start).min(len - target);
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        elements[target..target + count]
+                                            .copy_from_slice(&elems[start..start + count]);
+                                    }
+                                    self.stack.push(receiver);
+                                }
+                                "flat" => {
+                                    let depth = args
+                                        .first()
+                                        .map(|v| crate::ops::to_number(*v))
+                                        .map(|n| if n.is_nan() { 1.0 } else { n })
+                                        .unwrap_or(1.0);
+                                    let elems = self.array_elements(idx);
+                                    let flat = self.flat_array(elems, depth);
+                                    let new_arr = self.alloc_array(flat);
+                                    self.stack.push(Value::Object(new_arr));
+                                }
+                                "flatMap" => {
+                                    let (cb, this_arg) = self.array_cb_ctx(args);
+                                    let elems = self.array_elements(idx);
+                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
+                                    let mut out = Vec::with_capacity(elems.len());
+                                    for (elem_idx, elem) in elems.iter().enumerate() {
+                                        let mapped = self.invoke_array_cb(
+                                            cb,
+                                            this_arg,
+                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                                        )?;
+                                        if let Value::Object(ar) = mapped {
+                                            if let Some(HeapObject::Array { elements, .. }) =
+                                                self.heap.get(ar.0 as usize)
+                                            {
+                                                out.extend(elements.iter().copied());
+                                                continue;
+                                            }
+                                        }
+                                        out.push(mapped);
+                                    }
+                                    let new_arr = self.alloc_array(out);
+                                    self.stack.push(Value::Object(new_arr));
+                                }
+                                "splice" => {
+                                    let elems = self.array_elements(idx);
+                                    let len = elems.len();
+                                    let start = args
+                                        .first()
+                                        .map(|v| crate::ops::to_number(*v))
+                                        .map(|n| {
+                                            if n.is_nan() {
+                                                0.0
+                                            } else if n < 0.0 {
+                                                (len as f64 + n).max(0.0)
+                                            } else {
+                                                n.min(len as f64)
+                                            }
+                                        })
+                                        .unwrap_or(0.0)
+                                        as usize;
+                                    let del = match args.get(1) {
+                                        Some(v) => {
+                                            let n = crate::ops::to_number(*v);
+                                            if n < 0.0 {
+                                                0
+                                            } else {
+                                                (n as usize).min(len - start)
+                                            }
+                                        }
+                                        None => len - start,
+                                    };
+                                    let mut removed = self.array_elements(idx);
+                                    {
+                                        let drained: Vec<Value> = removed
+                                            .splice(
+                                                start..start + del,
+                                                args.get(2..).unwrap_or(&[]).to_vec(),
+                                            )
+                                            .collect();
+                                        if let Some(HeapObject::Array { elements, .. }) =
+                                            self.heap.get_mut(idx)
+                                        {
+                                            *elements = removed.clone();
+                                        }
+                                        let removed_arr = self.alloc_array(drained);
+                                        self.stack.push(Value::Object(removed_arr));
+                                    }
+                                }
+                                "keys" | "values" | "entries" => {
+                                    let kind = match method_name.as_ref() {
+                                        "keys" => "keys",
+                                        "entries" => "entries",
+                                        _ => "values",
+                                    };
+                                    let iter =
+                                        self.alloc_array_iterator_kind(ObjectRef(idx as u32), kind);
+                                    self.stack.push(iter);
+                                }
+                                "toString" | "toLocaleString" => {
+                                    let elems = self.array_elements(idx);
+                                    let items: Vec<String> = elems
+                                        .iter()
+                                        .map(|e| match e {
+                                            Value::Undefined | Value::Null => String::new(),
+                                            v => self.format_value(*v),
+                                        })
+                                        .collect();
+                                    let s = self.alloc_string(items.join(","));
+                                    self.stack.push(Value::Object(s));
                                 }
                                 _ => self.stack.push(Value::Undefined),
                             }
@@ -3490,7 +3996,16 @@ impl Vm {
                 Op::EnumKeys => {
                     // for-in 头部：快照原型链可枚举键为字符串数组（对齐 Go OpEnumKeys）
                     let src = self.pop()?;
-                    let keys = self.enumerate_for_in_keys(src);
+                    // Proxy 对象：经 ownKeys trap 快照（trap 异常时按空集降级）
+                    let keys: Vec<String> = if let Value::Object(r) = src {
+                        if self.proxy_parts(r).is_some() {
+                            self.proxy_own_keys(r).unwrap_or_default()
+                        } else {
+                            self.enumerate_for_in_keys(src)
+                        }
+                    } else {
+                        self.enumerate_for_in_keys(src)
+                    };
                     let key_refs: Vec<Value> = keys
                         .into_iter()
                         .map(|k| Value::Object(self.alloc_string(k)))
@@ -3554,6 +4069,16 @@ impl Vm {
                         } else {
                             self.stack.push(val);
                         }
+                    } else if self.is_typed_array(val) {
+                        // 类型化数组：物化元素快照迭代器（values 形态）
+                        if let Value::Object(ta) = val {
+                            let elems = self.ta_to_values(ta)?;
+                            let snapshot = self.alloc_array(elems);
+                            let it = self.alloc_array_iterator(snapshot);
+                            self.stack.push(it);
+                        } else {
+                            self.stack.push(val);
+                        }
                     } else {
                         // 自定义可迭代：读 Symbol.iterator 属性并调用取得迭代器
                         // （JS 协议：iterable[Symbol.iterator]() -> iterator）
@@ -3606,6 +4131,71 @@ impl Vm {
 }
 
 /// 解释器静态常量键：有效字符串借用当前帧池，非法/非字符串保持旧回退。
+/// 十进制 i128 按任意基数（2~36）格式化。
+fn format_radix(n: i128, radix: u32) -> String {
+    if radix == 10 || !(2..=36).contains(&radix) {
+        return n.to_string();
+    }
+    if n == 0 {
+        return "0".to_owned();
+    }
+    let neg = n < 0;
+    let mut digits = Vec::new();
+    let mut m = n.unsigned_abs();
+    let _ = &mut digits;
+    while m > 0 {
+        let d = (m % radix as u128) as u32;
+        digits.push(std::char::from_digit(d, radix).unwrap_or('0'));
+        m /= radix as u128;
+    }
+    if neg {
+        digits.push('-');
+    }
+    digits.iter().rev().collect()
+}
+
+/// SameValueZero 相等（`Array.prototype.includes` 语义：NaN 视为相等，
+/// `+0`/`-0` 相等；对象按引用身份）。
+fn values_same_zero(a: Value, b: Value) -> bool {
+    if let (Value::Number(x), Value::Number(y)) = (a, b) {
+        if x.is_nan() && y.is_nan() {
+            return true;
+        }
+    }
+    a == b
+}
+
+/// 归一化切片下标（`fill`/`copyWithin` 的 start/end 语义）：
+/// 负值从尾部计数、NaN 视为 0、越界钳制到 `[0, len]`。
+fn slice_index(n: Option<f64>, len: usize) -> usize {
+    let n = n.unwrap_or(0.0);
+    let n = if n.is_nan() || n.is_infinite() && n < 0.0 {
+        0.0
+    } else if n.is_infinite() {
+        f64::INFINITY
+    } else {
+        n
+    };
+    let raw = if n < 0.0 { len as f64 + n } else { n };
+    if raw.is_nan() || raw <= 0.0 {
+        0
+    } else if raw.is_infinite() || raw >= len as f64 {
+        len
+    } else {
+        raw as usize
+    }
+}
+
+/// 解析 `fill(value, start, end)` 的区间参数（第 2/3 实参）。
+fn normalize_slice_range(args: &[Value], len: usize) -> (usize, usize) {
+    let start = slice_index(args.get(1).map(|v| crate::ops::to_number(*v)), len);
+    let end = match args.get(2) {
+        Some(v) => slice_index(Some(crate::ops::to_number(*v)), len),
+        None => len,
+    };
+    (start, end.max(start))
+}
+
 fn constant_string(constants: &std::rc::Rc<Vec<Constant>>, idx: usize) -> Cow<'_, str> {
     match constants.get(idx) {
         Some(Constant::String(value)) => Cow::Borrowed(value.as_str()),

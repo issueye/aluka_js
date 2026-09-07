@@ -1483,11 +1483,14 @@ impl<'src> Parser<'src> {
                     }
 
                     // 1. 检查是否为 getter: get prop() { ... }
+                    //    `get`/`set` 后跟 `(` 时是名为 get/set 的方法简写
+                    //    （如 Proxy handler 的 `{ get(t,k,r) {} }`），走普通方法路径
                     if let TokenKind::Ident(ref id) = self.peek().kind {
                         if id == "get"
                             && !self.peek_ahead(1).is_punct(":")
                             && !self.peek_ahead(1).is_punct(",")
                             && !self.peek_ahead(1).is_punct("}")
+                            && !self.peek_ahead(1).is_punct("(")
                         {
                             self.advance(); // 消耗 "get"
                             let key = self.parse_prop_key();
@@ -1518,6 +1521,7 @@ impl<'src> Parser<'src> {
                             && !self.peek_ahead(1).is_punct(":")
                             && !self.peek_ahead(1).is_punct(",")
                             && !self.peek_ahead(1).is_punct("}")
+                            && !self.peek_ahead(1).is_punct("(")
                         {
                             self.advance(); // 消耗 "set"
                             let key = self.parse_prop_key();

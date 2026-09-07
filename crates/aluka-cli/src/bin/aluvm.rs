@@ -7,7 +7,33 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use aluka_bytecode::BytecodeModule;
+use aluka_parser::source_unit::{LanguageRegistry, ModuleKind};
 use aluka_vm::{Value, Vm};
+
+/// 装配动态求值编译器 Hook：源码 → 编译 → 字节码模块。
+/// （eval / new Function 经此在运行时按需编译，动态产物仍强制 Verifier 校验）
+fn install_eval_provider(vm: &mut Vm) {
+    vm.set_eval_provider(|src: &str| {
+        // 空源码：求值结果为 undefined（规范），无需编译
+        if src.trim().is_empty() {
+            return Ok(aluka_vm::empty_eval_module());
+        }
+        let mut unit = LanguageRegistry::global()
+            .parse_source(src, "<eval>", ModuleKind::Script)
+            .map_err(|e| e.to_string())?;
+        let Some(program) = unit.program.take() else {
+            return Err("unexpected end of input".to_owned());
+        };
+        // eval 以脚本完成值语义求值：完整编译管线 + 保留末语句值开关
+        let mut compiler = aluka_compiler::ModuleCompiler {
+            preserve_completion_value: true,
+            implicit_globals: true,
+            ..Default::default()
+        };
+        let module = compiler.compile(&program);
+        Ok(module)
+    });
+}
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -122,6 +148,7 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
     }
 
     let mut vm = Vm::new(0);
+    install_eval_provider(&mut vm);
     inject_process_argv(&mut vm, input, cli_args);
     vm.setup_cjs(input); // CJS 模块上下文（require/exports/循环依赖）
     // 函数扩展标量头（arguments 槽位等）
