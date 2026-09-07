@@ -446,12 +446,6 @@ impl Vm {
         }
         // null/undefined 上读属性：JS 语义抛 TypeError（Node 22 消息形态）
         if matches!(obj, Value::Undefined | Value::Null) {
-            if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
-                eprintln!(
-                    "[req-dbg] prop read of undefined/null key={key:?} func={} pc={}",
-                    self.current_func_idx, self.last_pc
-                );
-            }
             let kind = if obj == Value::Null {
                 "null"
             } else {
