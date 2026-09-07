@@ -10,6 +10,7 @@ description = "Tier 0 字节码虚拟机：帧、操作数栈、内联缓存、�
 [dependencies]
 aluka-core = { workspace = true }
 aluka-bytecode = { workspace = true }
+aluka-module = { workspace = true }
 aluka-jit = { workspace = true }
 aluka-regex = { workspace = true }
 # zlib 内置库压缩后端（全部纯 Rust，无 C 依赖）：

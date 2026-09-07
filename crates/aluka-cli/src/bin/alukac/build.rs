@@ -207,10 +207,72 @@ fn resolve_require(from: &Path, spec: &str) -> Option<PathBuf> {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         source_candidates(&normalize_components(&base.join(spec)))
+    } else if spec.starts_with('#') {
+        // `#alias`：最近 package.json 的 `imports` 条件映射（M2.1）
+        let base = from
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        for dir in base.ancestors() {
+            let pkg = dir.join("package.json");
+            if !pkg.is_file() {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&pkg) {
+                if let Some(parsed) = aluka_module::parse_json(&text) {
+                    if let Some(imports) = parsed.get("imports") {
+                        if let Some(target) = aluka_module::resolve_imports(
+                            imports,
+                            spec,
+                            aluka_module::ConditionKind::Require,
+                        ) {
+                            let joined = normalize_components(&dir.join(target));
+                            if let Some(p) = source_candidates(&joined) {
+                                return Some(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     } else {
+        // 裸说明符：exports 条件映射优先，无 exports 回退 main/index
+        let (name, subpath) = aluka_module::split_package_specifier(bare);
         for dir in from.ancestors() {
-            let pkg_root = normalize_components(&dir.join("node_modules").join(bare));
-            if let Some(p) = source_candidates(&pkg_root) {
+            let pkg_root = normalize_components(&dir.join("node_modules").join(&name));
+            if !pkg_root.is_dir() {
+                continue;
+            }
+            let pkg_json = pkg_root.join("package.json");
+            if pkg_json.is_file() {
+                if let Ok(text) = std::fs::read_to_string(&pkg_json) {
+                    if let Some(parsed) = aluka_module::parse_json(&text) {
+                        if let Some(exports) = parsed.get("exports") {
+                            if let Some(target) = aluka_module::resolve_exports(
+                                exports,
+                                &subpath,
+                                aluka_module::ConditionKind::Require,
+                            ) {
+                                let joined = normalize_components(&pkg_root.join(target));
+                                if let Some(p) = source_candidates(&joined) {
+                                    return Some(p);
+                                }
+                                continue;
+                            }
+                            if subpath != "." {
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            let pkg_dir = if subpath == "." {
+                pkg_root.clone()
+            } else {
+                normalize_components(&pkg_root.join(subpath.strip_prefix("./").unwrap_or(&subpath)))
+            };
+            if let Some(p) = source_candidates(&normalize_components(&pkg_dir)) {
                 return Some(p);
             }
         }

@@ -95,6 +95,7 @@ dependencies = [
  "aluka-bytecode",
  "aluka-compiler",
  "aluka-core",
+ "aluka-module",
  "aluka-parser",
  "aluka-runtime",
  "aluka-vm",
@@ -130,9 +131,7 @@ dependencies = [
 name = "aluka-module"
 version = "0.1.0"
 dependencies = [
- "aluka-compiler",
  "aluka-core",
- "aluka-vm",
 ]
 
 [[package]]
@@ -171,6 +170,7 @@ dependencies = [
  "aluka-bytecode",
  "aluka-core",
  "aluka-jit",
+ "aluka-module",
  "aluka-regex",
  "base64",
  "brotli",

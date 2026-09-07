@@ -9,8 +9,6 @@ description = "ESM/CJS 模块系统与 Node 解析算法（package.json exports/
 
 [dependencies]
 aluka-core = { workspace = true }
-aluka-compiler = { workspace = true }
-aluka-vm = { workspace = true }
 
 [lints]
 workspace = true

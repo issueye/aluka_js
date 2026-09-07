@@ -1,4 +1,4 @@
-﻿//! `module` 内置模块（Node.js 22 语义，Node.js 22 LTS 标准：
+//! `module` 内置模块（Node.js 22 语义，Node.js 22 LTS 标准：
 //! Node.js 22 LTS 规范）。
 //!
 //! - `builtinModules`：Node 22 的 68 项内置模块名（无 `node:` 前缀），
@@ -18,6 +18,7 @@
 //! 实例分派复用 `mod.rs::builtin_ns` 机制：Module 原型/实例标记
 //! `"module:proto"`；`createRequire` 的返回函数以处理器键直调分派。
 
+use crate::builtins::current_receiver;
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
@@ -145,6 +146,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "module", "createRequire", create_require);
     register_handler(registry, "module", "isBuiltin", is_builtin);
     register_handler(registry, "module", "registerVirtualModule", noop);
+    // import.meta.resolve(specifier)：模块说明符 → 绝对路径（M2.3）
+    register_handler(registry, "importMeta", "resolve", import_meta_resolve);
 
     // builtinModules：Node 22 完整列表（数组元素为堆字符串）
     let elems: Vec<Value> = BUILTIN_MODULES
@@ -265,6 +268,28 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// URL 对象（带 `href`）仅接受 `file:` scheme（Node ERR_INVALID_URL_SCHEME，
 /// 错误消息与 Go 逐字一致）；父路径仅作兼容保留——内置模块与相对文件模块
 /// 的解析复用 VM 既有 CJS 基准目录（`Vm::call_require`）。
+/// `import.meta.resolve(specifier)`：相对 meta 对象的 `_metaDir` 解析。
+fn import_meta_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let base_dir = match receiver {
+        Value::Object(r) => vm
+            .get_native_fn_property(r, "_metaDir")
+            .map(|v| vm.format_value(v))
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let spec = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let resolved = if let Some(p) = vm.resolve_module_for_meta(&base_dir, &spec) {
+        p
+    } else {
+        format!("{base_dir}/{spec}")
+    };
+    Ok(Value::Object(vm.alloc_string(resolved)))
+}
+
 fn create_require(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(arg) = args.first() {
         if matches!(arg, Value::Object(_)) {

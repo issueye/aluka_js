@@ -97,7 +97,7 @@
 ---
 
 ### M2 · 模块系统与真实生态承载 (Express 落地)
-- [ ] **M2.1 现代 `package.json` 解析规范**
+- [x] **M2.1 现代 `package.json` 解析规范**
   - 支持 `exports` 字段多条件映射（`import`, `require`, `node`, `default` 等条件分支）；
   - 支持 `imports` 内部子路径别名解析（`#internal/utils`）；
   - 支持 `type: "module"` 作用域自动判定与扩展名补全策略；
@@ -106,7 +106,7 @@
   - 编译器支持 AST 顶层 `await` 语法检测与阶段标记；
   - 模块加载器基于 DAG 拓扑排序实现异步模块加载与微任务推进；
   - 验收：TLA 模块加载依赖测试全绿。
-- [ ] **M2.3 ESM 与 CJS 深度互操作**
+- [x] **M2.3 ESM 与 CJS 深度互操作**
   - 实现 `createRequire(import.meta.url)` 动态创建 CJS require 函数；
   - 规范级 `import.meta` 对象（`url`, `filename`, `dirname`, `resolve`）；
   - 支持 ESM 默认导入 CommonJS 模块时的导出属性自动推断；

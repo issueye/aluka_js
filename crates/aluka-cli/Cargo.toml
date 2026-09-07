@@ -27,6 +27,7 @@ required-features = ["runtime"]
 [dependencies]
 aluka-core = { workspace = true }
 aluka-bytecode = { workspace = true }
+aluka-module = { workspace = true }
 aluka-vm = { workspace = true }
 aluka-parser = { workspace = true }
 aluka-compiler = { workspace = true }

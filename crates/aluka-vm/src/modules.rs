@@ -19,6 +19,7 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_bytecode::BytecodeModule;
+use aluka_core::ObjectRef;
 use std::path::{Path, PathBuf};
 
 impl Vm {
@@ -197,7 +198,15 @@ impl Vm {
                 _ => return self.get_property(module_obj, "exports"),
             };
 
-            // 包装形态：7 参 CJS 签名调用模块闭包
+            // 包装形态：7 参 CJS 签名调用模块闭包（import.meta 按本模块
+            // 的 filename/dirname 物化，M2.3）
+            let import_meta = self.build_import_meta(
+                resolved.display().to_string(),
+                resolved
+                    .parent()
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| PathBuf::from(".")),
+            );
             self.invoke_function(
                 func_idx,
                 Value::Undefined,
@@ -208,7 +217,7 @@ impl Vm {
                     filename,
                     dirname,
                     Value::Undefined, // __import
-                    Value::Undefined, // __importMeta
+                    Value::Object(import_meta),
                 ],
                 upvalues,
             )?;
@@ -259,21 +268,120 @@ impl Vm {
             .cloned()
             .or_else(|| self.base_dir.clone())
             .unwrap_or_else(|| PathBuf::from("."));
+        self.resolve_specifier_from(&base, specifier)
+    }
+
+    /// `import.meta.resolve(specifier)` 的路径计算入口（纯解析，不改状态）。
+    pub(crate) fn resolve_module_for_meta(&self, base: &str, specifier: &str) -> Option<String> {
+        self.resolve_specifier_from(Path::new(base), specifier)
+            .map(|p| p.with_extension("").to_string_lossy().to_string())
+    }
+
+    fn resolve_specifier_from(&self, base: &Path, specifier: &str) -> Option<PathBuf> {
         let is_relative = specifier.starts_with("./")
             || specifier.starts_with("../")
             || specifier.starts_with('/');
         if is_relative {
             let joined = normalize_path(&base.join(specifier));
             module_candidates(&joined)
-        } else {
+        } else if specifier.starts_with('#') {
+            // `#alias`：`imports` 内部子路径别名 —— 自当前包根向上找最近
+            // 的 package.json，经 `imports` 条件映射解析（M2.1）
             for dir in base.ancestors() {
-                let pkg_root = dir.join("node_modules").join(specifier);
-                if let Some(p) = module_candidates(&normalize_path(&pkg_root)) {
+                let pkg = dir.join("package.json");
+                if !pkg.is_file() {
+                    continue;
+                }
+                if let Ok(text) = std::fs::read_to_string(&pkg) {
+                    if let Some(parsed) = aluka_module::parse_json(&text) {
+                        if let Some(imports) = parsed.get("imports") {
+                            if let Some(target) = aluka_module::resolve_imports(
+                                imports,
+                                specifier,
+                                aluka_module::ConditionKind::Require,
+                            ) {
+                                let joined = normalize_path(&dir.join(target));
+                                if let Some(p) = module_candidates(&joined) {
+                                    return Some(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        } else {
+            // 裸说明符：拆分（包名, 子路径）→ 包根定位 → `exports` 条件
+            // 映射优先（M2.1），无 exports 时回退 main/index 既有链路
+            let (name, subpath) = aluka_module::split_package_specifier(specifier);
+            for dir in base.ancestors() {
+                let node_modules = dir.join("node_modules");
+                let pkg_root = node_modules.join(&name);
+                if !pkg_root.is_dir() {
+                    continue;
+                }
+                let pkg_json = pkg_root.join("package.json");
+                if pkg_json.is_file() {
+                    if let Ok(text) = std::fs::read_to_string(&pkg_json) {
+                        if let Some(parsed) = aluka_module::parse_json(&text) {
+                            if let Some(exports) = parsed.get("exports") {
+                                if let Some(target) = aluka_module::resolve_exports(
+                                    exports,
+                                    &subpath,
+                                    aluka_module::ConditionKind::Require,
+                                ) {
+                                    let joined = normalize_path(&pkg_root.join(target));
+                                    if let Some(p) = module_candidates(&joined) {
+                                        return Some(p);
+                                    }
+                                    // exports 明确拒绝或目标缺失：不回退
+                                    // 旧链路（Node 语义：exports 是唯一入口面）
+                                    continue;
+                                }
+                                // exports 存在但子路径被拒绝：跳过旧链路
+                                if subpath != "." {
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+                }
+                let pkg_dir = if subpath == "." {
+                    pkg_root.clone()
+                } else {
+                    normalize_path(&pkg_root.join(subpath.strip_prefix("./").unwrap_or(&subpath)))
+                };
+                if let Some(p) = module_candidates(&normalize_path(&pkg_dir)) {
                     return Some(p);
                 }
             }
             None
         }
+    }
+
+    /// 物化 `import.meta` 对象：`url`（file:// 形态）/ `filename` /
+    /// `dirname` / `resolve(specifier)`。
+    pub(crate) fn build_import_meta(
+        &mut self,
+        filename: String,
+        dir: std::path::PathBuf,
+    ) -> ObjectRef {
+        let meta = self.alloc_ordinary();
+        let fwd = filename.replace('\\', "/");
+        let url = self.alloc_string(format!("file:///{fwd}"));
+        let _ = self.set_property(Value::Object(meta), "url", Value::Object(url));
+        let fname = self.alloc_string(filename);
+        let _ = self.set_property(Value::Object(meta), "filename", Value::Object(fname));
+        let dirname = self.alloc_string(dir.to_string_lossy().to_string());
+        let _ = self.set_property(Value::Object(meta), "dirname", Value::Object(dirname));
+        // 命名空间标记：try_dispatch 形态二据此反查 importMeta.resolve
+        let ns = self.alloc_string("importMeta".to_owned());
+        let _ = self.set_property(Value::Object(meta), "_builtinNs", Value::Object(ns));
+        let resolve_fn = self.alloc_native_fn("importMeta.resolve");
+        let _ = self.set_property(Value::Object(meta), "resolve", Value::Object(resolve_fn));
+        let dir_str = self.alloc_string(dir.to_string_lossy().to_string());
+        self.set_native_fn_property(resolve_fn, "_metaDir", Value::Object(dir_str));
+        meta
     }
 
     fn module_not_found(&mut self, spec: &str) -> VmError {

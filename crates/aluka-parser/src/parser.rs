@@ -270,6 +270,7 @@ impl<'src> Parser<'src> {
         if (self.peek().kind == TokenKind::Keyword("import".to_owned())
             || self.peek().kind == TokenKind::Ident("import".to_owned()))
             && !self.peek_ahead(1).is_punct("(")
+            && !self.peek_ahead(1).is_punct(".")
         {
             return self.parse_import_stmt();
         }
@@ -1414,6 +1415,20 @@ impl<'src> Parser<'src> {
                         Expr::New {
                             callee: Box::new(callee),
                             args,
+                        }
+                    }
+                    // `import.meta`：元属性 → 预注册的全局名 __importMeta
+                    // （关键字自身已在 match 前消耗）
+                    "import" if self.peek().kind == TokenKind::Punct(".".to_owned()) => {
+                        self.advance(); // 消耗 '.'
+                        let prop = match self.advance().kind {
+                            TokenKind::Ident(p) | TokenKind::Keyword(p) => p,
+                            _ => "meta".to_owned(),
+                        };
+                        if prop == "meta" {
+                            Expr::Ident("__importMeta".to_owned())
+                        } else {
+                            Expr::Ident("import".to_owned())
                         }
                     }
                     _ => Expr::Ident(kw),

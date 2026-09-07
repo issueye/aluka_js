@@ -763,6 +763,16 @@ impl Vm {
                 let f = self.alloc_native_fn("Function");
                 Value::Object(f)
             }
+            // import.meta 元属性（CJS 内联形态经全局解析；ESM wrapper 形态
+            // 由 invoke_cjs_entry 注入实例）
+            "__importMeta" => Value::Object(
+                self.build_import_meta(
+                    self.entry_file.clone(),
+                    self.base_dir
+                        .clone()
+                        .unwrap_or_else(|| std::path::PathBuf::from(".")),
+                ),
+            ),
             _ => Value::Undefined,
         }
     }
