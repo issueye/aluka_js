@@ -19,9 +19,17 @@
   - 落地 8 字节 NaN-box 机器字表示，优化寄存器压栈与内存占用；
 - [ ] **多态内联缓存 (PIC) 与 JIT 全覆盖**：
   - 扩展 Shape PIC 覆盖对象读写、原型链遍历与函数多态调用；
-  - 扩容 Cranelift JIT 后端机器码发射能力。
+  - 扩容 Cranelift JIT 后端机器码发射能力；
+- [ ] **运行时动态求值执行驱动 (eval & Function)**：
+  - 设计并接入运行时编译器 Hook（Runtime Compiler Hook / Eval Provider），在保持 ISA 解耦前提下接收动态字节码；
+  - 动态字节码强制执行 Verifier 即时静态安全校验，严防恶意或破损字节码破坏 VM 不变量；
+  - 直接调用（Direct Eval）：支持访问与穿透当前调用栈帧的局部环境与作用域字典；
+  - 间接调用（Indirect Eval）与 `new Function`：强制在全局作用域与独立调用帧中执行。
 
 ### 2. 核心内置模块生产级推进 (`aluka-builtins`)
+- [ ] **动态求值核心内置对象 (eval & Function)**：
+  - 规范实现全局 `eval(x)` 函数，支持区分直接/间接调用上下文；
+  - 规范实现全局 `Function` 构造函数、原型链与严格模式限制属性（`caller`/`arguments`）；
 - [ ] **Stream 流规范背压状态机**：
   - 彻底重构 `Readable` / `Writable` 内部缓冲水位线（`highWaterMark`）与背压联动；
   - 支持 `pipeline()` 自动资源释放与错误级联传播；

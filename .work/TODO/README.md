@@ -53,7 +53,7 @@
 
 | 里程碑 | 核心目标 | 关键验收指标 | 状态 |
 |---|---|---|:---:|
-| **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、test262 扩容 ≥100 例 | `[ ]` |
+| **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[ ]` |
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[ ]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[ ]` |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[ ]` |
@@ -87,6 +87,12 @@
 - [ ] **M1.5 test262 官方测试集扩容**
   - 接入官方 test262 标准测试 runner，测试集规模从 8 例扩容至 ≥100 例；
   - 验收：`cargo test -p aluka-cli --test test262_subset_test` 100% 通过。
+- [ ] **M1.6 动态代码求值子系统 (`eval` & `new Function`)**
+  - **直接调用 `eval(code)` (Direct Eval)**：实现调用栈帧与局部词法作用域穿透，支持在当前局部环境内即时求值；
+  - **间接调用 `eval(code)` (Indirect Eval)**：严格限制在全局作用域下求值，隔离局部调用帧；
+  - **动态函数构造器 `new Function(...args, body)` / `Function(...)`**：实现形参与函数体字符串拼接解析、全局作用域函数模板动态生成；
+  - **动态字节码 Verifier 安全门禁**：动态编译产出的字节码必须 100% 经由 `aluka-bytecode::verifier` 静态安全校验，杜绝非法跳转与栈溢出；
+  - 验收：通过 eval 与 Function 专项测试套件（≥50 用例），与 Node.js 22 LTS 差分对拍 100% 一致。
 
 ---
 
