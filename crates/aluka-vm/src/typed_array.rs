@@ -416,7 +416,7 @@ impl Vm {
         let mut max = len;
         if let Some(Value::Object(opts)) = args.get(1).copied() {
             if let Ok(v) = self.get_property(Value::Object(opts), "resizable") {
-                if v.is_truthy() {
+                if self.truthy(v) {
                     resizable = true;
                 }
             }
@@ -792,10 +792,11 @@ impl Vm {
                 for (i, e) in elems.iter().enumerate() {
                     let r =
                         self.invoke_callable(cb, this_arg, &[*e, Value::Number(i as f64), this])?;
+                    let tr = self.truthy(r);
                     match method {
                         "map" => mapped.push(r),
-                        "filter" if r.is_truthy() => filtered.push(*e),
-                        "find" | "findIndex" | "findLast" | "findLastIndex" if r.is_truthy() => {
+                        "filter" if tr => filtered.push(*e),
+                        "find" | "findIndex" | "findLast" | "findLastIndex" if tr => {
                             match hit {
                                 None => hit = Some((i, *e)),
                                 Some(_) if method.starts_with("findLast") => {
@@ -804,8 +805,8 @@ impl Vm {
                                 _ => {}
                             }
                         }
-                        "some" if r.is_truthy() => return Ok(Value::Boolean(true)),
-                        "every" if !r.is_truthy() => return Ok(Value::Boolean(false)),
+                        "some" if tr => return Ok(Value::Boolean(true)),
+                        "every" if !tr => return Ok(Value::Boolean(false)),
                         _ => {}
                     }
                 }
@@ -880,7 +881,7 @@ impl Vm {
                                 Value::Undefined,
                                 &[elems[j - 1], elems[j]],
                             )?;
-                            if lt.is_truthy() {
+                            if self.truthy(lt) {
                                 elems.swap(j - 1, j);
                                 j -= 1;
                             } else {
@@ -955,7 +956,7 @@ impl Vm {
         let little = args
             .get(if is_set { 2 } else { 1 })
             .copied()
-            .is_some_and(|v| v.is_truthy());
+            .is_some_and(|v| self.truthy(v));
         let mut raw = [0u8; 8];
         if is_set {
             let value = args.get(1).copied().unwrap_or(Value::Undefined);

@@ -520,7 +520,7 @@ fn iter_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `stmt.setReadBigInts(bool)`：切换 INTEGER 列读取为 bigint。
-fn stmt_set_read_big_ints(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+fn stmt_set_read_big_ints(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let Value::Object(r) = receiver else {
         return Ok(Value::Undefined);
@@ -528,8 +528,8 @@ fn stmt_set_read_big_ints(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     let flag = args
         .first()
         .copied()
-        .unwrap_or(Value::Undefined)
-        .is_truthy();
+        .unwrap_or(Value::Undefined);
+    let flag = vm.truthy(flag);
     with_map(&STMTS, |m| {
         if let Some(entry) = m.get_mut(&r.0) {
             entry.read_big_ints = flag;

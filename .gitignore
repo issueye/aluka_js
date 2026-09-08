@@ -4,6 +4,7 @@
 # 环境与临时文件
 *.pdb
 *.log
+*.dc
 .DS_Store
 Thumbs.db
 m1_io.txt

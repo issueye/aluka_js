@@ -50,7 +50,7 @@ fn sync_os_link(vm: &mut Vm) {
 fn ok(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let val = args.first().copied().unwrap_or(Value::Undefined);
-    if val.is_truthy() {
+    if vm.truthy(val) {
         return Ok(Value::Undefined);
     }
     let msg = if let Some(m) = args.get(1) {

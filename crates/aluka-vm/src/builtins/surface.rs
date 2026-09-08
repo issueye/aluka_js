@@ -189,6 +189,7 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
     ] {
         let f = vm.alloc_native_fn(&format!("Number.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(num_p), m, Value::Object(f));
+        register_handler(registry, "Number.prototype", m, num_method_dispatch);
     }
 
     // Function.prototype：toString 真实 handler（interpreter 侧注册），
@@ -369,8 +370,10 @@ fn fn_proto_call_apply(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `Function.prototype.bind`：返回绑定函数（NativeFn 实例，目标/this/预设参
-/// 存自有属性；调用经 [`bound_fn_invoke`] 转发）。
-fn fn_proto_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+/// 存自有属性；调用经 [`bound_fn_invoke`] 转发）。pub(crate) 供解释器的
+/// CALL_METHOD bind 通用协议复用（NativeFn receiver 的 try_dispatch 回退
+/// 会错误劫持 bind——见 interpreter）。
+pub(crate) fn fn_proto_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this_fn = super::current_receiver();
     let b = vm.alloc_native_fn("Function.prototype.bound");
     vm.set_native_fn_property(b, "_target", this_fn);
@@ -548,6 +551,147 @@ fn str_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             Err(VmError::Thrown(Value::Object(msg)))
         }
     }
+}
+
+/// `Number.prototype.X.call(num, ...)` 形态分派（真实包大量 `len.toString(16)`、
+/// `(n).toFixed(2)` 等）。receiver 为原始值或 Number 包装对象。
+pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let full = super::pending_native_name();
+    let name = full
+        .rsplit("Number.prototype.")
+        .next()
+        .unwrap_or(&full)
+        .to_owned();
+    let this = super::current_receiver();
+    let n = match this {
+        Value::Number(n) => n,
+        Value::Boolean(b) => {
+            if b {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Undefined => f64::NAN,
+        Value::Null => 0.0,
+        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+            // Number/Boolean 包装对象以 Ordinary 承载：读值槽，缺省字符串化
+            Some(HeapObject::Ordinary { .. }) => vm
+                .own_value(r.0 as usize, "[[NumberValue]]")
+                .or_else(|| vm.own_value(r.0 as usize, "[[BooleanValue]]"))
+                .and_then(|v| match v {
+                    Value::Number(n) => Some(n),
+                    Value::Boolean(b) => Some(if b { 1.0 } else { 0.0 }),
+                    _ => None,
+                })
+                .unwrap_or_else(|| vm.format_value(this).parse().unwrap_or(f64::NAN)),
+            _ => vm.format_value(this).parse().unwrap_or(f64::NAN),
+        },
+    };
+    match name.as_str() {
+        "toString" => {
+            // toString([radix])：缺省 10；radix ∈ [2,36]；0/NaN 按 10
+            let radix = args
+                .first()
+                .map(|v| crate::ops::to_number(*v))
+                .unwrap_or(10.0);
+            let out = if radix == 10.0 || radix.is_nan() {
+                format_number_decimal(n)
+            } else if (2.0..=36.0).contains(&radix) {
+                let r = radix as u32;
+                format_number_radix(n, r)
+            } else {
+                format_number_decimal(n)
+            };
+            Ok(Value::Object(vm.alloc_string(out)))
+        }
+        "valueOf" => Ok(Value::Number(n)),
+        "toFixed" => {
+            let digits = args
+                .first()
+                .map(|v| crate::ops::to_number(*v))
+                .unwrap_or(0.0)
+                .clamp(0.0, 100.0) as usize;
+            Ok(Value::Object(vm.alloc_string(format!("{n:.digits$}"))))
+        }
+        "toExponential" => {
+            let digits = args
+                .first()
+                .map(|v| crate::ops::to_number(*v))
+                .unwrap_or(0.0);
+            Ok(Value::Object(vm.alloc_string(
+                format!("{:.*e}", digits.clamp(0.0, 100.0) as usize, n),
+            )))
+        }
+        "toPrecision" => {
+            let p = args
+                .first()
+                .map(|v| crate::ops::to_number(*v))
+                .unwrap_or(0.0);
+            let out = if p <= 0.0 || p >= 21.0 {
+                format_number_decimal(n)
+            } else {
+                let digits = p as usize;
+                if n.abs() >= 10f64.powi(digits as i32 - 1) || n == 0.0 {
+                    format!("{:.*}", digits - 1, n)
+                } else {
+                    format!("{:.*e}", digits - 1, n)
+                }
+            };
+            Ok(Value::Object(vm.alloc_string(out)))
+        }
+        "toLocaleString" => Ok(Value::Object(vm.alloc_string(format_number_decimal(n)))),
+        _ => {
+            let msg = vm.alloc_string(format!("Number.prototype.{name} is not a function"));
+            Err(VmError::Thrown(Value::Object(msg)))
+        }
+    }
+}
+
+/// 十进制数字字符串化（JS `String(n)` 形态：NaN/±Infinity 字面、
+/// 整数不带尾零、否则最短十进制表示）。
+fn format_number_decimal(n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_owned();
+    }
+    if n.is_infinite() {
+        return if n > 0.0 {
+            "Infinity".to_owned()
+        } else {
+            "-Infinity".to_owned()
+        };
+    }
+    if n == n.trunc() && n.abs() < 1e21 {
+        return format!("{}", n as i64);
+    }
+    format!("{n}")
+}
+
+/// 以给定进制格式化数字（2~36；整数位截断，负号保留）。
+fn format_number_radix(n: f64, radix: u32) -> String {
+    if n.is_nan() {
+        return "NaN".to_owned();
+    }
+    if n == 0.0 {
+        return "0".to_owned();
+    }
+    let neg = n < 0.0;
+    let mut v = n.abs().trunc() as u64;
+    let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = Vec::new();
+    while v > 0 {
+        out.push(digits[(v % u64::from(radix)) as usize] as char);
+        v /= u64::from(radix);
+    }
+    if out.is_empty() {
+        out.push('0');
+    }
+    out.reverse();
+    let mut s = out.into_iter().collect::<String>();
+    if neg {
+        s.insert(0, '-');
+    }
+    s
 }
 
 /// `RegExp.prototype.exec.call(re, str)`。

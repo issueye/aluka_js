@@ -235,7 +235,9 @@ pub unsafe extern "C" fn jit_to_number(_ctx: *mut JitCtx, a: u64) -> u64 {
 /// # Safety
 /// 见模块文档。
 pub unsafe extern "C" fn jit_to_boolean(_ctx: *mut JitCtx, a: u64) -> u64 {
-    from_vm_value(Value::Boolean(ops::to_boolean(to_vm_value(a))))
+    // JIT 路径无堆访问：字符串按非空判定无法在此完成（传空堆，
+    // 字符串回退 truthy）；JIT 化仅覆盖无字符串条件的基本块。
+    from_vm_value(Value::Boolean(ops::to_boolean(to_vm_value(a), &[])))
 }
 
 impl Vm {

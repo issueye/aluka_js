@@ -188,10 +188,7 @@ impl Vm {
             }
             if ctor_name.as_deref() == Some("Boolean") {
                 return Ok(Value::Boolean(
-                    args.first()
-                        .copied()
-                        .unwrap_or(Value::Undefined)
-                        .is_truthy(),
+                    self.truthy(args.first().copied().unwrap_or(Value::Undefined)),
                 ));
             }
             // String(value)：无 new 直调 = 字符串化（真实包顶层大量
@@ -356,10 +353,7 @@ impl Vm {
                     }
                     "Boolean" => {
                         return Ok(Value::Boolean(
-                            args.first()
-                                .copied()
-                                .unwrap_or(Value::Undefined)
-                                .is_truthy(),
+                            self.truthy(args.first().copied().unwrap_or(Value::Undefined)),
                         ));
                     }
                     "Date" => return self.construct_date(args),

@@ -109,6 +109,23 @@ const KEYWORDS: &[&str] = &[
     "from",
 ];
 
+/// 从 `bytes[pos..]` 读取恰好 `n` 位十六进制数字，成功时推进 `pos` 返回数值。
+/// 数字不足或不合法返回 `None`（`pos` 还原到调用前位置）。
+fn read_hex_units(bytes: &[u8], pos: &mut usize, n: usize) -> Option<u32> {
+    let start = *pos;
+    let mut v = 0u32;
+    for _ in 0..n {
+        let Some(d) = (bytes.get(*pos).copied()? as char).to_digit(16) else {
+            *pos = start; // 中途失败：还原（此前已推进的位不算数）
+            return None;
+        };
+        v = v.saturating_mul(16).saturating_add(d);
+        *pos += 1;
+    }
+    debug_assert!(*pos - start == n);
+    Some(v)
+}
+
 impl<'src> Lexer<'src> {
     /// 在源码上创建分析器。
     #[must_use]
@@ -249,6 +266,7 @@ impl<'src> Lexer<'src> {
                 } else if bytes[self.pos] == b'\\' && self.pos + 1 < bytes.len() {
                     self.pos += 1;
                     // raw 文本保留转义原文（反斜杠 + 转义字符）
+                    let esc_start = self.pos;
                     current_raw.push('\\');
                     current_raw.push(bytes[self.pos] as char);
                     match bytes[self.pos] {
@@ -258,6 +276,78 @@ impl<'src> Lexer<'src> {
                         b'\\' => current_quasi.push('\\'),
                         b'`' => current_quasi.push('`'),
                         b'$' => current_quasi.push('$'),
+                        b'0' => current_quasi.push('\0'),
+                        b'x' => {
+                            // 跳过 'x' 再读 2 位十六进制；两路径都 continue
+                            // （pos 已消费完整序列，跳过末尾 +1）
+                            self.pos += 1;
+                            match read_hex_units(bytes, &mut self.pos, 2) {
+                                Some(v) => current_quasi
+                                    .push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+                                None => current_quasi.push('x'),
+                            }
+                            current_raw.extend(self.src[esc_start + 1..self.pos].chars());
+                            continue;
+                        }
+                        b'u' => {
+                            // 跳过 'u' 再读 4 位（或 \u{...} 花括号形式）；
+                            // 各路径 pos 指向序列后，continue 跳过末尾 +1
+                            self.pos += 1;
+                            if bytes.get(self.pos) == Some(&b'{') {
+                                let mut end = self.pos + 1;
+                                let mut v = 0u32;
+                                let mut valid = false;
+                                while end < bytes.len() && bytes[end] != b'}' {
+                                    let Some(d) = (bytes[end] as char).to_digit(16) else {
+                                        break;
+                                    };
+                                    v = v.saturating_mul(16).saturating_add(d);
+                                    valid = true;
+                                    end += 1;
+                                }
+                                if valid && end < bytes.len() && bytes[end] == b'}' {
+                                    current_quasi
+                                        .push(char::from_u32(v).unwrap_or('\u{FFFD}'));
+                                    self.pos = end + 1; // 越过 '}'
+                                } else {
+                                    // 非法 \u{...：'u' 按字面，'{' 留给普通字符路径
+                                    current_quasi.push('u');
+                                }
+                            } else {
+                                match read_hex_units(bytes, &mut self.pos, 4) {
+                                    Some(v @ (0xD800..=0xDBFF)) => {
+                                        if bytes.get(self.pos) == Some(&b'\\')
+                                            && bytes.get(self.pos + 1) == Some(&b'u')
+                                        {
+                                            let mut probe = self.pos + 2;
+                                            if let Some(lo) = read_hex_units(bytes, &mut probe, 4) {
+                                                if (0xDC00..=0xDFFF).contains(&lo) {
+                                                    let cp = 0x1_0000
+                                                        + ((v - 0xD800) << 10)
+                                                        + (lo - 0xDC00);
+                                                    current_quasi.push(
+                                                        char::from_u32(cp)
+                                                            .unwrap_or('\u{FFFD}'),
+                                                    );
+                                                    self.pos = probe;
+                                                } else {
+                                                    current_quasi.push('\u{FFFD}');
+                                                }
+                                            } else {
+                                                current_quasi.push('\u{FFFD}');
+                                            }
+                                        } else {
+                                            current_quasi.push('\u{FFFD}');
+                                        }
+                                    }
+                                    Some(v) => current_quasi
+                                        .push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+                                    None => current_quasi.push('u'),
+                                }
+                            }
+                            current_raw.extend(self.src[esc_start + 1..self.pos].chars());
+                            continue;
+                        }
                         other => current_quasi.push(other as char),
                     }
                     self.pos += 1;
@@ -302,6 +392,78 @@ impl<'src> Lexer<'src> {
                         b'\\' => s.push('\\'),
                         b'"' => s.push('"'),
                         b'\'' => s.push('\''),
+                        b'0' => s.push('\0'),
+                        b'x' => {
+                            // 跳过 'x' 再读 2 位十六进制。成功时 pos 指向序列后；
+                            // 失败时 pos 停在 'x' 后、按字面输出 'x'。
+                            // 两路径都 continue：跳过循环体末尾的 +1（已经消费到
+                            // 序列末尾之后，多跳会吞掉闭合引号）。
+                            self.pos += 1;
+                            match read_hex_units(bytes, &mut self.pos, 2) {
+                                Some(v) => s.push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+                                None => s.push('x'),
+                            }
+                            continue;
+                        }
+                        b'u' => {
+                            // 跳过 'u' 再读 4 位（或 \u{...} 花括号形式）。
+                            // 各路径统一保证 pos 指向转义序列后的第一个字符，
+                            // 再 continue 跳过循环体末尾的 +1。
+                            self.pos += 1;
+                            if bytes.get(self.pos) == Some(&b'{') {
+                                let mut end = self.pos + 1;
+                                let mut v = 0u32;
+                                let mut valid = false;
+                                while end < bytes.len() && bytes[end] != b'}' {
+                                    let Some(d) = (bytes[end] as char).to_digit(16) else {
+                                        break;
+                                    };
+                                    v = v.saturating_mul(16).saturating_add(d);
+                                    valid = true;
+                                    end += 1;
+                                }
+                                if valid && end < bytes.len() && bytes[end] == b'}' {
+                                    s.push(char::from_u32(v).unwrap_or('\u{FFFD}'));
+                                    self.pos = end + 1; // 越过 '}'
+                                } else {
+                                    // 非法 \u{...：'u' 按字面，'{' 留给普通字符路径
+                                    s.push('u');
+                                }
+                            } else {
+                                let hi = read_hex_units(bytes, &mut self.pos, 4);
+                                match hi {
+                                    Some(v @ (0xD800..=0xDBFF)) => {
+                                        // 高位代理：紧跟 \uDC00..\uDFFF 时组合为码点
+                                        // （孤立代理按 U+FFFD 替换，Rust 字符串无法承载）
+                                        if bytes.get(self.pos) == Some(&b'\\')
+                                            && bytes.get(self.pos + 1) == Some(&b'u')
+                                        {
+                                            let mut probe = self.pos + 2;
+                                            if let Some(lo) = read_hex_units(bytes, &mut probe, 4) {
+                                                if (0xDC00..=0xDFFF).contains(&lo) {
+                                                    let cp = 0x1_0000
+                                                        + ((v - 0xD800) << 10)
+                                                        + (lo - 0xDC00);
+                                                    s.push(
+                                                        char::from_u32(cp).unwrap_or('\u{FFFD}'),
+                                                    );
+                                                    self.pos = probe;
+                                                } else {
+                                                    s.push('\u{FFFD}');
+                                                }
+                                            } else {
+                                                s.push('\u{FFFD}');
+                                            }
+                                        } else {
+                                            s.push('\u{FFFD}');
+                                        }
+                                    }
+                                    Some(v) => s.push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+                                    None => s.push('u'),
+                                }
+                            }
+                            continue;
+                        }
                         other => s.push(other as char),
                     }
                 } else {
@@ -517,5 +679,42 @@ mod tests {
         let mut lexer = Lexer::new("  \n\t // trailing comment\n ");
         assert_eq!(lexer.next_token().kind, TokenKind::Eof);
         assert_eq!(lexer.next_token().kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn decodes_unicode_escapes_in_strings() {
+        // \uFFFD → U+FFFD 替换符
+        let mut lexer = Lexer::new("'\\uFFFD'");
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenKind::String("\u{FFFD}".to_owned())
+        );
+        // \u{1F600} → 😀
+        let mut lexer = Lexer::new("'\\u{1F600}'");
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenKind::String("\u{1F600}".to_owned())
+        );
+        // 代理对 \uD83D\uDE00 → 😀
+        let mut lexer = Lexer::new("'\\uD83D\\uDE00'");
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenKind::String("\u{1F600}".to_owned())
+        );
+        // \x41 → 'A'
+        let mut lexer = Lexer::new("'\\x41'");
+        assert_eq!(
+            lexer.next_token().kind,
+            TokenKind::String("A".to_owned())
+        );
+        // 模板字符串内的 \uFFFD
+        let mut lexer = Lexer::new("`\\uFFFD`");
+        let t = lexer.next_token();
+        match t.kind {
+            TokenKind::TemplateLiteral { quasis, .. } => {
+                assert_eq!(quasis, vec!["\u{FFFD}".to_owned()]);
+            }
+            other => panic!("expected template literal, got {other:?}"),
+        }
     }
 }

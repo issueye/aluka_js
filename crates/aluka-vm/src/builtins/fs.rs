@@ -206,7 +206,7 @@ fn options_recursive(vm: &mut Vm, opt: Value) -> bool {
             let key = vm
                 .get_property(Value::Object(r), "recursive")
                 .unwrap_or(Value::Undefined);
-            key.is_truthy()
+            vm.truthy(key)
         }
         _ => false,
     }

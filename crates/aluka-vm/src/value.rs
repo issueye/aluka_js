@@ -19,18 +19,8 @@ pub enum Value {
     Object(ObjectRef),
 }
 
-impl Value {
-    /// 判断是否为真值（Truthy）。
-    #[must_use]
-    pub fn is_truthy(self) -> bool {
-        match self {
-            Self::Undefined | Self::Null => false,
-            Self::Boolean(b) => b,
-            Self::Number(n) => n != 0.0 && !n.is_nan(),
-            Self::Object(_) => true,
-        }
-    }
-}
+// 真值判定位于 `ops::to_boolean(val, heap)` / `Vm::truthy(val)`：
+// 字符串是堆对象，空字符串必须为 falsy，判定需要堆访问。
 
 impl From<Value> for aluka_core::Value {
     fn from(val: Value) -> Self {

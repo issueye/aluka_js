@@ -727,6 +727,9 @@ impl Vm {
                     HeapObject::NativeCtor { properties, .. } => {
                         properties.insert(key.to_owned(), val);
                     }
+                    HeapObject::NativeFn { properties, .. } => {
+                        properties.insert(key.to_owned(), val);
+                    }
                     HeapObject::Array {
                         elements,
                         properties,
@@ -923,6 +926,12 @@ impl Vm {
                 HeapObject::Closure { properties, .. } => {
                     (properties.keys().cloned().collect::<Vec<_>>(), None)
                 }
+                HeapObject::NativeCtor { properties, .. } => {
+                    (properties.keys().cloned().collect::<Vec<_>>(), None)
+                }
+                HeapObject::NativeFn { properties, .. } => {
+                    (properties.keys().cloned().collect::<Vec<_>>(), None)
+                }
                 HeapObject::String(s) => {
                     // 索引键按 UTF-16 code unit 计（星面字符占 2 个）
                     let units: usize = s.chars().map(|c| if c > '\u{FFFF}' { 2 } else { 1 }).sum();
@@ -1061,7 +1070,7 @@ impl Vm {
         // enumerable 位：缺省 false（JS 规范 defineProperty 语义）；
         // 本运行时记录到 non_enum 集合，供 Object.keys/entries 过滤
         let enumerable = get_v(self, "enumerable")
-            .map(|v| v.is_truthy())
+            .map(|v| self.truthy(v))
             .unwrap_or(false);
         let remember_enumerable = |non_enum: &mut std::collections::HashSet<String>, key: &str| {
             if !enumerable {

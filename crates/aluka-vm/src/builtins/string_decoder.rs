@@ -30,6 +30,11 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     let ctor_fn = vm.alloc_native_fn("string_decoder.StringDecoder");
     let write_fn = vm.alloc_native_fn("string_decoder.write");
     let end_fn = vm.alloc_native_fn("string_decoder.end");
+    // StringDecoder.prototype：write/end 方法（iconv-lite 等读此断定能力）
+    let proto = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(proto), "write", Value::Object(write_fn));
+    let _ = vm.set_property(Value::Object(proto), "end", Value::Object(end_fn));
+    let _ = vm.set_property(Value::Object(ctor_fn), "prototype", Value::Object(proto));
     set_module_prop(vm, obj, "StringDecoder", Value::Object(ctor_fn))?;
     set_module_prop(vm, obj, "write", Value::Object(write_fn))?;
     set_module_prop(vm, obj, "end", Value::Object(end_fn))?;

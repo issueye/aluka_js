@@ -1,0 +1,1 @@
+console.log('T1:', JSON.stringify('\uFFFD'));

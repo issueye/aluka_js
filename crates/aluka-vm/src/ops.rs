@@ -16,10 +16,23 @@ pub fn to_number(val: Value) -> f64 {
     }
 }
 
-/// 将任意值强制转换为布尔值。
+/// 将任意值强制转换为布尔值（ECMAScript ToBoolean）。
+///
+/// 字符串是堆对象，空字符串必须为 falsy——需要堆访问：
+/// `Object` 引用先查堆，`HeapObject::String` 按内容非空判定，
+/// 其余对象一律 truthy。`heap` 为 `&[]`（JIT 无堆路径）时
+/// 字符串按 truthy 处理（与旧行为一致，JIT 通道另行完善）。
 #[must_use]
-pub fn to_boolean(val: Value) -> bool {
-    val.is_truthy()
+pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
+    match val {
+        Value::Undefined | Value::Null => false,
+        Value::Boolean(b) => b,
+        Value::Number(n) => n != 0.0 && !n.is_nan(),
+        Value::Object(r) => match heap.get(r.0 as usize) {
+            Some(HeapObject::String(s)) => !s.is_empty(),
+            _ => true,
+        },
+    }
 }
 
 /// 字符串值相等：两个堆字符串按内容比较（JS 语义；句柄相同或内容相同）。
@@ -118,6 +131,12 @@ pub fn strict_eq(
 }
 
 impl Vm {
+    /// ECMAScript ToBoolean（借助本 VM 堆判定字符串内容）。
+    #[must_use]
+    pub fn truthy(&self, val: Value) -> bool {
+        to_boolean(val, &self.heap)
+    }
+
     /// 执行加法运算（支持数值相加与 ECMAScript 字符串自动拼接）。
     pub fn add_values(&mut self, left: Value, right: Value) -> Value {
         if let (Value::Number(a), Value::Number(b)) = (left, right) {

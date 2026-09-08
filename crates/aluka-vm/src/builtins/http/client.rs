@@ -110,9 +110,9 @@ pub(crate) fn create_request_object(
                         url = format!("{}{pa}", url.trim_end_matches('/'));
                     }
                 }
-                if let Some(pa) = get(vm, "path") {
-                    url = format!("{}{pa}", url.trim_end_matches('/'));
-                }
+                // path 已在 url 构造中拼入（if url.is_empty() 分支内），
+                // 此处不再重复拼接——此前重复拼接导致 `req.url` 路径翻倍
+                // （`/echo/aluka42` → `/echo/aluka42/echo/aluka42`）
                 if let Ok(hobj_v) = vm.get_property(*opt, "headers") {
                     if super::is_plain_object(vm, hobj_v) {
                         let hobj = match hobj_v {

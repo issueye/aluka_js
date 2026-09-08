@@ -1721,7 +1721,7 @@ impl Vm {
                 // 4. 位运算与逻辑非
                 Op::Not => {
                     let top = self.pop()?;
-                    self.stack.push(Value::Boolean(!to_boolean(top)));
+                    self.stack.push(Value::Boolean(!to_boolean(top, &self.heap)));
                 }
                 Op::BitNot => {
                     let top = self.pop()?;
@@ -1858,21 +1858,21 @@ impl Vm {
                 }
                 Op::JmpTruePop => {
                     let top = self.pop()?;
-                    if to_boolean(top) {
+                    if to_boolean(top, &self.heap) {
                         pc = compute_jump_target(pc, instr.operand);
                         continue;
                     }
                 }
                 Op::JmpFalsePop => {
                     let top = self.pop()?;
-                    if !to_boolean(top) {
+                    if !to_boolean(top, &self.heap) {
                         pc = compute_jump_target(pc, instr.operand);
                         continue;
                     }
                 }
                 Op::JmpTrueKeep => {
                     let top = self.peek()?;
-                    if to_boolean(top) {
+                    if to_boolean(top, &self.heap) {
                         pc = compute_jump_target(pc, instr.operand);
                         continue;
                     } else {
@@ -1881,7 +1881,7 @@ impl Vm {
                 }
                 Op::JmpFalseKeep => {
                     let top = self.peek()?;
-                    if !to_boolean(top) {
+                    if !to_boolean(top, &self.heap) {
                         pc = compute_jump_target(pc, instr.operand);
                         continue;
                     } else {
@@ -1921,6 +1921,18 @@ impl Vm {
                     // 不可被「模块名.方法名」拼接劫持。例外：解析出的方法值是
                     // Reflect./Proxy. 前缀原生函数时（如 Reflect.apply 本身即
                     // 规范静态方法），内置分派优先于通用协议
+                    // bind：同样必须走 Function.prototype 语义——NativeFn
+                    // receiver 的 try_dispatch 回退会错误地把 bind 分派到
+                    // 函数自身方法（如 AsyncResource.runInAsyncScope.bind 被
+                    // 劫持成 runInAsyncScope 调用，raw-body 依赖此形态）
+                    if method_name.as_ref() == "bind" {
+                        crate::builtins::set_current_receiver(receiver);
+                        crate::builtins::set_pending_native_name("Function.prototype.bind");
+                        let res = crate::builtins::surface::fn_proto_bind(self, args)?;
+                        self.stack.push(res);
+                        pc += 1;
+                        continue;
+                    }
                     if matches!(method_name.as_ref(), "call" | "apply") {
                         let method_val = self.get_property(receiver, &method_name)?;
                         let is_reflect_like = match &method_val {
@@ -3177,7 +3189,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if to_boolean(keep) {
+                                        if to_boolean(keep, &self.heap) {
                                             kept.push(*elem);
                                         }
                                     }
@@ -3202,7 +3214,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if to_boolean(hit) {
+                                        if to_boolean(hit, &self.heap) {
                                             found = *elem;
                                             break;
                                         }
@@ -3227,7 +3239,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if to_boolean(hit) {
+                                        if to_boolean(hit, &self.heap) {
                                             any = true;
                                             break;
                                         }
@@ -3472,7 +3484,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if !ok.is_truthy() {
+                                        if !self.truthy(ok) {
                                             all = false;
                                             break;
                                         }
@@ -3490,7 +3502,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if ok.is_truthy() {
+                                        if self.truthy(ok) {
                                             found = elem_idx as f64;
                                             break;
                                         }
@@ -3508,7 +3520,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if ok.is_truthy() {
+                                        if self.truthy(ok) {
                                             hit = Some(elem_idx);
                                         }
                                     }
@@ -3750,7 +3762,23 @@ impl Vm {
                             }
                         }
                     } else {
-                        self.stack.push(Value::Undefined);
+                        // 原始值 receiver 的方法调用（JS 装箱语义）：数字/布尔
+                        // 走 Number.prototype 面（toString(radix)/toFixed/...）。
+                        // 字符串原始值是堆字符串由上面字符串链处理，此处仅
+                        // Number/Boolean——缺省仍按 undefined 返回。
+                        match receiver {
+                            Value::Number(_) | Value::Boolean(_) => {
+                                crate::builtins::set_current_receiver(receiver);
+                                let full = format!("Number.prototype.{method_name}");
+                                crate::builtins::set_pending_native_name(&full);
+                                let res = crate::builtins::surface::num_method_dispatch(
+                                    self,
+                                    args,
+                                )?;
+                                self.stack.push(res);
+                            }
+                            _ => self.stack.push(Value::Undefined),
+                        }
                     }
                 }
                 Op::Call => {

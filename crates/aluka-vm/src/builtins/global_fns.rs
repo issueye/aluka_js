@@ -81,6 +81,18 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     vm.globals
         .insert("Boolean".to_owned(), Value::Object(boolean));
 
+    // String：静态方法 fromCharCode/fromCodePoint（iconv-lite 等真实包依赖）
+    let string = vm.alloc_native_ctor("String", vm.object_prototype);
+    for (method, handler) in [
+        ("fromCharCode", string_from_char_code as BuiltinHandler),
+        ("fromCodePoint", string_from_code_point as BuiltinHandler),
+    ] {
+        let f = vm.alloc_native_fn(&format!("String.{method}"));
+        let _ = vm.set_property(Value::Object(string), method, Value::Object(f));
+        register_handler(registry, "String", method, handler);
+    }
+    vm.globals.insert("String".to_owned(), Value::Object(string));
+
     // Date：now 静态 + 实例最小面（getTime/toISOString/valueOf/toString）
     let date = vm.alloc_native_ctor("Date", vm.object_prototype);
     let now = vm.alloc_native_fn("Date.now");
@@ -178,8 +190,11 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 #[allow(non_upper_case_globals)]
 const _: () = ();
 
-fn arg_number(_vm: &mut Vm, args: &[Value]) -> f64 {
-    args.first().map(|v| to_number(*v)).unwrap_or(f64::NAN)
+fn arg_number(vm: &mut Vm, args: &[Value]) -> f64 {
+    // JS ToNumber：堆字符串对象须解析（isNaN('23') → false 等真实包依赖）
+    args.first()
+        .map(|v| vm.to_number_value(*v))
+        .unwrap_or(f64::NAN)
 }
 
 fn global_is_nan(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
@@ -280,14 +295,18 @@ fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let method = name.split('.').next_back().unwrap_or("");
     let v = args.first().copied().unwrap_or(Value::Undefined);
+    // 数字静态面/全局 isNaN 族的数值化：字符串对象须解析（JS ToNumber
+    // 语义；`isNaN('23')` → false、`Number.isSafeInteger('5')` → false）。
+    // to_number_value 处理堆字符串；原始值经 to_number 兜底。
+    let to_num = |vm: &mut Vm, v: Value| -> f64 { vm.to_number_value(v) };
     match method {
         "isInteger" => {
-            let n = to_number(v);
+            let n = to_num(vm, v);
             let is_int = matches!(v, Value::Number(_)) && n.fract() == 0.0 && n.is_finite();
             Ok(Value::Boolean(is_int))
         }
         "isSafeInteger" => {
-            let n = to_number(v);
+            let n = to_num(vm, v);
             let ok = matches!(v, Value::Number(_))
                 && n.fract() == 0.0
                 && n.is_finite()
@@ -295,16 +314,46 @@ fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             Ok(Value::Boolean(ok))
         }
         "isFinite" => {
-            let n = to_number(v);
+            let n = to_num(vm, v);
             Ok(Value::Boolean(
                 matches!(v, Value::Number(_)) && n.is_finite(),
             ))
         }
-        "isNaN" => Ok(Value::Boolean(to_number(v).is_nan())),
+        "isNaN" => Ok(Value::Boolean(to_num(vm, v).is_nan())),
         "parseInt" => global_parse_int(vm, args),
         "parseFloat" => global_parse_float(vm, args),
         _ => Ok(Value::Undefined),
     }
+}
+
+/// `String.fromCharCode(...codes)`：将数值码点序列转为字符串（UTF-16 码元）。
+fn string_from_char_code(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let mut s = String::with_capacity(args.len());
+    for arg in args {
+        let code = to_number(*arg) as u32;
+        // UTF-16 代理对：0x10000+ 拆为高低代理
+        if code < 0x10000 {
+            s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+        } else if code < 0x110000 {
+            let hi = 0xD800 + ((code - 0x10000) >> 10);
+            let lo = 0xDC00 + ((code - 0x10000) & 0x3FF);
+            s.push(char::from_u32(hi).unwrap_or('\u{FFFD}'));
+            s.push(char::from_u32(lo).unwrap_or('\u{FFFD}'));
+        } else {
+            s.push('\u{FFFD}');
+        }
+    }
+    Ok(Value::Object(vm.alloc_string(s)))
+}
+
+/// `String.fromCodePoint(...codes)`：将 Unicode 码点序列转为字符串。
+fn string_from_code_point(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let mut s = String::with_capacity(args.len());
+    for arg in args {
+        let code = to_number(*arg) as u32;
+        s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
+    }
+    Ok(Value::Object(vm.alloc_string(s)))
 }
 
 fn date_now(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
@@ -439,7 +488,15 @@ fn decode_component_impl(
         }
     }
     Ok(Value::Object(
-        vm.alloc_string(String::from_utf8_lossy(&out).to_string()),
+        vm.alloc_string(match String::from_utf8(out) {
+            Ok(s) => s,
+            Err(_) => {
+                let err = vm.alloc_string("URI malformed".to_owned());
+                let name = vm.alloc_string("URIError".to_owned());
+                let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+                return Err(VmError::Thrown(Value::Object(err)));
+            }
+        }),
     ))
 }
 

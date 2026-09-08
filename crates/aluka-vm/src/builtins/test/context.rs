@@ -39,7 +39,7 @@ fn fail_expected_but_got(vm: &mut Vm, a: Value, b: Value) -> VmError {
 pub fn ctx_assert_ok(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let _ = with_current_mut(|st| st.add_assert());
     let val = args.first().copied().unwrap_or(Value::Undefined);
-    if val.is_truthy() {
+    if vm.truthy(val) {
         return Ok(Value::Undefined);
     }
     Err(assert_fail(vm, "expected value to be truthy"))

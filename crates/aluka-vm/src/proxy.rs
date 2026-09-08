@@ -126,7 +126,7 @@ impl Vm {
         let key_val = Value::Object(self.alloc_string(key.to_owned()));
         let args = [key_val, val, receiver];
         let res = match self.call_trap(r, "set", &args)? {
-            Some(v) => v.is_truthy(),
+            Some(v) => self.truthy(v),
             None => {
                 let (target, _, _) = self.proxy_parts(r).unwrap();
                 self.set_property(Value::Object(target), key, val)?;
@@ -147,7 +147,7 @@ impl Vm {
     pub(crate) fn proxy_has(&mut self, r: ObjectRef, key: &str) -> Result<bool, VmError> {
         let key_val = Value::Object(self.alloc_string(key.to_owned()));
         match self.call_trap(r, "has", &[key_val])? {
-            Some(v) => Ok(v.is_truthy()),
+            Some(v) => Ok(self.truthy(v)),
             None => {
                 let (target, _, _) = self.proxy_parts(r).unwrap();
                 Ok(self.has_property(Value::Object(target), key))
@@ -160,7 +160,7 @@ impl Vm {
     pub(crate) fn proxy_delete(&mut self, r: ObjectRef, key: &str) -> Result<(), VmError> {
         let key_val = Value::Object(self.alloc_string(key.to_owned()));
         let res = match self.call_trap(r, "deleteProperty", &[key_val])? {
-            Some(v) => v.is_truthy(),
+            Some(v) => self.truthy(v),
             None => {
                 let (target, _, _) = self.proxy_parts(r).unwrap();
                 self.delete_property(Value::Object(target), key);
@@ -241,7 +241,7 @@ impl Vm {
         proto: Value,
     ) -> Result<bool, VmError> {
         match self.call_trap(r, "setPrototypeOf", &[proto])? {
-            Some(v) => Ok(v.is_truthy()),
+            Some(v) => Ok(self.truthy(v)),
             None => {
                 let (target, _, _) = self.proxy_parts(r).unwrap();
                 let p = match proto {
@@ -258,7 +258,7 @@ impl Vm {
     /// （本运行时对象恒可扩展）。
     pub(crate) fn proxy_is_extensible(&mut self, r: ObjectRef) -> Result<bool, VmError> {
         match self.call_trap(r, "isExtensible", &[])? {
-            Some(v) => Ok(v.is_truthy()),
+            Some(v) => Ok(self.truthy(v)),
             None => Ok(true),
         }
     }
@@ -266,7 +266,7 @@ impl Vm {
     /// [[PreventExtensions]]：`preventExtensions` trap。返回操作是否成功。
     pub(crate) fn proxy_prevent_extensions(&mut self, r: ObjectRef) -> Result<bool, VmError> {
         match self.call_trap(r, "preventExtensions", &[])? {
-            Some(v) => Ok(v.is_truthy()),
+            Some(v) => Ok(self.truthy(v)),
             None => Ok(true),
         }
     }
@@ -297,7 +297,7 @@ impl Vm {
     ) -> Result<bool, VmError> {
         let key_val = Value::Object(self.alloc_string(key.to_owned()));
         match self.call_trap(r, "defineProperty", &[key_val, desc])? {
-            Some(v) => Ok(v.is_truthy()),
+            Some(v) => Ok(self.truthy(v)),
             None => {
                 let (target, _, _) = self.proxy_parts(r).unwrap();
                 self.ordinary_define_property(Value::Object(target), key, desc)?;

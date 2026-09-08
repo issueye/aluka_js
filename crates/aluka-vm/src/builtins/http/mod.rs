@@ -288,7 +288,7 @@ fn agent_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         let read = |vm: &mut Vm, key: &str| vm.get_property(Value::Object(*opts), key).ok();
         if let Some(v) = read(vm, "keepAlive") {
             if !matches!(v, Value::Undefined) {
-                keep_alive = v.is_truthy();
+                keep_alive = vm.truthy(v);
             }
         }
         if let Some(Value::Number(n)) = read(vm, "keepAliveMsecs") {
