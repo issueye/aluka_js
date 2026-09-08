@@ -74,6 +74,15 @@ impl Vm {
         self.eval_provider = Some(std::rc::Rc::new(std::cell::RefCell::new(provider)));
     }
 
+    /// 装配真实 worker 线程 spawn 钩子（装配层在执行前调用一次）。
+    ///
+    /// 未装配时 `new Worker` 回落同进程伪 worker 路径（`worker_threads`
+    /// 模块文档「已知偏离」）；装配后经 [`crate::worker::WorkerEntryFn`]
+    /// spawn 物理线程，消息仅以 JSON 字符串跨线程。
+    pub fn set_worker_entry(&mut self, entry: std::sync::Arc<crate::worker::WorkerEntryFn>) {
+        self.worker_entry = Some(entry);
+    }
+
     /// 经 Hook 编译动态源码并**强制** Verifier 静态安全校验。
     fn compile_dynamic(&mut self, src: &str) -> Result<BytecodeModule, VmError> {
         let provider = self.eval_provider.clone().ok_or_else(|| {

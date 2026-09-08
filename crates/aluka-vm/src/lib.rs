@@ -27,6 +27,7 @@ pub mod symbol;
 mod tls_spike;
 pub mod typed_array;
 pub mod value;
+pub mod worker;
 
 pub use eval::empty_eval_module;
 pub use heap::HeapObject;

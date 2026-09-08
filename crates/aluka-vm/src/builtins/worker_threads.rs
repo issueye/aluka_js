@@ -1,4 +1,4 @@
-﻿//! `worker_threads` 内置模块（Phase 6）。
+//! `worker_threads` 内置模块（Phase 6）。
 //!
 //! 照实移植 Node.js 22 LTS 规范的模型并
 //! 按宿主现实落地：Go 侧 worker 是「独立 goroutine + 完整 VM」，Rust 侧 VM
@@ -28,8 +28,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// `require("worker_threads")` / `require("node:worker_threads")` 模块导出。
@@ -50,53 +50,98 @@ struct PortState {
     closed: bool,
 }
 
-/// 端口对象句柄 id → 消息缓冲。
-static PORT_STATES: Mutex<Option<HashMap<u32, PortState>>> = Mutex::new(None);
+// 以下状态表全部线程局部：真实 worker 线程持有独立 Vm（独立堆），
+// 堆句柄仅在本线程有效，跨线程只能经 `worker::` 通道传 JSON 字符串。
+
+// 端口对象句柄 id → 消息缓冲。
+thread_local! {
+    static PORT_STATES: RefCell<Option<HashMap<u32, PortState>>> = const { RefCell::new(None) };
+}
 
 fn with_port_state<F, R>(id: u32, f: F) -> R
 where
     F: FnOnce(&mut PortState) -> R,
 {
-    let mut guard = PORT_STATES.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    f(map.entry(id).or_default())
+    PORT_STATES.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        f(map.entry(id).or_default())
+    })
 }
 
-/// worker 对象句柄 id → parentPort 端口对象句柄 id。
-static WORKER_PP: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+// worker 对象句柄 id → parentPort 端口对象句柄 id。
+thread_local! {
+    static WORKER_PP: RefCell<Option<HashMap<u32, u32>>> = const { RefCell::new(None) };
+}
 
-/// parentPort 端口对象句柄 id → worker 对象句柄 id。
-static PP_TO_WORKER: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+// parentPort 端口对象句柄 id → worker 对象句柄 id。
+thread_local! {
+    static PP_TO_WORKER: RefCell<Option<HashMap<u32, u32>>> = const { RefCell::new(None) };
+}
 
-/// threadId → Worker 对象句柄 id（postMessageToThread 用）。
-static WORKER_BY_THREAD: Mutex<Option<HashMap<u64, u32>>> = Mutex::new(None);
+// threadId → Worker 对象句柄 id（postMessageToThread 用）。
+thread_local! {
+    static WORKER_BY_THREAD: RefCell<Option<HashMap<u64, u32>>> = const { RefCell::new(None) };
+}
 
-/// 已 terminate 的 worker（后续消息丢弃，Go 关闭通道语义）。
-static WORKER_CLOSED: Mutex<Option<std::collections::HashSet<u32>>> = Mutex::new(None);
+// 已 terminate 的 worker（后续消息丢弃，Go 关闭通道语义）。
+thread_local! {
+    static WORKER_CLOSED: RefCell<Option<std::collections::HashSet<u32>>> =
+        const { RefCell::new(None) };
+}
 
-/// BroadcastChannel：port id → 频道名（广播注册表）。
-static BROADCAST_NAMES: Mutex<Option<HashMap<u32, String>>> = Mutex::new(None);
+// BroadcastChannel：port id → 频道名（广播注册表）。
+thread_local! {
+    static BROADCAST_NAMES: RefCell<Option<HashMap<u32, String>>> = const { RefCell::new(None) };
+}
 
-/// 频道名 → 成员 port id 列表。
-static BROADCAST_CHANNELS: Mutex<Option<HashMap<String, Vec<u32>>>> = Mutex::new(None);
+// 频道名 → 成员 port id 列表。
+thread_local! {
+    static BROADCAST_CHANNELS: RefCell<Option<HashMap<String, Vec<u32>>>> =
+        const { RefCell::new(None) };
+}
 
-/// 跨 worker 环境数据（Go envDataMap）。
-static ENV_DATA: Mutex<Option<HashMap<String, Value>>> = Mutex::new(None);
+// 跨 worker 环境数据（Go envDataMap）。
+thread_local! {
+    static ENV_DATA: RefCell<Option<HashMap<String, Value>>> = const { RefCell::new(None) };
+}
 
-fn with_map<F, R>(holder: &Mutex<Option<HashMap<u32, u32>>>, f: F) -> R
+// 真实跨线程 worker 注册表：worker 对象句柄 id → 主线程侧桥。
+thread_local! {
+    static REAL_WORKERS: RefCell<HashMap<u32, crate::worker::WorkerBridge>> =
+        RefCell::new(HashMap::new());
+}
+
+// worker 线程侧 parentPort 端口对象句柄 id（真实线程路径）。
+thread_local! {
+    static REAL_PP_ID: RefCell<Option<u32>> = const { RefCell::new(None) };
+}
+
+fn with_worker_pp<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, u32>) -> R,
 {
-    let mut guard = holder.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    WORKER_PP.with(|g| {
+        let mut binding = g.borrow_mut();
+        f(binding.get_or_insert_with(HashMap::new))
+    })
+}
+
+fn with_pp_to_worker<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut HashMap<u32, u32>) -> R,
+{
+    PP_TO_WORKER.with(|g| {
+        let mut binding = g.borrow_mut();
+        f(binding.get_or_insert_with(HashMap::new))
+    })
 }
 
 fn with_thread_map<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u64, u32>) -> R,
 {
-    let mut guard = WORKER_BY_THREAD.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    WORKER_BY_THREAD.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
@@ -230,7 +275,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         _ => true,
     };
     let _ = vm.set_property(Value::Object(obj), "isMainThread", Value::Boolean(is_main));
-    let _ = vm.set_property(Value::Object(obj), "threadId", Value::Number(0.0));
+    let tid = crate::worker::worker_thread_io()
+        .map(|io| io.thread_id)
+        .unwrap_or(0);
+    let _ = vm.set_property(Value::Object(obj), "threadId", Value::Number(tid as f64));
     let _ = vm.set_property(
         Value::Object(obj),
         "isInternalThread",
@@ -309,10 +357,10 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // worker 端 parentPort 端口（构造期预建，主线程 postMessage 先于 worker
     // 模块体执行时消息在端口缓冲，对齐 Go toWorker 通道缓冲）。
     let pp = make_port(vm, "worker_threads:parent_port");
-    with_map(&WORKER_PP, |m| {
+    with_worker_pp(|m| {
         m.insert(worker.0, pp.0);
     });
-    with_map(&PP_TO_WORKER, |m| {
+    with_pp_to_worker(|m| {
         m.insert(pp.0, worker.0);
     });
 
@@ -326,6 +374,41 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             worker: worker.0,
             code: 1,
         });
+    } else if let Some(entry) = vm.worker_entry.clone() {
+        // M5.1 真实跨物理线程路径：装配层钩子负责编译并运行 worker 文件，
+        // 消息只以 JSON 字符串跨线程（结构化克隆的传输层近似）。
+        let abs = absolute_js_path(vm, &filename);
+        let data_json = match worker_data {
+            Some(d) => Some(value_to_json_string(vm, d)?),
+            None => None,
+        };
+        match entry(&abs, data_json.as_deref()) {
+            Ok(bridge) => {
+                let _ = vm.set_property(
+                    Value::Object(worker),
+                    "threadId",
+                    Value::Number(bridge.thread_id as f64),
+                );
+                let tid = bridge.thread_id;
+                with_thread_map(|m| {
+                    m.insert(tid, worker.0);
+                });
+                REAL_WORKERS.with(|m| {
+                    m.borrow_mut().insert(worker.0, bridge);
+                });
+                vm.activate_event_source("real_workers", pump_real_workers);
+            }
+            Err(message) => {
+                push_event(ProcEvent::WorkerError {
+                    worker: worker.0,
+                    message,
+                });
+                push_event(ProcEvent::WorkerExit {
+                    worker: worker.0,
+                    code: 1,
+                });
+            }
+        }
     } else {
         push_event(ProcEvent::RunWorker {
             worker: worker.0,
@@ -355,7 +438,7 @@ pub(crate) fn run_worker_body(
         // RunWorker 事件只由非 eval 脚本路径入队；eval 失败在构造期已入队。
         return Ok(());
     }
-    let pp_id = with_map(&WORKER_PP, |m| m.get(&worker_id).copied());
+    let pp_id = with_worker_pp(|m| m.get(&worker_id).copied());
     let Some(pp_id) = pp_id else {
         return Ok(());
     };
@@ -475,16 +558,32 @@ fn resolve_worker_bc(vm: &Vm, path: &str) -> Option<std::path::PathBuf> {
 }
 
 /// worker .js 路径的绝对化（Go loader 错误文案中的路径形态）。
+/// 解析优先级：绝对路径 → 相对 cwd 可达（`__filename` 入口相对形态）→
+/// 相对入口目录（require 语义）→ 回退 cwd 拼接。
 fn absolute_js_path(vm: &Vm, path: &str) -> String {
     let p = std::path::Path::new(path);
     if p.is_absolute() {
         return path.to_owned();
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        let as_cwd = cwd.join(path);
+        if as_cwd.is_file() {
+            return as_cwd.to_string_lossy().to_string();
+        }
     }
     let base = vm
         .base_dir
         .clone()
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let joined = base.join(path);
+    if joined.is_file() {
+        if joined.is_absolute() {
+            return joined.to_string_lossy().to_string();
+        }
+        if let Ok(cwd) = std::env::current_dir() {
+            return cwd.join(joined).to_string_lossy().to_string();
+        }
+    }
     if joined.is_absolute() {
         joined.to_string_lossy().to_string()
     } else {
@@ -543,18 +642,18 @@ fn wt_broadcast_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let port = make_port(vm, "worker_threads:port");
     let name_val = vm.alloc_string(name.clone());
     let _ = vm.set_property(Value::Object(port), "name", Value::Object(name_val));
-    BROADCAST_NAMES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(port.0, name.clone());
-    BROADCAST_CHANNELS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .entry(name)
-        .or_default()
-        .push(port.0);
+    BROADCAST_NAMES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(port.0, name.clone());
+    });
+    BROADCAST_CHANNELS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .entry(name)
+            .or_default()
+            .push(port.0);
+    });
     Ok(Value::Object(port))
 }
 
@@ -565,7 +664,16 @@ fn wt_pp_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(r) = receiver else {
         return Ok(Value::Undefined);
     };
-    let worker = with_map(&PP_TO_WORKER, |m| m.get(&r.0).copied());
+    // M5.1 真实线程路径：worker 侧 parentPort → 主线程通道
+    if crate::worker::is_worker_thread() && REAL_PP_ID.with(|c| *c.borrow()) == Some(r.0) {
+        if let Some(io) = crate::worker::worker_thread_io() {
+            let msg = json_roundtrip(vm, args.first().copied().unwrap_or(Value::Undefined));
+            let json = value_to_json_string(vm, msg)?;
+            let _ = io.to_main.send(crate::worker::WorkerEvent::Message(json));
+        }
+        return Ok(Value::Undefined);
+    }
+    let worker = with_pp_to_worker(|m| m.get(&r.0).copied());
     if let Some(worker) = worker {
         let msg = json_roundtrip(vm, args.first().copied().unwrap_or(Value::Undefined));
         push_event(ProcEvent::WorkerToMain { worker, msg });
@@ -586,24 +694,19 @@ fn wt_port_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let msg = args.first().copied().unwrap_or(Value::Undefined);
 
     // BroadcastChannel：投递给同频道其他端口。
-    let bc_name = BROADCAST_NAMES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .get(&r.0)
-        .cloned();
+    let bc_name = BROADCAST_NAMES.with(|g| g.borrow().as_ref().and_then(|m| m.get(&r.0)).cloned());
     if let Some(name) = bc_name {
         let msg = json_roundtrip(vm, msg);
-        let peers: Vec<u32> = BROADCAST_CHANNELS
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .get(&name)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|id| *id != r.0)
-            .collect();
+        let peers: Vec<u32> = BROADCAST_CHANNELS.with(|g| {
+            g.borrow()
+                .as_ref()
+                .and_then(|m| m.get(&name))
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|id| *id != r.0)
+                .collect()
+        });
         for peer in peers {
             port_post(vm, Value::Object(ObjectRef(peer)), msg)?;
         }
@@ -671,20 +774,18 @@ fn wt_port_close(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
         st.closed = true;
         st.queue.clear();
     });
-    if let Some(name) = BROADCAST_NAMES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .remove(&r.0)
-    {
-        if let Some(chans) = BROADCAST_CHANNELS
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .get_mut(&name)
-        {
-            chans.retain(|id| *id != r.0);
-        }
+    let removed =
+        BROADCAST_NAMES.with(|g| g.borrow_mut().get_or_insert_with(HashMap::new).remove(&r.0));
+    if let Some(name) = removed {
+        BROADCAST_CHANNELS.with(|g| {
+            if let Some(chans) = g
+                .borrow_mut()
+                .get_or_insert_with(HashMap::new)
+                .get_mut(&name)
+            {
+                chans.retain(|id| *id != r.0);
+            }
+        });
     }
     Ok(Value::Undefined)
 }
@@ -704,13 +805,24 @@ fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(r) = receiver else {
         return Ok(Value::Undefined);
     };
-    let pp = with_map(&WORKER_PP, |m| m.get(&r.0).copied());
-    if WORKER_CLOSED
-        .lock()
-        .unwrap()
-        .get_or_insert_with(Default::default)
-        .contains(&r.0)
-    {
+    let pp = with_worker_pp(|m| m.get(&r.0).copied());
+    if WORKER_CLOSED.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(Default::default)
+            .contains(&r.0)
+    }) {
+        return Ok(Value::Undefined);
+    }
+    // M5.1 真实线程路径：经通道送 JSON 到物理线程
+    if REAL_WORKERS.with(|m| m.borrow().contains_key(&r.0)) {
+        if let Some(bridge) =
+            REAL_WORKERS.with(|m| m.borrow().get(&r.0).map(|b| b.to_worker.clone()))
+        {
+            let msg = args.first().copied().unwrap_or(Value::Undefined);
+            let rounded = json_roundtrip(vm, msg);
+            let json = value_to_json_string(vm, rounded)?;
+            let _ = bridge.send(json);
+        }
         return Ok(Value::Undefined);
     }
     if let Some(pp) = pp {
@@ -728,11 +840,19 @@ fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn wt_worker_terminate(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
     if let Value::Object(r) = receiver {
-        WORKER_CLOSED
-            .lock()
-            .unwrap()
-            .get_or_insert_with(Default::default)
-            .insert(r.0);
+        WORKER_CLOSED.with(|g| {
+            g.borrow_mut()
+                .get_or_insert_with(Default::default)
+                .insert(r.0)
+        });
+        // 真实线程路径：置终止旗标、关闭通道、立即派发 'exit'(1)（Node 语义）
+        if let Some(bridge) = REAL_WORKERS.with(|m| m.borrow_mut().remove(&r.0)) {
+            bridge
+                .terminate
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            ns_emit(_vm, Value::Object(r), "exit", &[Value::Number(1.0)])?;
+            maybe_deactivate_real_worker_source(_vm);
+        }
     }
     Ok(Value::Undefined)
 }
@@ -757,16 +877,18 @@ fn wt_set_env_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     let key = env_data_key(vm, key_val);
-    let mut guard = ENV_DATA.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    match args.get(1).copied() {
-        Some(v) => {
-            map.insert(key, v);
+    ENV_DATA.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        match args.get(1).copied() {
+            Some(v) => {
+                map.insert(key, v);
+            }
+            None => {
+                map.remove(&key);
+            }
         }
-        None => {
-            map.remove(&key);
-        }
-    }
+    });
     Ok(Value::Undefined)
 }
 
@@ -776,12 +898,13 @@ fn wt_get_env_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     let key = env_data_key(vm, key_val);
-    let guard = ENV_DATA.lock().unwrap();
-    Ok(guard
-        .as_ref()
-        .and_then(|m| m.get(&key))
-        .copied()
-        .unwrap_or(Value::Undefined))
+    Ok(ENV_DATA.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&key))
+            .copied()
+            .unwrap_or(Value::Undefined)
+    }))
 }
 
 /// 环境数据键序列化（Go workerDataKey：数字 `num:%v`、其余 `str:%s`）。
@@ -819,7 +942,7 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let worker = with_thread_map(|m| m.get(&thread_id).copied());
     if let Some(worker) = worker {
-        let pp = with_map(&WORKER_PP, |m| m.get(&worker).copied());
+        let pp = with_worker_pp(|m| m.get(&worker).copied());
         if let Some(pp) = pp {
             push_event(ProcEvent::MainToWorker { pp, msg });
             vm.activate_event_source(
@@ -877,6 +1000,188 @@ pub(crate) fn json_roundtrip(vm: &mut Vm, v: Value) -> Value {
             Value::Object(obj)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// M5.1 真实跨物理线程：主线程泵 + worker 线程事件循环
+// ---------------------------------------------------------------------------
+
+/// 值 → JSON 字符串（跨线程传输格式；`json_roundtrip` 已归一 undefined → null）。
+fn value_to_json_string(vm: &mut Vm, v: Value) -> Result<String, VmError> {
+    let boxed = vm.json_stringify(v)?;
+    let Value::Object(s) = boxed else {
+        return Ok(String::new());
+    };
+    match vm.heap.get(s.0 as usize) {
+        Some(HeapObject::String(text)) => Ok(text.clone()),
+        _ => Ok(String::new()),
+    }
+}
+
+/// JSON 字符串 → 值（接收线程堆上重建）。
+fn json_string_to_value(vm: &mut Vm, json: &str) -> Result<Value, VmError> {
+    let arg = Value::Object(vm.alloc_string(json.to_owned()));
+    vm.json_parse(&[arg])
+}
+
+/// 主线程侧真实 worker 泵：非阻塞收取各 worker 线程事件并派发
+/// `'message'` / `'error'` / `'exit'`（`real_workers` 事件源）。
+fn pump_real_workers(vm: &mut Vm) -> Result<bool, VmError> {
+    let mut progressed = false;
+    // 先全量取走事件（borrow 不跨 VM 调用）
+    let events: Vec<(u32, crate::worker::WorkerEvent)> = REAL_WORKERS.with(|m| {
+        let map = m.borrow();
+        let mut out = Vec::new();
+        for (wid, bridge) in map.iter() {
+            while let Ok(ev) = bridge.from_worker.try_recv() {
+                out.push((*wid, ev));
+            }
+        }
+        out
+    });
+    let mut exits: Vec<(u32, u32)> = Vec::new();
+    for (wid, ev) in events {
+        progressed = true;
+        let is_exit = matches!(ev, crate::worker::WorkerEvent::Exit(_));
+        let target = Value::Object(ObjectRef(wid));
+        match ev {
+            crate::worker::WorkerEvent::Message(json) => {
+                if let Ok(val) = json_string_to_value(vm, &json) {
+                    ns_emit(vm, target, "message", &[val])?;
+                }
+            }
+            crate::worker::WorkerEvent::Error(text) => {
+                let msg = vm.alloc_string(text);
+                ns_emit(vm, target, "error", &[Value::Object(msg)])?;
+            }
+            crate::worker::WorkerEvent::Exit(code) => {
+                exits.push((wid, code));
+            }
+        }
+        // 同批事件处理中 worker 可能已被 terminate（exit 已即时派发）：
+        // 丢弃其滞留的 Exit(0)，避免覆盖 terminate 的 exit(1)
+        if is_exit {
+            continue;
+        }
+        let alive = REAL_WORKERS.with(|m| m.borrow().contains_key(&wid));
+        if !alive {
+            exits.retain(|(id, _)| *id != wid);
+        }
+    }
+    for (wid, code) in exits {
+        REAL_WORKERS.with(|m| {
+            m.borrow_mut().remove(&wid);
+        });
+        WORKER_CLOSED.with(|g| {
+            g.borrow_mut()
+                .get_or_insert_with(Default::default)
+                .insert(wid);
+        });
+        ns_emit(
+            vm,
+            Value::Object(ObjectRef(wid)),
+            "exit",
+            &[Value::Number(code as f64)],
+        )?;
+    }
+    maybe_deactivate_real_worker_source(vm);
+    Ok(progressed)
+}
+
+/// 无存活真实 worker 时注销事件源（事件循环停止为其泵询）。
+fn maybe_deactivate_real_worker_source(vm: &mut Vm) {
+    let empty = REAL_WORKERS.with(|m| m.borrow().is_empty());
+    if empty {
+        vm.deactivate_event_source("real_workers");
+    }
+}
+
+/// worker 线程全局注入（真实线程路径；装配层在 `run_module` 前调用）：
+/// `parentPort`（通道端口）、`isMainThread=false`、`workerData`。
+pub fn setup_worker_globals(vm: &mut Vm) {
+    let Some(io) = crate::worker::worker_thread_io() else {
+        return;
+    };
+    let pp = make_port(vm, "worker_threads:parent_port");
+    REAL_PP_ID.with(|c| *c.borrow_mut() = Some(pp.0));
+    let pp_val = Value::Object(pp);
+    vm.globals.insert("parentPort".to_owned(), pp_val);
+    vm.globals
+        .insert("isMainThread".to_owned(), Value::Boolean(false));
+    let mut worker_data_val = Value::Null;
+    if let Some(json) = io.worker_data_json.as_deref() {
+        if let Ok(v) = json_string_to_value(vm, json) {
+            worker_data_val = v;
+            vm.globals.insert("workerData".to_owned(), worker_data_val);
+        }
+    }
+    // 同步已构建的模块单例表面（register_all 引导期即已 build，缓存对象
+    // 不会重读全局——对齐伪 worker 的 restore 逻辑）
+    if let Some(m) = vm.builtin_registry.module("worker_threads") {
+        let target = Value::Object(m);
+        let _ = vm.set_property(target, "isMainThread", Value::Boolean(false));
+        let _ = vm.set_property(target, "parentPort", pp_val);
+        let _ = vm.set_property(target, "workerData", worker_data_val);
+        let _ = vm.set_property(target, "threadId", Value::Number(io.thread_id as f64));
+    }
+}
+
+/// worker 线程事件循环（模块体执行完后调用；直至无待办工作 / terminate）。
+/// 返回退出码：0 正常；1 terminate。
+pub fn run_worker_event_loop(vm: &mut Vm) -> u32 {
+    use std::sync::mpsc::RecvTimeoutError;
+    let Some(io) = crate::worker::worker_thread_io() else {
+        return 0;
+    };
+    loop {
+        if io.terminate.load(std::sync::atomic::Ordering::SeqCst) {
+            return 1;
+        }
+        let _ = vm.drain_microtasks();
+        flush_worker_stdout(vm);
+        // 非阻塞收取主线程消息
+        while let Ok(msg) = io.from_main.try_recv() {
+            deliver_main_message(vm, &msg);
+        }
+        if io.terminate.load(std::sync::atomic::Ordering::SeqCst) {
+            return 1;
+        }
+        // 有本地待办（定时器 / 事件源如子进程完成）：排空一轮后重查
+        // terminate 旗标与消息，随后再判空
+        if !vm.macro_tasks.is_empty() || vm.has_active_event_sources() {
+            let _ = vm.drain_macro_tasks();
+            flush_worker_stdout(vm);
+            continue;
+        }
+        // 无待办：worker 事件循环已排空——正常退出（对齐 Node：模块体结束
+        // 且无挂起句柄时 worker 退出；此后的主线程消息按失活端口丢弃）
+        let _ = RecvTimeoutError::Timeout;
+        return 0;
+    }
+}
+
+/// 把主线程消息派发到 worker 侧 parentPort 的 'message' 监听器。
+fn deliver_main_message(vm: &mut Vm, json: &str) {
+    let Some(pp) = REAL_PP_ID.with(|c| *c.borrow()) else {
+        return;
+    };
+    if let Ok(val) = json_string_to_value(vm, json) {
+        let _ = ns_emit(vm, Value::Object(ObjectRef(pp)), "message", &[val]);
+    }
+}
+
+/// worker 线程 stdout 刷盘：各 Vm 独立缓冲，泵间隙写真实 stdout。
+fn flush_worker_stdout(vm: &mut Vm) {
+    if vm.stdout_records.is_empty() {
+        return;
+    }
+    let lines: Vec<String> = vm.stdout_records.drain(..).collect();
+    use std::io::Write as _;
+    let mut out = std::io::stdout();
+    for line in lines {
+        let _ = writeln!(out, "{line}");
+    }
+    let _ = out.flush();
 }
 
 /// JSON 往返的堆形态快照。

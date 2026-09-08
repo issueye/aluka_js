@@ -1,4 +1,4 @@
-﻿//! 进程类内置模块（`child_process` / `worker_threads` / `cluster`）的共享基建。
+//! 进程类内置模块（`child_process` / `worker_threads` / `cluster`）的共享基建。
 //!
 //! 对齐 Node.js 22 LTS 标准 的两套机制：
 //! - **实例事件器**（`nodeevents.NewEmitterInstance`）：`_builtinNs` 命名空间
@@ -35,17 +35,21 @@ struct NsEmitterState {
     listeners: HashMap<String, Vec<NsListener>>,
 }
 
-/// 全部 `_builtinNs` 实例的监听器状态。
-static NS_EMITTERS: std::sync::Mutex<Option<HashMap<u32, NsEmitterState>>> =
-    std::sync::Mutex::new(None);
+// 全部 `_builtinNs` 实例的监听器状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static NS_EMITTERS: std::cell::RefCell<Option<HashMap<u32, NsEmitterState>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 fn with_ns_state<F, R>(id: u32, f: F) -> R
 where
     F: FnOnce(&mut NsEmitterState) -> R,
 {
-    let mut guard = NS_EMITTERS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    f(map.entry(id).or_default())
+    NS_EMITTERS.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        f(map.entry(id).or_default())
+    })
 }
 
 /// 给实例对象挂 `_builtinNs` 命名空间与方法原生函数属性（属性名 `{ns}.{m}`，
@@ -198,13 +202,14 @@ fn inst_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 事件名对应的监听器数量。
 pub(crate) fn ns_listener_count(id: u32, event: &str) -> usize {
-    let guard = NS_EMITTERS.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&id))
-        .and_then(|s| s.listeners.get(event))
-        .map(Vec::len)
-        .unwrap_or(0)
+    NS_EMITTERS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .and_then(|s| s.listeners.get(event))
+            .map(Vec::len)
+            .unwrap_or(0)
+    })
 }
 
 /// 给 `_builtinNs` 实例追加一个 Rust 侧监听器（内部事件转接用，如 cluster
@@ -371,18 +376,32 @@ pub(crate) enum ProcEvent {
     },
 }
 
-/// 跨线程事件队列。
-static PROC_EVENTS: std::sync::Mutex<Option<VecDeque<ProcEvent>>> = std::sync::Mutex::new(None);
+/// 跨线程事件队列（进程级）：条目携带属主线程 id——事件回调的堆句柄属于
+/// 发起线程的 Vm 堆，泵（属主线程）只派发属主匹配的事件，其余线程的事件
+/// 留在队列由其属主泵消费（真实 worker 线程隔离的前提）。
+static PROC_EVENTS: std::sync::Mutex<Option<VecDeque<(std::thread::ThreadId, ProcEvent)>>> =
+    std::sync::Mutex::new(None);
 
-/// 推入一个待派发事件（任意线程可调用）。
+/// 推入一个待派发事件（任意线程可调用；属主为当前线程）。
 pub(crate) fn push_event(ev: ProcEvent) {
-    let mut guard = PROC_EVENTS.lock().unwrap();
-    guard.get_or_insert_with(VecDeque::new).push_back(ev);
+    push_event_for(std::thread::current().id(), ev);
 }
 
-fn pop_event() -> Option<ProcEvent> {
+/// 以指定属主线程推入事件（辅助线程回投时须传发起线程 id）。
+pub(crate) fn push_event_for(owner: std::thread::ThreadId, ev: ProcEvent) {
     let mut guard = PROC_EVENTS.lock().unwrap();
-    guard.as_mut()?.pop_front()
+    guard
+        .get_or_insert_with(VecDeque::new)
+        .push_back((owner, ev));
+}
+
+/// 弹出队首属主匹配的事件（其余线程事件保留原序）。
+fn pop_event() -> Option<ProcEvent> {
+    let me = std::thread::current().id();
+    let mut guard = PROC_EVENTS.lock().unwrap();
+    let queue = guard.as_mut()?;
+    let idx = queue.iter().position(|(owner, _)| *owner == me)?;
+    queue.remove(idx).map(|(_, ev)| ev)
 }
 
 /// 子进程运行期状态（对象句柄 id → 状态）。
@@ -397,30 +416,33 @@ pub(crate) struct ChildState {
     pub exit_enqueued: bool,
 }
 
-/// 子进程表（按句柄 id 有序，保证多子进程时派发顺序确定）。
-static CHILDREN: std::sync::Mutex<Option<BTreeMap<u32, ChildState>>> = std::sync::Mutex::new(None);
+// 子进程表（按句柄 id 有序，保证多子进程时派发顺序确定；线程局部）。
+thread_local! {
+    static CHILDREN: std::cell::RefCell<Option<BTreeMap<u32, ChildState>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// 在子进程表中执行闭包。
 pub(crate) fn with_children<F, R>(f: F) -> R
 where
     F: FnOnce(&mut BTreeMap<u32, ChildState>) -> R,
 {
-    let mut guard = CHILDREN.lock().unwrap();
-    f(guard.get_or_insert_with(BTreeMap::new))
+    CHILDREN.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(BTreeMap::new);
+        f(map)
+    })
 }
 
 /// 已 spawn 成功、等待退出事件入队，或事件队列非空 → 事件源保持活跃。
 pub(crate) fn proc_source_busy() -> bool {
+    let me = std::thread::current().id();
     let events_left = PROC_EVENTS
         .lock()
         .unwrap()
         .as_ref()
-        .is_some_and(|q| !q.is_empty());
-    let children_left = CHILDREN
-        .lock()
-        .unwrap()
-        .as_ref()
-        .is_some_and(|m| !m.is_empty());
+        .is_some_and(|q| q.iter().any(|(owner, _)| *owner == me));
+    let children_left = CHILDREN.with(|g| g.borrow().as_ref().is_some_and(|m| !m.is_empty()));
     events_left || children_left || EXEC_PENDING.load(std::sync::atomic::Ordering::SeqCst) > 0
 }
 
@@ -592,24 +614,32 @@ pub(crate) fn spawn_pipe_reader<R: Read + Send + 'static>(
     stream_id: u32,
     kind: StreamKind,
 ) {
+    // 属主线程 id：读管道线程回投事件须标记发起线程（堆句柄属主）
+    let owner = std::thread::current().id();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
             match pipe.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    push_event(ProcEvent::Data {
-                        stream: stream_id,
-                        chunk: buf[..n].to_vec(),
-                    });
+                    push_event_for(
+                        owner,
+                        ProcEvent::Data {
+                            stream: stream_id,
+                            chunk: buf[..n].to_vec(),
+                        },
+                    );
                 }
                 Err(_) => break,
             }
         }
-        push_event(ProcEvent::StreamEof {
-            child: child_id,
-            stream: stream_id,
-            kind,
-        });
+        push_event_for(
+            owner,
+            ProcEvent::StreamEof {
+                child: child_id,
+                stream: stream_id,
+                kind,
+            },
+        );
     });
 }

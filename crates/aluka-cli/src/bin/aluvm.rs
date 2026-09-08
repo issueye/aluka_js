@@ -149,6 +149,9 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
 
     let mut vm = Vm::new(0);
     install_eval_provider(&mut vm);
+    // M5.1：真实 worker 线程钩子（装配层独占编译能力，随 runtime 特性启用）
+    #[cfg(feature = "runtime")]
+    aluka_runtime::install_worker_entry(&mut vm);
     inject_process_argv(&mut vm, input, cli_args);
     vm.setup_cjs(input); // CJS 模块上下文（require/exports/循环依赖）
     // 函数扩展标量头（arguments 槽位等）

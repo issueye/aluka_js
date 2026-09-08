@@ -15,15 +15,17 @@ use crate::builtins::events::{emitter_emit, emitter_on};
 use crate::builtins::{current_receiver, set_current_receiver};
 use crate::interpreter::Vm;
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
-/// 频道路由表：频道名 → 成员实例句柄（按加入顺序）。
-static CHANNELS: Mutex<Option<HashMap<String, Vec<u32>>>> = Mutex::new(None);
+// 频道路由表：频道名 → 成员实例句柄（按加入顺序）。
+thread_local! {
+    // CHANNELS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static CHANNELS: RefCell<Option<HashMap<String, Vec<u32>>>> = const { RefCell::new(None) };
+}
 
 fn with_channels<R>(f: impl FnOnce(&mut HashMap<String, Vec<u32>>) -> R) -> R {
-    let mut guard = CHANNELS.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    CHANNELS.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 /// 频道名（receiver 的 `name` 属性）。

@@ -12,21 +12,24 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
-/// 全局 Buffer 字节缓存（ObjectRef 索引 -> 字节数组），保证实例状态安全独立。
-static BUFFER_STORE: Mutex<Option<HashMap<u32, Vec<u8>>>> = Mutex::new(None);
+// Buffer 字节缓存（ObjectRef 索引 -> 字节数组；线程局部：堆句柄仅本线程有效）。
+thread_local! {
+    static BUFFER_STORE: RefCell<Option<HashMap<u32, Vec<u8>>>> = const { RefCell::new(None) };
+}
 
 fn store_buffer(id: u32, data: Vec<u8>) {
-    let mut guard = BUFFER_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.insert(id, data);
+    BUFFER_STORE.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, data);
+    });
 }
 
 fn get_buffer(id: u32) -> Option<Vec<u8>> {
-    let guard = BUFFER_STORE.lock().unwrap();
-    guard.as_ref()?.get(&id).cloned()
+    BUFFER_STORE.with(|g| g.borrow().as_ref()?.get(&id).cloned())
 }
 
 /// 提取任意 Value 的底层字节序列（支持 Buffer 实例、字符串、数组等）。

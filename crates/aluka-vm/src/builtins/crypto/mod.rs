@@ -16,7 +16,7 @@
 //!
 //! 实例分派：Hash/Hmac/Cipher/X509 实例挂 `_builtinNs` 标记，`CALL_METHOD`
 //! 按 `"{ns}.{method}"` 查分派表（见 `builtins::try_dispatch`）；实例可变状态
-//! 存静态表（键为堆句柄）。异步回调（`pbkdf2`/`scrypt`/`hkdf`/`randomInt`/
+//! 存线程局部静态表（键为堆句柄）。异步回调（`pbkdf2`/`scrypt`/`hkdf`/`randomInt`/
 //! `checkPrime`/`randomFill`）经宏任务投递蹦床回放，顺序与 Node.js 22 LTS 标准 的
 //! 「同步脚本 → 微任务 → 宏任务」一致。
 
@@ -44,6 +44,7 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 
 /// `require("crypto")` / `require("node:crypto")` 主模块。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -215,31 +216,33 @@ fn create_secret_key(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let _ = vm.set_property(Value::Object(obj), "export", Value::Object(export_fn));
     let ns_val = Value::Object(vm.alloc_string("crypto:secret".to_owned()));
     let _ = vm.set_property(Value::Object(obj), "_builtinNs", ns_val);
-    // export() 捕获密钥字节：经静态登记（键为 KeyObject 句柄）
-    SECRET_KEYS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(std::collections::HashMap::new)
-        .insert(obj.0, key);
+    // export() 捕获密钥字节：经线程局部表登记（键为 KeyObject 句柄）
+    SECRET_KEYS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(std::collections::HashMap::new)
+            .insert(obj.0, key);
+    });
     Ok(Value::Object(obj))
 }
 
-/// secret KeyObject 句柄 → 密钥字节（export 实例方法取用）。
-static SECRET_KEYS: std::sync::Mutex<Option<std::collections::HashMap<u32, Vec<u8>>>> =
-    std::sync::Mutex::new(None);
+// secret KeyObject 句柄 → 密钥字节（export 实例方法取用；线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static SECRET_KEYS: RefCell<Option<std::collections::HashMap<u32, Vec<u8>>>> =
+        const { RefCell::new(None) };
+}
 
 /// 实例 `export()`：导出 secret KeyObject 字节为 Buffer。
 fn secret_export(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(r) = crate::builtins::current_receiver() else {
         return Ok(Value::Undefined);
     };
-    let bytes = SECRET_KEYS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(&r.0))
-        .cloned()
-        .unwrap_or_default();
+    let bytes = SECRET_KEYS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&r.0))
+            .cloned()
+            .unwrap_or_default()
+    });
     Ok(Value::Object(create_buffer_instance(vm, bytes)))
 }
 

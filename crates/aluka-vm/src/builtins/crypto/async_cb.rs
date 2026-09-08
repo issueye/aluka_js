@@ -4,14 +4,14 @@
 //!
 //! 实现说明：宏任务泵按 `invoke_callable(cb, undefined, &[])` 无参调用回调，
 //! 因此调度的是本模块注册的**投递蹦床**（`crypto.deliver.async`），投递载荷
-//! 存放于静态 FIFO 队列，蹦床按序弹出并携带实参调用用户回调。宏任务按注册
+//! 存放于线程局部 FIFO 队列，蹦床按序弹出并携带实参调用用户回调。宏任务按注册
 //! 顺序执行 ⇒ FIFO 弹出与注册顺序严格一致。
 
 use crate::builtins::buffer;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::Mutex;
 
 /// 投递载荷：错误串或成功结果值。
 #[derive(Debug)]
@@ -34,15 +34,14 @@ struct PendingDelivery {
     delivery: Delivery,
 }
 
-/// 静态 FIFO 投递队列。
-static DELIVERY_QUEUE: Mutex<VecDeque<PendingDelivery>> = Mutex::new(VecDeque::new());
+// 投递 FIFO 队列（线程局部：crypto 异步为同步模拟，载荷仅在主 Vm 线程排入与消费）。
+thread_local! {
+    static DELIVERY_QUEUE: RefCell<VecDeque<PendingDelivery>> = const { RefCell::new(VecDeque::new()) };
+}
 
 /// 登记一次异步投递并调度宏任务蹦床。
 pub(crate) fn schedule_delivery(vm: &mut Vm, cb: Value, delivery: Delivery) {
-    DELIVERY_QUEUE
-        .lock()
-        .unwrap()
-        .push_back(PendingDelivery { cb, delivery });
+    DELIVERY_QUEUE.with(|q| q.borrow_mut().push_back(PendingDelivery { cb, delivery }));
     vm.timer_counter += 1;
     let id = vm.timer_counter;
     let last_due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
@@ -53,7 +52,9 @@ pub(crate) fn schedule_delivery(vm: &mut Vm, cb: Value, delivery: Delivery) {
 
 /// 蹦床处理器：弹出队首载荷并实参回放用户回调。
 fn deliver(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let Some(PendingDelivery { cb, delivery }) = DELIVERY_QUEUE.lock().unwrap().pop_front() else {
+    let Some(PendingDelivery { cb, delivery }) =
+        DELIVERY_QUEUE.with(|q| q.borrow_mut().pop_front())
+    else {
         return Ok(Value::Undefined);
     };
     match delivery {

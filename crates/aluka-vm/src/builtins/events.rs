@@ -12,8 +12,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// 监听器条目定义
 #[derive(Debug, Clone)]
@@ -42,14 +42,18 @@ impl Default for EmitterState {
     }
 }
 
-/// 全局 EventEmitter 状态映射存储（对象堆句柄索引 -> 实例状态）
-static EMITTER_STORE: Mutex<Option<HashMap<u32, EmitterState>>> = Mutex::new(None);
+// EventEmitter 状态存储（对象堆句柄索引 -> 实例状态；线程局部：堆句柄仅本线程有效）
+thread_local! {
+    static EMITTER_STORE: RefCell<Option<HashMap<u32, EmitterState>>> = const { RefCell::new(None) };
+}
 
 /// 保存指定实例的事件状态
 fn store_emitter(id: u32, state: EmitterState) {
-    let mut guard = EMITTER_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.insert(id, state);
+    EMITTER_STORE.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, state);
+    });
 }
 
 /// 可变借用执行闭包访问指定实例的状态
@@ -57,10 +61,12 @@ fn with_emitter_mut<F, R>(id: u32, f: F) -> R
 where
     F: FnOnce(&mut EmitterState) -> R,
 {
-    let mut guard = EMITTER_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    let state = map.entry(id).or_default();
-    f(state)
+    EMITTER_STORE.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        let state = map.entry(id).or_default();
+        f(state)
+    })
 }
 
 /// 只读借用执行闭包访问指定实例的状态
@@ -68,31 +74,35 @@ fn with_emitter<F, R>(id: u32, f: F) -> R
 where
     F: FnOnce(&EmitterState) -> R,
 {
-    let mut guard = EMITTER_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    let state = map.entry(id).or_default();
-    f(state)
+    EMITTER_STORE.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        let state = map.entry(id).or_default();
+        f(state)
+    })
 }
 
 /// 确保指定实例状态已在全局映射中就绪（支持堆中历史 EventEmitter 对象状态同步）
 fn ensure_emitter_state(vm: &Vm, id: u32) {
-    let mut guard = EMITTER_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.entry(id).or_insert_with(|| {
-        let mut state = EmitterState::default();
-        if let Some(HeapObject::EventEmitter { listeners }) = vm.heap.get(id as usize) {
-            for (k, list) in listeners {
-                let items: Vec<ListenerItem> = list
-                    .iter()
-                    .map(|(cb, once)| ListenerItem {
-                        callback: *cb,
-                        once: *once,
-                    })
-                    .collect();
-                state.listeners.insert(k.clone(), items);
+    EMITTER_STORE.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        map.entry(id).or_insert_with(|| {
+            let mut state = EmitterState::default();
+            if let Some(HeapObject::EventEmitter { listeners }) = vm.heap.get(id as usize) {
+                for (k, list) in listeners {
+                    let items: Vec<ListenerItem> = list
+                        .iter()
+                        .map(|(cb, once)| ListenerItem {
+                            callback: *cb,
+                            once: *once,
+                        })
+                        .collect();
+                    state.listeners.insert(k.clone(), items);
+                }
             }
-        }
-        state
+            state
+        });
     });
 }
 

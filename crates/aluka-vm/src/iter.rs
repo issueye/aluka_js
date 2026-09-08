@@ -7,12 +7,13 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 
-/// 迭代位置表：迭代器对象句柄 → 下一个待产出下标。
-static ARRAY_ITER_POS: LazyLock<Mutex<HashMap<u32, usize>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// 迭代位置表：迭代器对象句柄 → 下一个待产出下标（线程局部）。
+thread_local! {
+    static ARRAY_ITER_POS: RefCell<HashMap<u32, usize>> = RefCell::new(HashMap::new());
+}
 
 impl Vm {
     /// 判断值是否为数组迭代器对象（`_isArrayIterator` 标记）。
@@ -35,7 +36,7 @@ impl Vm {
             let flag = self.alloc_string(kind.to_owned());
             let _ = self.set_property(Value::Object(obj), "_iterKind", Value::Object(flag));
         }
-        ARRAY_ITER_POS.lock().unwrap().insert(obj.0, 0);
+        ARRAY_ITER_POS.with(|c| c.borrow_mut().insert(obj.0, 0));
         Value::Object(obj)
     }
 
@@ -62,12 +63,7 @@ impl Vm {
             },
             _ => "values".to_owned(),
         };
-        let pos = ARRAY_ITER_POS
-            .lock()
-            .unwrap()
-            .get(&iter.0)
-            .copied()
-            .unwrap_or(0);
+        let pos = ARRAY_ITER_POS.with(|c| c.borrow().get(&iter.0).copied().unwrap_or(0));
         let result = match self.heap.get(arr.0 as usize) {
             Some(HeapObject::Array { elements, .. }) => {
                 if pos < elements.len() {
@@ -86,7 +82,7 @@ impl Vm {
             }
             _ => self.make_iterator_result(Value::Undefined, true)?,
         };
-        ARRAY_ITER_POS.lock().unwrap().insert(iter.0, pos + 1);
+        ARRAY_ITER_POS.with(|c| c.borrow_mut().insert(iter.0, pos + 1));
         Ok(result)
     }
 

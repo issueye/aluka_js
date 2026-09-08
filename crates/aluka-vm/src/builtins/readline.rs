@@ -21,10 +21,10 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Read as IoRead;
 use std::io::Write as IoWrite;
-use std::sync::Mutex;
 
 /// `require("readline")` / `require("node:readline")` 主模块。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -40,7 +40,11 @@ struct RlState {
     prompt: String,
 }
 
-static RL_STATES: Mutex<Option<HashMap<u32, RlState>>> = Mutex::new(None);
+// Interface 实例状态表：实例句柄 → 会话状态。
+thread_local! {
+    // RL_STATES：线程局部（堆句柄仅本线程 Vm 有效）。
+    static RL_STATES: RefCell<Option<HashMap<u32, RlState>>> = const { RefCell::new(None) };
+}
 
 /// 构建 `readline` 模块对象并登记全部分派处理器。
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
@@ -154,17 +158,15 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     set_module_prop(vm, rl, "line", empty)?;
 
     let id = rl.0;
-    RL_STATES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(
+    RL_STATES.with(|g| {
+        g.borrow_mut().get_or_insert_with(HashMap::new).insert(
             id,
             RlState {
                 output,
                 prompt: String::new(),
             },
         );
+    });
 
     for method in [
         "question",
@@ -185,31 +187,34 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 读取当前 Interface 实例状态的提示符文本。
 fn state_prompt(id: u32) -> String {
-    let guard = RL_STATES.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&id))
-        .map(|s| s.prompt.clone())
-        .unwrap_or_default()
+    RL_STATES.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .map(|s| s.prompt.clone())
+            .unwrap_or_default()
+    })
 }
 
 /// 读取当前 Interface 实例的输出流。
 fn state_output(id: u32) -> Option<Value> {
-    let guard = RL_STATES.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&id))
-        .and_then(|s| s.output)
+    RL_STATES.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .and_then(|s| s.output)
+    })
 }
 
 /// 更新当前 Interface 实例的提示符文本。
 fn set_state_prompt(id: u32, prompt: &str) {
-    let mut guard = RL_STATES.lock().unwrap();
-    if let Some(m) = guard.as_mut() {
-        if let Some(s) = m.get_mut(&id) {
-            s.prompt = prompt.to_owned();
+    RL_STATES.with(|g| {
+        if let Some(m) = g.borrow_mut().as_mut() {
+            if let Some(s) = m.get_mut(&id) {
+                s.prompt = prompt.to_owned();
+            }
         }
-    }
+    });
 }
 
 /// `rl.question(query, cb)`：打印提示并阻塞读 stdin 一行。
@@ -360,12 +365,14 @@ pub(crate) fn read_line_blocking() -> Option<String> {
 
 /// 阻塞读取一行（共享缓冲：行间残留内容保留，供 REPL 循环逐行消费）。
 pub(crate) fn read_line_shared() -> Option<String> {
-    let mut leftover = STDIN_LEFTOVER.lock().unwrap();
-    read_line_impl(&mut leftover)
+    STDIN_LEFTOVER.with(|leftover| read_line_impl(&mut leftover.borrow_mut()))
 }
 
-/// stdin 行间残留缓冲（`read_line_shared` 专用，跨调用保留）。
-static STDIN_LEFTOVER: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+// stdin 行间残留缓冲（`read_line_shared` 专用，跨调用保留）。
+thread_local! {
+    // STDIN_LEFTOVER：线程局部（每线程独立的 stdin 消费缓冲）。
+    static STDIN_LEFTOVER: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 /// 阻塞读取一行的实现核心（`buf` 为跨调用残留缓冲）。
 fn read_line_impl(buf: &mut Vec<u8>) -> Option<String> {

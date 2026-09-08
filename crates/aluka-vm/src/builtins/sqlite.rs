@@ -26,8 +26,8 @@ use crate::value::Value;
 use aluka_core::ObjectRef;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, Statement};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// `require("sqlite")` / `require("node:sqlite")` 主模块。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -106,17 +106,20 @@ struct TxEntry {
     callback: Value,
 }
 
-static DBS: Mutex<Option<HashMap<u32, DbEntry>>> = Mutex::new(None);
-static STMTS: Mutex<Option<HashMap<u32, StmtEntry>>> = Mutex::new(None);
-static ITERS: Mutex<Option<HashMap<u32, IterEntry>>> = Mutex::new(None);
-static TXNS: Mutex<Option<HashMap<u32, TxEntry>>> = Mutex::new(None);
+// 线程局部状态表（键为实例堆句柄索引；堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static DBS: RefCell<Option<HashMap<u32, DbEntry>>> = const { RefCell::new(None) };
+    static STMTS: RefCell<Option<HashMap<u32, StmtEntry>>> = const { RefCell::new(None) };
+    static ITERS: RefCell<Option<HashMap<u32, IterEntry>>> = const { RefCell::new(None) };
+    static TXNS: RefCell<Option<HashMap<u32, TxEntry>>> = const { RefCell::new(None) };
+}
 
-/// 在状态表上执行闭包（惰性初始化；各表独立加锁、不嵌套，避免锁序问题）。
-fn with_map<T, F, R>(m: &Mutex<Option<HashMap<u32, T>>>, f: F) -> R
+/// 在状态表上执行闭包（惰性初始化；各表独立借用、不嵌套，避免借用冲突）。
+fn with_map<T, F, R>(m: &RefCell<Option<HashMap<u32, T>>>, f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, T>) -> R,
 {
-    let mut guard = m.lock().unwrap();
+    let mut guard = m.borrow_mut();
     let map = guard.get_or_insert_with(HashMap::new);
     f(map)
 }
@@ -174,8 +177,10 @@ fn database_sync_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     set_module_prop(vm, obj, "isOpen", Value::Boolean(true))?;
 
     let id = obj.0;
-    with_map(&DBS, |m| {
-        m.insert(id, DbEntry { conn });
+    DBS.with(|g| {
+        with_map(g, |m| {
+            m.insert(id, DbEntry { conn });
+        })
     });
     Ok(Value::Object(obj))
 }
@@ -186,14 +191,16 @@ fn db_exec(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(sqlite_throw(vm, "node:sqlite: exec requires SQL string"));
     };
     let id = require_db_id(vm)?;
-    let outcome = with_map(&DBS, |m| {
-        let Some(entry) = m.get_mut(&id) else {
-            return Err("node:sqlite: sql: database is closed".to_owned());
-        };
-        entry
-            .conn
-            .execute_batch(&sql)
-            .map_err(|e| format!("node:sqlite: {}", fmt_driver_err(&e)))
+    let outcome = DBS.with(|g| {
+        with_map(g, |m| {
+            let Some(entry) = m.get_mut(&id) else {
+                return Err("node:sqlite: sql: database is closed".to_owned());
+            };
+            entry
+                .conn
+                .execute_batch(&sql)
+                .map_err(|e| format!("node:sqlite: {}", fmt_driver_err(&e)))
+        })
     });
     match outcome {
         Ok(()) => Ok(Value::Undefined),
@@ -208,15 +215,17 @@ fn db_prepare(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let db_id = require_db_id(vm)?;
     // prepare 期即校验语法（对齐 Go：非法 SQL 在 prepare 时报错）。
-    let prep = with_map(&DBS, |m| {
-        let Some(entry) = m.get_mut(&db_id) else {
-            return Err("node:sqlite: sql: database is closed".to_owned());
-        };
-        entry
-            .conn
-            .prepare(&sql)
-            .map(|_| ())
-            .map_err(|e| format!("node:sqlite: {}", fmt_driver_err(&e)))
+    let prep = DBS.with(|g| {
+        with_map(g, |m| {
+            let Some(entry) = m.get_mut(&db_id) else {
+                return Err("node:sqlite: sql: database is closed".to_owned());
+            };
+            entry
+                .conn
+                .prepare(&sql)
+                .map(|_| ())
+                .map_err(|e| format!("node:sqlite: {}", fmt_driver_err(&e)))
+        })
     });
     if let Err(msg) = prep {
         return Err(sqlite_throw(vm, &msg));
@@ -232,15 +241,17 @@ fn db_prepare(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
     }
     let id = obj.0;
-    with_map(&STMTS, |m| {
-        m.insert(
-            id,
-            StmtEntry {
-                db_id,
-                sql,
-                read_big_ints: false,
-            },
-        );
+    STMTS.with(|g| {
+        with_map(g, |m| {
+            m.insert(
+                id,
+                StmtEntry {
+                    db_id,
+                    sql,
+                    read_big_ints: false,
+                },
+            );
+        })
     });
     Ok(Value::Object(obj))
 }
@@ -252,11 +263,15 @@ fn db_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     let id = r.0;
-    with_map(&STMTS, |m| {
-        m.retain(|_, e| e.db_id != id);
+    STMTS.with(|g| {
+        with_map(g, |m| {
+            m.retain(|_, e| e.db_id != id);
+        })
     });
-    with_map(&DBS, |m| {
-        m.remove(&id);
+    DBS.with(|g| {
+        with_map(g, |m| {
+            m.remove(&id);
+        })
     });
     set_module_prop(vm, r, "isOpen", Value::Boolean(false))?;
     Ok(Value::Undefined)
@@ -273,8 +288,10 @@ fn db_transaction(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let wrapper = vm.alloc_native_fn("sqlite:txn.call");
     let wid = wrapper.0;
-    with_map(&TXNS, |m| {
-        m.insert(wid, TxEntry { db_id, callback });
+    TXNS.with(|g| {
+        with_map(g, |m| {
+            m.insert(wid, TxEntry { db_id, callback });
+        })
     });
     Ok(Value::Object(wrapper))
 }
@@ -285,32 +302,35 @@ fn txn_call(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(r) = receiver else {
         return Ok(Value::Undefined);
     };
-    let found = with_map(&TXNS, |m| m.get(&r.0).map(|e| (e.db_id, e.callback)));
+    let found = TXNS.with(|g| with_map(g, |m| m.get(&r.0).map(|e| (e.db_id, e.callback))));
     let Some((db_id, callback)) = found else {
         return Ok(Value::Undefined);
     };
-    let begun = with_map(&DBS, |m| {
-        let Some(entry) = m.get_mut(&db_id) else {
-            return Err("node:sqlite: sql: database is closed".to_owned());
-        };
-        entry
-            .conn
-            .execute_batch("BEGIN")
-            .map_err(|e| format!("node:sqlite: begin transaction: {}", fmt_driver_err(&e)))
+    let begun = DBS.with(|g| {
+        with_map(g, |m| {
+            let Some(entry) = m.get_mut(&db_id) else {
+                return Err("node:sqlite: sql: database is closed".to_owned());
+            };
+            entry
+                .conn
+                .execute_batch("BEGIN")
+                .map_err(|e| format!("node:sqlite: begin transaction: {}", fmt_driver_err(&e)))
+        })
     });
     if let Err(msg) = begun {
         return Err(sqlite_throw(vm, &msg));
     }
     match vm.invoke_callable(callback, Value::Undefined, args) {
         Ok(ret) => {
-            let committed = with_map(&DBS, |m| {
-                let Some(entry) = m.get_mut(&db_id) else {
-                    return Err("node:sqlite: sql: database is closed".to_owned());
-                };
-                entry
-                    .conn
-                    .execute_batch("COMMIT")
-                    .map_err(|e| format!("node:sqlite: commit transaction: {}", fmt_driver_err(&e)))
+            let committed = DBS.with(|g| {
+                with_map(g, |m| {
+                    let Some(entry) = m.get_mut(&db_id) else {
+                        return Err("node:sqlite: sql: database is closed".to_owned());
+                    };
+                    entry.conn.execute_batch("COMMIT").map_err(|e| {
+                        format!("node:sqlite: commit transaction: {}", fmt_driver_err(&e))
+                    })
+                })
             });
             match committed {
                 Ok(()) => Ok(ret),
@@ -329,10 +349,12 @@ fn txn_call(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 事务失败时的静默 ROLLBACK。
 fn rollback_quiet(db_id: u32) {
-    with_map(&DBS, |m| {
-        if let Some(entry) = m.get_mut(&db_id) {
-            let _ = entry.conn.execute_batch("ROLLBACK");
-        }
+    DBS.with(|g| {
+        with_map(g, |m| {
+            if let Some(entry) = m.get_mut(&db_id) {
+                let _ = entry.conn.execute_batch("ROLLBACK");
+            }
+        })
     });
 }
 
@@ -444,15 +466,17 @@ fn stmt_iterate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let next_fn = vm.alloc_native_fn("sqlite:iter.next");
     set_module_prop(vm, iter, "next", Value::Object(next_fn))?;
     let id = iter.0;
-    with_map(&ITERS, |m| {
-        m.insert(
-            id,
-            IterEntry {
-                rows,
-                pos: 0,
-                read_big_ints,
-            },
-        );
+    ITERS.with(|g| {
+        with_map(g, |m| {
+            m.insert(
+                id,
+                IterEntry {
+                    rows,
+                    pos: 0,
+                    read_big_ints,
+                },
+            );
+        })
     });
     Ok(Value::Object(iter))
 }
@@ -493,17 +517,19 @@ fn iter_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let Value::Object(r) = receiver else {
         return Ok(Value::Undefined);
     };
-    let (next, read_big_ints) = with_map(&ITERS, |m| {
-        let Some(entry) = m.get_mut(&r.0) else {
-            return (None, false);
-        };
-        let flag = entry.read_big_ints;
-        if entry.pos >= entry.rows.len() {
-            return (None, flag);
-        }
-        let cells = entry.rows[entry.pos].clone();
-        entry.pos += 1;
-        (Some(cells), flag)
+    let (next, read_big_ints) = ITERS.with(|g| {
+        with_map(g, |m| {
+            let Some(entry) = m.get_mut(&r.0) else {
+                return (None, false);
+            };
+            let flag = entry.read_big_ints;
+            if entry.pos >= entry.rows.len() {
+                return (None, flag);
+            }
+            let cells = entry.rows[entry.pos].clone();
+            entry.pos += 1;
+            (Some(cells), flag)
+        })
     });
     let res = vm.alloc_ordinary();
     match next {
@@ -527,10 +553,12 @@ fn stmt_set_read_big_ints(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
     };
     let flag = args.first().copied().unwrap_or(Value::Undefined);
     let flag = vm.truthy(flag);
-    with_map(&STMTS, |m| {
-        if let Some(entry) = m.get_mut(&r.0) {
-            entry.read_big_ints = flag;
-        }
+    STMTS.with(|g| {
+        with_map(g, |m| {
+            if let Some(entry) = m.get_mut(&r.0) {
+                entry.read_big_ints = flag;
+            }
+        })
     });
     Ok(Value::Undefined)
 }
@@ -542,18 +570,20 @@ fn stmt_columns(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let Some((db_id, sql)) = found else {
         return Ok(Value::Object(vm.alloc_array(Vec::new())));
     };
-    let names = with_map(&DBS, |m| {
-        let Some(entry) = m.get_mut(&db_id) else {
-            return Vec::new();
-        };
-        match entry.conn.prepare(&sql) {
-            Ok(stmt) => stmt
-                .column_names()
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect(),
-            Err(_) => Vec::new(),
-        }
+    let names = DBS.with(|g| {
+        with_map(g, |m| {
+            let Some(entry) = m.get_mut(&db_id) else {
+                return Vec::new();
+            };
+            match entry.conn.prepare(&sql) {
+                Ok(stmt) => stmt
+                    .column_names()
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect(),
+                Err(_) => Vec::new(),
+            }
+        })
     });
     let mut elems: Vec<Value> = Vec::with_capacity(names.len());
     for name in names {
@@ -582,9 +612,11 @@ fn current_stmt_key(vm: &mut Vm) -> Result<u32, VmError> {
 
 /// 读取语句条目 `(db_id, sql, read_big_ints)`。
 fn stmt_entry(key: &u32) -> Option<(u32, String, bool)> {
-    with_map(&STMTS, |m| {
-        m.get(key)
-            .map(|e| (e.db_id, e.sql.clone(), e.read_big_ints))
+    STMTS.with(|g| {
+        with_map(g, |m| {
+            m.get(key)
+                .map(|e| (e.db_id, e.sql.clone(), e.read_big_ints))
+        })
     })
 }
 
@@ -603,11 +635,13 @@ where
     let (db_id, sql) = stmt_entry(key)
         .map(|(db_id, sql, _)| (db_id, sql))
         .ok_or_else(|| "node:sqlite: sql: database is closed".to_owned())?;
-    with_map(&DBS, |m| {
-        let Some(entry) = m.get_mut(&db_id) else {
-            return Err("node:sqlite: sql: database is closed".to_owned());
-        };
-        f(&mut entry.conn, &sql, plan)
+    DBS.with(|g| {
+        with_map(g, |m| {
+            let Some(entry) = m.get_mut(&db_id) else {
+                return Err("node:sqlite: sql: database is closed".to_owned());
+            };
+            f(&mut entry.conn, &sql, plan)
+        })
     })
 }
 

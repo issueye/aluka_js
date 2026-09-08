@@ -15,8 +15,8 @@ use crate::builtins::buffer::create_buffer_instance;
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// 实例背后的摘要状态（Hash 或 Hmac）。
 #[derive(Debug, Clone)]
@@ -45,29 +45,32 @@ impl DigestState {
     }
 }
 
-/// 实例句柄 → 摘要状态。
-static DIGEST_STATES: Mutex<Option<HashMap<u32, DigestState>>> = Mutex::new(None);
+// 实例句柄 → 摘要状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static DIGEST_STATES: RefCell<Option<HashMap<u32, DigestState>>> = const { RefCell::new(None) };
+}
 
 /// 写入实例状态。
 fn set_state(id: u32, state: DigestState) {
-    let mut guard = DIGEST_STATES.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).insert(id, state);
+    DIGEST_STATES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, state);
+    });
 }
 
-/// 读取实例状态（克隆，避免持锁计算）。
+/// 读取实例状态（克隆返回，不长期持有借用）。
 fn get_state(id: u32) -> Option<DigestState> {
-    let guard = DIGEST_STATES.lock().unwrap();
-    guard.as_ref()?.get(&id).cloned()
+    DIGEST_STATES.with(|g| g.borrow().as_ref()?.get(&id).cloned())
 }
 
 /// 更新实例状态。
 fn mutate_state<F: FnOnce(&mut DigestState)>(id: u32, f: F) {
-    let mut guard = DIGEST_STATES.lock().unwrap();
-    if let Some(map) = guard.as_mut() {
-        if let Some(state) = map.get_mut(&id) {
+    DIGEST_STATES.with(|g| {
+        if let Some(state) = g.borrow_mut().as_mut().and_then(|map| map.get_mut(&id)) {
             f(state);
         }
-    }
+    });
 }
 
 /// `createHash(algorithm)`：创建 Hash 实例。

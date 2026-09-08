@@ -125,6 +125,7 @@ impl Runtime {
 
         let mut vm = Vm::new(0);
         install_eval_provider(&mut vm);
+        install_worker_entry(&mut vm);
         inject_process_argv(&mut vm, path, args);
         vm.setup_cjs(path);
 
@@ -168,6 +169,7 @@ impl Runtime {
 
         let mut vm = Vm::new(0);
         install_eval_provider(&mut vm);
+        install_worker_entry(&mut vm);
         inject_process_argv(&mut vm, path_buf, args);
         vm.setup_cjs(path_buf);
 
@@ -282,6 +284,165 @@ fn install_eval_provider(vm: &mut Vm) {
         let module = compiler.compile(&program);
         Ok(module)
     });
+}
+
+// ---------------------------------------------------------------------------
+// M5.1 真实跨物理线程 worker：装配层 spawn 钩子
+// ---------------------------------------------------------------------------
+
+/// 真实 worker 物理线程 id 计数（对齐 Node `worker.threadId`，自 1 起）。
+static WORKER_THREAD_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 装配真实 worker 线程 spawn 钩子（`new Worker` 的物理线程路径）。
+///
+/// 职责分界：装配层独占编译能力（JS 源码 → 字节码），worker 线程内构建
+/// 独立 `Vm`（独立堆 + 线程局部内置表），跨线程只传 JSON 字符串。
+pub fn install_worker_entry(vm: &mut Vm) {
+    vm.set_worker_entry(std::sync::Arc::new(
+        |js_path: &str, worker_data: Option<&str>| {
+            let thread_id =
+                WORKER_THREAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel::<String>();
+            let (from_worker_tx, from_worker_rx) = std::sync::mpsc::channel();
+            let terminate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+            let path = js_path.to_owned();
+            let data = worker_data.map(str::to_owned);
+            let t_terminate = terminate.clone();
+            let handle = std::thread::Builder::new()
+                .name(format!("aluka-worker-{thread_id}"))
+                .spawn(move || {
+                    let io = aluka_vm::worker::WorkerThreadIo {
+                        thread_id,
+                        worker_data_json: data,
+                        to_main: from_worker_tx.clone(),
+                        from_main: to_worker_rx,
+                        terminate: t_terminate,
+                    };
+                    let code = run_worker_file(&path, io);
+                    // 退出码后送（Sender 克隆保属主端存活；Receiver 端在桥上）
+                    let _ = from_worker_tx.send(aluka_vm::worker::WorkerEvent::Exit(code));
+                });
+            handle.map_err(|e| e.to_string())?;
+
+            Ok(aluka_vm::worker::WorkerBridge {
+                thread_id,
+                to_worker: to_worker_tx,
+                from_worker: from_worker_rx,
+                terminate,
+            })
+        },
+    ));
+}
+
+/// worker 输入解析：`.bc` 直用；`.js/.ts` 等源码形态在同目录存在预编译
+/// `.bc`（字节码分发模式）时优先取 `.bc`，否则保留源码路径（现场编译）。
+fn resolve_worker_input(path: &str) -> String {
+    let p = std::path::Path::new(path);
+    if p.extension().and_then(|e| e.to_str()) == Some("bc") {
+        return path.to_owned();
+    }
+    let with_bc = p.with_extension("bc");
+    if with_bc.is_file() {
+        return with_bc.to_string_lossy().to_string();
+    }
+    let appended = std::path::PathBuf::from(format!("{path}.bc"));
+    if appended.is_file() {
+        return appended.to_string_lossy().to_string();
+    }
+    path.to_owned()
+}
+
+/// worker 线程主体：登记线程 I/O 束 → 加载 worker（字节码容器或源码编译）
+/// → 独立 Vm 执行 → 事件循环泵至退出。返回退出码（0 正常；1 异常 / 终止）。
+fn run_worker_file(path: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
+    use aluka_vm::worker::WorkerEvent;
+
+    // 线程角色登记：此后本线程 `worker_thread_io()` 可用
+    aluka_vm::worker::set_worker_thread_io(io);
+    let io = aluka_vm::worker::worker_thread_io().expect("上方刚登记");
+
+    let input = resolve_worker_input(path);
+    let input_path = std::path::Path::new(&input);
+    let is_bc = input.ends_with(".bc");
+
+    // 组装字节码模块：字节码容器直载（字节码分发模式），或源码现场编译
+    let module_and_payload: (aluka_bytecode::BytecodeModule, Option<Vec<u8>>) = if is_bc {
+        let data = match std::fs::read(input_path) {
+            Ok(d) => d,
+            Err(err) => {
+                let _ = io.to_main.send(WorkerEvent::Error(format!(
+                    "worker: 无法读取 {input}: {err}"
+                )));
+                return 1;
+            }
+        };
+        match aluka_bytecode::BytecodeModule::load_any_container(&data) {
+            Ok((module, range)) => (module, Some(data[range].to_vec())),
+            Err(err) => {
+                let _ = io.to_main.send(WorkerEvent::Error(format!(
+                    "worker: 反序列化 {input} 失败: {err}"
+                )));
+                return 1;
+            }
+        }
+    } else {
+        // 按扩展名推断模块种类（alukac 同款判定）
+        let module_kind = match input_path.extension().and_then(|e| e.to_str()) {
+            Some("mjs") | Some("mts") => ModuleKind::Esm,
+            _ => ModuleKind::Script,
+        };
+        let mut unit = match LanguageRegistry::global().parse_file(&input, module_kind) {
+            Ok(unit) => unit,
+            Err(e) => {
+                let _ = io
+                    .to_main
+                    .send(WorkerEvent::Error(format!("worker: 无法读取 {input}: {e}")));
+                return 1;
+            }
+        };
+        match compile_source_unit(&mut unit) {
+            Ok(m) => (m, None),
+            Err(e) => {
+                let _ = io
+                    .to_main
+                    .send(WorkerEvent::Error(format!("worker: 编译失败: {e}")));
+                return 1;
+            }
+        }
+    };
+    let (module, payload) = module_and_payload;
+    if let Err(e) = module.verify() {
+        let _ = io
+            .to_main
+            .send(WorkerEvent::Error(format!("worker: 字节码校验失败: {e}")));
+        return 1;
+    }
+
+    let mut vm = Vm::new(0);
+    install_eval_provider(&mut vm);
+    // worker 角色表面：parentPort / isMainThread=false / workerData
+    aluka_vm::builtins::worker_threads::setup_worker_globals(&mut vm);
+    vm.setup_cjs(input_path);
+
+    if let Some(payload) = payload {
+        if let Err(err) = vm.load_module(&payload, &module) {
+            let _ = io.to_main.send(WorkerEvent::Error(format!(
+                "worker: functions 标量头不完整: {err}"
+            )));
+            return 1;
+        }
+    }
+
+    match vm.run_module(&module) {
+        Ok(_) => aluka_vm::builtins::worker_threads::run_worker_event_loop(&mut vm),
+        Err(VmError::Thrown(exc)) => {
+            let text = format_uncaught_with_vm(&mut vm, exc, input_path);
+            let _ = io.to_main.send(WorkerEvent::Error(text));
+            1
+        }
+        Err(_) => 1,
+    }
 }
 
 /// 把脚本路径与命令行参数注入 `process.argv`（argv[0]=脚本路径，对齐 Node 语义）。

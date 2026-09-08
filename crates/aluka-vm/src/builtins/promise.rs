@@ -16,8 +16,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
 
 /// 组合器种类。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -45,13 +45,15 @@ struct Combiner {
 /// 元素监听条目：(combiner promise 句柄, 槽位)。
 type WatchEntry = (u32, usize);
 
-/// 组合器表：combiner promise 句柄 → 状态。
-static COMBINERS: LazyLock<Mutex<HashMap<u32, Combiner>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// 组合器表：combiner promise 句柄 → 状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static COMBINERS: RefCell<HashMap<u32, Combiner>> = RefCell::new(HashMap::new());
+}
 
-/// 元素监听表：元素 promise 句柄 → 关联的监听条目列表。
-static WATCHERS: LazyLock<Mutex<HashMap<u32, Vec<WatchEntry>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// 元素监听表：元素 promise 句柄 → 关联的监听条目列表。
+thread_local! {
+    static WATCHERS: RefCell<HashMap<u32, Vec<WatchEntry>>> = RefCell::new(HashMap::new());
+}
 
 /// 组合器完成动作：经微任务调用对应解析器。
 enum Outcome {
@@ -105,23 +107,23 @@ impl Vm {
                 other => Some((*other, false)),
             };
             match settled {
-                None => WATCHERS
-                    .lock()
-                    .unwrap()
-                    .entry(el_handle(*el))
-                    .or_default()
-                    .push((combiner.0, slot)),
+                None => WATCHERS.with(|c| {
+                    c.borrow_mut()
+                        .entry(el_handle(*el))
+                        .or_default()
+                        .push((combiner.0, slot))
+                }),
                 Some((value, is_rejected)) => {
                     if let Some(outcome) = record_and_outcome(&mut state, slot, value, is_rejected)
                     {
-                        COMBINERS.lock().unwrap().insert(combiner.0, state);
+                        COMBINERS.with(|c| c.borrow_mut().insert(combiner.0, state));
                         self.apply_outcome(combiner, outcome)?;
                         return Ok(Value::Object(combiner));
                     }
                 }
             }
         }
-        COMBINERS.lock().unwrap().insert(combiner.0, state);
+        COMBINERS.with(|c| c.borrow_mut().insert(combiner.0, state));
         // 元素全部为即期值：走一次就绪检查（微任务完成组合器）
         self.settle_if_ready(combiner)?;
         Ok(Value::Object(combiner))
@@ -137,18 +139,18 @@ impl Vm {
 
     /// 就绪检查 + 完成动作构建（All：拒绝优先；AllSettled：status 对象数组）。
     fn build_ready_outcome(&mut self, combiner: ObjectRef) -> Result<Option<Outcome>, VmError> {
-        let snapshot = {
-            let mut map = COMBINERS.lock().unwrap();
-            let Some(state) = map.get_mut(&combiner.0) else {
-                return Ok(None);
-            };
+        let snapshot = COMBINERS.with(|c| {
+            let mut map = c.borrow_mut();
+            let state = map.get_mut(&combiner.0)?;
             if state.done || state.pending > 0 {
-                return Ok(None);
+                return None;
             }
             state.done = true;
-            (state.kind, std::mem::take(&mut state.results))
+            Some((state.kind, std::mem::take(&mut state.results)))
+        });
+        let Some((kind, results)) = snapshot else {
+            return Ok(None);
         };
-        let (kind, results) = snapshot;
         let mut first_rejection: Option<Value> = None;
         let mut values: Vec<Value> = Vec::with_capacity(results.len());
         let mut settled_objs: Vec<Value> = Vec::with_capacity(results.len());
@@ -187,17 +189,20 @@ impl Vm {
 
     /// 经微任务把完成动作投递给组合器解析器。
     fn apply_outcome(&mut self, combiner: ObjectRef, outcome: Outcome) -> Result<(), VmError> {
-        let (value, resolver) = {
-            let map = COMBINERS.lock().unwrap();
+        let (value, resolver) = COMBINERS.with(|c| {
+            let map = c.borrow();
             let Some(state) = map.get(&combiner.0) else {
-                return Ok(());
+                return (Value::Undefined, Value::Undefined);
             };
             match outcome {
                 Outcome::Resolve(v) => (v, state.resolver),
                 Outcome::Reject(v) => (v, state.reject_resolver),
             }
-        };
-        COMBINERS.lock().unwrap().remove(&combiner.0);
+        });
+        if matches!(resolver, Value::Undefined) {
+            return Ok(());
+        }
+        COMBINERS.with(|c| c.borrow_mut().remove(&combiner.0));
         self.microtask_queue
             .push_back(crate::builtins::Job::Call(resolver, value));
         Ok(())
@@ -245,20 +250,15 @@ pub(crate) fn on_settled(
     value: Value,
     is_rejected: bool,
 ) -> Result<(), VmError> {
-    let watchers = WATCHERS
-        .lock()
-        .unwrap()
-        .remove(&promise.0)
-        .unwrap_or_default();
+    let watchers: Vec<WatchEntry> =
+        WATCHERS.with(|c| c.borrow_mut().remove(&promise.0).unwrap_or_default());
     for (combiner_id, slot) in watchers {
         // 即时胜负（Race 胜出 / All 首个拒绝）：直接构建完成动作
-        let immediate = {
-            let mut map = COMBINERS.lock().unwrap();
-            let Some(state) = map.get_mut(&combiner_id) else {
-                continue;
-            };
+        let immediate = COMBINERS.with(|c| {
+            let mut map = c.borrow_mut();
+            let state = map.get_mut(&combiner_id)?;
             if state.done {
-                continue;
+                return None;
             }
             state.results[slot] = Some((value, is_rejected));
             match state.kind {
@@ -279,11 +279,12 @@ pub(crate) fn on_settled(
                     None
                 }
             }
+        });
+        let Some(immediate) = immediate else {
+            vm.settle_if_ready(ObjectRef(combiner_id))?;
+            continue;
         };
-        match immediate {
-            Some(outcome) => vm.apply_outcome(ObjectRef(combiner_id), outcome)?,
-            None => vm.settle_if_ready(ObjectRef(combiner_id))?,
-        }
+        vm.apply_outcome(ObjectRef(combiner_id), immediate)?;
     }
     Ok(())
 }
@@ -292,17 +293,18 @@ impl Vm {}
 
 /// GC root provider：组合器状态表持有的全部值与解析器。
 pub(crate) fn combiner_roots(out: &mut crate::gc::GcRoots) {
-    let map = COMBINERS.lock().unwrap();
-    for state in map.values() {
-        if state.done {
-            continue;
+    COMBINERS.with(|c| {
+        for state in c.borrow().values() {
+            if state.done {
+                continue;
+            }
+            out.push(state.resolver);
+            out.push(state.reject_resolver);
+            for (v, _) in state.results.iter().flatten() {
+                out.push(*v);
+            }
         }
-        out.push(state.resolver);
-        out.push(state.reject_resolver);
-        for (v, _) in state.results.iter().flatten() {
-            out.push(*v);
-        }
-    }
+    });
 }
 
 /// 元素 promise 的 Value → 堆句柄（供监听表键控）。
@@ -324,37 +326,31 @@ pub(crate) struct Reaction {
     pub(crate) reject_resolver: Value,
 }
 
-/// then 反应表：promise 句柄 → 待派发反应（pending 期登记，定型时排空）。
-pub(crate) static THEN_REACTIONS: LazyLock<Mutex<HashMap<u32, Vec<Reaction>>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+// then 反应表：promise 句柄 → 待派发反应（pending 期登记，定型时排空）。
+thread_local! {
+    static THEN_REACTIONS: RefCell<HashMap<u32, Vec<Reaction>>> = RefCell::new(HashMap::new());
+}
 
 /// 登记一条反应。
 pub(crate) fn push_reaction(target: u32, reaction: Reaction) {
-    THEN_REACTIONS
-        .lock()
-        .unwrap()
-        .entry(target)
-        .or_default()
-        .push(reaction);
+    THEN_REACTIONS.with(|c| c.borrow_mut().entry(target).or_default().push(reaction));
 }
 
 /// 排空 promise 的全部反应（定型时调用），返回反应列表。
 pub(crate) fn take_reactions(target: u32) -> Vec<Reaction> {
-    THEN_REACTIONS
-        .lock()
-        .unwrap()
-        .remove(&target)
-        .unwrap_or_default()
+    THEN_REACTIONS.with(|c| c.borrow_mut().remove(&target).unwrap_or_default())
 }
 
 /// GC root provider：反应表持有的回调与解析器。
 pub(crate) fn reaction_roots(out: &mut crate::gc::GcRoots) {
-    for reactions in THEN_REACTIONS.lock().unwrap().values() {
-        for r in reactions {
-            out.push(r.on_f);
-            out.push(r.on_r);
-            out.push(r.resolver);
-            out.push(r.reject_resolver);
+    THEN_REACTIONS.with(|c| {
+        for reactions in c.borrow().values() {
+            for r in reactions {
+                out.push(r.on_f);
+                out.push(r.on_r);
+                out.push(r.resolver);
+                out.push(r.reject_resolver);
+            }
         }
-    }
+    });
 }

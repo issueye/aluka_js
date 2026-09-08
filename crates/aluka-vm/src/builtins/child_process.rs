@@ -289,6 +289,8 @@ fn run_collect_command(
 ) -> Result<(), VmError> {
     apply_windows_hide(&mut cmd, cfg!(windows));
     let finish_task = proc_common::begin_exec_task();
+    // 属主线程 id：回调句柄属于发起线程的 Vm 堆，事件须回投给属主
+    let owner = std::thread::current().id();
     std::thread::spawn(move || {
         let (err, stdout, stderr) = match cmd.output() {
             Ok(out) => (
@@ -302,12 +304,15 @@ fn run_collect_command(
                 String::new(),
             ),
         };
-        push_event(ProcEvent::ExecDone {
-            cb,
-            err,
-            stdout,
-            stderr,
-        });
+        proc_common::push_event_for(
+            owner,
+            ProcEvent::ExecDone {
+                cb,
+                err,
+                stdout,
+                stderr,
+            },
+        );
         finish_task();
     });
     vm.activate_event_source("proc", proc_common::pump_proc);

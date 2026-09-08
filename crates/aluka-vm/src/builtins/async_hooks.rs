@@ -1,4 +1,4 @@
-﻿//! `async_hooks` 内置模块（Phase 7）：异步追踪钩子与 AsyncLocalStorage。
+//! `async_hooks` 内置模块（Phase 7）：异步追踪钩子与 AsyncLocalStorage。
 //!
 //! 语义照实移植 Node.js 22 LTS 规范
 //! 的简化异步模型：
@@ -23,8 +23,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// AsyncResource 自增 id 起点（对齐 Go：首个 AsyncResource 的 asyncId 为 2）。
@@ -77,16 +77,31 @@ struct BoundCtx {
     this_arg: Value,
 }
 
-/// 执行链状态。
-static EXEC: Mutex<Option<ExecState>> = Mutex::new(None);
-/// AsyncHook 注册表（创建顺序即派发顺序）：实例句柄 → 状态。
-static HOOKS: Mutex<Vec<(u32, HookState)>> = Mutex::new(Vec::new());
-/// AsyncLocalStorage 实例表：实例句柄 → 状态。
-static ALS: Mutex<Option<HashMap<u32, AlsState>>> = Mutex::new(None);
-/// AsyncResource 实例表：实例句柄 → 状态。
-static RESOURCES: Mutex<Option<HashMap<u32, ResourceData>>> = Mutex::new(None);
-/// 最近一次创建的 bind 包装上下文（静态表模拟 Go 的闭包捕获）。
-static LAST_BOUND: Mutex<Option<BoundCtx>> = Mutex::new(None);
+// 执行链状态。
+thread_local! {
+    // EXEC：线程局部（堆句柄仅本线程 Vm 有效）。
+    static EXEC: RefCell<Option<ExecState>> = const { RefCell::new(None) };
+}
+// AsyncHook 注册表（创建顺序即派发顺序）：实例句柄 → 状态。
+thread_local! {
+    // HOOKS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static HOOKS: RefCell<Vec<(u32, HookState)>> = const { RefCell::new(Vec::new()) };
+}
+// AsyncLocalStorage 实例表：实例句柄 → 状态。
+thread_local! {
+    // ALS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static ALS: RefCell<Option<HashMap<u32, AlsState>>> = const { RefCell::new(None) };
+}
+// AsyncResource 实例表：实例句柄 → 状态。
+thread_local! {
+    // RESOURCES：线程局部（堆句柄仅本线程 Vm 有效）。
+    static RESOURCES: RefCell<Option<HashMap<u32, ResourceData>>> = const { RefCell::new(None) };
+}
+// 最近一次创建的 bind 包装上下文（静态表模拟 Go 的闭包捕获）。
+thread_local! {
+    // LAST_BOUND：线程局部（堆句柄仅本线程 Vm 有效）。
+    static LAST_BOUND: RefCell<Option<BoundCtx>> = const { RefCell::new(None) };
+}
 
 /// `require("async_hooks")` / `require("node:async_hooks")`。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -96,21 +111,28 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 /// 执行链状态访问。
 fn with_exec<R>(f: impl FnOnce(&mut ExecState) -> R) -> R {
-    let mut guard = EXEC.lock().unwrap();
-    f(guard.get_or_insert_with(ExecState::default))
+    EXEC.with(|g| f(g.borrow_mut().get_or_insert_with(ExecState::default)))
 }
 
 /// ALS 实例状态访问。
 fn with_als<R>(id: u32, f: impl FnOnce(&mut AlsState) -> R) -> R {
-    let mut guard = ALS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    f(map.entry(id).or_default())
+    ALS.with(|g| {
+        let mut guard = g.borrow_mut();
+        f(guard
+            .get_or_insert_with(HashMap::new)
+            .entry(id)
+            .or_default())
+    })
 }
 
 /// AsyncResource 实例状态访问。
 fn with_resource<R>(id: u32, f: impl FnOnce(&mut ResourceData) -> R) -> Option<R> {
-    let mut guard = RESOURCES.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).get_mut(&id).map(f)
+    RESOURCES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .get_mut(&id)
+            .map(f)
+    })
 }
 
 /// 顶层执行 id（Node 语义：1）。
@@ -154,14 +176,13 @@ fn thrown(vm: &mut Vm, msg: &str) -> VmError {
 /// 向全部启用中的 hook 派发回调（hook 回调内的错误就地吞掉，对齐 Go 的
 /// `ReportUncaught` 后继续派发）。
 fn fire_hook(vm: &mut Vm, kind: usize, args: &[Value]) {
-    let targets: Vec<Value> = {
-        let hooks = HOOKS.lock().unwrap();
-        hooks
+    let targets: Vec<Value> = HOOKS.with(|g| {
+        g.borrow()
             .iter()
             .filter(|(_, h)| h.enabled)
             .filter_map(|(_, h)| h.callbacks[kind])
             .collect()
-    };
+    });
     for cb in targets {
         if is_function(vm, cb) {
             let _ = vm.invoke_callable(cb, Value::Undefined, args);
@@ -306,18 +327,20 @@ fn create_hook(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         let fn_ref = vm.alloc_native_fn(&format!("async_hooks:hook.{method}"));
         let _ = vm.set_property(Value::Object(inst), method, Value::Object(fn_ref));
     }
-    HOOKS.lock().unwrap().push((inst.0, state));
+    HOOKS.with(|g| g.borrow_mut().push((inst.0, state)));
     Ok(Value::Object(inst))
 }
 
 /// `hook.enable()`。
 fn hook_enable(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     if let Some(id) = receiver_id() {
-        for (hook_id, state) in HOOKS.lock().unwrap().iter_mut() {
-            if *hook_id == id {
-                state.enabled = true;
+        HOOKS.with(|g| {
+            for (hook_id, state) in g.borrow_mut().iter_mut() {
+                if *hook_id == id {
+                    state.enabled = true;
+                }
             }
-        }
+        });
     }
     Ok(Value::Undefined)
 }
@@ -325,11 +348,13 @@ fn hook_enable(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `hook.disable()`。
 fn hook_disable(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     if let Some(id) = receiver_id() {
-        for (hook_id, state) in HOOKS.lock().unwrap().iter_mut() {
-            if *hook_id == id {
-                state.enabled = false;
+        HOOKS.with(|g| {
+            for (hook_id, state) in g.borrow_mut().iter_mut() {
+                if *hook_id == id {
+                    state.enabled = false;
+                }
             }
-        }
+        });
     }
     Ok(Value::Undefined)
 }
@@ -373,11 +398,8 @@ fn async_resource_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         let fn_ref = vm.alloc_native_fn(&format!("async_hooks:resource.{method}"));
         let _ = vm.set_property(Value::Object(inst), method, Value::Object(fn_ref));
     }
-    RESOURCES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(
+    RESOURCES.with(|g| {
+        g.borrow_mut().get_or_insert_with(HashMap::new).insert(
             inst.0,
             ResourceData {
                 uid,
@@ -385,6 +407,7 @@ fn async_resource_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 destroyed: false,
             },
         );
+    });
     let init_args = [
         Value::Number(uid as f64),
         Value::Object(vm.alloc_string(typ)),
@@ -485,13 +508,13 @@ fn make_bound(
         return Err(thrown(vm, err_msg));
     }
     let this_arg = args.get(this_arg_idx).copied().unwrap_or(Value::Undefined);
-    *LAST_BOUND.lock().unwrap() = Some(BoundCtx { cb, this_arg });
+    LAST_BOUND.with(|g| *g.borrow_mut() = Some(BoundCtx { cb, this_arg }));
     Ok(Value::Object(vm.alloc_native_fn("async_hooks:bound")))
 }
 
 /// bind 包装回调：以捕获的 this 调用被包装函数（包装可重复调用）。
 fn bound_trampoline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(ctx) = LAST_BOUND.lock().unwrap().clone() else {
+    let Some(ctx) = LAST_BOUND.with(|g| g.borrow().clone()) else {
         return Ok(Value::Undefined);
     };
     vm.invoke_callable(ctx.cb, ctx.this_arg, args)
@@ -504,7 +527,7 @@ fn bound_trampoline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn resource_static_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let cb = args.first().copied().unwrap_or(Value::Undefined);
     let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
-    *LAST_BOUND.lock().unwrap() = Some(BoundCtx { cb, this_arg });
+    LAST_BOUND.with(|g| *g.borrow_mut() = Some(BoundCtx { cb, this_arg }));
     let bound = vm.alloc_native_fn("async_hooks:bound");
     Ok(Value::Object(bound))
 }
@@ -518,10 +541,11 @@ fn async_local_storage_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmErr
         let fn_ref = vm.alloc_native_fn(&format!("async_hooks:als.{method}"));
         let _ = vm.set_property(Value::Object(inst), method, Value::Object(fn_ref));
     }
-    ALS.lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(inst.0, AlsState::default());
+    ALS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(inst.0, AlsState::default());
+    });
     Ok(Value::Object(inst))
 }
 

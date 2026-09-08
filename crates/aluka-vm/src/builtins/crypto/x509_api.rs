@@ -18,14 +18,20 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-/// 实例句柄 → 解析后的证书。
-static X509_CERTS: Mutex<Option<HashMap<u32, Arc<super::der::ParsedCert>>>> = Mutex::new(None);
+// 实例句柄 → 解析后的证书（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static X509_CERTS: RefCell<Option<HashMap<u32, Arc<super::der::ParsedCert>>>> =
+        const { RefCell::new(None) };
+}
 
-/// 密钥对象句柄 → RSA 公开参数（公私钥对象通用）。
-static KEY_STORE: Mutex<Option<HashMap<u32, KeyEntry>>> = Mutex::new(None);
+// 密钥对象句柄 → RSA 公开参数（公私钥对象通用；线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static KEY_STORE: RefCell<Option<HashMap<u32, KeyEntry>>> = const { RefCell::new(None) };
+}
 
 /// 密钥对象登记项（RSA 公开参数；公私钥对象通用）。
 #[derive(Debug, Clone)]
@@ -38,30 +44,30 @@ struct KeyEntry {
 
 /// 写入证书登记。
 fn set_cert(id: u32, cert: Arc<super::der::ParsedCert>) {
-    X509_CERTS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(id, cert);
+    X509_CERTS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, cert);
+    });
 }
 
 /// 读取证书登记。
 fn get_cert(r: ObjectRef) -> Option<Arc<super::der::ParsedCert>> {
-    X509_CERTS.lock().unwrap().as_ref()?.get(&r.0).cloned()
+    X509_CERTS.with(|g| g.borrow().as_ref()?.get(&r.0).cloned())
 }
 
 /// 登记密钥对象。
 fn set_key(id: u32, entry: KeyEntry) {
-    KEY_STORE
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(id, entry);
+    KEY_STORE.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, entry);
+    });
 }
 
 /// 读取密钥对象登记。
 fn get_key(r: ObjectRef) -> Option<KeyEntry> {
-    KEY_STORE.lock().unwrap().as_ref()?.get(&r.0).cloned()
+    KEY_STORE.with(|g| g.borrow().as_ref()?.get(&r.0).cloned())
 }
 
 /// 读取对象字符串属性（缺失返回 `None`）。

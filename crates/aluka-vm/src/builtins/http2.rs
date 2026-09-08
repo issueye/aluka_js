@@ -23,12 +23,18 @@ use crate::builtins::{
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
-use std::sync::Mutex;
+use std::cell::RefCell;
 
-/// 待异步发射 `'connect'` 的会话对象队列（宏任务标记函数消费）。
-static CONNECT_TARGETS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
-/// 待异步派发的流错误（流对象, 错误消息）队列。
-static STREAM_ERRORS: Mutex<Vec<(Value, String)>> = Mutex::new(Vec::new());
+// 待异步发射 `'connect'` 的会话对象队列（宏任务标记函数消费；线程局部：
+// 堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static CONNECT_TARGETS: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+}
+
+// 待异步派发的流错误（流对象, 错误消息）队列（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static STREAM_ERRORS: RefCell<Vec<(Value, String)>> = const { RefCell::new(Vec::new()) };
+}
 
 /// `require("http2")` / `require("node:http2")` 模块定义。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -225,7 +231,7 @@ fn http2_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let auth = vm.alloc_string(authority);
     let _ = vm.set_property(Value::Object(sess), "_authority", Value::Object(auth));
     // 'connect' 事件经宏任务异步发射（Go PostTask 语义，无需活跃服务器）。
-    CONNECT_TARGETS.lock().unwrap().push(Value::Object(sess));
+    CONNECT_TARGETS.with(|q| q.borrow_mut().push(Value::Object(sess)));
     schedule_emit_task(vm, "http2:internal.connectEmit");
     Ok(Value::Object(sess))
 }
@@ -242,7 +248,7 @@ fn schedule_emit_task(vm: &mut Vm, name: &str) {
 
 /// 标记任务：发射全部待发 `'connect'` 事件（参数 `(sess, undefined)`）。
 fn connect_emit(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let targets: Vec<Value> = std::mem::take(&mut *CONNECT_TARGETS.lock().unwrap());
+    let targets: Vec<Value> = CONNECT_TARGETS.with(|q| std::mem::take(&mut *q.borrow_mut()));
     for sess in targets {
         state::emit(vm, sess, "connect", &[sess, Value::Undefined])?;
     }
@@ -251,7 +257,7 @@ fn connect_emit(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 标记任务：派发全部待发流错误（Go 以字符串值发 `'error'`）。
 fn stream_task_emit(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let errors: Vec<(Value, String)> = std::mem::take(&mut *STREAM_ERRORS.lock().unwrap());
+    let errors: Vec<(Value, String)> = STREAM_ERRORS.with(|q| std::mem::take(&mut *q.borrow_mut()));
     for (stream, msg) in errors {
         let err = vm.alloc_string(msg);
         state::emit(vm, stream, "error", &[Value::Object(err)])?;
@@ -349,12 +355,14 @@ fn session_request(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
     // Rust 侧无 HTTP/2/TLS 协议栈：流请求统一异步派发 'error'（Go 会真实
     // 发起请求，此处为登记的已知限制，探针只打会话表面）。
-    STREAM_ERRORS.lock().unwrap().push((
-        Value::Object(stream),
-        format!(
-            "http2: session {authority} request {method} {path} requires an HTTP/2 stack (unsupported in Rust build)"
-        ),
-    ));
+    STREAM_ERRORS.with(|q| {
+        q.borrow_mut().push((
+            Value::Object(stream),
+            format!(
+                "http2: session {authority} request {method} {path} requires an HTTP/2 stack (unsupported in Rust build)"
+            ),
+        ));
+    });
     schedule_emit_task(vm, "http2:internal.streamTask");
     Ok(Value::Object(stream))
 }

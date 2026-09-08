@@ -12,9 +12,10 @@
 //! 不逐字节相同，探针一律使用 roundtrip 结果与确定性值（解压文本、crc32 数值、
 //! 常量值），绝不打印压缩后的原始字节。
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::io::{Read as _, Write as _};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use crate::builtins::buffer::{create_buffer_instance, extract_bytes};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
@@ -188,23 +189,23 @@ struct AsyncDelivery {
     outcome: Result<Vec<u8>, String>,
 }
 
-/// 待投递队列（与宏任务 FIFO 对齐：每次异步调用排队一项 + 一个投递宏任务）。
-static DELIVERIES: Mutex<Option<VecDeque<AsyncDelivery>>> = Mutex::new(None);
+// 待投递队列（与宏任务 FIFO 对齐：每次异步调用排队一项 + 一个投递宏任务）。
+thread_local! {
+    // DELIVERIES：线程局部（堆句柄仅本线程 Vm 有效）。
+    static DELIVERIES: RefCell<Option<VecDeque<AsyncDelivery>>> = const { RefCell::new(None) };
+}
 
 fn queue_delivery(callback: Value, outcome: Result<Vec<u8>, String>) {
-    let mut guard = DELIVERIES.lock().unwrap();
-    guard
-        .get_or_insert_with(VecDeque::new)
-        .push_back(AsyncDelivery { callback, outcome });
+    DELIVERIES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(VecDeque::new)
+            .push_back(AsyncDelivery { callback, outcome });
+    });
 }
 
 /// 投递宏任务处理器：从队列取出结果，回调 `(null, Buffer)` 或 `(errMessage,)`。
 fn deliver_async(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let delivery = DELIVERIES
-        .lock()
-        .unwrap()
-        .as_mut()
-        .and_then(VecDeque::pop_front);
+    let delivery = DELIVERIES.with(|g| g.borrow_mut().as_mut().and_then(VecDeque::pop_front));
     let Some(delivery) = delivery else {
         return Ok(Value::Undefined);
     };

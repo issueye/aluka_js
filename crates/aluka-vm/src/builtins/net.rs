@@ -25,10 +25,10 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream};
-use std::sync::Mutex;
 
 /// 单次读取上限（对齐 Go 读循环 4096 字节缓冲）。
 const READ_CHUNK: usize = 4096;
@@ -121,10 +121,15 @@ struct NetShared {
     pending: VecDeque<NetAction>,
 }
 
-static NET_SHARED: Mutex<Option<NetShared>> = Mutex::new(None);
+// net 模块共享状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static NET_SHARED: RefCell<Option<NetShared>> = const { RefCell::new(None) };
+}
 
-/// BlockList 实例规则表（实例句柄 → 规则列表）。
-static BLOCKLISTS: Mutex<Option<HashMap<u32, Vec<BlockRule>>>> = Mutex::new(None);
+// BlockList 实例规则表（实例句柄 → 规则列表；线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static BLOCKLISTS: RefCell<Option<HashMap<u32, Vec<BlockRule>>>> = const { RefCell::new(None) };
+}
 
 /// 黑名单条目（Range / Subnet / Address，与 Go blockListState 对应）。
 #[derive(Debug, Clone)]
@@ -137,13 +142,12 @@ enum BlockRule {
     Address(String),
 }
 
-/// 在互斥锁内访问 net 共享状态（闭包内禁止触碰 `Vm` 与其他锁）。
+/// 在线程局部借用内访问 net 共享状态（闭包内禁止触碰 `Vm`）。
 fn with_net<R>(f: impl FnOnce(&mut NetShared) -> R) -> R {
-    let mut guard = NET_SHARED.lock().unwrap();
-    f(guard.get_or_insert_with(NetShared::default))
+    NET_SHARED.with(|g| f(g.borrow_mut().get_or_insert_with(NetShared::default)))
 }
 
-/// 在互斥锁内访问指定实例（socket 或 server）的监听器表。
+/// 在线程局部借用内访问指定实例（socket 或 server）的监听器表。
 fn with_listeners<R>(
     id: u32,
     f: impl FnOnce(&mut HashMap<String, Vec<NetListener>>) -> R,
@@ -159,12 +163,16 @@ fn with_listeners<R>(
     })
 }
 
-/// 在互斥锁内访问指定 BlockList 实例的规则表。
+/// 在线程局部借用内访问指定 BlockList 实例的规则表。
 fn with_blocklist<R>(id: u32, f: impl FnOnce(&mut Vec<BlockRule>) -> R) -> Option<R> {
-    let mut guard = BLOCKLISTS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    let rules = map.entry(id).or_default();
-    Some(f(rules))
+    BLOCKLISTS.with(|g| {
+        let mut binding = g.borrow_mut();
+        let rules = binding
+            .get_or_insert_with(HashMap::new)
+            .entry(id)
+            .or_default();
+        Some(f(rules))
+    })
 }
 
 /// `require("net")` / `require("node:net")` 模块定义。

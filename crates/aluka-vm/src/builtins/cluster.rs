@@ -24,8 +24,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// `require("cluster")` / `require("node:cluster")` 模块导出。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -33,15 +33,18 @@ pub const MODULE: ModuleDef = ModuleDef {
     build,
 };
 
-/// child 对象句柄 id → (worker id, worker 对象句柄 id)（事件转接用）。
-static CHILD_TO_WORKER: Mutex<Option<HashMap<u32, (u64, u32)>>> = Mutex::new(None);
+// child 对象句柄 id → (worker id, worker 对象句柄 id)（事件转接用）；
+// 线程局部：堆句柄仅本线程 Vm 有效。
+thread_local! {
+    static CHILD_TO_WORKER: RefCell<Option<HashMap<u32, (u64, u32)>>> =
+        const { RefCell::new(None) };
+}
 
 fn with_child_map<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, (u64, u32)>) -> R,
 {
-    let mut guard = CHILD_TO_WORKER.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    CHILD_TO_WORKER.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {

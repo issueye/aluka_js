@@ -23,10 +23,10 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs, UdpSocket};
-use std::sync::Mutex;
 
 /// UDP 单次接收缓冲上限（对齐 Go 65536 字节缓冲）。
 const RECV_CHUNK: usize = 65536;
@@ -84,12 +84,14 @@ struct DgramShared {
     pending: VecDeque<DgramAction>,
 }
 
-static DGRAM_SHARED: Mutex<Option<DgramShared>> = Mutex::new(None);
+// dgram 模块共享状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static DGRAM_SHARED: RefCell<Option<DgramShared>> = const { RefCell::new(None) };
+}
 
-/// 在互斥锁内访问 dgram 共享状态（闭包内禁止触碰 `Vm`）。
+/// 在线程局部借用内访问 dgram 共享状态（闭包内禁止触碰 `Vm`）。
 fn with_dgram<R>(f: impl FnOnce(&mut DgramShared) -> R) -> R {
-    let mut guard = DGRAM_SHARED.lock().unwrap();
-    f(guard.get_or_insert_with(DgramShared::default))
+    DGRAM_SHARED.with(|g| f(g.borrow_mut().get_or_insert_with(DgramShared::default)))
 }
 
 /// `require("dgram")` / `require("node:dgram")` 模块定义。
@@ -314,7 +316,7 @@ fn is_same_value(a: Value, b: Value) -> bool {
     }
 }
 
-/// 在互斥锁内访问指定 socket 的监听器表。
+/// 在线程局部借用内访问指定 socket 的监听器表。
 fn with_socket_listeners<R>(
     id: u32,
     f: impl FnOnce(&mut HashMap<String, Vec<DgramListener>>) -> R,

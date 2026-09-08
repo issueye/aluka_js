@@ -20,8 +20,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// 单个命名通道的注册表状态（对象、订阅者、tracing 观察者、绑定 store）。
 struct ChannelState {
@@ -43,14 +43,26 @@ struct TracingState {
     members: Vec<u32>,
 }
 
-/// 命名通道注册表：实例对象句柄 → 状态。
-static CHANNELS: Mutex<Option<HashMap<u32, ChannelState>>> = Mutex::new(None);
-/// 通道名 → 实例对象句柄（`channel(name)` 幂等）。
-static CHANNEL_NAMES: Mutex<Option<HashMap<String, u32>>> = Mutex::new(None);
-/// tracingChannel 聚合对象句柄 → 成员通道状态。
-static TRACINGS: Mutex<Option<HashMap<u32, TracingState>>> = Mutex::new(None);
-/// `runStores` 链式续体（wrapped 回调）捕获的剩余状态，LIFO 消费。
-static CHAIN: Mutex<Vec<ChainCtx>> = Mutex::new(Vec::new());
+// 命名通道注册表：实例对象句柄 → 状态。
+thread_local! {
+    // CHANNELS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static CHANNELS: RefCell<Option<HashMap<u32, ChannelState>>> = const { RefCell::new(None) };
+}
+// 通道名 → 实例对象句柄（`channel(name)` 幂等）。
+thread_local! {
+    // CHANNEL_NAMES：线程局部（堆句柄仅本线程 Vm 有效）。
+    static CHANNEL_NAMES: RefCell<Option<HashMap<String, u32>>> = const { RefCell::new(None) };
+}
+// tracingChannel 聚合对象句柄 → 成员通道状态。
+thread_local! {
+    // TRACINGS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static TRACINGS: RefCell<Option<HashMap<u32, TracingState>>> = const { RefCell::new(None) };
+}
+// `runStores` 链式续体（wrapped 回调）捕获的剩余状态，LIFO 消费。
+thread_local! {
+    // CHAIN：线程局部（堆句柄仅本线程 Vm 有效）。
+    static CHAIN: RefCell<Vec<ChainCtx>> = const { RefCell::new(Vec::new()) };
+}
 
 /// `runStores` 链式调用中被 store.run 持有的续体上下文。
 struct ChainCtx {
@@ -70,20 +82,17 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 /// 可加锁访问的静态表便捷宏展开辅助：`with_map!` 风格手动展开。
 fn with_channels<R>(f: impl FnOnce(&mut HashMap<u32, ChannelState>) -> R) -> R {
-    let mut guard = CHANNELS.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    CHANNELS.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 /// 通道名注册表访问。
 fn with_names<R>(f: impl FnOnce(&mut HashMap<String, u32>) -> R) -> R {
-    let mut guard = CHANNEL_NAMES.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    CHANNEL_NAMES.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 /// tracing 聚合表访问。
 fn with_tracings<R>(f: impl FnOnce(&mut HashMap<u32, TracingState>) -> R) -> R {
-    let mut guard = TRACINGS.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    TRACINGS.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 /// 值是否为可调用函数（对齐 Go 的 `Value.IsFunction`）。
@@ -609,10 +618,12 @@ fn chain_invoke(
         return chain_invoke(vm, &stores[1..], context, callback, call_args);
     }
     let wrapped = vm.alloc_native_fn("diagnostics_channel:runStores.chain");
-    CHAIN.lock().unwrap().push(ChainCtx {
-        remaining: stores[1..].to_vec(),
-        context,
-        callback,
+    CHAIN.with(|g| {
+        g.borrow_mut().push(ChainCtx {
+            remaining: stores[1..].to_vec(),
+            context,
+            callback,
+        });
     });
     let mut forwarded = vec![context, Value::Object(wrapped)];
     forwarded.extend_from_slice(call_args);
@@ -621,7 +632,7 @@ fn chain_invoke(
 
 /// `runStores` 链式续体：弹出最近一层上下文并继续进入剩余 store。
 fn run_stores_chain(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let ctx = CHAIN.lock().unwrap().pop();
+    let ctx = CHAIN.with(|g| g.borrow_mut().pop());
     let Some(ctx) = ctx else {
         return Ok(Value::Undefined);
     };

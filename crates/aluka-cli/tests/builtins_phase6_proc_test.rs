@@ -307,8 +307,10 @@ fn worker_message_round_trip_matches_go() {
     );
     let out = assert_e2e_matches_go(&work, "probe.js");
     assert!(out.contains("main: true 0 null null"), "{out:?}");
+    // M5.1 真实跨线程路径：worker threadId 遵循 Node 22 语义（自 1 起），
+    // 旧伪 worker 的恒 0 是 Go 怪癖（模块文档「已知偏离」已删除）
     assert!(
-        out.contains("in worker: isMain false threadId 0 parentPort object task t1"),
+        out.contains("in worker: isMain false threadId 1 parentPort object task t1"),
         "{out:?}"
     );
     assert!(out.contains("msg: pong:t1 string"), "{out:?}");

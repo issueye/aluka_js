@@ -14,8 +14,8 @@
 //! - `ReadableStreamTee(stream)`：优先调用 `stream.tee()`，否则返回
 //!   `[stream, stream]`，无参返回 undefined，非对象实参抛错。
 
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
 
 use crate::builtins::{
     BuiltinHandler, BuiltinRegistry, ModuleDef, register_handler, set_module_prop,
@@ -51,8 +51,10 @@ struct RsState {
     bridge: Option<u32>,
 }
 
-/// 全部 ReadableStream 的内部状态表。
-static RS_STATES: Mutex<Option<HashMap<u32, RsState>>> = Mutex::new(None);
+// 全部 ReadableStream 的内部状态表（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static RS_STATES: RefCell<Option<HashMap<u32, RsState>>> = const { RefCell::new(None) };
+}
 
 /// WritableStream 内部状态：underlyingSink 回调 + Node 桥（toWeb）。
 struct WsState {
@@ -64,42 +66,52 @@ struct WsState {
     node_sink: Option<ObjectRef>,
 }
 
-/// 全部 WritableStream 的内部状态表。
-static WS_STATES: Mutex<Option<HashMap<u32, WsState>>> = Mutex::new(None);
+// 全部 WritableStream 的内部状态表（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static WS_STATES: RefCell<Option<HashMap<u32, WsState>>> = const { RefCell::new(None) };
+}
 
 fn with_state<R>(id: u32, f: impl FnOnce(&mut RsState) -> R) -> Option<R> {
-    let mut guard = RS_STATES.lock().unwrap();
-    guard.as_mut()?.get_mut(&id).map(f)
+    RS_STATES.with(|g| g.borrow_mut().as_mut()?.get_mut(&id).map(f))
 }
 
 fn insert_state(id: u32, state: RsState) {
-    let mut guard = RS_STATES.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).insert(id, state);
+    RS_STATES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, state);
+    });
 }
 
 /// M4 GC 根登记：两张状态表持有的全部堆值（chunk 队列 / sink 回调 / Node 桥）。
 pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
-    if let Some(map) = RS_STATES.lock().unwrap().as_ref() {
-        for s in map.values() {
-            for v in &s.queue {
-                out.push(*v);
-            }
-            out.push(Value::Object(s.stream));
-        }
-    }
-    if let Some(map) = WS_STATES.lock().unwrap().as_ref() {
-        for s in map.values() {
-            if let Some(w) = s.sink_write {
-                out.push(w);
-            }
-            if let Some(c) = s.sink_close {
-                out.push(c);
-            }
-            if let Some(n) = s.node_sink {
-                out.push(Value::Object(n));
+    RS_STATES.with(|g| {
+        let binding = g.borrow();
+        if let Some(map) = binding.as_ref() {
+            for s in map.values() {
+                for v in &s.queue {
+                    out.push(*v);
+                }
+                out.push(Value::Object(s.stream));
             }
         }
-    }
+    });
+    WS_STATES.with(|g| {
+        let binding = g.borrow();
+        if let Some(map) = binding.as_ref() {
+            for s in map.values() {
+                if let Some(w) = s.sink_write {
+                    out.push(w);
+                }
+                if let Some(c) = s.sink_close {
+                    out.push(c);
+                }
+                if let Some(n) = s.node_sink {
+                    out.push(Value::Object(n));
+                }
+            }
+        }
+    });
 }
 
 /// M4 互通：登记 fromWeb 桥并补交既有队列（`start` 阶段先于挂桥入队的
@@ -107,14 +119,15 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
 pub fn attach_node_bridge_and_drain(vm: &mut Vm, web_id: u32, node_id: u32) -> Result<(), VmError> {
     let mut pending: Vec<Value> = Vec::new();
     {
-        let mut guard = RS_STATES.lock().unwrap();
-        if let Some(state) = guard.as_mut().and_then(|m| m.get_mut(&web_id)) {
-            state.bridge = Some(node_id);
-            pending = state.queue.drain(..).collect();
-            if state.closed {
-                pending.push(Value::Null);
+        RS_STATES.with(|g| {
+            if let Some(state) = g.borrow_mut().as_mut().and_then(|m| m.get_mut(&web_id)) {
+                state.bridge = Some(node_id);
+                pending = state.queue.drain(..).collect();
+                if state.closed {
+                    pending.push(Value::Null);
+                }
             }
-        }
+        });
     }
     for chunk in pending {
         crate::builtins::stream::node_bridge_push(vm, node_id, chunk)?;
@@ -124,28 +137,25 @@ pub fn attach_node_bridge_and_drain(vm: &mut Vm, web_id: u32, node_id: u32) -> R
 
 /// M4 互通：Node 侧 push 转发入口——chunk 入 web 队列。
 pub fn web_bridge_enqueue(web_id: u32, chunk: Value) {
-    let mut guard = RS_STATES.lock().unwrap();
-    if let Some(map) = guard.as_mut() {
-        if let Some(state) = map.get_mut(&web_id) {
+    RS_STATES.with(|g| {
+        if let Some(state) = g.borrow_mut().as_mut().and_then(|m| m.get_mut(&web_id)) {
             state.queue.push_back(chunk);
         }
-    }
+    });
 }
 
 /// M4 互通：Node 侧 push(null) 转发入口——关闭 web 流。
 pub fn web_bridge_close(web_id: u32) {
-    let mut guard = RS_STATES.lock().unwrap();
-    if let Some(map) = guard.as_mut() {
-        if let Some(state) = map.get_mut(&web_id) {
+    RS_STATES.with(|g| {
+        if let Some(state) = g.borrow_mut().as_mut().and_then(|m| m.get_mut(&web_id)) {
             state.closed = true;
         }
-    }
+    });
 }
 
 /// 查询 WritableStream 状态（writer / toWeb 桥用）。
 fn with_ws_state<R>(id: u32, f: impl FnOnce(&mut WsState) -> R) -> Option<R> {
-    let mut guard = WS_STATES.lock().unwrap();
-    guard.as_mut()?.get_mut(&id).map(f)
+    WS_STATES.with(|g| g.borrow_mut().as_mut()?.get_mut(&id).map(f))
 }
 
 /// 读取接收者上的 `_wsId`（WritableStream / writer 共用关联键）。
@@ -167,38 +177,41 @@ pub fn create_web_writable(vm: &mut Vm) -> Result<ObjectRef, VmError> {
 
 /// M4 互通：登记 toWeb 桥（web 流 id → Node 可写流）。
 pub fn attach_node_sink(web_id: u32, node: ObjectRef) {
-    let mut guard = WS_STATES.lock().unwrap();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .entry(web_id)
-        .or_insert(WsState {
-            sink_write: None,
-            sink_close: None,
-            node_sink: None,
-        })
-        .node_sink = Some(node);
+    WS_STATES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .entry(web_id)
+            .or_insert(WsState {
+                sink_write: None,
+                sink_close: None,
+                node_sink: None,
+            })
+            .node_sink = Some(node);
+    });
 }
 
 /// M4 互通：为 `Writable.fromWeb` 回写 web 流的 underlyingSink 回调
 /// （Node 可写流 → web sink 的转发目标）。
 pub fn set_web_sink_fns(web_id: u32, sink_write: Option<Value>, sink_close: Option<Value>) {
-    let mut guard = WS_STATES.lock().unwrap();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .entry(web_id)
-        .or_insert(WsState {
-            sink_write: None,
-            sink_close: None,
-            node_sink: None,
-        });
-    if let Some(state) = guard.as_mut().and_then(|m| m.get_mut(&web_id)) {
-        if state.sink_write.is_none() {
-            state.sink_write = sink_write;
+    WS_STATES.with(|g| {
+        let mut binding = g.borrow_mut();
+        binding
+            .get_or_insert_with(HashMap::new)
+            .entry(web_id)
+            .or_insert(WsState {
+                sink_write: None,
+                sink_close: None,
+                node_sink: None,
+            });
+        if let Some(state) = binding.as_mut().and_then(|m| m.get_mut(&web_id)) {
+            if state.sink_write.is_none() {
+                state.sink_write = sink_write;
+            }
+            if state.sink_close.is_none() {
+                state.sink_close = sink_close;
+            }
         }
-        if state.sink_close.is_none() {
-            state.sink_close = sink_close;
-        }
-    }
+    });
 }
 
 // --- 通用辅助 ---------------------------------------------------------------
@@ -318,16 +331,16 @@ fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
-    let mut guard = WS_STATES.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).insert(
-        stream.0,
-        WsState {
-            sink_write,
-            sink_close,
-            node_sink: None,
-        },
-    );
-    drop(guard);
+    WS_STATES.with(|g| {
+        g.borrow_mut().get_or_insert_with(HashMap::new).insert(
+            stream.0,
+            WsState {
+                sink_write,
+                sink_close,
+                node_sink: None,
+            },
+        );
+    });
 
     let stream_val = Value::Object(stream);
     set_ns(vm, stream_val, WS_NS);

@@ -1,4 +1,4 @@
-﻿//! `domain` 内置模块（Phase 8 提前落地）：DEP0003 废弃的 legacy 错误路由。
+//! `domain` 内置模块（Phase 8 提前落地）：DEP0003 废弃的 legacy 错误路由。
 //!
 //! 照实移植 Node.js 22 LTS 规范：
 //! - 导出 `create` / `createDomain`（同一函数对象）/ `Domain` / `active`
@@ -28,8 +28,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// 模块级共享状态（Node 的模块级 stack / active）。
@@ -86,16 +86,31 @@ struct WrapCtx {
 static MODULE_ID: AtomicU32 = AtomicU32::new(0);
 /// Domain.prototype 句柄（`new Domain()` 实例的原型链）。
 static PROTO_ID: AtomicU32 = AtomicU32::new(0);
-/// 模块级全局状态。
-static GLOBAL: Mutex<Option<DomainGlobal>> = Mutex::new(None);
-/// domain 实例表：实例句柄 → 状态。
-static DOMAINS: Mutex<Option<HashMap<u32, DomainState>>> = Mutex::new(None);
-/// emitter 句柄 → 所属 domain 句柄（内部 error 转发路由表）。
-static FORWARDER_OF: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
-/// 最近创建的 bind 包装上下文。
-static LAST_BIND: Mutex<Option<WrapCtx>> = Mutex::new(None);
-/// 最近创建的 intercept 包装上下文。
-static LAST_INTERCEPT: Mutex<Option<WrapCtx>> = Mutex::new(None);
+// 模块级全局状态。
+thread_local! {
+    // GLOBAL：线程局部（堆句柄仅本线程 Vm 有效）。
+    static GLOBAL: RefCell<Option<DomainGlobal>> = const { RefCell::new(None) };
+}
+// domain 实例表：实例句柄 → 状态。
+thread_local! {
+    // DOMAINS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static DOMAINS: RefCell<Option<HashMap<u32, DomainState>>> = const { RefCell::new(None) };
+}
+// emitter 句柄 → 所属 domain 句柄（内部 error 转发路由表）。
+thread_local! {
+    // FORWARDER_OF：线程局部（堆句柄仅本线程 Vm 有效）。
+    static FORWARDER_OF: RefCell<Option<HashMap<u32, u32>>> = const { RefCell::new(None) };
+}
+// 最近创建的 bind 包装上下文。
+thread_local! {
+    // LAST_BIND：线程局部（堆句柄仅本线程 Vm 有效）。
+    static LAST_BIND: RefCell<Option<WrapCtx>> = const { RefCell::new(None) };
+}
+// 最近创建的 intercept 包装上下文。
+thread_local! {
+    // LAST_INTERCEPT：线程局部（堆句柄仅本线程 Vm 有效）。
+    static LAST_INTERCEPT: RefCell<Option<WrapCtx>> = const { RefCell::new(None) };
+}
 /// DEP0003 弃用警告只发一次。
 static DEPRECATION_EMITTED: AtomicBool = AtomicBool::new(false);
 
@@ -107,14 +122,17 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 /// 全局状态访问。
 fn with_global<R>(f: impl FnOnce(&mut DomainGlobal) -> R) -> R {
-    let mut guard = GLOBAL.lock().unwrap();
-    f(guard.get_or_insert_with(DomainGlobal::default))
+    GLOBAL.with(|g| f(g.borrow_mut().get_or_insert_with(DomainGlobal::default)))
 }
 
 /// 实例状态访问。
 fn with_domain<R>(id: u32, f: impl FnOnce(&mut DomainState) -> R) -> Option<R> {
-    let mut guard = DOMAINS.lock().unwrap();
-    guard.get_or_insert_with(HashMap::new).get_mut(&id).map(f)
+    DOMAINS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .get_mut(&id)
+            .map(f)
+    })
 }
 
 /// 首次使用时发出 DEP0003 弃用警告（对齐 Go 的 EmitDeprecation 文本）。
@@ -198,9 +216,11 @@ fn set_module_active(vm: &mut Vm, v: Value) {
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
     MODULE_ID.store(obj.0, Ordering::SeqCst);
-    *GLOBAL.lock().unwrap() = Some(DomainGlobal {
-        stack: Vec::new(),
-        active: Value::Null,
+    GLOBAL.with(|g| {
+        *g.borrow_mut() = Some(DomainGlobal {
+            stack: Vec::new(),
+            active: Value::Null,
+        });
     });
 
     // create / createDomain：同一函数对象（Node 别名语义）
@@ -318,11 +338,8 @@ fn new_instance(vm: &mut Vm, with_proto: bool) -> Value {
         let fn_ref = vm.alloc_native_fn(&format!("domain:instance.{method}"));
         let _ = vm.set_property(Value::Object(obj), method, Value::Object(fn_ref));
     }
-    DOMAINS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(
+    DOMAINS.with(|g| {
+        g.borrow_mut().get_or_insert_with(HashMap::new).insert(
             obj.0,
             DomainState {
                 listeners: HashMap::new(),
@@ -332,6 +349,7 @@ fn new_instance(vm: &mut Vm, with_proto: bool) -> Value {
                 forwarders: HashMap::new(),
             },
         );
+    });
     Value::Object(obj)
 }
 
@@ -438,13 +456,13 @@ fn domain_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(id) = receiver_id() else {
         return Ok(Value::Undefined);
     };
-    *LAST_BIND.lock().unwrap() = Some(WrapCtx { domain: id, cb });
+    LAST_BIND.with(|g| *g.borrow_mut() = Some(WrapCtx { domain: id, cb }));
     Ok(Value::Object(vm.alloc_native_fn("domain:runBound")))
 }
 
 /// bind 包装调用：enter → 调用 → exit；抛错原样传播（domain 保持 enter）。
 fn run_bound_trampoline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(ctx) = LAST_BIND.lock().unwrap().clone() else {
+    let Some(ctx) = LAST_BIND.with(|g| g.borrow().clone()) else {
         return Ok(Value::Undefined);
     };
     let self_val = Value::Object(ObjectRef(ctx.domain));
@@ -473,13 +491,13 @@ fn domain_intercept(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(id) = receiver_id() else {
         return Ok(Value::Undefined);
     };
-    *LAST_INTERCEPT.lock().unwrap() = Some(WrapCtx { domain: id, cb });
+    LAST_INTERCEPT.with(|g| *g.borrow_mut() = Some(WrapCtx { domain: id, cb }));
     Ok(Value::Object(vm.alloc_native_fn("domain:runIntercepted")))
 }
 
 /// intercept 包装调用。
 fn run_intercepted_trampoline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(ctx) = LAST_INTERCEPT.lock().unwrap().clone() else {
+    let Some(ctx) = LAST_INTERCEPT.with(|g| g.borrow().clone()) else {
         return Ok(Value::Undefined);
     };
     let first = args.first().copied().unwrap_or(Value::Undefined);
@@ -547,11 +565,11 @@ fn domain_add(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 with_domain(id, |st| {
                     st.forwarders.insert(er.0, forwarder);
                 });
-                FORWARDER_OF
-                    .lock()
-                    .unwrap()
-                    .get_or_insert_with(HashMap::new)
-                    .insert(er.0, id);
+                FORWARDER_OF.with(|g| {
+                    g.borrow_mut()
+                        .get_or_insert_with(HashMap::new)
+                        .insert(er.0, id);
+                });
             }
         }
     }
@@ -571,11 +589,11 @@ fn domain_remove(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Value::Object(er) = ee {
         let _ = vm.set_property(ee, "domain", Value::Null);
         let forwarder = with_domain(id, |st| st.forwarders.remove(&er.0)).flatten();
-        FORWARDER_OF
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashMap::new)
-            .remove(&er.0);
+        FORWARDER_OF.with(|g| {
+            g.borrow_mut()
+                .get_or_insert_with(HashMap::new)
+                .remove(&er.0);
+        });
         if let Some(fwd) = forwarder {
             if let Ok(off_fn) = vm.get_property(ee, "removeListener") {
                 if is_function(vm, off_fn) {
@@ -610,13 +628,12 @@ fn error_forwarder(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(emitter_id) = receiver_id() else {
         return Ok(Value::Undefined);
     };
-    let Some(domain_id) = FORWARDER_OF
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .get(&emitter_id)
-        .copied()
-    else {
+    let Some(domain_id) = FORWARDER_OF.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .get(&emitter_id)
+            .copied()
+    }) else {
         return Ok(Value::Undefined);
     };
     let er = args.first().copied().unwrap_or(Value::Undefined);

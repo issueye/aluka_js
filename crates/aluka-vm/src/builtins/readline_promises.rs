@@ -21,8 +21,9 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::thread::LocalKey;
 
 // 复用 `readline` 模块的阻塞读行 / 直接打印 / 可调用判定 / 事件触发工具。
 use crate::builtins::readline::{emit_event, is_callable_value, print_direct, read_line_blocking};
@@ -58,17 +59,23 @@ struct IfaceEntry {
     output: Option<Value>,
 }
 
-static IFACES: Mutex<Option<HashMap<u32, IfaceEntry>>> = Mutex::new(None);
-static CHANNELS: Mutex<Option<HashMap<u32, InputChannel>>> = Mutex::new(None);
+// Interface 实例状态表：实例句柄 → 捕获的输入/输出流。
+thread_local! {
+    // IFACES：线程局部（堆句柄仅本线程 Vm 有效）。
+    static IFACES: RefCell<Option<HashMap<u32, IfaceEntry>>> = const { RefCell::new(None) };
+}
+// 输入流消费通道表：流句柄 → 通道状态。
+thread_local! {
+    // CHANNELS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static CHANNELS: RefCell<Option<HashMap<u32, InputChannel>>> = const { RefCell::new(None) };
+}
 
-/// 在状态表上执行闭包（惰性初始化；各表独立加锁不嵌套）。
-fn with_map<T, F, R>(m: &Mutex<Option<HashMap<u32, T>>>, f: F) -> R
+/// 在状态表上执行闭包（惰性初始化；各表独立访问不嵌套）。
+fn with_map<T, F, R>(m: &'static LocalKey<RefCell<Option<HashMap<u32, T>>>>, f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, T>) -> R,
 {
-    let mut guard = m.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    f(map)
+    m.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 /// 构建 `readline/promises` 模块对象。

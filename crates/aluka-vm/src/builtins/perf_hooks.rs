@@ -1,4 +1,4 @@
-﻿//! `perf_hooks` 内置模块（Phase 3）：Performance / User Timing API。
+//! `perf_hooks` 内置模块（Phase 3）：Performance / User Timing API。
 //!
 //! 语义实测对齐 Node.js 22 LTS 标准（`nodediag.NewPerfHooks`）：
 //! - `performance.now()`：基于启动原点的单调时钟（毫秒浮点数）；
@@ -9,7 +9,7 @@ use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_p
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
-use std::sync::Mutex;
+use std::cell::RefCell;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// 单条性能记录。
@@ -21,7 +21,11 @@ struct PerfEntry {
     duration: f64,
 }
 
-static PERF_STATE: Mutex<Option<PerfState>> = Mutex::new(None);
+// 性能记录状态表（按线程 Vm 隔离）。
+thread_local! {
+    // PERF_STATE：线程局部（性能记录随线程 Vm 生命周期）。
+    static PERF_STATE: RefCell<Option<PerfState>> = const { RefCell::new(None) };
+}
 
 struct PerfState {
     start_instant: Instant,
@@ -31,19 +35,21 @@ struct PerfState {
 }
 
 fn init_state() {
-    let mut guard = PERF_STATE.lock().unwrap();
-    if guard.is_none() {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as f64)
-            .unwrap_or(0.0);
-        *guard = Some(PerfState {
-            start_instant: Instant::now(),
-            time_origin: now_ms,
-            entries: Vec::new(),
-            marks: std::collections::HashMap::new(),
-        });
-    }
+    PERF_STATE.with(|g| {
+        let mut guard = g.borrow_mut();
+        if guard.is_none() {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as f64)
+                .unwrap_or(0.0);
+            *guard = Some(PerfState {
+                start_instant: Instant::now(),
+                time_origin: now_ms,
+                entries: Vec::new(),
+                marks: std::collections::HashMap::new(),
+            });
+        }
+    });
 }
 
 /// `require("perf_hooks")` / `require("node:perf_hooks")` 主模块。
@@ -65,10 +71,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 
     set_module_prop(vm, obj, "performance", Value::Object(perf_obj))?;
 
-    let time_origin = {
-        let guard = PERF_STATE.lock().unwrap();
-        guard.as_ref().map(|s| s.time_origin).unwrap_or(0.0)
-    };
+    let time_origin =
+        PERF_STATE.with(|g| g.borrow().as_ref().map(|s| s.time_origin).unwrap_or(0.0));
     set_module_prop(vm, perf_obj, "timeOrigin", Value::Number(time_origin))?;
 
     for method in [
@@ -122,11 +126,12 @@ fn build_performance(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<Obje
 /// `performance.now()`
 fn now(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     init_state();
-    let guard = PERF_STATE.lock().unwrap();
-    let elapsed = guard
-        .as_ref()
-        .map(|s| s.start_instant.elapsed().as_secs_f64() * 1000.0)
-        .unwrap_or(0.0);
+    let elapsed = PERF_STATE.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|s| s.start_instant.elapsed().as_secs_f64() * 1000.0)
+            .unwrap_or(0.0)
+    });
     Ok(Value::Number(elapsed))
 }
 
@@ -138,18 +143,21 @@ fn mark(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .map(|v| vm.format_value(*v))
         .unwrap_or_else(|| "default".to_owned());
 
-    let mut guard = PERF_STATE.lock().unwrap();
-    let state = guard.as_mut().unwrap();
-    let start_time = state.start_instant.elapsed().as_secs_f64() * 1000.0;
+    let entry = PERF_STATE.with(|g| {
+        let mut guard = g.borrow_mut();
+        let state = guard.as_mut().unwrap();
+        let start_time = state.start_instant.elapsed().as_secs_f64() * 1000.0;
 
-    state.marks.insert(name.clone(), start_time);
-    let entry = PerfEntry {
-        name: name.clone(),
-        entry_type: "mark".to_owned(),
-        start_time,
-        duration: 0.0,
-    };
-    state.entries.push(entry.clone());
+        state.marks.insert(name.clone(), start_time);
+        let entry = PerfEntry {
+            name: name.clone(),
+            entry_type: "mark".to_owned(),
+            start_time,
+            duration: 0.0,
+        };
+        state.entries.push(entry.clone());
+        entry
+    });
 
     Ok(Value::Object(perf_entry_to_obj(vm, &entry)))
 }
@@ -165,30 +173,33 @@ fn measure(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let start_name = args.get(1).map(|v| vm.format_value(*v));
     let end_name = args.get(2).map(|v| vm.format_value(*v));
 
-    let mut guard = PERF_STATE.lock().unwrap();
-    let state = guard.as_mut().unwrap();
-    let now = state.start_instant.elapsed().as_secs_f64() * 1000.0;
+    let entry = PERF_STATE.with(|g| {
+        let mut guard = g.borrow_mut();
+        let state = guard.as_mut().unwrap();
+        let now = state.start_instant.elapsed().as_secs_f64() * 1000.0;
 
-    let start_time = if let Some(sn) = start_name {
-        state.marks.get(&sn).copied().unwrap_or(0.0)
-    } else {
-        0.0
-    };
+        let start_time = if let Some(sn) = start_name {
+            state.marks.get(&sn).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
 
-    let end_time = if let Some(en) = end_name {
-        state.marks.get(&en).copied().unwrap_or(now)
-    } else {
-        now
-    };
+        let end_time = if let Some(en) = end_name {
+            state.marks.get(&en).copied().unwrap_or(now)
+        } else {
+            now
+        };
 
-    let duration = (end_time - start_time).max(0.0);
-    let entry = PerfEntry {
-        name: name.clone(),
-        entry_type: "measure".to_owned(),
-        start_time,
-        duration,
-    };
-    state.entries.push(entry.clone());
+        let duration = (end_time - start_time).max(0.0);
+        let entry = PerfEntry {
+            name: name.clone(),
+            entry_type: "measure".to_owned(),
+            start_time,
+            duration,
+        };
+        state.entries.push(entry.clone());
+        entry
+    });
 
     Ok(Value::Object(perf_entry_to_obj(vm, &entry)))
 }
@@ -196,11 +207,12 @@ fn measure(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `performance.getEntries()`
 fn get_entries(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     init_state();
-    let guard = PERF_STATE.lock().unwrap();
-    let entries = guard
-        .as_ref()
-        .map(|s| s.entries.clone())
-        .unwrap_or_default();
+    let entries = PERF_STATE.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|s| s.entries.clone())
+            .unwrap_or_default()
+    });
     let list: Vec<Value> = entries
         .iter()
         .map(|e| Value::Object(perf_entry_to_obj(vm, e)))
@@ -215,11 +227,12 @@ fn get_entries_by_type(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_default();
-    let guard = PERF_STATE.lock().unwrap();
-    let entries = guard
-        .as_ref()
-        .map(|s| s.entries.clone())
-        .unwrap_or_default();
+    let entries = PERF_STATE.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|s| s.entries.clone())
+            .unwrap_or_default()
+    });
     let list: Vec<Value> = entries
         .iter()
         .filter(|e| e.entry_type == typ)
@@ -235,11 +248,12 @@ fn get_entries_by_name(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_default();
-    let guard = PERF_STATE.lock().unwrap();
-    let entries = guard
-        .as_ref()
-        .map(|s| s.entries.clone())
-        .unwrap_or_default();
+    let entries = PERF_STATE.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|s| s.entries.clone())
+            .unwrap_or_default()
+    });
     let list: Vec<Value> = entries
         .iter()
         .filter(|e| e.name == name)
@@ -252,17 +266,19 @@ fn get_entries_by_name(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn clear_marks(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     init_state();
     let target = args.first().map(|v| vm.format_value(*v));
-    let mut guard = PERF_STATE.lock().unwrap();
-    let state = guard.as_mut().unwrap();
-    if let Some(name) = target {
-        state.marks.remove(&name);
-        state
-            .entries
-            .retain(|e| !(e.entry_type == "mark" && e.name == name));
-    } else {
-        state.marks.clear();
-        state.entries.retain(|e| e.entry_type != "mark");
-    }
+    PERF_STATE.with(|g| {
+        let mut guard = g.borrow_mut();
+        let state = guard.as_mut().unwrap();
+        if let Some(name) = target {
+            state.marks.remove(&name);
+            state
+                .entries
+                .retain(|e| !(e.entry_type == "mark" && e.name == name));
+        } else {
+            state.marks.clear();
+            state.entries.retain(|e| e.entry_type != "mark");
+        }
+    });
     Ok(Value::Undefined)
 }
 

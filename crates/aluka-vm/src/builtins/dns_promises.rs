@@ -26,8 +26,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::net::{IpAddr, ToSocketAddrs};
-use std::sync::Mutex;
 
 /// DNS 异步待派发动作（Promise 兑现 / 回调调用）。
 pub(crate) enum DnsAction {
@@ -40,16 +40,25 @@ pub(crate) enum DnsAction {
     },
 }
 
-/// dns 家族共享的异步派发队列（`node:dns` 与 `node:dns/promises` 共用）。
-pub(crate) static DNS_PENDING: Mutex<std::collections::VecDeque<DnsAction>> =
-    Mutex::new(std::collections::VecDeque::new());
+// dns 家族共享的异步派发队列（`node:dns` 与 `node:dns/promises` 共用）。
+thread_local! {
+    // DNS_PENDING：线程局部（堆句柄仅本线程 Vm 有效）。
+    pub(crate) static DNS_PENDING: RefCell<std::collections::VecDeque<DnsAction>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+}
 
-/// `setDefaultResultOrder` 共享状态（Node 22 默认 verbatim；解析本身不重排，
-/// 对齐 Go 观测：设置后 lookup 结果仍按系统序返回）。
-pub(crate) static DEFAULT_RESULT_ORDER: Mutex<Option<String>> = Mutex::new(None);
+// `setDefaultResultOrder` 共享状态（Node 22 默认 verbatim；解析本身不重排，
+// 对齐 Go 观测：设置后 lookup 结果仍按系统序返回）。
+thread_local! {
+    // DEFAULT_RESULT_ORDER：线程局部（同线程的 dns 与 dns/promises 共享）。
+    pub(crate) static DEFAULT_RESULT_ORDER: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
-/// dns/promises 单例缓存（`dns.promises === require("node:dns/promises")`）。
-static PROMISES_OBJ: Mutex<Option<u32>> = Mutex::new(None);
+// dns/promises 单例缓存（`dns.promises === require("node:dns/promises")`）。
+thread_local! {
+    // PROMISES_OBJ：线程局部（缓存句柄仅本线程堆有效）。
+    static PROMISES_OBJ: RefCell<Option<u32>> = const { RefCell::new(None) };
+}
 
 /// `require("dns/promises")` / `require("node:dns/promises")` 模块定义。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -67,14 +76,15 @@ pub(crate) fn get_or_build_promises(
     vm: &mut Vm,
     registry: &mut BuiltinRegistry,
 ) -> Result<ObjectRef, VmError> {
-    if let Some(id) = PROMISES_OBJ.lock().unwrap().as_ref() {
+    let cached = PROMISES_OBJ.with(|g| *g.borrow());
+    if let Some(id) = cached {
         // 同一堆内的缓存句柄直接复用（跨 VM 实例句柄失效则重建）。
-        if (*id as usize) < vm.heap.len() {
-            return Ok(ObjectRef(*id));
+        if (id as usize) < vm.heap.len() {
+            return Ok(ObjectRef(id));
         }
     }
     let obj = build_promises_obj(vm, registry)?;
-    *PROMISES_OBJ.lock().unwrap() = Some(obj.0);
+    PROMISES_OBJ.with(|g| *g.borrow_mut() = Some(obj.0));
     Ok(obj)
 }
 
@@ -363,10 +373,7 @@ pub(crate) fn dns_error_codes() -> Vec<(&'static str, &'static str)> {
 
 /// 入队 dns 异步动作并激活 dns 事件源。
 pub(crate) fn enqueue_dns(vm: &mut Vm, cb: Value, args: Vec<Value>) {
-    DNS_PENDING
-        .lock()
-        .unwrap()
-        .push_back(DnsAction::Call { cb, args });
+    DNS_PENDING.with(|g| g.borrow_mut().push_back(DnsAction::Call { cb, args }));
     vm.activate_event_source("dns", dns_pump);
 }
 
@@ -374,7 +381,7 @@ pub(crate) fn enqueue_dns(vm: &mut Vm, cb: Value, args: Vec<Value>) {
 fn dns_pump(vm: &mut Vm) -> Result<bool, VmError> {
     let mut progressed = false;
     loop {
-        let action = DNS_PENDING.lock().unwrap().pop_front();
+        let action = DNS_PENDING.with(|g| g.borrow_mut().pop_front());
         let Some(DnsAction::Call { cb, args }) = action else {
             break;
         };
@@ -605,7 +612,7 @@ fn promises_set_servers(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError>
 /// `dns.promises.setDefaultResultOrder(order)`（与 node:dns 共享状态）。
 fn promises_set_default_result_order(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(v) = args.first() {
-        *DEFAULT_RESULT_ORDER.lock().unwrap() = Some(vm.format_value(*v));
+        DEFAULT_RESULT_ORDER.with(|g| *g.borrow_mut() = Some(vm.format_value(*v)));
     }
     Ok(Value::Undefined)
 }
@@ -613,9 +620,7 @@ fn promises_set_default_result_order(vm: &mut Vm, args: &[Value]) -> Result<Valu
 /// `dns.promises.getDefaultResultOrder()`。
 fn promises_get_default_result_order(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let order = DEFAULT_RESULT_ORDER
-        .lock()
-        .unwrap()
-        .clone()
+        .with(|g| g.borrow().clone())
         .unwrap_or_else(|| "verbatim".to_owned());
     Ok(Value::Object(vm.alloc_string(order)))
 }

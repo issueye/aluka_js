@@ -338,7 +338,7 @@ fn dns_set_servers(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `dns.setDefaultResultOrder(order)`（与 dns/promises 共享状态）。
 fn dns_set_default_result_order(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(v) = args.first() {
-        *DEFAULT_RESULT_ORDER.lock().unwrap() = Some(vm.format_value(*v));
+        DEFAULT_RESULT_ORDER.with(|g| *g.borrow_mut() = Some(vm.format_value(*v)));
     }
     Ok(Value::Undefined)
 }
@@ -346,9 +346,7 @@ fn dns_set_default_result_order(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
 /// `dns.getDefaultResultOrder()`。
 fn dns_get_default_result_order(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let order = DEFAULT_RESULT_ORDER
-        .lock()
-        .unwrap()
-        .clone()
+        .with(|g| g.borrow().clone())
         .unwrap_or_else(|| "verbatim".to_owned());
     Ok(Value::Object(vm.alloc_string(order)))
 }
@@ -408,7 +406,7 @@ mod tests {
     #[test]
     fn dns_queue_starts_empty_per_process() {
         // 共享队列在进程生命周期内惰性创建；此处仅验证可安全加锁。
-        let len = DNS_PENDING.lock().unwrap().len();
+        let len = DNS_PENDING.with(|g| g.borrow().len());
         assert_eq!(len, 0);
     }
 }

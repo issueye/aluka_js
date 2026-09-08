@@ -1,14 +1,14 @@
 //! `http` 内置库的 Rust 侧运行时状态。
 //!
 //! 与模板（`stream.rs`/`events.rs`）一致：所有 socket 与实例状态放在
-//! `Mutex` 静态表里，以对象堆句柄 `ObjectRef.0` 为键；泵函数非阻塞地
+//! 线程局部静态表里，以对象堆句柄 `ObjectRef.0` 为键；泵函数非阻塞地
 //! accept/读写 socket，解析出完整报文后经 `vm.invoke_callable` 派发回调。
 
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
 
 /// 一条已接受的 TCP 连接（服务端）。
 pub(crate) struct Conn {
@@ -127,9 +127,6 @@ pub(crate) struct ReqDispatch {
     pub body: Vec<u8>,
 }
 
-static SERVERS: Mutex<Option<Vec<Server>>> = Mutex::new(None);
-static CLIENTS: Mutex<Option<Vec<ClientReq>>> = Mutex::new(None);
-static RESPONSES: Mutex<Option<HashMap<u32, RespBinding>>> = Mutex::new(None);
 /// 监听器条目（回调 + 是否一次性）。
 struct ListenerItem {
     /// 回调值
@@ -141,18 +138,24 @@ struct ListenerItem {
 /// 监听器表：对象句柄 → (事件名 → 监听器列表)。
 type ListenerMap = HashMap<u32, HashMap<String, Vec<ListenerItem>>>;
 
-static LISTENERS: Mutex<Option<ListenerMap>> = Mutex::new(None);
-static CONN_COUNTER: Mutex<u64> = Mutex::new(0);
-/// 待发射事件队列（目标对象, 事件名）：`end` 的 finish/close、`listen` 的
-/// listening 等，由泵在安全时机统一发射（对齐 Go `PostTask` 顺序）。
-static PENDING_EVENTS: Mutex<Vec<(Value, &'static str)>> = Mutex::new(Vec::new());
-/// 待发射 `'timeout'` 的请求对象队列（宏任务标记函数消费）。
-static TIMEOUT_TARGETS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
-
-/// Agent keepAlive 连接池：origin("host:port") → 空闲 TCP 流（上限 4/origin，
-/// 对齐 Node globalAgent keepAlive 默认语义；复用失败自动丢弃）。
-pub(crate) static CONN_POOL: Mutex<Option<HashMap<String, Vec<std::net::TcpStream>>>> =
-    Mutex::new(None);
+// http 模块全部运行时状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static SERVERS: RefCell<Option<Vec<Server>>> = const { RefCell::new(None) };
+    static CLIENTS: RefCell<Option<Vec<ClientReq>>> = const { RefCell::new(None) };
+    static RESPONSES: RefCell<Option<HashMap<u32, RespBinding>>> = const { RefCell::new(None) };
+    static LISTENERS: RefCell<Option<ListenerMap>> = const { RefCell::new(None) };
+    static CONN_COUNTER: RefCell<u64> = const { RefCell::new(0) };
+    // 待发射事件队列（目标对象, 事件名）：`end` 的 finish/close、`listen` 的
+    // listening 等，由泵在安全时机统一发射（对齐 Go `PostTask` 顺序）。
+    static PENDING_EVENTS: RefCell<Vec<(Value, &'static str)>> =
+        const { RefCell::new(Vec::new()) };
+    // 待发射 `'timeout'` 的请求对象队列（宏任务标记函数消费）。
+    static TIMEOUT_TARGETS: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+    // Agent keepAlive 连接池：origin("host:port") → 空闲 TCP 流（上限 4/origin，
+    // 对齐 Node globalAgent keepAlive 默认语义；复用失败自动丢弃）。
+    pub(crate) static CONN_POOL: RefCell<Option<HashMap<String, Vec<std::net::TcpStream>>>> =
+        const { RefCell::new(None) };
+}
 
 /// 连接池单 origin 上限。
 const POOL_CAP: usize = 4;
@@ -160,136 +163,148 @@ const POOL_CAP: usize = 4;
 /// 从连接池取一条到 `origin` 的存活流（`peek` 探活：WouldBlock=存活，
 /// Ok(0)=对端已关闭）。
 pub(crate) fn pool_take(origin: &str) -> Option<std::net::TcpStream> {
-    let mut guard = CONN_POOL.lock().unwrap();
-    let pool = guard.get_or_insert_with(HashMap::new);
-    while let Some(stream) = pool.get_mut(origin).and_then(|v| v.pop()) {
-        let mut probe = [0u8; 1];
-        match stream.peek(&mut probe) {
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Some(stream),
-            _ => continue, // 对端已关或出错：丢弃继续取
+    CONN_POOL.with(|g| {
+        let mut binding = g.borrow_mut();
+        let pool = binding.get_or_insert_with(HashMap::new);
+        while let Some(stream) = pool.get_mut(origin).and_then(|v| v.pop()) {
+            let mut probe = [0u8; 1];
+            match stream.peek(&mut probe) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Some(stream),
+                _ => continue, // 对端已关或出错：丢弃继续取
+            }
         }
-    }
-    None
+        None
+    })
 }
 
 /// 归还一条流到连接池（超上限则丢弃）。
 pub(crate) fn pool_put(origin: &str, stream: std::net::TcpStream) {
-    let mut guard = CONN_POOL.lock().unwrap();
-    let pool = guard.get_or_insert_with(HashMap::new);
-    let slot = pool.entry(origin.to_owned()).or_default();
-    if slot.len() < POOL_CAP {
-        slot.push(stream);
-    }
+    CONN_POOL.with(|g| {
+        let mut binding = g.borrow_mut();
+        let pool = binding.get_or_insert_with(HashMap::new);
+        let slot = pool.entry(origin.to_owned()).or_default();
+        if slot.len() < POOL_CAP {
+            slot.push(stream);
+        }
+    });
 }
 
 /// 入队一条待发射事件。
 pub(crate) fn push_pending_event(target: Value, event: &'static str) {
-    PENDING_EVENTS.lock().unwrap().push((target, event));
+    PENDING_EVENTS.with(|q| q.borrow_mut().push((target, event)));
 }
 
 /// 取走全部待发射事件。
 pub(crate) fn drain_pending_events() -> Vec<(Value, &'static str)> {
-    std::mem::take(&mut *PENDING_EVENTS.lock().unwrap())
+    PENDING_EVENTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
 /// 入队 `'timeout'` 发射目标。
 pub(crate) fn push_timeout_target(target: Value) {
-    TIMEOUT_TARGETS.lock().unwrap().push(target);
+    TIMEOUT_TARGETS.with(|q| q.borrow_mut().push(target));
 }
 
 /// 弹出队首 `'timeout'` 发射目标。
 pub(crate) fn pop_timeout_target() -> Option<Value> {
-    TIMEOUT_TARGETS.lock().unwrap().pop()
+    TIMEOUT_TARGETS.with(|q| q.borrow_mut().pop())
 }
 
 /// 可变借用服务器表。
 pub(crate) fn with_servers<R>(f: impl FnOnce(&mut Vec<Server>) -> R) -> R {
-    let mut guard = SERVERS.lock().unwrap();
-    f(guard.get_or_insert_with(Vec::new))
+    SERVERS.with(|g| f(g.borrow_mut().get_or_insert_with(Vec::new)))
 }
 
 /// 只读借用服务器表。
 pub(crate) fn read_servers<R>(f: impl FnOnce(&[Server]) -> R) -> R {
-    let guard = SERVERS.lock().unwrap();
-    f(guard.as_deref().unwrap_or(&[]))
+    SERVERS.with(|g| {
+        let binding = g.borrow();
+        f(binding.as_deref().unwrap_or(&[]))
+    })
 }
 
 /// 可变借用客户端请求表。
 pub(crate) fn with_clients<R>(f: impl FnOnce(&mut Vec<ClientReq>) -> R) -> R {
-    let mut guard = CLIENTS.lock().unwrap();
-    f(guard.get_or_insert_with(Vec::new))
+    CLIENTS.with(|g| f(g.borrow_mut().get_or_insert_with(Vec::new)))
 }
 
 /// 可变借用响应绑定表。
 pub(crate) fn with_responses<R>(f: impl FnOnce(&mut HashMap<u32, RespBinding>) -> R) -> R {
-    let mut guard = RESPONSES.lock().unwrap();
-    f(guard.get_or_insert_with(HashMap::new))
+    RESPONSES.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
 /// 分配下一个连接编号。
 pub(crate) fn next_conn_id() -> u64 {
-    let mut guard = CONN_COUNTER.lock().unwrap();
-    *guard += 1;
-    *guard
+    CONN_COUNTER.with(|c| {
+        let mut v = c.borrow_mut();
+        *v += 1;
+        *v
+    })
 }
 
 /// 为实例对象注册事件监听器（`once` 由发射时剔除实现，存储为可迭代值表）。
 pub(crate) fn add_listener(obj: u32, event: &str, cb: Value, once: bool) {
-    let mut guard = LISTENERS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.entry(obj)
-        .or_default()
-        .entry(event.to_string())
-        .or_default()
-        .push(ListenerItem { callback: cb, once });
+    LISTENERS.with(|g| {
+        let mut binding = g.borrow_mut();
+        let map = binding.get_or_insert_with(HashMap::new);
+        map.entry(obj)
+            .or_default()
+            .entry(event.to_string())
+            .or_default()
+            .push(ListenerItem { callback: cb, once });
+    });
 }
 
 /// 快照某事件当前监听器（剔除 `once` 项）。无监听器返回空表。
 fn take_listeners(obj: u32, event: &str) -> Vec<Value> {
-    let mut guard = LISTENERS.lock().unwrap();
-    let Some(map) = guard.as_mut() else {
-        return Vec::new();
-    };
-    let Some(entry) = map.get_mut(&obj) else {
-        return Vec::new();
-    };
-    let Some(list) = entry.get_mut(event) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    let mut keep = Vec::new();
-    for item in list.drain(..) {
-        out.push(item.callback);
-        if !item.once {
-            keep.push(item);
+    LISTENERS.with(|g| {
+        let mut binding = g.borrow_mut();
+        let Some(map) = binding.as_mut() else {
+            return Vec::new();
+        };
+        let Some(entry) = map.get_mut(&obj) else {
+            return Vec::new();
+        };
+        let Some(list) = entry.get_mut(event) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        let mut keep = Vec::new();
+        for item in list.drain(..) {
+            out.push(item.callback);
+            if !item.once {
+                keep.push(item);
+            }
         }
-    }
-    *list = keep;
-    out
+        *list = keep;
+        out
+    })
 }
 
 /// 查询是否存在某事件的监听器。
 pub(crate) fn has_listener(obj: u32, event: &str) -> bool {
-    let guard = LISTENERS.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&obj))
-        .and_then(|e| e.get(event))
-        .is_some_and(|l| !l.is_empty())
+    LISTENERS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&obj))
+            .and_then(|e| e.get(event))
+            .is_some_and(|l| !l.is_empty())
+    })
 }
 
 /// 移除某事件的指定回调监听器（首个匹配）。
 pub(crate) fn remove_listener(obj: u32, event: &str, cb: Value) {
-    let mut guard = LISTENERS.lock().unwrap();
-    if let Some(list) = guard
-        .as_mut()
-        .and_then(|m| m.get_mut(&obj))
-        .and_then(|e| e.get_mut(event))
-    {
-        if let Some(pos) = list.iter().position(|item| item.callback == cb) {
-            list.remove(pos);
+    LISTENERS.with(|g| {
+        if let Some(list) = g
+            .borrow_mut()
+            .as_mut()
+            .and_then(|m| m.get_mut(&obj))
+            .and_then(|e| e.get_mut(event))
+        {
+            if let Some(pos) = list.iter().position(|item| item.callback == cb) {
+                list.remove(pos);
+            }
         }
-    }
+    });
 }
 
 /// 在实例对象上发射事件：依次调用监听器；`error` 事件无监听器时按
@@ -335,22 +350,27 @@ pub(crate) type BindingSnapshot = (
 
 /// 读取 ServerResponse 绑定（不存在返回 None 的克隆快照）。
 pub(crate) fn response_binding(res_id: u32) -> Option<BindingSnapshot> {
-    let guard = RESPONSES.lock().unwrap();
-    guard.as_ref().and_then(|m| m.get(&res_id)).map(|b| {
-        (
-            b.server_obj,
-            b.conn_id,
-            b.status,
-            b.live.clone(),
-            b.wire.clone(),
-            b.body.clone(),
-            b.finished,
-        )
+    RESPONSES.with(|g| {
+        g.borrow().as_ref().and_then(|m| m.get(&res_id)).map(|b| {
+            (
+                b.server_obj,
+                b.conn_id,
+                b.status,
+                b.live.clone(),
+                b.wire.clone(),
+                b.body.clone(),
+                b.finished,
+            )
+        })
     })
 }
 
 /// 更新响应绑定（存在时）。
 pub(crate) fn update_response<R>(res_id: u32, f: impl FnOnce(&mut RespBinding) -> R) -> Option<R> {
-    let mut guard = RESPONSES.lock().unwrap();
-    guard.as_mut().and_then(|m| m.get_mut(&res_id)).map(f)
+    RESPONSES.with(|g| {
+        g.borrow_mut()
+            .as_mut()
+            .and_then(|m| m.get_mut(&res_id))
+            .map(f)
+    })
 }

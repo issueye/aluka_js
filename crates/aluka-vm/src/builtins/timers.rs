@@ -1,4 +1,4 @@
-﻿//! `timers` 与 `timers/promises` 内置模块（Phase 3）：Node 定时器与 Promise 化接口。
+//! `timers` 与 `timers/promises` 内置模块（Phase 3）：Node 定时器与 Promise 化接口。
 //!
 //! 语义实测对齐 Node.js 22 LTS 标准（`nodetimers`）：
 //! - `timers`：`setTimeout` / `clearTimeout` / `setInterval` / `clearInterval` / `setImmediate` / `clearImmediate`；
@@ -8,32 +8,39 @@ use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_p
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
-static RESOLVER_VALS: Mutex<Option<HashMap<u32, Value>>> = Mutex::new(None);
+// 解析器预存兑现值（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static RESOLVER_VALS: RefCell<Option<HashMap<u32, Value>>> = const { RefCell::new(None) };
+}
 
 /// GC root provider：解析器预存兑现值（timers/promises 延迟兑现载体）。
 pub(crate) fn resolver_roots(out: &mut crate::gc::GcRoots) {
-    let guard = RESOLVER_VALS.lock().unwrap();
-    if let Some(map) = guard.as_ref() {
-        for v in map.values() {
-            out.push(*v);
-        }
+    let vals: Vec<Value> = RESOLVER_VALS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .map(|m| m.values().copied().collect())
+            .unwrap_or_default()
+    });
+    for v in vals {
+        out.push(v);
     }
 }
 
 /// 暂存 PromiseResolver 对应的预设兑现值。
 pub fn set_resolver_val(id: u32, val: Value) {
-    let mut guard = RESOLVER_VALS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.insert(id, val);
+    RESOLVER_VALS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, val);
+    });
 }
 
 /// 取出并移除 PromiseResolver 对应的预设兑现值。
 pub fn take_resolver_val(id: u32) -> Option<Value> {
-    let mut guard = RESOLVER_VALS.lock().unwrap();
-    guard.as_mut()?.remove(&id)
+    RESOLVER_VALS.with(|g| g.borrow_mut().as_mut()?.remove(&id))
 }
 
 /// `require("timers")` / `require("node:timers")` 主模块。

@@ -20,9 +20,9 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Write as IoWrite;
-use std::sync::Mutex;
 
 /// `require("repl")` / `require("node:repl")` 主模块。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -36,7 +36,11 @@ struct ReplState {
     prompt: String,
 }
 
-static REPL_STATES: Mutex<Option<HashMap<u32, ReplState>>> = Mutex::new(None);
+// REPLServer 实例状态表：实例句柄 → 会话状态。
+thread_local! {
+    // REPL_STATES：线程局部（堆句柄仅本线程 Vm 有效）。
+    static REPL_STATES: RefCell<Option<HashMap<u32, ReplState>>> = const { RefCell::new(None) };
+}
 
 /// 构建 `repl` 模块对象并登记分派处理器。
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
@@ -96,11 +100,11 @@ fn repl_start(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let ns = Value::Object(vm.alloc_string("repl:server".to_owned()));
     set_module_prop(vm, repl_obj, "_builtinNs", ns)?;
     let id = repl_obj.0;
-    REPL_STATES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(id, ReplState { prompt });
+    REPL_STATES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, ReplState { prompt });
+    });
 
     for method in [
         "setPrompt",
@@ -214,22 +218,24 @@ fn server_close(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 读取实例提示符（未登记时为空串）。
 fn state_prompt(id: u32) -> String {
-    let guard = REPL_STATES.lock().unwrap();
-    guard
-        .as_ref()
-        .and_then(|m| m.get(&id))
-        .map(|s| s.prompt.clone())
-        .unwrap_or_default()
+    REPL_STATES.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .map(|s| s.prompt.clone())
+            .unwrap_or_default()
+    })
 }
 
 /// 更新实例提示符。
 fn set_state_prompt(id: u32, prompt: &str) {
-    let mut guard = REPL_STATES.lock().unwrap();
-    if let Some(m) = guard.as_mut() {
-        if let Some(s) = m.get_mut(&id) {
-            s.prompt = prompt.to_owned();
+    REPL_STATES.with(|g| {
+        if let Some(m) = g.borrow_mut().as_mut() {
+            if let Some(s) = m.get_mut(&id) {
+                s.prompt = prompt.to_owned();
+            }
         }
-    }
+    });
 }
 
 /// 判断堆对象形态的辅助（保持对 `HeapObject` 的窄依赖）。

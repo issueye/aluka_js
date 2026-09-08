@@ -22,8 +22,8 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// 流实例内部状态
 #[derive(Debug, Clone, Default)]
@@ -71,42 +71,44 @@ struct StreamState {
     readable_length: usize,
 }
 
-/// 全局流状态存储表（对象句柄索引 -> 流内部状态）
-static STREAM_STORE: Mutex<Option<HashMap<u32, StreamState>>> = Mutex::new(None);
+// 流状态存储表（对象句柄索引 -> 流内部状态；线程局部：堆句柄仅本线程 Vm 有效）
+thread_local! {
+    static STREAM_STORE: RefCell<Option<HashMap<u32, StreamState>>> = const { RefCell::new(None) };
+}
 
 /// 默认水位线（对齐 Node `stream` 默认 highWaterMark：64 KiB）
 const DEFAULT_HIGH_WATER_MARK: usize = 64 * 1024;
 
 /// 初始化流实例内部状态
 fn init_stream_state(id: u32, write_fn: Option<Value>, high_water_mark: usize, self_val: Value) {
-    let mut guard = STREAM_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.insert(
-        id,
-        StreamState {
-            buffer: Vec::new(),
-            ended: false,
-            finished: false,
-            flowing: false,
-            pipe_dest: None,
-            listeners: HashMap::new(),
-            write_fn,
-            write_queue: std::collections::VecDeque::new(),
-            write_busy: false,
-            write_cb_fired: false,
-            processing_writes: false,
-            awaiters: Vec::new(),
-            high_water_mark,
-            writable_length: 0,
-            need_drain: false,
-            destroyed: false,
-            errored: None,
-            pipe_wait_drain: false,
-            self_handle: Some(self_val),
-            draining: false,
-            readable_length: 0,
-        },
-    );
+    STREAM_STORE.with(|g| {
+        g.borrow_mut().get_or_insert_with(HashMap::new).insert(
+            id,
+            StreamState {
+                buffer: Vec::new(),
+                ended: false,
+                finished: false,
+                flowing: false,
+                pipe_dest: None,
+                listeners: HashMap::new(),
+                write_fn,
+                write_queue: std::collections::VecDeque::new(),
+                write_busy: false,
+                write_cb_fired: false,
+                processing_writes: false,
+                awaiters: Vec::new(),
+                high_water_mark,
+                writable_length: 0,
+                need_drain: false,
+                destroyed: false,
+                errored: None,
+                pipe_wait_drain: false,
+                self_handle: Some(self_val),
+                draining: false,
+                readable_length: 0,
+            },
+        );
+    });
 }
 
 /// 计算 chunk 的字节长度（Buffer/字符串取真实字节；其余类型 0）
@@ -136,21 +138,32 @@ fn with_stream_state<F, R>(id: u32, f: F) -> Option<R>
 where
     F: FnOnce(&mut StreamState) -> R,
 {
-    let mut guard = STREAM_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    let state = map.entry(id).or_default();
-    Some(f(state))
+    STREAM_STORE.with(|g| {
+        let mut binding = g.borrow_mut();
+        let state = binding
+            .get_or_insert_with(HashMap::new)
+            .entry(id)
+            .or_default();
+        Some(f(state))
+    })
 }
 
 /// 获取流状态快照副本
 fn get_stream_state(id: u32) -> StreamState {
-    let mut guard = STREAM_STORE.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    map.entry(id).or_default().clone()
+    STREAM_STORE.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .entry(id)
+            .or_default()
+            .clone()
+    })
 }
 
-/// M4 互通桥登记表：Node 可读流 id → web ReadableStream id（`Readable.toWeb`）。
-static WEB_BRIDGES: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+// M4 互通桥登记表：Node 可读流 id → web ReadableStream id（`Readable.toWeb`）；
+// 线程局部：堆句柄仅本线程 Vm 有效。
+thread_local! {
+    static WEB_BRIDGES: RefCell<Option<HashMap<u32, u32>>> = const { RefCell::new(None) };
+}
 
 /// M4 互通（stream_web.rs → Node 侧）：fromWeb 桥转发——把 web 侧 chunk
 /// 经 Node `push` 语义写入可读流（Null 哨兵同样适用）。
@@ -170,19 +183,16 @@ pub(crate) fn node_bridge_push(
 
 /// M4 互通：登记 toWeb 桥（Node 可读流 id → web 流 id）。
 fn attach_web_bridge(node_id: u32, web_id: u32) {
-    let mut guard = WEB_BRIDGES.lock().unwrap();
-    guard
-        .get_or_insert_with(HashMap::new)
-        .insert(node_id, web_id);
+    WEB_BRIDGES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(node_id, web_id);
+    });
 }
 
 /// M4 互通：Node push 数据/关闭哨兵实时转发到 web 流（`Readable.toWeb` live 桥）。
 fn forward_to_web(id: u32, chunk: Value) {
-    let web_id = WEB_BRIDGES
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(&id).copied());
+    let web_id = WEB_BRIDGES.with(|g| g.borrow().as_ref().and_then(|m| m.get(&id).copied()));
     if let Some(web_id) = web_id {
         if matches!(chunk, Value::Null) {
             crate::builtins::stream_web::web_bridge_close(web_id);
@@ -293,39 +303,41 @@ fn stream_internal_web_sink_write(vm: &mut Vm, args: &[Value]) -> Result<Value, 
 /// GC 根提供者：STREAM_STORE 持有的全部堆值（缓冲 chunk、写队列、监听器、
 /// pipe 目标、等待者 promise 等——静态表在 JS 可达图之外，必须显式登记）。
 pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
-    let guard = STREAM_STORE.lock().unwrap();
-    let Some(map) = guard.as_ref() else {
-        return;
-    };
-    for s in map.values() {
-        for v in &s.buffer {
-            out.push(*v);
-        }
-        for (chunk, cb) in &s.write_queue {
-            out.push(*chunk);
-            out.push(*cb);
-        }
-        if let Some(w) = s.write_fn {
-            out.push(w);
-        }
-        if let Some(p) = s.pipe_dest {
-            out.push(p);
-        }
-        for cbs in s.listeners.values() {
-            for cb in cbs {
+    STREAM_STORE.with(|g| {
+        let binding = g.borrow();
+        let Some(map) = binding.as_ref() else {
+            return;
+        };
+        for s in map.values() {
+            for v in &s.buffer {
+                out.push(*v);
+            }
+            for (chunk, cb) in &s.write_queue {
+                out.push(*chunk);
                 out.push(*cb);
             }
+            if let Some(w) = s.write_fn {
+                out.push(w);
+            }
+            if let Some(p) = s.pipe_dest {
+                out.push(p);
+            }
+            for cbs in s.listeners.values() {
+                for cb in cbs {
+                    out.push(*cb);
+                }
+            }
+            for a in &s.awaiters {
+                out.push(Value::Object(*a));
+            }
+            if let Some(h) = s.self_handle {
+                out.push(h);
+            }
+            if let Some(e) = s.errored {
+                out.push(e);
+            }
         }
-        for a in &s.awaiters {
-            out.push(Value::Object(*a));
-        }
-        if let Some(h) = s.self_handle {
-            out.push(h);
-        }
-        if let Some(e) = s.errored {
-            out.push(e);
-        }
-    }
+    });
 }
 
 /// 触发流实例的指定事件监听器
@@ -495,7 +507,7 @@ pub(crate) fn call_stream_method(
 /// 创建新的 Readable 实例
 ///
 /// 使用 `HeapObject::Readable` 变体，使 `for await...of` 的 `GetAsyncIterator`
-/// 识别流实例自身即异步迭代器；缓冲/结束/等待者状态仍存于全局 STREAM_STORE。
+/// 识别流实例自身即异步迭代器；缓冲/结束/等待者状态仍存于线程局部 STREAM_STORE。
 pub fn create_readable_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef, VmError> {
     // Ordinary 实例（与 Writable 同构）：方法经注册表分派；堆 Readable 变体
     // 保留给 fs/http 等原生物流的快速路径

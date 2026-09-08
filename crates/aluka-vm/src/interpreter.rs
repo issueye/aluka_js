@@ -166,6 +166,9 @@ pub struct Vm {
     pub(crate) microtask_queue: std::collections::VecDeque<crate::builtins::Job>,
     /// 宏任务队列（句柄 id + 到期累计毫秒 + 延迟 + 回调 + 是否周期）
     pub(crate) macro_tasks: std::collections::VecDeque<(u64, u64, u64, Value, bool)>,
+    /// 真实 worker 线程 spawn 钩子（装配层注入；None 时 `new Worker` 走
+    /// 同进程伪 worker 路径，见 `worker_threads` 模块文档）
+    pub worker_entry: Option<std::sync::Arc<crate::worker::WorkerEntryFn>>,
     /// 定时器句柄计数器（setTimeout/setInterval 分配 id）
     pub(crate) timer_counter: u64,
     /// 已被 clear 的定时器句柄集合（drain 时跳过）
@@ -365,6 +368,7 @@ impl Vm {
             events_module: None,
             builtin_registry: std::default::Default::default(),
             event_sources: Vec::new(),
+            worker_entry: None,
             gc: crate::gc::GcState::default(),
             promise_resumes: HashMap::new(),
             module_exports: HashMap::new(),
@@ -4709,29 +4713,31 @@ fn math_method(method: &str, args: &[Value]) -> Value {
     Value::Number(value)
 }
 
-/// RegExp 实例的 `lastIndex` 状态：`HeapObject::RegExp` 不携带可变字段，
-/// 以线程局部表承载（键为对象句柄，与 STREAM_STORE 同款模式）。
-static REGEX_LAST_INDEX: std::sync::Mutex<Option<HashMap<u32, usize>>> =
-    std::sync::Mutex::new(None);
+// RegExp 实例的 `lastIndex` 状态：`HeapObject::RegExp` 不携带可变字段，
+// 以线程局部表承载（键为对象句柄，与 STREAM_STORE 同款模式）。
+thread_local! {
+    static REGEX_LAST_INDEX: std::cell::RefCell<Option<HashMap<u32, usize>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// 读取 RegExp 实例的 `lastIndex`（未设置过按 0）。
 pub(crate) fn regex_last_index(obj: u32) -> usize {
-    REGEX_LAST_INDEX
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|m| m.get(&obj))
-        .copied()
-        .unwrap_or(0)
+    REGEX_LAST_INDEX.with(|c| {
+        c.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&obj))
+            .copied()
+            .unwrap_or(0)
+    })
 }
 
 /// 写入 RegExp 实例的 `lastIndex`。
 pub(crate) fn set_regex_last_index(obj: u32, value: usize) {
-    REGEX_LAST_INDEX
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(obj, value);
+    REGEX_LAST_INDEX.with(|c| {
+        c.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(obj, value);
+    });
 }
 
 /// `Object.prototype.hasOwnProperty(key)`：自有属性判定（receiver 经

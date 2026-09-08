@@ -1,4 +1,4 @@
-﻿//! `inspector` 内置模块（Phase 7）：Chrome DevTools Protocol 会话 API 面。
+//! `inspector` 内置模块（Phase 7）：Chrome DevTools Protocol 会话 API 面。
 //!
 //! 照实移植 Node.js 22 LTS 规范的
 //! 纯解释器定位：无真实 CDP 通信，仅提供 API 面（存在性检测与轻量交互）：
@@ -18,11 +18,14 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
-/// Session 实例连接标记表：实例句柄 → 是否已连接。
-static SESSIONS: Mutex<Option<HashMap<u32, bool>>> = Mutex::new(None);
+// Session 实例连接标记表：实例句柄 → 是否已连接。
+thread_local! {
+    // SESSIONS：线程局部（堆句柄仅本线程 Vm 有效）。
+    static SESSIONS: RefCell<Option<HashMap<u32, bool>>> = const { RefCell::new(None) };
+}
 
 /// `require("inspector")` / `require("node:inspector")`。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -32,9 +35,13 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 /// 会话连接标记访问。
 fn session_connected<R>(id: u32, f: impl FnOnce(&mut bool) -> R) -> R {
-    let mut guard = SESSIONS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    f(map.entry(id).or_default())
+    SESSIONS.with(|g| {
+        let mut guard = g.borrow_mut();
+        f(guard
+            .get_or_insert_with(HashMap::new)
+            .entry(id)
+            .or_default())
+    })
 }
 
 /// 当前接收者（Session 实例）句柄 id。
@@ -184,11 +191,11 @@ fn session_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
         let fn_ref = vm.alloc_native_fn(&format!("inspector:session.{method}"));
         let _ = vm.set_property(Value::Object(inst), method, Value::Object(fn_ref));
     }
-    SESSIONS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(inst.0, false);
+    SESSIONS.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(inst.0, false);
+    });
     Ok(Value::Object(inst))
 }
 

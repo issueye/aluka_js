@@ -20,8 +20,8 @@ use crate::builtins::buffer::create_buffer_instance;
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// 工作模式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,31 +53,32 @@ struct CipherState {
     auth_tag: Vec<u8>,
 }
 
-/// 实例句柄 → 密码状态。
-static CIPHER_STATES: Mutex<Option<HashMap<u32, CipherState>>> = Mutex::new(None);
+// 实例句柄 → 密码状态（线程局部：堆句柄仅本线程 Vm 有效）。
+thread_local! {
+    static CIPHER_STATES: RefCell<Option<HashMap<u32, CipherState>>> = const { RefCell::new(None) };
+}
 
 /// 写入实例状态。
 fn set_state(id: u32, state: CipherState) {
-    CIPHER_STATES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(id, state);
+    CIPHER_STATES.with(|g| {
+        g.borrow_mut()
+            .get_or_insert_with(HashMap::new)
+            .insert(id, state);
+    });
 }
 
 /// 读取实例状态快照。
 fn get_state(id: u32) -> Option<CipherState> {
-    CIPHER_STATES.lock().unwrap().as_ref()?.get(&id).cloned()
+    CIPHER_STATES.with(|g| g.borrow().as_ref()?.get(&id).cloned())
 }
 
 /// 就地更新实例状态。
 fn mutate_state<F: FnOnce(&mut CipherState)>(id: u32, f: F) {
-    let mut guard = CIPHER_STATES.lock().unwrap();
-    if let Some(map) = guard.as_mut() {
-        if let Some(state) = map.get_mut(&id) {
+    CIPHER_STATES.with(|g| {
+        if let Some(state) = g.borrow_mut().as_mut().and_then(|map| map.get_mut(&id)) {
             f(state);
         }
-    }
+    });
 }
 
 /// `createCipheriv` / `createDecipheriv(algorithm, key, iv)`。
