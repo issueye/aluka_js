@@ -146,6 +146,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         .insert("Headers".to_owned(), Value::Object(headers_ctor));
     register_handler(registry, "Headers", "ctor", headers_ctor_impl);
 
+    // Response.text / Response.json handler（fetch 返回的 Response 对象方法）
+    register_handler(registry, "Response", "text", response_text_handler);
+    register_handler(registry, "Response", "json", response_json_handler);
+
     // ===== Object 静态方法面（真实包硬需求）=====
     if let Some(octor) = vm.object_ctor {
         vm.builtin_registry.register_module_object("Object", octor);
@@ -803,6 +807,32 @@ fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// `fetch(url[, options]) -> Promise<Response>`：同步 HTTP 请求后
 /// 构造 Response 对象并以 Promise 包装返回。
+/// `Response.text()` handler：返回 _bodyText 属性的文本内容。
+fn response_text_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    vm.get_property(receiver, "_bodyText")
+}
+
+/// `Response.json()` handler：解析 _bodyText 为 JSON 并返回解析结果。
+fn response_json_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let body = vm.get_property(receiver, "_bodyText")?;
+    let text = vm.format_value(body);
+    let str_ref = vm.alloc_string(text);
+    vm.json_parse(&[Value::Object(str_ref)])
+}
+
+/// `Response.arrayBuffer()` handler：返回 _bodyText 的字节数组。
+#[allow(dead_code)]
+fn response_array_buffer_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let body = vm.get_property(receiver, "_bodyText")?;
+    let text = vm.format_value(body);
+    let bytes = text.as_bytes().to_vec();
+    let nums: Vec<Value> = bytes.iter().map(|&b| Value::Number(b as f64)).collect();
+    Ok(Value::Object(vm.alloc_array(nums)))
+}
+
 fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let url_val = args.first().copied().unwrap_or(Value::Undefined);
     let url = vm.format_value(url_val);
