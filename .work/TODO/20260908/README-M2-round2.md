@@ -57,7 +57,17 @@
 - `t12`（纯 http 环回）、`t19`（express + res.end）、`t24`（use 中间件）、`t25/t26`（中间件链 + 路由 dispatch 调用 handler）全部 200 完成，与 node 对齐；
 - **当前阻塞点（诚实登记）**：`res.send('hi')` 崩溃（err-trace：`send func=831 pc=200`，404 页面由 finalhandler 正常生成）；t27 探针显示 send 调用**挂起**（try/catch 形态）或崩溃（无 try 形态 404）——下轮入口：send 的 0x118 `this.get` / 0x12C `this.type` CALL_METHOD 或 u0 upvalue（depd 相关）细分定位；已排除：res 方法面齐全（t28 与 node 全等）、arguments 语义正确（t21）、layer.match 正确（t23）、setPrototypeOf 生效（t18）。
 
-## 4. 门禁结果（待回填 — 后台回归已启动）
+## 4. 门禁结果（全绿）
+
+```bash
+cargo fmt --all --check          # FMT-OK
+cargo clippy --all-targets --all-features -- -D warnings   # 0 error
+cargo test --workspace --all-features --no-fail-fast
+# passed: 537, failed: 0（含 test262 154 例全绿；修复 CALL_METHOD 缺
+# PromiseResolver 分派——此前 Promise.withResolvers 经静默 undefined 空转）
+```
+
+- 提交：`ad598df` `fix(m2.4): Express 依赖树复现排障批次——访问器 upvalue/枚举/process 面/setImmediate/http 拨号`
 
 ## 5. 复审结论
 - 改动全部由真实包排障驱动（http-errors→body-parser→express 链），无投机性改动；debug 插桩已清理（ALUKA_CALL_TRACE 两处 + [vm-err] Exit 豁免保留）；临时探针清出 demo 目录。
