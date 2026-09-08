@@ -149,6 +149,185 @@ fn get_stream_state(id: u32) -> StreamState {
     map.entry(id).or_default().clone()
 }
 
+/// M4 互通桥登记表：Node 可读流 id → web ReadableStream id（`Readable.toWeb`）。
+static WEB_BRIDGES: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+
+/// M4 互通（stream_web.rs → Node 侧）：fromWeb 桥转发——把 web 侧 chunk
+/// 经 Node `push` 语义写入可读流（Null 哨兵同样适用）。
+pub(crate) fn node_bridge_push(
+    vm: &mut crate::interpreter::Vm,
+    node_id: u32,
+    chunk: Value,
+) -> Result<(), crate::interpreter::VmError> {
+    call_stream_method(
+        vm,
+        Value::Object(aluka_core::ObjectRef(node_id)),
+        "push",
+        &[chunk],
+    )?;
+    Ok(())
+}
+
+/// M4 互通：登记 toWeb 桥（Node 可读流 id → web 流 id）。
+fn attach_web_bridge(node_id: u32, web_id: u32) {
+    let mut guard = WEB_BRIDGES.lock().unwrap();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .insert(node_id, web_id);
+}
+
+/// M4 互通：Node push 数据/关闭哨兵实时转发到 web 流（`Readable.toWeb` live 桥）。
+fn forward_to_web(id: u32, chunk: Value) {
+    let web_id = WEB_BRIDGES
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(&id).copied());
+    if let Some(web_id) = web_id {
+        if matches!(chunk, Value::Null) {
+            crate::builtins::stream_web::web_bridge_close(web_id);
+        } else {
+            crate::builtins::stream_web::web_bridge_enqueue(web_id, chunk);
+        }
+    }
+}
+
+/// `Readable.fromWeb(webStream)`：把 web ReadableStream 桥接为 Node 可读流。
+/// 登记双向 live 桥后，web 侧 `controller.enqueue` / `close` 同步转发 Node 侧
+/// `push` / `push(null)`（Node 22 LTS 对齐面）。
+fn readable_from_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(web) = args.first().copied() else {
+        return Ok(Value::Undefined);
+    };
+    let web_id = match &web {
+        Value::Object(r) => r.0,
+        _ => {
+            let msg =
+                vm.alloc_string("Readable.fromWeb: stream must be a ReadableStream".to_owned());
+            return Err(VmError::Thrown(Value::Object(msg)));
+        }
+    };
+    let node = create_readable_instance(vm, &[])?;
+    crate::builtins::stream_web::attach_node_bridge_and_drain(vm, web_id, node.0)?;
+    Ok(Value::Object(node))
+}
+
+/// `Readable.toWeb(nodeReadable)`：把 Node 可读流桥接为 web ReadableStream。
+/// 既有缓冲立即转入 web 队列（已结束则同步关闭），此后 Node `push` 经
+/// live 桥实时入队。
+fn readable_to_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(node_val) = args.first().copied() else {
+        return Ok(Value::Undefined);
+    };
+    let node_id = match node_val {
+        Value::Object(r) => r.0,
+        _ => {
+            let msg = vm.alloc_string("Readable.toWeb: stream must be a Readable".to_owned());
+            return Err(VmError::Thrown(Value::Object(msg)));
+        }
+    };
+    let web = crate::builtins::stream_web::create_web_readable(vm)?;
+    let state = get_stream_state(node_id);
+    for chunk in &state.buffer {
+        crate::builtins::stream_web::web_bridge_enqueue(web.0, *chunk);
+    }
+    if state.ended {
+        crate::builtins::stream_web::web_bridge_close(web.0);
+    }
+    attach_web_bridge(node_id, web.0);
+    Ok(Value::Object(web))
+}
+
+/// `Writable.fromWeb(webStream)`：把 web WritableStream 桥接为 Node 可写流。
+/// Node 侧 `write` 经内部处理器转发 web 侧 underlyingSink.write。
+fn writable_from_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(web) = args.first().copied() else {
+        return Ok(Value::Undefined);
+    };
+    let web_id = match &web {
+        Value::Object(r) => r.0,
+        _ => {
+            let msg =
+                vm.alloc_string("Writable.fromWeb: stream must be a WritableStream".to_owned());
+            return Err(VmError::Thrown(Value::Object(msg)));
+        }
+    };
+    let fwd = vm.alloc_native_fn("stream:internal.webSinkWrite");
+    vm.set_native_fn_property(fwd, "_webId", Value::Number(web_id as f64));
+    let opts = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(opts), "write", Value::Object(fwd));
+    let node = create_writable_instance(vm, &[Value::Object(opts)])?;
+    Ok(Value::Object(node))
+}
+
+/// `Writable.toWeb(nodeWritable)`：把 Node 可写流桥接为 web WritableStream。
+/// web 侧 writer.write / close 转发 Node write / end。
+fn writable_to_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(node_val) = args.first().copied() else {
+        return Ok(Value::Undefined);
+    };
+    let node = match node_val {
+        Value::Object(r) => r,
+        _ => {
+            let msg = vm.alloc_string("Writable.toWeb: stream must be a Writable".to_owned());
+            return Err(VmError::Thrown(Value::Object(msg)));
+        }
+    };
+    let web = crate::builtins::stream_web::create_web_writable(vm)?;
+    crate::builtins::stream_web::attach_node_sink(web.0, node);
+    Ok(Value::Object(web))
+}
+
+/// webSinkWrite 内部处理器：fromWeb 桥的 Node write_fn → web underlyingSink.write。
+fn stream_internal_web_sink_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Value::Object(fwd_ref) = super::pending_callee() else {
+        return Ok(Value::Undefined);
+    };
+    let Some(Value::Number(n)) = vm.get_native_fn_property(fwd_ref, "_webId") else {
+        return Ok(Value::Undefined);
+    };
+    let chunk = args.first().copied().unwrap_or(Value::Undefined);
+    crate::builtins::stream_web::web_sink_forward(vm, n as u32, chunk)
+}
+
+/// GC 根提供者：STREAM_STORE 持有的全部堆值（缓冲 chunk、写队列、监听器、
+/// pipe 目标、等待者 promise 等——静态表在 JS 可达图之外，必须显式登记）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    let guard = STREAM_STORE.lock().unwrap();
+    let Some(map) = guard.as_ref() else {
+        return;
+    };
+    for s in map.values() {
+        for v in &s.buffer {
+            out.push(*v);
+        }
+        for (chunk, cb) in &s.write_queue {
+            out.push(*chunk);
+            out.push(*cb);
+        }
+        if let Some(w) = s.write_fn {
+            out.push(w);
+        }
+        if let Some(p) = s.pipe_dest {
+            out.push(p);
+        }
+        for cbs in s.listeners.values() {
+            for cb in cbs {
+                out.push(*cb);
+            }
+        }
+        for a in &s.awaiters {
+            out.push(Value::Object(*a));
+        }
+        if let Some(h) = s.self_handle {
+            out.push(h);
+        }
+        if let Some(e) = s.errored {
+            out.push(e);
+        }
+    }
+}
+
 /// 触发流实例的指定事件监听器
 fn emit_event(vm: &mut Vm, stream_val: Value, event: &str, args: &[Value]) -> Result<(), VmError> {
     let id = match stream_val {
@@ -292,7 +471,7 @@ fn write_to_stream(vm: &mut Vm, dest: Value, chunk: Value) -> Result<Value, VmEr
 }
 
 /// 调用流对象方法：优先直接走原生流处理器
-fn call_stream_method(
+pub(crate) fn call_stream_method(
     vm: &mut Vm,
     target: Value,
     method: &str,
@@ -415,9 +594,35 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     let readable_ctor = vm.alloc_native_fn("stream.Readable");
     let from_fn = vm.alloc_native_fn("stream.Readable.from");
     let _ = vm.set_property(Value::Object(readable_ctor), "from", Value::Object(from_fn));
+    // M4 互通：Readable.fromWeb / Readable.toWeb
+    let from_web_fn = vm.alloc_native_fn("stream.Readable.fromWeb");
+    let _ = vm.set_property(
+        Value::Object(readable_ctor),
+        "fromWeb",
+        Value::Object(from_web_fn),
+    );
+    let r_to_web_fn = vm.alloc_native_fn("stream.Readable.toWeb");
+    let _ = vm.set_property(
+        Value::Object(readable_ctor),
+        "toWeb",
+        Value::Object(r_to_web_fn),
+    );
 
     // Writable 构造器对象
     let writable_ctor = vm.alloc_native_fn("stream.Writable");
+    // M4 互通：Writable.fromWeb / Writable.toWeb
+    let w_from_web_fn = vm.alloc_native_fn("stream.Writable.fromWeb");
+    let _ = vm.set_property(
+        Value::Object(writable_ctor),
+        "fromWeb",
+        Value::Object(w_from_web_fn),
+    );
+    let w_to_web_fn = vm.alloc_native_fn("stream.Writable.toWeb");
+    let _ = vm.set_property(
+        Value::Object(writable_ctor),
+        "toWeb",
+        Value::Object(w_to_web_fn),
+    );
 
     // 模块导出属性挂载
     set_module_prop(vm, obj, "Readable", Value::Object(readable_ctor))?;
@@ -451,7 +656,17 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         register_handler(registry, ns, "Readable", stream_readable_ctor);
         register_handler(registry, ns, "Writable", stream_writable_ctor);
         register_handler(registry, ns, "from", readable_from);
+        register_handler(registry, ns, "fromWeb", readable_from_web);
+        register_handler(registry, ns, "toWeb", readable_to_web);
     }
+    // Writable 侧互通（键与 NativeFn 名对齐：stream.Writable.fromWeb / toWeb）
+    register_handler(registry, "stream.Writable", "fromWeb", writable_from_web);
+    register_handler(registry, "stream.Writable", "toWeb", writable_to_web);
+    // Readable 静态互通键（属性调用 Readable.fromWeb(x) / 裸调用皆经此分派）
+    register_handler(registry, "stream.Readable", "fromWeb", readable_from_web);
+    register_handler(registry, "stream.Readable", "toWeb", readable_to_web);
+    // `Readable.from(x)` 属性调用形态键（缺它时形态一回退原构造器——静默建空流）
+    register_handler(registry, "stream.Readable", "from", readable_from);
 
     // 内部 handler（write 完成回调 / pipe 背压恢复 / pipeline 错误级联）
     register_handler(
@@ -471,6 +686,12 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "stream:internal",
         "pipelineError",
         stream_internal_pipeline_error,
+    );
+    register_handler(
+        registry,
+        "stream:internal",
+        "webSinkWrite",
+        stream_internal_web_sink_write,
     );
 
     Ok(obj)
@@ -640,6 +861,10 @@ fn stream_push(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     if with_stream_state(id, |s| s.destroyed).unwrap_or(false) {
         return Ok(Value::Boolean(false));
+    }
+    // M4 toWeb 桥：数据与结束哨兵实时转发到 web 流队列
+    if let Some(chunk) = args.first().copied() {
+        forward_to_web(id, chunk);
     }
     if let Some(chunk) = args.first().copied() {
         if matches!(chunk, Value::Null) {

@@ -1,4 +1,4 @@
-﻿//! `stream/web` 内置模块（Phase 4）：Web Streams 构造器表面 + `ReadableStreamTee`。
+//! `stream/web` 内置模块（Phase 4）：Web Streams 构造器表面 + `ReadableStreamTee`。
 //!
 //! Node.js 22 LTS 规范把全局
 //! `ReadableStream` / `WritableStream` / `TransformStream` 转发为模块导出并提供
@@ -47,10 +47,25 @@ struct RsState {
     queue: VecDeque<Value>,
     closed: bool,
     stream: ObjectRef,
+    /// M4 互通桥（`Readable.fromWeb`）：数据/关闭同步转发到的 Node 可读流 id。
+    bridge: Option<u32>,
 }
 
 /// 全部 ReadableStream 的内部状态表。
 static RS_STATES: Mutex<Option<HashMap<u32, RsState>>> = Mutex::new(None);
+
+/// WritableStream 内部状态：underlyingSink 回调 + Node 桥（toWeb）。
+struct WsState {
+    /// `underlyingSink.write(chunk)`（JS 回调，GC 根登记见 store_roots）
+    sink_write: Option<Value>,
+    /// `underlyingSink.close()`
+    sink_close: Option<Value>,
+    /// `Writable.toWeb` 桥：writer 写入转发到的 Node 可写流。
+    node_sink: Option<ObjectRef>,
+}
+
+/// 全部 WritableStream 的内部状态表。
+static WS_STATES: Mutex<Option<HashMap<u32, WsState>>> = Mutex::new(None);
 
 fn with_state<R>(id: u32, f: impl FnOnce(&mut RsState) -> R) -> Option<R> {
     let mut guard = RS_STATES.lock().unwrap();
@@ -60,6 +75,130 @@ fn with_state<R>(id: u32, f: impl FnOnce(&mut RsState) -> R) -> Option<R> {
 fn insert_state(id: u32, state: RsState) {
     let mut guard = RS_STATES.lock().unwrap();
     guard.get_or_insert_with(HashMap::new).insert(id, state);
+}
+
+/// M4 GC 根登记：两张状态表持有的全部堆值（chunk 队列 / sink 回调 / Node 桥）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    if let Some(map) = RS_STATES.lock().unwrap().as_ref() {
+        for s in map.values() {
+            for v in &s.queue {
+                out.push(*v);
+            }
+            out.push(Value::Object(s.stream));
+        }
+    }
+    if let Some(map) = WS_STATES.lock().unwrap().as_ref() {
+        for s in map.values() {
+            if let Some(w) = s.sink_write {
+                out.push(w);
+            }
+            if let Some(c) = s.sink_close {
+                out.push(c);
+            }
+            if let Some(n) = s.node_sink {
+                out.push(Value::Object(n));
+            }
+        }
+    }
+}
+
+/// M4 互通：登记 fromWeb 桥并补交既有队列（`start` 阶段先于挂桥入队的
+/// chunk 与已关闭哨兵不丢——对齐 Node `Readable.fromWeb` 的可见语义）。
+pub fn attach_node_bridge_and_drain(vm: &mut Vm, web_id: u32, node_id: u32) -> Result<(), VmError> {
+    let mut pending: Vec<Value> = Vec::new();
+    {
+        let mut guard = RS_STATES.lock().unwrap();
+        if let Some(state) = guard.as_mut().and_then(|m| m.get_mut(&web_id)) {
+            state.bridge = Some(node_id);
+            pending = state.queue.drain(..).collect();
+            if state.closed {
+                pending.push(Value::Null);
+            }
+        }
+    }
+    for chunk in pending {
+        crate::builtins::stream::node_bridge_push(vm, node_id, chunk)?;
+    }
+    Ok(())
+}
+
+/// M4 互通：Node 侧 push 转发入口——chunk 入 web 队列。
+pub fn web_bridge_enqueue(web_id: u32, chunk: Value) {
+    let mut guard = RS_STATES.lock().unwrap();
+    if let Some(map) = guard.as_mut() {
+        if let Some(state) = map.get_mut(&web_id) {
+            state.queue.push_back(chunk);
+        }
+    }
+}
+
+/// M4 互通：Node 侧 push(null) 转发入口——关闭 web 流。
+pub fn web_bridge_close(web_id: u32) {
+    let mut guard = RS_STATES.lock().unwrap();
+    if let Some(map) = guard.as_mut() {
+        if let Some(state) = map.get_mut(&web_id) {
+            state.closed = true;
+        }
+    }
+}
+
+/// 查询 WritableStream 状态（writer / toWeb 桥用）。
+fn with_ws_state<R>(id: u32, f: impl FnOnce(&mut WsState) -> R) -> Option<R> {
+    let mut guard = WS_STATES.lock().unwrap();
+    guard.as_mut()?.get_mut(&id).map(f)
+}
+
+/// 读取接收者上的 `_wsId`（WritableStream / writer 共用关联键）。
+fn receiver_ws_id(vm: &mut Vm) -> Option<u32> {
+    let this = crate::builtins::current_receiver();
+    match vm.get_property(this, "_wsId") {
+        Ok(Value::Number(n)) if n >= 0.0 => Some(n as u32),
+        _ => None,
+    }
+}
+
+/// M4 互通：为 `Writable.toWeb` 创建真实 WritableStream 实例（无 underlyingSink）。
+pub fn create_web_writable(vm: &mut Vm) -> Result<ObjectRef, VmError> {
+    writable_stream_ctor(vm, &[]).map(|v| match v {
+        Value::Object(r) => r,
+        _ => unreachable!("writable_stream_ctor 恒返回对象"),
+    })
+}
+
+/// M4 互通：登记 toWeb 桥（web 流 id → Node 可写流）。
+pub fn attach_node_sink(web_id: u32, node: ObjectRef) {
+    let mut guard = WS_STATES.lock().unwrap();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .entry(web_id)
+        .or_insert(WsState {
+            sink_write: None,
+            sink_close: None,
+            node_sink: None,
+        })
+        .node_sink = Some(node);
+}
+
+/// M4 互通：为 `Writable.fromWeb` 回写 web 流的 underlyingSink 回调
+/// （Node 可写流 → web sink 的转发目标）。
+pub fn set_web_sink_fns(web_id: u32, sink_write: Option<Value>, sink_close: Option<Value>) {
+    let mut guard = WS_STATES.lock().unwrap();
+    guard
+        .get_or_insert_with(HashMap::new)
+        .entry(web_id)
+        .or_insert(WsState {
+            sink_write: None,
+            sink_close: None,
+            node_sink: None,
+        });
+    if let Some(state) = guard.as_mut().and_then(|m| m.get_mut(&web_id)) {
+        if state.sink_write.is_none() {
+            state.sink_write = sink_write;
+        }
+        if state.sink_close.is_none() {
+            state.sink_close = sink_close;
+        }
+    }
 }
 
 // --- 通用辅助 ---------------------------------------------------------------
@@ -128,6 +267,7 @@ fn readable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             queue: VecDeque::new(),
             closed: false,
             stream,
+            bridge: None,
         },
     );
     let stream_val = Value::Object(stream);
@@ -159,11 +299,39 @@ fn readable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(stream_val)
 }
 
-/// `new WritableStream([underlyingSink])`：最小表面 `getWriter` / `write` / `close`。
-fn writable_stream_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+/// `new WritableStream([underlyingSink])`：登记 underlyingSink 回调与表面
+/// `getWriter` / `write` / `close`（M4 互通：sink 回调供 fromWeb 转发）。
+fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let stream = vm.alloc_ordinary();
+    let mut sink_write = None;
+    let mut sink_close = None;
+    if let Some(Value::Object(sink_ref)) = args.first().copied() {
+        let sink = Value::Object(sink_ref);
+        if let Ok(w) = vm.get_property(sink, "write") {
+            if is_function(vm, w) {
+                sink_write = Some(w);
+            }
+        }
+        if let Ok(c) = vm.get_property(sink, "close") {
+            if is_function(vm, c) {
+                sink_close = Some(c);
+            }
+        }
+    }
+    let mut guard = WS_STATES.lock().unwrap();
+    guard.get_or_insert_with(HashMap::new).insert(
+        stream.0,
+        WsState {
+            sink_write,
+            sink_close,
+            node_sink: None,
+        },
+    );
+    drop(guard);
+
     let stream_val = Value::Object(stream);
     set_ns(vm, stream_val, WS_NS);
+    let _ = vm.set_property(stream_val, "_wsId", Value::Number(stream.0 as f64));
     for method in ["getWriter", "write", "close"] {
         set_method(vm, stream_val, WS_NS, method);
     }
@@ -224,26 +392,37 @@ fn rs_cancel(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     resolved_promise(vm, Value::Undefined)
 }
 
-/// `rs.enqueue(chunk)` / `controller.enqueue(chunk)`：推入内部队列。
+/// `rs.enqueue(chunk)` / `controller.enqueue(chunk)`：推入内部队列；
+/// 存在 fromWeb 桥时同步转发到 Node 可读流（live 互通）。
 fn rs_enqueue(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(id) = receiver_stream_id(vm) {
         let chunk = args.first().copied().unwrap_or(Value::Undefined);
+        if let Some((Some(node_id), false)) = with_state(id, |s| (s.bridge, s.closed)) {
+            crate::builtins::stream::node_bridge_push(vm, node_id, chunk)?;
+        }
         with_state(id, |s| s.queue.push_back(chunk));
     }
     Ok(Value::Undefined)
 }
 
-/// `rs.close()` / `controller.close()`：关闭流。
+/// `rs.close()` / `controller.close()`：关闭流；fromWeb 桥同步推 Null 哨兵。
 fn rs_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     if let Some(id) = receiver_stream_id(vm) {
+        if let Some((Some(node_id), false)) = with_state(id, |s| (s.bridge, s.closed)) {
+            crate::builtins::stream::node_bridge_push(vm, node_id, Value::Null)?;
+        }
         with_state(id, |s| s.closed = true);
     }
     Ok(Value::Undefined)
 }
 
-/// `controller.error()`：标记错误态（简化为关闭，对齐 Go 的 error 行为面）。
+/// `controller.error()`：标记错误态（简化为关闭，对齐 Go 的 error 行为面）；
+/// fromWeb 桥同步推 Null 哨兵终结 Node 侧消费。
 fn ctl_error(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     if let Some(id) = receiver_stream_id(vm) {
+        if let Some((Some(node_id), false)) = with_state(id, |s| (s.bridge, s.closed)) {
+            crate::builtins::stream::node_bridge_push(vm, node_id, Value::Null)?;
+        }
         with_state(id, |s| s.closed = true);
     }
     Ok(Value::Undefined)
@@ -290,35 +469,72 @@ fn reader_release_lock(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 // --- WritableStream / writer 实例方法 ----------------------------------------
 
-/// `ws.getWriter()`：返回 writer（`write` / `close`，方法均返回已兑现 Promise）。
+/// `ws.getWriter()`：返回 writer（`write` / `close`，方法均返回已兑现 Promise）；
+/// writer 记 `_wsId` 关联所属流（M4 互通转发键）。
 fn ws_get_writer(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = crate::builtins::current_receiver();
     let writer = vm.alloc_ordinary();
     let writer_val = Value::Object(writer);
     set_ns(vm, writer_val, WRITER_NS);
+    let ws_id_prop = vm.get_property(this, "_wsId").unwrap_or(Value::Undefined);
+    let _ = vm.set_property(writer_val, "_wsId", ws_id_prop);
     for method in ["write", "close"] {
         set_method(vm, writer_val, WRITER_NS, method);
     }
     Ok(writer_val)
 }
 
-/// `ws.write(chunk)`：最小表面（Go 侧转发 sink.write）。
-fn ws_write(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    Ok(Value::Undefined)
-}
-
-/// `ws.close()`：最小表面（Go 侧转发 sink.close）。
-fn ws_close(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    Ok(Value::Undefined)
-}
-
-/// `writer.write(chunk)`：返回已兑现 Promise（对齐 Go writer.write 的返回面）。
-fn writer_write(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+/// WritableStream 写入统一路径：优先 Node 桥（toWeb），否则 underlyingSink.write；
+/// 两者皆无则静默吞下（对齐 Go 最小实现）。恒返回已兑现 Promise。
+fn ws_write_via(vm: &mut Vm, ws_id: u32, chunk: Value) -> Result<Value, VmError> {
+    let (node_sink, sink_write) =
+        with_ws_state(ws_id, |s| (s.node_sink, s.sink_write)).unwrap_or((None, None));
+    if let Some(node) = node_sink {
+        let node_val = Value::Object(node);
+        let _ = crate::builtins::stream::call_stream_method(vm, node_val, "write", &[chunk])?;
+    } else if let Some(w) = sink_write {
+        vm.invoke_callable(w, Value::Undefined, &[chunk])?;
+    }
     resolved_promise(vm, Value::Undefined)
 }
 
-/// `writer.close()`：返回已兑现 Promise。
+/// `ws.write(chunk)`：直调写入路径（`_wsId` 在流实例上）。
+fn ws_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let chunk = args.first().copied().unwrap_or(Value::Undefined);
+    let id = receiver_ws_id(vm).unwrap_or(0);
+    ws_write_via(vm, id, chunk)
+}
+
+/// `ws.close()`：转发 underlyingSink.close / Node end。
+fn ws_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let id = receiver_ws_id(vm).unwrap_or(0);
+    ws_close_via(vm, id)
+}
+
+/// WritableStream 关闭统一路径。
+fn ws_close_via(vm: &mut Vm, ws_id: u32) -> Result<Value, VmError> {
+    let (node_sink, sink_close) =
+        with_ws_state(ws_id, |s| (s.node_sink, s.sink_close)).unwrap_or((None, None));
+    if let Some(node) = node_sink {
+        let node_val = Value::Object(node);
+        let _ = crate::builtins::stream::call_stream_method(vm, node_val, "end", &[])?;
+    } else if let Some(c) = sink_close {
+        vm.invoke_callable(c, Value::Undefined, &[])?;
+    }
+    resolved_promise(vm, Value::Undefined)
+}
+
+/// `writer.write(chunk)`：经 `_wsId` 关联所属流后走统一写入路径。
+fn writer_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let chunk = args.first().copied().unwrap_or(Value::Undefined);
+    let id = receiver_ws_id(vm).unwrap_or(0);
+    ws_write_via(vm, id, chunk)
+}
+
+/// `writer.close()`：经 `_wsId` 关联所属流后走统一关闭路径。
 fn writer_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    resolved_promise(vm, Value::Undefined)
+    let id = receiver_ws_id(vm).unwrap_or(0);
+    ws_close_via(vm, id)
 }
 
 // --- ReadableStreamTee ------------------------------------------------------
@@ -338,6 +554,21 @@ fn readable_stream_tee(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return vm.invoke_callable(tee, stream, &[]);
     }
     Ok(Value::Object(vm.alloc_array(vec![stream, stream])))
+}
+
+// --- M4 互通：跨模块工厂 ------------------------------------------------
+
+/// M4 互通：为 `Readable.toWeb` 创建真实 ReadableStream 实例（无 underlyingSource）。
+pub fn create_web_readable(vm: &mut Vm) -> Result<ObjectRef, VmError> {
+    readable_stream_ctor(vm, &[]).map(|v| match v {
+        Value::Object(r) => r,
+        _ => unreachable!("readable_stream_ctor 恒返回对象"),
+    })
+}
+
+/// M4 互通：Node 可写流写入转发目标（`Writable.fromWeb` 桥内部处理器用）。
+pub fn web_sink_forward(vm: &mut Vm, ws_id: u32, chunk: Value) -> Result<Value, VmError> {
+    ws_write_via(vm, ws_id, chunk)
 }
 
 // --- 模块注册 ----------------------------------------------------------------

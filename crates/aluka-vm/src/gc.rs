@@ -565,6 +565,9 @@ fn static_roots(out: &mut GcRoots) {
     crate::builtins::promise::reaction_roots(out);
     crate::builtins::timers::resolver_roots(out);
     crate::symbol::registry_roots(out);
+    // M4：Node/Web 流静态状态表（缓冲 chunk、监听器、互通桥）
+    crate::builtins::stream::store_roots(out);
+    crate::builtins::stream_web::store_roots(out);
 }
 
 #[cfg(test)]

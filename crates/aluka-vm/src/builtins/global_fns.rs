@@ -129,22 +129,38 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     let fetch_fn = vm.alloc_native_fn("fetch");
     vm.globals
         .insert("fetch".to_owned(), Value::Object(fetch_fn));
-    register_handler(registry, "fetch", "fetch", global_fetch);
+    // 裸调用经 NativeFn 名查表：键必须恰为 "fetch"（"fetch.fetch" 永不命中）
+    registry.dispatch.insert("fetch".to_owned(), global_fetch);
 
     let abort_ctor = vm.alloc_native_ctor("AbortController", None);
     vm.globals
         .insert("AbortController".to_owned(), Value::Object(abort_ctor));
+    // 构造器体经 do_construct 以裸构造器名查表（对齐 ReadableStream 注册法）
+    registry
+        .dispatch
+        .insert("AbortController".to_owned(), abort_controller_ctor_impl);
+    // M4：abort 方法与 signal 监听器分派键（与 NativeFn 名严格对齐）
+    register_handler(registry, "AbortController", "abort", controller_abort_impl);
+    register_handler(registry, "AbortSignal", "abort", signal_abort_impl);
     register_handler(
         registry,
-        "AbortController",
-        "ctor",
-        abort_controller_ctor_impl,
+        "AbortSignal",
+        "addEventListener",
+        signal_add_event_listener,
+    );
+    register_handler(
+        registry,
+        "AbortSignal",
+        "removeEventListener",
+        signal_remove_event_listener,
     );
 
     let headers_ctor = vm.alloc_native_ctor("Headers", None);
     vm.globals
         .insert("Headers".to_owned(), Value::Object(headers_ctor));
-    register_handler(registry, "Headers", "ctor", headers_ctor_impl);
+    registry
+        .dispatch
+        .insert("Headers".to_owned(), headers_ctor_impl);
 
     // Response.text / Response.json handler（fetch 返回的 Response 对象方法）
     register_handler(registry, "Response", "text", response_text_handler);
@@ -870,6 +886,19 @@ fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 同步 HTTP 请求
     let (status, body_text) = do_sync_http_request(vm, &url, &method, &headers, body.as_ref())?;
 
+    // AbortSignal 后置检查：signal 在请求发起后（前序宏任务中）被 abort →
+    // 兑现为携带 reason（缺省 AbortError）的 rejected promise，不返回 Response
+    if let Value::Object(sig_ref) = signal {
+        if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
+            let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
+                Ok(r) if !matches!(r, Value::Undefined) => r,
+                _ => default_abort_error(vm),
+            };
+            let promise = vm.alloc_rejected_promise(reason);
+            return Ok(Value::Object(promise));
+        }
+    }
+
     // 构造 Response 对象
     let response = vm.alloc_ordinary();
     let _ = vm.set_property(
@@ -1007,7 +1036,8 @@ fn parse_http_url(_vm: &mut Vm, url: &str) -> Result<(String, u16, String), VmEr
     Ok((host, port, path))
 }
 
-/// `AbortController` 构造器：创建 { signal: { aborted, _abortId }, abort() } 对象。
+/// `AbortController` 构造器：创建 { signal: { aborted, reason, _abortId }, abort() }
+/// 对象；signal 携带 addEventListener / removeEventListener（M4 abort 联动面）。
 static ABORT_ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 fn next_abort_id() -> u32 {
@@ -1024,6 +1054,21 @@ fn abort_controller_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
         "_abortId",
         Value::Number(abort_id as f64),
     );
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "_isAbortSignal",
+        Value::Boolean(true),
+    );
+    let listeners = vm.alloc_array(Vec::new());
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "_listeners",
+        Value::Object(listeners),
+    );
+    for method in ["addEventListener", "removeEventListener"] {
+        let fn_ref = vm.alloc_native_fn(&format!("AbortSignal.{method}"));
+        let _ = vm.set_property(Value::Object(signal), method, Value::Object(fn_ref));
+    }
     let abort_fn = vm.alloc_native_fn("AbortSignal.abort");
     let _ = vm.set_property(Value::Object(signal), "abort", Value::Object(abort_fn));
     let _ = vm.set_property(Value::Object(controller), "signal", Value::Object(signal));
@@ -1034,6 +1079,105 @@ fn abort_controller_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
         Value::Object(abort_method),
     );
     Ok(Value::Object(controller))
+}
+
+/// 构造缺省 AbortError（`name: "AbortError"`）。
+fn default_abort_error(vm: &mut Vm) -> Value {
+    let err = vm.alloc_error_instance("This operation was aborted");
+    let name = vm.alloc_string("AbortError".to_owned());
+    let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+    Value::Object(err)
+}
+
+/// abort 统一路径：幂等置位 `aborted`、写 `reason`、同步触发 'abort' 监听器
+/// （事件对象 `{ type: "abort" }`，Node 22 LTS EventTarget 语义对齐面）。
+fn apply_abort(vm: &mut Vm, signal: Value, reason: Value) -> Result<(), VmError> {
+    if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+        return Ok(());
+    }
+    let _ = vm.set_property(signal, "aborted", Value::Boolean(true));
+    let reason = if matches!(reason, Value::Undefined) {
+        default_abort_error(vm)
+    } else {
+        reason
+    };
+    let _ = vm.set_property(signal, "reason", reason);
+    // 触发已登记监听器（_listeners 数组；堆数组直读）
+    if let Ok(Value::Object(arr)) = vm.get_property(signal, "_listeners") {
+        let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {
+            Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
+            _ => Vec::new(),
+        };
+        if !elements.is_empty() {
+            let event = vm.alloc_ordinary();
+            let type_str = vm.alloc_string("abort".to_owned());
+            let _ = vm.set_property(Value::Object(event), "type", Value::Object(type_str));
+            let event_val = Value::Object(event);
+            for cb in elements {
+                let _ = vm.invoke_callable(cb, Value::Undefined, &[event_val]);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `signal.addEventListener(type, cb)`：登记 'abort' 监听器（仅 type="abort" 生效）。
+fn signal_add_event_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let this = current_receiver();
+    let ty = args.first().copied().unwrap_or(Value::Undefined);
+    if vm.format_value(ty) != "abort" {
+        return Ok(Value::Undefined);
+    }
+    let Some(cb) = args.get(1).copied() else {
+        return Ok(Value::Undefined);
+    };
+    let arr = match vm.get_property(this, "_listeners") {
+        Ok(Value::Object(r)) => r,
+        _ => vm.alloc_array(Vec::new()),
+    };
+    if let Some(crate::heap::HeapObject::Array { elements, .. }) = vm.heap.get_mut(arr.0 as usize) {
+        elements.push(cb);
+    }
+    Ok(Value::Undefined)
+}
+
+/// `signal.removeEventListener(type, cb)`：移除首个匹配监听器。
+fn signal_remove_event_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let this = current_receiver();
+    let ty = args.first().copied().unwrap_or(Value::Undefined);
+    if vm.format_value(ty) != "abort" {
+        return Ok(Value::Undefined);
+    }
+    let Some(cb) = args.get(1).copied() else {
+        return Ok(Value::Undefined);
+    };
+    if let Ok(Value::Object(arr)) = vm.get_property(this, "_listeners") {
+        if let Some(crate::heap::HeapObject::Array { elements, .. }) =
+            vm.heap.get_mut(arr.0 as usize)
+        {
+            if let Some(pos) = elements.iter().position(|e| e == &cb) {
+                elements.remove(pos);
+            }
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+/// `signal.abort(reason)` handler：接收者即 signal。
+fn signal_abort_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let signal = current_receiver();
+    let reason = args.first().copied().unwrap_or(Value::Undefined);
+    apply_abort(vm, signal, reason)?;
+    Ok(Value::Undefined)
+}
+
+/// `controller.abort(reason)` handler：接收者是 controller，委托其 signal。
+fn controller_abort_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let controller = current_receiver();
+    let signal = vm.get_property(controller, "signal")?;
+    let reason = args.first().copied().unwrap_or(Value::Undefined);
+    apply_abort(vm, signal, reason)?;
+    Ok(Value::Undefined)
 }
 
 /// `Headers` 构造器：创建空 Headers 对象。
