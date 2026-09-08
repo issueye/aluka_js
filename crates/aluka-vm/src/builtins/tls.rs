@@ -251,7 +251,61 @@ const STANDARD_CIPHER_SUITES: &[&str] = &[
     "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
 ];
 
-/// 编译期锚定：密码套件表与标准一致（13 项，同序）。
+// ---- M3.2 rustls 真实 TLS 层（供 https/net 模块调用的底层构建函数）----
+// （rustls 辅助函数暂未被 JS 表面调用——供 https TLS 接线后使用）
+
+use std::sync::Arc;
+
+#[allow(dead_code)]
+/// TLS 测试证书（EC P-256 CN=localhost 自签名，与 tls_spike.rs 同套）。
+pub(crate) const TEST_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----MIIBfTCCASOgAwIBAgIUPVhrgGjBtukok6rwdJylvYl2UKEwCgYIKoZIzj0EAwIwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDkwNTAzNDg0NloXDTM2MDkwMjAzNDg0NlowFDESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEFFzrytgxmKNhGAaOJYcZRzZ2poc8ZYnrfPFwcCapXw6NFQpIA/GQHMtMV49mcvyJr2XhbmZpOsR88cEXBR7tOaNTMFEwHQYDVR0OBBYEFLHI9r+4mBfu/6X1ND5FdhyqbGFXMB8GA1UdIwQYMBaAFLHI9r+4mBfu/6X1ND5FdhyqbGFXMA8GA1UdEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIgaNRObbGR5CinTtXxx3RCAJIHpTcGGqXXT3M8Dxgs4fwCIQCXqnOaJfB8AH6G3WIRullF5mzYpg5OU8ViVMtxuSdhzw==-----END CERTIFICATE-----";
+
+/// TLS 测试私钥（PKCS#8 EC P-256，与上 cert 配对）。
+#[allow(dead_code)]
+pub(crate) const TEST_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgEfccIWANmwviC3OWEfx26Fe479xclCh3ZDCDX0g4vKihRANCAAQUXOvK2DGYo2EYBo4lhxlHNnamhzxliet88XBwJqlfDo0VCkgD8ZAcy0xXj2Zy/ImvZeFuZmk6xHzxwRcFHu05-----END PRIVATE KEY-----";
+
+/// rustls 全局加密提供者（懒初始化一次）。
+#[allow(dead_code)]
+pub(crate) fn crypto_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    static P: std::sync::OnceLock<Arc<rustls::crypto::CryptoProvider>> = std::sync::OnceLock::new();
+    P.get_or_init(|| Arc::new(rustls_rustcrypto::provider()))
+        .clone()
+}
+
+/// PEM → DER 载荷（剥离 PEM 包装，base64 解码）。
+#[allow(dead_code)]
+pub(crate) fn pem_to_der(pem: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    let body: String = pem
+        .lines()
+        .filter(|l| !l.starts_with("-----"))
+        .collect::<Vec<_>>()
+        .join("");
+    let cleaned: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(cleaned.as_bytes())
+        .map_err(|e| format!("PEM base64 decode: {e}"))
+}
+
+/// 从 PEM 密钥/证书构建 rustls ServerConfig。
+#[allow(dead_code)]
+pub(crate) fn make_server_config(
+    key_pem: &str,
+    cert_pem: &str,
+) -> Result<rustls::ServerConfig, String> {
+    let cert_der = pem_to_der(cert_pem)?;
+    let certs = vec![rustls::pki_types::CertificateDer::from_slice(&cert_der).into_owned()];
+    let key_der = pem_to_der(key_pem)?;
+    let key = rustls::pki_types::PrivateKeyDer::try_from(key_der)
+        .map_err(|e| format!("private key: {e}"))?;
+    rustls::ServerConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("protocol versions: {e}"))?
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("server cert: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
