@@ -125,11 +125,25 @@ impl Vm {
         // 在表切换后依然有效，这是单表 VM 支持多模块的关键。
         let fn_base = self.module_functions.len() as u32;
         let class_base = self.module_classes.len() as u32;
+        if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+            eprintln!("[req-dbg] append {resolved:?} fn_base={fn_base} tpl_count={}", module.functions.len());
+        }
         let mut funcs: Vec<aluka_bytecode::FuncTemplate> = module.functions.to_vec();
+        let debug_rewrite = std::env::var("ALUKA_REQ_DEBUG").is_ok();
         for f in funcs.iter_mut() {
             for instr in f.code.iter_mut() {
                 match instr.op {
-                    aluka_bytecode::Op::MakeClosure => instr.operand += fn_base,
+                    aluka_bytecode::Op::MakeClosure => {
+                        if debug_rewrite && instr.operand >= fn_base {
+                            eprintln!(
+                                "[req-dbg] rewrite double? module {} op {} already >= fn_base {}",
+                                resolved.display(),
+                                instr.operand,
+                                fn_base
+                            );
+                        }
+                        instr.operand += fn_base;
+                    }
                     aluka_bytecode::Op::MakeClass => instr.operand += class_base,
                     _ => {}
                 }
