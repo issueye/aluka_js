@@ -1,4 +1,4 @@
-﻿//! `stream`、`stream/promises` 与 `stream/consumers` 内置模块（Phase 4）：Node 流机制。
+//! `stream`、`stream/promises` 与 `stream/consumers` 内置模块（Phase 4）：Node 流机制。
 //!
 //! 核心能力实现与 Node.js 22 LTS 标准（`nodestream`）严格对齐：
 //! - `stream` 模块：
@@ -42,15 +42,43 @@ struct StreamState {
     listeners: HashMap<String, Vec<Value>>,
     /// Writable 自定义写入回调（对应 options.write）
     write_fn: Option<Value>,
+    /// 内部写队列：(chunk, 完成回调)——write_fn 串行逐块交付（Node 语义：
+    /// 完成一个才启动下一个，队列清空时发 drain）
+    write_queue: std::collections::VecDeque<(Value, Value)>,
+    /// 写处理器状态：write_fn 在飞 / 完成回调已触发 / 处理器重入守卫
+    write_busy: bool,
+    write_cb_fired: bool,
+    processing_writes: bool,
     /// `for await` 的 next 等待者：pending promise（按到达顺序兑现）
     awaiters: Vec<aluka_core::ObjectRef>,
+    /// 水位线（字节）：writable_length 达到该值时 write 返回 false（M3.1）
+    high_water_mark: usize,
+    /// 已入队未完成写入的字节数（writableLength）
+    writable_length: usize,
+    /// 写入返回 false 后置位，drain 事件时清除（writableNeedDrain）
+    need_drain: bool,
+    /// 已销毁标记（destroy 后写入报错、事件不再触发）
+    destroyed: bool,
+    /// destroy(err) 存储的错误（errored 属性读取）
+    errored: Option<Value>,
+    /// pipe 背压暂停中：等待目标流 drain 事件恢复（防重复挂监听）
+    pipe_wait_drain: bool,
+    /// 自身句柄（内部 handler 发事件用；值由 JS 堆持有，GC 经闭包/监听器可达）
+    self_handle: Option<Value>,
+    /// drain_to_dest 重入守卫（同步完成回调触发的 drain 重入时置位）
+    draining: bool,
+    /// 可读缓冲字节长度（readableLength；push 入队/读取出队时维护）
+    readable_length: usize,
 }
 
 /// 全局流状态存储表（对象句柄索引 -> 流内部状态）
 static STREAM_STORE: Mutex<Option<HashMap<u32, StreamState>>> = Mutex::new(None);
 
+/// 默认水位线（对齐 Node `stream` 默认 highWaterMark：64 KiB）
+const DEFAULT_HIGH_WATER_MARK: usize = 64 * 1024;
+
 /// 初始化流实例内部状态
-fn init_stream_state(id: u32, write_fn: Option<Value>) {
+fn init_stream_state(id: u32, write_fn: Option<Value>, high_water_mark: usize, self_val: Value) {
     let mut guard = STREAM_STORE.lock().unwrap();
     let map = guard.get_or_insert_with(HashMap::new);
     map.insert(
@@ -63,9 +91,44 @@ fn init_stream_state(id: u32, write_fn: Option<Value>) {
             pipe_dest: None,
             listeners: HashMap::new(),
             write_fn,
+            write_queue: std::collections::VecDeque::new(),
+            write_busy: false,
+            write_cb_fired: false,
+            processing_writes: false,
             awaiters: Vec::new(),
+            high_water_mark,
+            writable_length: 0,
+            need_drain: false,
+            destroyed: false,
+            errored: None,
+            pipe_wait_drain: false,
+            self_handle: Some(self_val),
+            draining: false,
+            readable_length: 0,
         },
     );
+}
+
+/// 计算 chunk 的字节长度（Buffer/字符串取真实字节；其余类型 0）
+fn chunk_byte_len(vm: &crate::interpreter::Vm, chunk: Value) -> usize {
+    match chunk {
+        Value::Object(_) => crate::builtins::buffer::extract_bytes(vm, chunk)
+            .map(|b| b.len())
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
+/// 从 options 对象读取 highWaterMark（缺省/非法 → 默认水位线）
+fn read_high_water_mark(vm: &mut crate::interpreter::Vm, args: &[Value]) -> usize {
+    if let Some(Value::Object(opts)) = args.first().copied() {
+        if let Ok(Value::Number(n)) = vm.get_property(Value::Object(opts), "highWaterMark") {
+            if n.is_finite() && n >= 0.0 {
+                return n as usize;
+            }
+        }
+    }
+    DEFAULT_HIGH_WATER_MARK
 }
 
 /// 安全借用并修改流状态
@@ -101,19 +164,97 @@ fn emit_event(vm: &mut Vm, stream_val: Value, event: &str, args: &[Value]) -> Re
     Ok(())
 }
 
-/// 排空缓冲区到管道目标流
+/// 排空缓冲区到管道目标流（背压联动：dest.write 返回 false 时暂停源流，
+/// 挂 drain 监听待目标流恢复后继续排空——M3.1 背压联动核心）。
+/// 写前先出队（防同步完成回调触发的重入 drain 重复写同一块）。
 fn drain_to_dest(vm: &mut Vm, id: u32, stream_val: Value, dest: Value) -> Result<(), VmError> {
-    let chunks: Vec<Value> =
-        with_stream_state(id, |s| std::mem::take(&mut s.buffer)).unwrap_or_default();
-    for chunk in chunks {
+    // 重入守卫：同步 cb → drain 事件 → 本函数重入时，外层循环持有控制权
+    let reentered = with_stream_state(id, |s| {
+        let was = s.draining;
+        s.draining = true;
+        was
+    })
+    .unwrap_or(true);
+    if reentered {
+        return Ok(());
+    }
+    let result = loop {
+        let front = with_stream_state(id, |s| s.buffer.first().copied()).flatten();
+        let Some(chunk) = front else {
+            break Ok(());
+        };
         if matches!(chunk, Value::Null) {
+            with_stream_state(id, |s| {
+                s.buffer.remove(0);
+                s.readable_length = s.readable_length.saturating_sub(0);
+            });
             finish_readable(vm, id, stream_val)?;
             end_pipe_dest(vm, dest)?;
-            return Ok(());
+            break Ok(());
         }
-        let _ = write_to_stream(vm, dest, chunk)?;
-    }
+        // 写前出队：chunk 已交付 write_fn（背压仅意味着"暂停推入"，
+        // 不回队——回队会导致该块二次交付）
+        with_stream_state(id, |s| {
+            s.buffer.remove(0);
+            let blen = chunk_byte_len(vm, chunk);
+            s.readable_length = s.readable_length.saturating_sub(blen);
+        });
+        let ok = write_to_stream(vm, dest, chunk)?;
+        if matches!(ok, Value::Boolean(false)) {
+            // 目标流背压：源流暂停（剩余块留在缓冲），等 dest 'drain' 后恢复
+            with_stream_state(id, |s| {
+                s.flowing = false;
+                s.pipe_wait_drain = true;
+            });
+            attach_pipe_drain_listener(vm, stream_val)?;
+            break Ok(());
+        }
+    };
+    with_stream_state(id, |s| s.draining = false);
+    result
+}
+
+/// 为 pipe 背压挂 `drain` 恢复监听（去重：源流 pipe_wait_drain 已置位时
+/// 由调用方保证只挂一次）。
+fn attach_pipe_drain_listener(vm: &mut Vm, src_val: Value) -> Result<(), VmError> {
+    let listener = vm.alloc_native_fn("stream:internal.pipeDrain");
+    vm.set_native_fn_property(listener, "_src", src_val);
+    let drain_str = Value::Object(vm.alloc_string("drain".to_owned()));
+    stream_on(vm, &[drain_str, Value::Object(listener)])?;
     Ok(())
+}
+
+/// pipe 背压恢复 handler：dest 'drain' 后恢复源流排空。
+fn stream_internal_pipe_drain(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let callee = super::pending_callee();
+    let src_val = match callee {
+        Value::Object(r) => vm
+            .get_native_fn_property(r, "_src")
+            .unwrap_or(Value::Undefined),
+        _ => Value::Undefined,
+    };
+    let Value::Object(r) = src_val else {
+        return Ok(Value::Undefined);
+    };
+    let dest = with_stream_state(r.0, |s| {
+        s.pipe_wait_drain = false;
+        s.flowing = true;
+        s.pipe_dest
+    })
+    .unwrap_or(None);
+    if let Some(d) = dest {
+        // 先排空剩余缓冲（push(null) 的 Null 哨兵在队尾时按序收尾）
+        drain_to_dest(vm, r.0, src_val, d)?;
+    }
+    let (ended, buf_empty) =
+        with_stream_state(r.0, |s| (s.ended, s.buffer.is_empty())).unwrap_or((false, true));
+    if ended && buf_empty {
+        finish_readable(vm, r.0, src_val)?;
+        if let Some(d) = dest {
+            end_pipe_dest(vm, d)?;
+        }
+    }
+    Ok(Value::Undefined)
 }
 
 /// 排空缓冲区触发 'data' 事件
@@ -176,12 +317,21 @@ fn call_stream_method(
 ///
 /// 使用 `HeapObject::Readable` 变体，使 `for await...of` 的 `GetAsyncIterator`
 /// 识别流实例自身即异步迭代器；缓冲/结束/等待者状态仍存于全局 STREAM_STORE。
-pub fn create_readable_instance(vm: &mut Vm, _args: &[Value]) -> Result<ObjectRef, VmError> {
-    let obj = vm.alloc_readable();
-    init_stream_state(obj.0, None);
+pub fn create_readable_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef, VmError> {
+    // Ordinary 实例（与 Writable 同构）：方法经注册表分派；堆 Readable 变体
+    // 保留给 fs/http 等原生物流的快速路径
+    let obj = vm.alloc_ordinary();
+    let hwm = read_high_water_mark(vm, args);
+    let self_val = Value::Object(obj);
+    init_stream_state(obj.0, None, hwm, self_val);
 
     let _ = vm.set_property(Value::Object(obj), "_isStream", Value::Boolean(true));
     let _ = vm.set_property(Value::Object(obj), "_isReadable", Value::Boolean(true));
+    let _ = vm.set_property(
+        Value::Object(obj),
+        "readableHighWaterMark",
+        Value::Number(hwm as f64),
+    );
 
     for method in [
         "push", "read", "pipe", "on", "pause", "resume", "destroy", "isPaused",
@@ -196,6 +346,8 @@ pub fn create_readable_instance(vm: &mut Vm, _args: &[Value]) -> Result<ObjectRe
 /// 创建新的 Writable 实例
 pub fn create_writable_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
+    let hwm = read_high_water_mark(vm, args);
+    let self_val = Value::Object(obj);
     let mut write_fn = None;
     if let Some(Value::Object(opts_ref)) = args.first() {
         if let Ok(w) = vm.get_property(Value::Object(*opts_ref), "write") {
@@ -204,10 +356,15 @@ pub fn create_writable_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef
             }
         }
     }
-    init_stream_state(obj.0, write_fn);
+    init_stream_state(obj.0, write_fn, hwm, self_val);
 
     let _ = vm.set_property(Value::Object(obj), "_isStream", Value::Boolean(true));
     let _ = vm.set_property(Value::Object(obj), "_isWritable", Value::Boolean(true));
+    let _ = vm.set_property(
+        Value::Object(obj),
+        "writableHighWaterMark",
+        Value::Number(hwm as f64),
+    );
 
     for method in [
         "write",
@@ -296,7 +453,44 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         register_handler(registry, ns, "from", readable_from);
     }
 
+    // 内部 handler（write 完成回调 / pipe 背压恢复 / pipeline 错误级联）
+    register_handler(
+        registry,
+        "stream:internal",
+        "writeCb",
+        stream_internal_write_cb,
+    );
+    register_handler(
+        registry,
+        "stream:internal",
+        "pipeDrain",
+        stream_internal_pipe_drain,
+    );
+    register_handler(
+        registry,
+        "stream:internal",
+        "pipelineError",
+        stream_internal_pipeline_error,
+    );
+
     Ok(obj)
+}
+
+/// 流实例计算属性（`writableLength`/`writableNeedDrain`/`destroyed` 等；
+/// get_property 对挂 `_isStream` 标记的对象路由到此处）。
+pub(crate) fn stream_computed_prop(id: u32, key: &str) -> Option<Value> {
+    let s = get_stream_state(id);
+    match key {
+        "writableLength" => Some(Value::Number(s.writable_length as f64)),
+        "writableHighWaterMark" => Some(Value::Number(s.high_water_mark as f64)),
+        "readableHighWaterMark" => Some(Value::Number(s.high_water_mark as f64)),
+        "readableLength" => Some(Value::Number(s.buffer.len() as f64)),
+        "writableNeedDrain" => Some(Value::Boolean(s.need_drain)),
+        "destroyed" => Some(Value::Boolean(s.destroyed)),
+        "flowing" => Some(Value::Boolean(s.flowing)),
+        "errored" => Some(s.errored.unwrap_or(Value::Null)),
+        _ => None,
+    }
 }
 
 /// 构建 `stream/promises` 模块对象。
@@ -444,13 +638,26 @@ fn stream_push(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         Value::Object(r) => r.0,
         _ => return Ok(Value::Boolean(false)),
     };
+    if with_stream_state(id, |s| s.destroyed).unwrap_or(false) {
+        return Ok(Value::Boolean(false));
+    }
     if let Some(chunk) = args.first().copied() {
         if matches!(chunk, Value::Null) {
             with_stream_state(id, |s| s.ended = true);
+            // pipe 背压暂停中：Null 哨兵入队，恢复排空后按序收尾
+            let paused = with_stream_state(id, |s| {
+                if s.pipe_wait_drain {
+                    s.buffer.push(Value::Null);
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
             let state = get_stream_state(id);
             // 等待中的 for await next：立即以 done 兑现
             fulfill_next_awaiter(vm, id, Value::Undefined, true)?;
-            if state.flowing {
+            if state.flowing && !paused {
                 finish_readable(vm, id, receiver)?;
                 if let Some(dest) = state.pipe_dest {
                     end_pipe_dest(vm, dest)?;
@@ -464,7 +671,11 @@ fn stream_push(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 // 等待者优先：直接兑现，不进入缓冲
                 fulfill_next_awaiter(vm, id, chunk, false)?;
             } else {
-                with_stream_state(id, |s| s.buffer.push(chunk));
+                let blen = chunk_byte_len(vm, chunk);
+                with_stream_state(id, |s| {
+                    s.buffer.push(chunk);
+                    s.readable_length += blen;
+                });
             }
             let state = get_stream_state(id);
             if state.flowing {
@@ -480,7 +691,7 @@ fn stream_push(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `stream.read([size])`：从流缓冲区读取数据
-fn stream_read(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+fn stream_read(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let id = match receiver {
         Value::Object(r) => r.0,
@@ -488,7 +699,10 @@ fn stream_read(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     };
     let chunk = with_stream_state(id, |s| {
         if !s.buffer.is_empty() {
-            Some(s.buffer.remove(0))
+            let c = s.buffer.remove(0);
+            let blen = chunk_byte_len(vm, c);
+            s.readable_length = s.readable_length.saturating_sub(blen);
+            Some(c)
         } else {
             None
         }
@@ -512,6 +726,8 @@ fn stream_pipe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         s.pipe_dest = Some(dest);
         s.flowing = true;
     });
+    // 背压联动：dest 队列清空发 'drain' 时恢复源流排空（Node pipe 语义）
+    attach_pipe_drain_listener(vm, receiver)?;
     // 立即排空缓冲区到目标流
     drain_to_dest(vm, id, receiver, dest)?;
     let state = get_stream_state(id);
@@ -591,25 +807,40 @@ fn stream_is_paused(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Boolean(paused))
 }
 
-/// `stream.destroy([error])`
+/// `stream.destroy([error])`：幂等销毁——置 destroyed、清缓冲、发
+/// error（携带 err 时）与 close；错误存 errored 供 `stream.errored` 读取。
 fn stream_destroy(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     if let Value::Object(r) = receiver {
+        let already = with_stream_state(r.0, |s| {
+            let was = s.destroyed;
+            s.destroyed = true;
+            s.ended = true;
+            s.buffer.clear();
+            s.readable_length = 0;
+            s.writable_length = 0;
+            was
+        })
+        .unwrap_or(true);
+        if already {
+            return Ok(receiver);
+        }
         if let Some(err) = args.first() {
             if !matches!(err, Value::Undefined | Value::Null) {
+                with_stream_state(r.0, |s| s.errored = Some(*err));
                 emit_event(vm, receiver, "error", &[*err])?;
             }
         }
-        with_stream_state(r.0, |s| {
-            s.ended = true;
-            s.buffer.clear();
-        });
         emit_event(vm, receiver, "close", &[])?;
     }
     Ok(receiver)
 }
 
-/// `stream.write(chunk[, encoding][, callback])`：向可写流写入数据
+/// `stream.write(chunk[, encoding][, callback])`：向可写流写入数据。
+///
+/// 背压语义（M3.1）：入队后 `writable_length` 达到水位线 → 返回 `false`
+/// 并置 `writableNeedDrain`；write_fn 完成回调（cb）触发时扣减队列长度，
+/// 跌破水位线 → 发 `drain` 事件恢复上游。
 fn stream_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let id = match receiver {
@@ -620,13 +851,164 @@ fn stream_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Boolean(false));
     };
     let state = get_stream_state(id);
-    if let Some(write_fn) = state.write_fn {
-        let empty_str = Value::Object(vm.alloc_string(String::new()));
-        let _ = vm.invoke_callable(write_fn, receiver, &[chunk, empty_str, Value::Undefined])?;
+    if state.destroyed {
+        let msg = vm.alloc_string("write after destroy".to_owned());
+        return Err(VmError::Thrown(Value::Object(msg)));
+    }
+    if state.ended {
+        let err = vm.alloc_error_instance("write after end");
+        let name = vm.alloc_string("TypeError".to_owned());
+        let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+        emit_event(vm, receiver, "error", &[Value::Object(err)])?;
+        return Ok(Value::Boolean(false));
+    }
+    let len = chunk_byte_len(vm, chunk);
+    if state.write_fn.is_some() {
+        // 入内部写队列：串行逐块交付（完成一个启动下一个）；
+        // writable_length 达到水位线 → 返回 false（背压信号）
+        let cb = make_write_callback(vm, id, len);
+        with_stream_state(id, |s| {
+            s.write_queue.push_back((chunk, cb));
+            s.writable_length += len;
+        });
+        process_write_queue(vm, id)?;
     } else {
-        with_stream_state(id, |s| s.buffer.push(chunk));
+        with_stream_state(id, |s| {
+            s.buffer.push(chunk);
+            s.writable_length += len;
+        });
+    }
+    let state = get_stream_state(id);
+    if state.writable_length >= state.high_water_mark {
+        with_stream_state(id, |s| s.need_drain = true);
+        return Ok(Value::Boolean(false));
     }
     Ok(Value::Boolean(true))
+}
+
+/// 写队列处理器：串行将队头交付 write_fn；同步完成（write_fn 内直接调 cb）
+/// 时在循环内继续下一块，异步完成（cb 由调度器触发）时返回、由 writeCb
+/// handler 重新进入。processing_writes 防同步链重入。
+fn process_write_queue(vm: &mut Vm, id: u32) -> Result<(), VmError> {
+    let reentered = with_stream_state(id, |s| {
+        let was = s.processing_writes;
+        s.processing_writes = true;
+        was
+    })
+    .unwrap_or(true);
+    if reentered {
+        return Ok(());
+    }
+    loop {
+        // 完成回调检测：write_fn 已同步/异步完成 → 释放在飞标记
+        if with_stream_state(id, |s| s.write_cb_fired).unwrap_or(false) {
+            with_stream_state(id, |s| {
+                s.write_cb_fired = false;
+                s.write_busy = false;
+                s.write_queue.pop_front();
+            });
+        }
+        let (busy, empty, need) = with_stream_state(id, |s| {
+            (s.write_busy, s.write_queue.is_empty(), s.need_drain)
+        })
+        .unwrap_or((true, true, false));
+        if busy {
+            break; // 异步在飞：等 writeCb 重新进入
+        }
+        if empty {
+            // 队列清空：need_drain 置位时发 drain 恢复上游（drain 监听器
+            // 可能同步入队新写——continue 继续处理而非退出）
+            if need {
+                with_stream_state(id, |s| s.need_drain = false);
+                let self_val = with_stream_state(id, |s| s.self_handle).flatten();
+                if let Some(sv) = self_val {
+                    emit_event(vm, sv, "drain", &[])?;
+                }
+                continue;
+            }
+            break;
+        }
+        let (chunk, cb) = with_stream_state(id, |s| {
+            s.write_queue
+                .front()
+                .cloned()
+                .unwrap_or((Value::Undefined, Value::Undefined))
+        })
+        .unwrap_or((Value::Undefined, Value::Undefined));
+        with_stream_state(id, |s| {
+            s.write_busy = true;
+            s.write_cb_fired = false;
+        });
+        let write_fn = with_stream_state(id, |s| s.write_fn).flatten();
+        let Some(write_fn) = write_fn else {
+            with_stream_state(id, |s| {
+                s.write_queue.clear();
+                s.write_busy = false;
+            });
+            break;
+        };
+        let empty_str = Value::Object(vm.alloc_string(String::new()));
+        vm.invoke_callable(
+            write_fn,
+            Value::Object(aluka_core::ObjectRef(id)),
+            &[chunk, empty_str, cb],
+        )?;
+        // write_fn 未调 cb → 同步完成，自动出队继续下一块
+        //（简化 Writable 的 write 不带 cb 参数时的兼容路径）
+        if !with_stream_state(id, |s| s.write_cb_fired).unwrap_or(false) {
+            with_stream_state(id, |s| {
+                s.write_busy = false;
+                s.write_queue.pop_front();
+            });
+        }
+    }
+    with_stream_state(id, |s| s.processing_writes = false);
+    Ok(())
+}
+
+/// 构造 write_fn 的完成回调（NativeFn：属性携带流句柄与本块字节数）。
+fn make_write_callback(vm: &mut Vm, stream_id: u32, chunk_len: usize) -> Value {
+    let cb = vm.alloc_native_fn("stream:internal.writeCb");
+    vm.set_native_fn_property(cb, "_sid", Value::Number(stream_id as f64));
+    vm.set_native_fn_property(cb, "_clen", Value::Number(chunk_len as f64));
+    Value::Object(cb)
+}
+
+/// `write` 完成回调 handler：扣减 writable_length，跌破水位线发 `drain`。
+fn stream_internal_write_cb(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Value::Object(cb_ref) = super::pending_callee() else {
+        return Ok(Value::Undefined);
+    };
+    let sid = match vm.get_native_fn_property(cb_ref, "_sid") {
+        Some(Value::Number(n)) => n as u32,
+        _ => return Ok(Value::Undefined),
+    };
+    let clen = match vm.get_native_fn_property(cb_ref, "_clen") {
+        Some(Value::Number(n)) => n as usize,
+        _ => 0,
+    };
+    // 回调携带错误 → 存 errored、级联销毁流并触发 error 事件
+    if let Some(err) = args.first().copied() {
+        if !matches!(err, Value::Undefined | Value::Null) {
+            with_stream_state(sid, |s| {
+                s.errored = Some(err);
+                s.destroyed = true;
+            });
+            emit_event(
+                vm,
+                Value::Object(aluka_core::ObjectRef(sid)),
+                "error",
+                &[err],
+            )?;
+            return Ok(Value::Undefined);
+        }
+    }
+    with_stream_state(sid, |s| {
+        s.writable_length = s.writable_length.saturating_sub(clen);
+        s.write_cb_fired = true;
+    });
+    process_write_queue(vm, sid)?;
+    Ok(Value::Undefined)
 }
 
 /// `stream.end([chunk][, callback])`：结束可写流
@@ -636,6 +1018,9 @@ fn stream_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         Value::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
+    if with_stream_state(id, |s| s.destroyed).unwrap_or(false) {
+        return Ok(receiver);
+    }
     if let Some(chunk) = args.first().copied() {
         if !matches!(chunk, Value::Undefined | Value::Null) {
             let state = get_stream_state(id);
@@ -691,12 +1076,62 @@ fn stream_pipeline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         let _ = call_stream_method(vm, last_stream, "on", &[finish_str, callback])?;
     }
 
+    // 错误级联（M3.1）：任一流 error → 销毁其余全部流（destroy(err)），
+    // 回调以该错误调用一次（_fired 标记去重）
+    for (i, sv) in streams.iter().enumerate() {
+        let handler = vm.alloc_native_fn("stream:internal.pipelineError");
+        vm.set_native_fn_property(handler, "_self", *sv);
+        let arr = vm.alloc_array(streams.to_vec());
+        vm.set_native_fn_property(handler, "_all", Value::Object(arr));
+        vm.set_native_fn_property(handler, "_idx", Value::Number(i as f64));
+        if let Some(cbv) = cb {
+            vm.set_native_fn_property(handler, "_cb", cbv);
+        }
+        let err_str = Value::Object(vm.alloc_string("error".to_owned()));
+        let _ = call_stream_method(vm, *sv, "on", &[err_str, Value::Object(handler)])?;
+    }
+
     let mut current = streams[0];
     for next_stream in streams.iter().skip(1).copied() {
         current = call_stream_method(vm, current, "pipe", &[next_stream])?;
     }
 
     Ok(streams[streams.len() - 1])
+}
+
+/// pipeline 错误级联 handler：销毁除本流外的全部流（destroy(err)），回调
+/// 以同一错误调用一次（_fired 去重，防多流同时报错重复回调）。
+fn stream_internal_pipeline_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Value::Object(cb_ref) = super::pending_callee() else {
+        return Ok(Value::Undefined);
+    };
+    let fired = matches!(
+        vm.get_native_fn_property(cb_ref, "_fired"),
+        Some(Value::Boolean(true))
+    );
+    if fired {
+        return Ok(Value::Undefined);
+    }
+    vm.set_native_fn_property(cb_ref, "_fired", Value::Boolean(true));
+    let self_val = vm
+        .get_native_fn_property(cb_ref, "_self")
+        .unwrap_or(Value::Undefined);
+    let all = vm.get_native_fn_property(cb_ref, "_all");
+    let err = args.first().copied().unwrap_or(Value::Undefined);
+    if let Some(Value::Object(arr)) = all
+        && let Some(HeapObject::Array { elements, .. }) = vm.heap.get(arr.0 as usize)
+    {
+        for sv in elements.clone() {
+            if sv == self_val {
+                continue;
+            }
+            let _ = call_stream_method(vm, sv, "destroy", std::slice::from_ref(&err))?;
+        }
+    }
+    if let Some(cb) = vm.get_native_fn_property(cb_ref, "_cb") {
+        vm.invoke_callable(cb, Value::Undefined, &[err])?;
+    }
+    Ok(Value::Undefined)
 }
 
 /// `stream.finished(stream, callback)`

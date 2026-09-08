@@ -224,6 +224,24 @@ impl Vm {
                 return Ok(self.resolve_global(key));
             }
         }
+        // 流实例计算属性（writableLength/writableNeedDrain/destroyed 等；
+        // 状态存 STREAM_STORE，M3.1 背压状态机）
+        if matches!(
+            key,
+            "writableLength"
+                | "writableNeedDrain"
+                | "writableHighWaterMark"
+                | "readableLength"
+                | "readableHighWaterMark"
+                | "destroyed"
+                | "errored"
+                | "flowing"
+        ) && let Value::Object(r) = obj
+            && self.has_own_slot(r.0 as usize, "_isStream")
+            && let Some(v) = crate::builtins::stream::stream_computed_prop(r.0, key)
+        {
+            return Ok(v);
+        }
         // 内置对象的方法按需物化（process.nextTick 等属性访问先于调用）
         if key == "env" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             // process.env：对象单例缓存（Node 语义：process.env === process.env 恒等）

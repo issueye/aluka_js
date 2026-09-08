@@ -407,6 +407,14 @@ impl Vm {
                     }
                     _ => {}
                 }
+                if name == "stream.Readable" {
+                    let r = crate::builtins::stream::create_readable_instance(self, args)?;
+                    return Ok(Value::Object(r));
+                }
+                if name == "stream.Writable" {
+                    let r = crate::builtins::stream::create_writable_instance(self, args)?;
+                    return Ok(Value::Object(r));
+                }
                 if let Some(handler) = self.builtin_registry.lookup(name) {
                     return handler(self, args);
                 }

@@ -4511,8 +4511,11 @@ impl Vm {
                 }
                 Op::GetIterator | Op::GetAsyncIterator => {
                     let val = self.pop()?;
-                    if self.is_generator_obj(val) || self.is_readable_obj(val) {
-                        // 生成器对象自身即（async）迭代器
+                    if self.is_generator_obj(val)
+                        || self.is_readable_obj(val)
+                        || matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isReadable"))
+                    {
+                        // 生成器对象自身即（async）迭代器（含 _isReadable 流实例）
                         self.stack.push(val);
                     } else if self.is_array_value(val) {
                         // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
