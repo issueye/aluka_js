@@ -175,6 +175,9 @@ pub struct Vm {
     pub(crate) last_entry_async_promise: Option<Value>,
     /// GC 钉扎句柄（require 进行中的 module 对象；防嵌套加载期间被回收）
     pub(crate) gc_pinned: Vec<u32>,
+    /// 保存帧寄存器：嵌套执行期间被换出的外层帧状态（GC 根集合成员，
+    /// 见 [`crate::gc::SavedFrameState`]；漏登记 = 换出帧悬垂复用）
+    pub(crate) gc_saved_frames: Vec<crate::gc::SavedFrameState>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
@@ -303,6 +306,7 @@ impl Vm {
             eval_provider: None,
             last_entry_async_promise: None,
             gc_pinned: Vec::new(),
+            gc_saved_frames: Vec::new(),
             process_object: None,
             path_module: None,
             os_module: None,

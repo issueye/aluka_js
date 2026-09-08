@@ -3,6 +3,43 @@
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::{Upvalue, Value};
+use std::cell::RefCell;
+
+thread_local! {
+    /// 轻量 JS 调用链（诊断用）：(func_idx, 模板名)，invoke_function 进入时推入、退出时弹出
+    static CALL_CHAIN: RefCell<Vec<(usize, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 调用链帧守卫：作用域结束时弹出栈顶（含错误传播路径）。
+struct FrameGuard;
+
+impl Drop for FrameGuard {
+    fn drop(&mut self) {
+        CALL_CHAIN.with(|c| {
+            c.borrow_mut().pop();
+        });
+    }
+}
+
+/// 打印当前调用链（诊断开关：ALUKA_REQ_DEBUG）。
+pub fn dump_call_chain(vm: &Vm, context: &str) {
+    if std::env::var("ALUKA_REQ_DEBUG").is_err() {
+        return;
+    }
+    let chain = CALL_CHAIN.with(|c| c.borrow().clone());
+    let frames: Vec<String> = chain
+        .iter()
+        .map(|(f, n)| {
+            let src = vm
+                .module_functions
+                .get(*f)
+                .map(|t| t.source_file.clone())
+                .unwrap_or_default();
+            format!("{f}:{n}@{src}")
+        })
+        .collect();
+    eprintln!("[req-dbg] call chain at {context}: {frames:?}");
+}
 
 /// 同步调用的实参暂存区。
 ///
@@ -399,20 +436,6 @@ impl Vm {
             return Ok(Value::Undefined);
         }
         let tmpl = self.module_functions[func_idx].clone();
-        if std::env::var("ALUKA_REQ_DEBUG").is_ok()
-            && tmpl.name == "eehaslisteners"
-            && args.is_empty()
-        {
-            let caller_name = self
-                .module_functions
-                .get(self.current_func_idx.max(0) as usize)
-                .map(|t| t.name.clone())
-                .unwrap_or_else(|| "<entry>".to_owned());
-            eprintln!(
-                "[req-dbg] zero-arg into eehaslisteners, caller func={} ({caller_name:?}) pc={}",
-                self.current_func_idx, self.last_pc
-            );
-        }
         if tmpl.is_generator {
             return Ok(self.make_generator(&tmpl, func_idx, this_val, args, upvalues));
         }
@@ -422,20 +445,29 @@ impl Vm {
                 return Ok(self.jit_run(func_idx, &jit, args, tmpl.num_params as usize, upvalues));
             }
         }
-        let old_locals = std::mem::replace(
-            &mut self.locals,
-            vec![Value::Undefined; tmpl.num_locals as usize],
-        );
+        // 调用链登记：进入解释帧推入，任何退出路径（含 ?）由 FrameGuard 弹出
+        CALL_CHAIN.with(|c| c.borrow_mut().push((func_idx, tmpl.name.clone())));
+        let _frame_guard = FrameGuard;
         let old_func_idx = std::mem::replace(&mut self.current_func_idx, func_idx as i64);
         let old_constants = std::mem::replace(
             &mut self.current_constants,
             self.module_constants[func_idx].clone(),
         );
-        let old_upvalues = std::mem::replace(&mut self.current_upvalues, upvalues);
-        let old_open_upvalues = std::mem::take(&mut self.open_upvalues);
-        // 每帧独立的 try handler 栈与 Try 表（异常只在所属帧内查找 handler）
-        let old_try_stack = std::mem::take(&mut self.try_stack);
         let old_try_table = std::mem::replace(&mut self.current_try_table, tmpl.try_table.clone());
+        // 换出的外层帧状态登记进保存帧寄存器（GC 根集合成员）：嵌套执行
+        // 触发回收时这些对象必须保持存活，否则恢复帧会读到悬垂复用引用
+        let frame_slot = self.gc_saved_frames.len();
+        self.gc_saved_frames.push(crate::gc::SavedFrameState {
+            locals: std::mem::replace(
+                &mut self.locals,
+                vec![Value::Undefined; tmpl.num_locals as usize],
+            ),
+            upvalues: std::mem::replace(&mut self.current_upvalues, upvalues),
+            open_upvalues: std::mem::take(&mut self.open_upvalues)
+                .into_iter()
+                .collect(),
+            try_stack: std::mem::take(&mut self.try_stack),
+        });
         // 本帧逻辑栈分界（AWAIT 挂起时收割本帧逻辑栈用）
         let frame_base = self.stack.len();
 
@@ -456,6 +488,10 @@ impl Vm {
         let ret =
             self.run_with_constants_rc(&tmpl.code, self.module_constants[func_idx].clone(), 0);
 
+        // 恢复换出帧（弹保存帧寄存器；嵌套调用对称出入栈）
+        let saved_frame = self.gc_saved_frames.pop().unwrap_or_default();
+        debug_assert_eq!(frame_slot, self.gc_saved_frames.len());
+
         // async 函数遇未完成 Promise：**在恢复调用者之前**收割本帧
         //（否则收割到的是调用者上下文——挂起语义的帧归属错误）
         if let Err(VmError::Awaited(awaited_promise)) = &ret {
@@ -472,10 +508,10 @@ impl Vm {
                 self.current_constants = old_constants.clone();
                 self.current_try_table = old_try_table;
                 self.current_func_idx = old_func_idx;
-                self.locals = old_locals;
-                self.current_upvalues = old_upvalues;
-                self.open_upvalues = old_open_upvalues;
-                self.try_stack = old_try_stack;
+                self.locals = saved_frame.locals;
+                self.current_upvalues = saved_frame.upvalues;
+                self.open_upvalues = saved_frame.open_upvalues.into_iter().collect();
+                self.try_stack = saved_frame.try_stack;
                 let p_obj = self.alloc_pending_promise();
                 self.promise_resumes.insert(
                     awaited_promise.index() as u32,
@@ -497,16 +533,16 @@ impl Vm {
             }
         }
 
-        self.locals = old_locals;
+        self.locals = saved_frame.locals;
         self.current_constants = old_constants.clone();
-        self.current_upvalues = old_upvalues;
-        self.open_upvalues = old_open_upvalues;
+        self.current_upvalues = saved_frame.upvalues;
+        self.open_upvalues = saved_frame.open_upvalues.into_iter().collect();
         for (slot, uv) in &self.open_upvalues {
             if let Some(loc) = self.locals.get_mut(*slot) {
                 *loc = *uv.0.borrow();
             }
         }
-        self.try_stack = old_try_stack;
+        self.try_stack = saved_frame.try_stack;
         self.current_try_table = old_try_table;
         self.current_func_idx = old_func_idx;
         match ret {
@@ -541,14 +577,34 @@ impl Vm {
     pub fn run_func(&mut self, func: &aluka_bytecode::FuncTemplate) -> Result<Value, VmError> {
         let func = std::rc::Rc::new(func.clone());
         let constants = std::rc::Rc::new(func.constants.clone());
-        let old_locals = std::mem::replace(
-            &mut self.locals,
-            vec![Value::Undefined; func.num_locals as usize],
-        );
         let old_constants = std::mem::replace(&mut self.current_constants, constants.clone());
         let old_try_table = std::mem::replace(&mut self.current_try_table, func.try_table.clone());
+        // 模块 main 帧与 invoke_function 帧协议一致：换出 locals **与打开上值
+        // 表**。嵌套模块体执行期间若让外层表留在 open_upvalues，其 MAKE_CLOSURE
+        // 以同 slot 捕获会命中外层 cell（entry(slot) 复用），STORE_LOCAL 快路径
+        // 把外层 cell 污染成内层闭包——恢复时回写即覆写外层 locals（M2.4 实测
+        // http-errors slot7 被 depd 的 eehaslisteners 覆写即此路径）。两者同时
+        // 登记保存帧寄存器（GC 根集合成员）。
+        self.gc_saved_frames.push(crate::gc::SavedFrameState {
+            locals: std::mem::replace(
+                &mut self.locals,
+                vec![Value::Undefined; func.num_locals as usize],
+            ),
+            open_upvalues: std::mem::take(&mut self.open_upvalues)
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        });
         let res = self.run_with_constants_rc(&func.code, constants, 0);
-        self.locals = old_locals;
+        let saved_frame = self.gc_saved_frames.pop().unwrap_or_default();
+        self.locals = saved_frame.locals;
+        self.open_upvalues = saved_frame.open_upvalues.into_iter().collect();
+        // 打开上值内容同步回外层 locals（与 invoke_function 恢复语义一致）
+        for (slot, uv) in &self.open_upvalues {
+            if let Some(loc) = self.locals.get_mut(*slot) {
+                *loc = *uv.0.borrow();
+            }
+        }
         self.current_constants = old_constants;
         self.current_try_table = old_try_table;
         if std::env::var("ALUKA_ERR_TRACE").is_ok() {

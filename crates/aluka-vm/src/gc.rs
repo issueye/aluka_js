@@ -28,7 +28,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::Vm;
-use crate::value::Value;
+use crate::value::{Upvalue, Value};
 use aluka_core::ObjectRef;
 
 /// GC 根集（VM 侧）。aluka-core 的 `RootSet` 服务于其自身槽位模型的
@@ -94,6 +94,27 @@ impl GcState {
             self.allocs_since_major >= MAJOR_TRIGGER,
         )
     }
+}
+
+/// 嵌套执行期间被换出的外层帧状态（GC 根集合成员）。
+///
+/// 解释器在嵌套调用（`invoke_function` / `run_func` / JIT 热点入口 / 生成器
+/// 与 async 帧驱动）时，把外层帧的 locals/upvalues/try 栈从 `Vm` 字段换出；
+/// 这些状态在换出期间若只存于 Rust 栈变量，就逃过了根扫描，嵌套执行触发
+/// GC 时会把它们引用的对象误判不可达并回收——堆格子复用后恢复的帧即读到
+/// 悬垂引用（M2.4 express 依赖树加载实测：http-errors 帧 slot 7 的闭包被
+/// 回收复用为 depd 的 eehaslisteners）。换出状态统一登记进本栈，由
+/// `collect_vm_roots` 保守按根扫描（多留不死，杜绝悬垂）。
+#[derive(Default)]
+pub(crate) struct SavedFrameState {
+    /// 外层帧局部槽位
+    pub(crate) locals: Vec<Value>,
+    /// 外层帧上值（`Rc` 共享句柄，其单元格内容亦是根）
+    pub(crate) upvalues: Vec<Upvalue>,
+    /// 外层帧活跃的打开上值表
+    pub(crate) open_upvalues: Vec<(usize, Upvalue)>,
+    /// 外层帧 try handler 栈（挂起异常/完成值亦是根）
+    pub(crate) try_stack: Vec<crate::exception::TryHandler>,
 }
 
 impl Vm {
@@ -230,11 +251,43 @@ impl Vm {
                 for uv in &frame.upvalues {
                     out.push(*uv.0.borrow());
                 }
+                for uv in frame.open_upvalues.values() {
+                    out.push(*uv.0.borrow());
+                }
+                for h in &frame.try_stack {
+                    if let Some(exc) = h.exc {
+                        out.push(exc);
+                    }
+                    if let Some(crate::exception::Completion::Return(v)) = h.completion {
+                        out.push(v);
+                    }
+                }
             }
         }
         // 挂起 async 帧恢复登记
         for r in self.promise_resumes.values() {
             self.push_resume_roots(out, r);
+        }
+        // 嵌套执行换出的外层帧（保存帧寄存器：invoke_function/run_func/
+        // CallerFrame/jit 入口换出期间同样是活跃根，漏扫 = 悬垂复用）
+        for f in &self.gc_saved_frames {
+            for v in &f.locals {
+                out.push(*v);
+            }
+            for uv in &f.upvalues {
+                out.push(*uv.0.borrow());
+            }
+            for (_, uv) in &f.open_upvalues {
+                out.push(*uv.0.borrow());
+            }
+            for h in &f.try_stack {
+                if let Some(exc) = h.exc {
+                    out.push(exc);
+                }
+                if let Some(crate::exception::Completion::Return(v)) = h.completion {
+                    out.push(v);
+                }
+            }
         }
         // 模块导出缓存与内置注册表单例
         for v in self.module_exports.values() {
@@ -261,6 +314,17 @@ impl Vm {
         }
         for uv in &r.frame.upvalues {
             out.push(*uv.0.borrow());
+        }
+        for uv in r.frame.open_upvalues.values() {
+            out.push(*uv.0.borrow());
+        }
+        for h in &r.frame.try_stack {
+            if let Some(exc) = h.exc {
+                out.push(exc);
+            }
+            if let Some(crate::exception::Completion::Return(v)) = h.completion {
+                out.push(v);
+            }
         }
     }
 

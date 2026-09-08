@@ -223,33 +223,41 @@ impl Vm {
 }
 
 /// 调用者帧上下文快照（生成器驱动期间换出、结束后换回）。
+///
+/// 换出的帧状态（locals/upvalues/try 栈）同步登记进 `Vm::gc_saved_frames`
+/// 保存帧寄存器——驱动期间这些对象仍是活跃根，触发 GC 不得回收。
 pub(crate) struct CallerFrame {
-    locals: Vec<Value>,
     constants: std::rc::Rc<Vec<Constant>>,
-    upvalues: Vec<Upvalue>,
-    open_upvalues: HashMap<usize, Upvalue>,
-    try_stack: Vec<TryHandler>,
     try_table: Vec<TryEntry>,
+    /// 保存帧寄存器槽位（恢复时弹出）
+    slot: usize,
 }
 
 impl CallerFrame {
     pub(crate) fn save(vm: &mut Vm) -> Self {
-        Self {
+        let slot = vm.gc_saved_frames.len();
+        vm.gc_saved_frames.push(crate::gc::SavedFrameState {
             locals: std::mem::take(&mut vm.locals),
-            constants: std::mem::replace(&mut vm.current_constants, std::rc::Rc::new(Vec::new())),
             upvalues: std::mem::take(&mut vm.current_upvalues),
-            open_upvalues: std::mem::take(&mut vm.open_upvalues),
+            open_upvalues: std::mem::take(&mut vm.open_upvalues).into_iter().collect(),
             try_stack: std::mem::take(&mut vm.try_stack),
+        });
+        Self {
+            constants: std::mem::replace(&mut vm.current_constants, std::rc::Rc::new(Vec::new())),
             try_table: std::mem::take(&mut vm.current_try_table),
+            slot,
         }
     }
 
     pub(crate) fn restore(self, vm: &mut Vm) {
-        vm.locals = self.locals;
+        // 弹出本帧记录（嵌套调用对称出入栈，本帧必为栈顶）
+        debug_assert_eq!(self.slot, vm.gc_saved_frames.len() - 1);
+        let saved = vm.gc_saved_frames.pop().unwrap_or_default();
+        vm.locals = saved.locals;
         vm.current_constants = self.constants;
-        vm.current_upvalues = self.upvalues;
-        vm.open_upvalues = self.open_upvalues;
-        vm.try_stack = self.try_stack;
+        vm.current_upvalues = saved.upvalues;
+        vm.open_upvalues = saved.open_upvalues.into_iter().collect();
+        vm.try_stack = saved.try_stack;
         vm.current_try_table = self.try_table;
     }
 }

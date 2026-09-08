@@ -163,8 +163,12 @@ impl Vm {
         // 解释器（并再次换帧），故必须像解释器一样保存/恢复本帧上值与常量池。
         // 常量池以 Rc 换入换出（引用计数增减，无深拷贝）。
         let consts = Rc::clone(&self.module_constants[func_idx]);
-        let old_upvalues = std::mem::replace(&mut self.current_upvalues, upvalues);
         let old_constants = std::mem::replace(&mut self.current_constants, Rc::clone(&consts));
+        // 换出的外层上值登记保存帧寄存器（重入解释器触发 GC 时保持存活）
+        self.gc_saved_frames.push(crate::gc::SavedFrameState {
+            upvalues: std::mem::replace(&mut self.current_upvalues, upvalues),
+            ..Default::default()
+        });
 
         // 复用装箱 ctx：首次构造完整结构，之后只改随帧变化的三字段，并在
         // 调用前后保存/恢复（嵌套 JIT→JIT 调用会共享同一 ctx，不恢复会让
@@ -205,7 +209,7 @@ impl Vm {
             ctx_box.heap_ptr = saved.3;
         }
 
-        self.current_upvalues = old_upvalues;
+        self.current_upvalues = self.gc_saved_frames.pop().unwrap_or_default().upvalues;
         self.current_constants = old_constants;
         crate::jit_helpers::to_vm_value(r)
     }

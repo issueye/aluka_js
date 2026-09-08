@@ -8,8 +8,7 @@ use aluka_parser::Parser;
 
 #[test]
 fn member_assign_with_member_chain_argument_keeps_call_args() {
-    let src =
-        "module.exports.isHttpError = createIsHttpErrorFunction(module.exports.HttpError);";
+    let src = "module.exports.isHttpError = createIsHttpErrorFunction(module.exports.HttpError);";
     let program = Parser::new(src).parse_program();
     assert_eq!(program.body.len(), 1, "单语句");
     let printed = format!("{:#?}", program.body[0]);

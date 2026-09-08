@@ -126,7 +126,10 @@ impl Vm {
         let fn_base = self.module_functions.len() as u32;
         let class_base = self.module_classes.len() as u32;
         if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
-            eprintln!("[req-dbg] append {resolved:?} fn_base={fn_base} tpl_count={}", module.functions.len());
+            eprintln!(
+                "[req-dbg] append {resolved:?} fn_base={fn_base} tpl_count={}",
+                module.functions.len()
+            );
         }
         let mut funcs: Vec<aluka_bytecode::FuncTemplate> = module.functions.to_vec();
         let debug_rewrite = std::env::var("ALUKA_REQ_DEBUG").is_ok();
@@ -288,10 +291,7 @@ impl Vm {
                             .ok()
                             .map(|v| self.format_value(v))
                             .unwrap_or_default();
-                        format!(
-                            "{name}: {msg} (last_pc={})",
-                            self.last_pc
-                        )
+                        format!("{name}: {msg} (last_pc={})", self.last_pc)
                     }
                     other => format!("{other:?}"),
                 };

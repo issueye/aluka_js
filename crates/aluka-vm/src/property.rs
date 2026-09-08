@@ -463,9 +463,6 @@ impl Vm {
 
     /// 设置属性（含数组下标写入、闭包对象属性写入与 Setter 访问器触发）。
     pub fn set_property(&mut self, obj: Value, key: &str, val: Value) -> Result<(), VmError> {
-        if std::env::var("ALUKA_REQ_DEBUG").is_ok() && key == "exports" {
-            eprintln!("[req-debug] set_property exports on {obj:?} <- {val:?}");
-        }
         // Proxy 对象：经 set trap 派发（假值返回抛 TypeError）
         if let Value::Object(r) = obj {
             if self.proxy_parts(r).is_some() {
