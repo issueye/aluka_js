@@ -152,6 +152,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "getColumnNumber",
         "toString",
         "isNative",
+        "isEval",
+        "isConstructor",
+        "getFunctionName",
+        "getTypeName",
     ] {
         register_handler(registry, "callsite", method, callsite_method);
     }
@@ -697,7 +701,8 @@ fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     match method.as_str() {
         "getFileName" => Ok(Value::Object(vm.alloc_string(file))),
         "getLineNumber" | "getColumnNumber" => Ok(Value::Number(0.0)),
-        "isNative" => Ok(Value::Boolean(false)),
+        "isNative" | "isEval" | "isConstructor" => Ok(Value::Boolean(false)),
+        "getFunctionName" | "getTypeName" => Ok(Value::Undefined),
         "toString" => Ok(Value::Object(
             vm.alloc_string(format!("at <anonymous> ({file})")),
         )),

@@ -37,13 +37,35 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     let obj = vm.alloc_ordinary();
     let format_fn = vm.alloc_native_fn("util.format");
     let inspect_fn = vm.alloc_native_fn("util.inspect");
+    let inherits_fn = vm.alloc_native_fn("util.inherits");
     set_module_prop(vm, obj, "format", Value::Object(format_fn))?;
     set_module_prop(vm, obj, "inspect", Value::Object(inspect_fn))?;
+    set_module_prop(vm, obj, "inherits", Value::Object(inherits_fn))?;
     let types = vm.alloc_ordinary();
     set_module_prop(vm, obj, "types", Value::Object(types))?;
     register_handler(registry, "util", "format", format);
     register_handler(registry, "util", "inspect", inspect);
+    register_handler(registry, "util", "inherits", inherits);
     Ok(obj)
+}
+
+/// `util.inherits(ctor, superCtor)`：`ctor.prototype` 的 [[Prototype]] 指向
+/// `superCtor.prototype` 且 `constructor` 回指 `ctor`（Node 继承语义；
+/// express 的 Router/Route 等原型链依赖）。
+fn inherits(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let ctor = args.first().copied().unwrap_or(Value::Undefined);
+    let super_ctor = args.get(1).copied().unwrap_or(Value::Undefined);
+    let proto = vm.get_property(ctor, "prototype")?;
+    let super_proto = vm.get_property(super_ctor, "prototype")?;
+    if let Value::Object(_) = proto {
+        let sp = match super_proto {
+            Value::Object(r) => Some(r),
+            _ => None,
+        };
+        vm.set_prototype_of(proto, sp);
+        let _ = vm.set_property(proto, "constructor", ctor);
+    }
+    Ok(ctor)
 }
 
 /// `util.types` 子模块 build：取主模块 `types` 属性对象并登记类型判断方法。

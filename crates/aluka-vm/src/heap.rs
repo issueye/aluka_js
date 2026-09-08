@@ -51,10 +51,11 @@ pub enum HeapObject {
     Ordinary {
         /// 属性存储模式（快速 shape+slots 或字典 HashMap）
         props: OrdinaryProps,
-        /// 访问器 Getter 映射表（属性名 -> 函数模板索引）
-        getters: HashMap<String, usize>,
-        /// 访问器 Setter 映射表（属性名 -> 函数模板索引）
-        setters: HashMap<String, usize>,
+        /// 访问器 Getter 映射表（属性名 -> 访问器函数值；存闭包对象以保留
+        /// upvalue 捕获——延迟调用时闭包引用的模块/外层变量仍可解析）
+        getters: HashMap<String, Value>,
+        /// 访问器 Setter 映射表（属性名 -> 访问器函数值）
+        setters: HashMap<String, Value>,
         /// 隐式原型 [[Prototype]]
         proto: Option<ObjectRef>,
         /// 已删除属性名集合（删除不改 shape，查询时先看本集）
@@ -85,6 +86,12 @@ pub enum HeapObject {
         upvalues: Vec<Upvalue>,
         /// 闭包自有属性（例如 prototype、静态字段等）
         properties: HashMap<String, Value>,
+        /// 闭包访问器 Getter 表（`Object.defineProperty` 挂函数对象静态面，
+        /// 如 body-parser 的 json/raw/text/urlencoded 惰性 getter；存闭包值）
+        getters: HashMap<String, Value>,
+        /// 不可枚举属性键集合（函数对象 `prototype`、`defineProperty` 未声明
+        /// enumerable 的静态面——`Object.keys(fn)` 须过滤）
+        non_enum: HashSet<String>,
         /// 闭包原型 [[Prototype]]（用于静态继承 superClass）
         proto: Option<ObjectRef>,
     },
@@ -303,10 +310,15 @@ impl Vm {
         let default_proto = self.alloc_ordinary();
         let mut properties = HashMap::new();
         properties.insert("prototype".to_owned(), Value::Object(default_proto));
+        let mut non_enum = HashSet::new();
+        // JS 规范：函数对象 `prototype` 属性不可枚举（Object.keys 不含）
+        non_enum.insert("prototype".to_owned());
         self.push_object(HeapObject::Closure {
             func_idx,
             upvalues,
             properties,
+            getters: HashMap::new(),
+            non_enum,
             proto: None,
         })
     }
@@ -499,7 +511,13 @@ impl HeapObject {
     /// 遍历对象持有的全部堆引用（GC 标记用；叶子对象为空集）。
     pub fn trace_refs(&self, mut f: impl FnMut(u32)) {
         match self {
-            HeapObject::Ordinary { props, proto, .. } => {
+            HeapObject::Ordinary {
+                props,
+                getters,
+                setters,
+                proto,
+                ..
+            } => {
                 match props {
                     OrdinaryProps::Shape { slots, .. } => {
                         // 槽位为 NaN-box：对象引用以盒形式存在
@@ -515,6 +533,11 @@ impl HeapObject {
                                 f(r.0);
                             }
                         }
+                    }
+                }
+                for v in getters.values().chain(setters.values()) {
+                    if let Value::Object(r) = v {
+                        f(r.0);
                     }
                 }
                 if let Some(p) = proto {
@@ -543,6 +566,7 @@ impl HeapObject {
             HeapObject::Closure {
                 upvalues,
                 properties,
+                getters,
                 proto,
                 ..
             } => {
@@ -551,7 +575,7 @@ impl HeapObject {
                         f(r.0);
                     }
                 }
-                for v in properties.values() {
+                for v in properties.values().chain(getters.values()) {
                     if let Value::Object(r) = v {
                         f(r.0);
                     }

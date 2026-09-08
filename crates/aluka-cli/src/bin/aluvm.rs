@@ -169,6 +169,10 @@ fn run_bc(input: &std::path::Path, cli_args: &[String]) -> ExitCode {
                 println!("{line}");
             }
             match err {
+                // process.exit(code)：正常终止（含事件循环活跃时立即退出）
+                aluka_vm::VmError::Exit(code) => {
+                    return ExitCode::from(code.clamp(0, 255) as u8);
+                }
                 aluka_vm::VmError::Thrown(exc) => {
                     eprintln!("{}", format_uncaught(&mut vm, exc));
                 }

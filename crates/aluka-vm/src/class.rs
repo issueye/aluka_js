@@ -164,7 +164,7 @@ impl Vm {
                     self.set_property(target, &name, Value::Object(m_ref))?;
                 }
                 1 => {
-                    // Getter
+                    // Getter（存方法闭包值，保留 upvalue 捕获）
                     if let Value::Object(t_ref) = target {
                         if let Some(HeapObject::Ordinary {
                             getters,
@@ -172,7 +172,7 @@ impl Vm {
                             ..
                         }) = self.heap.get_mut(t_ref.0 as usize)
                         {
-                            getters.insert(name, m_func_idx);
+                            getters.insert(name, Value::Object(m_ref));
                             *has_accessors = 1;
                         }
                     }
@@ -186,7 +186,7 @@ impl Vm {
                             ..
                         }) = self.heap.get_mut(t_ref.0 as usize)
                         {
-                            setters.insert(name, m_func_idx);
+                            setters.insert(name, Value::Object(m_ref));
                             *has_accessors = 1;
                         }
                     }

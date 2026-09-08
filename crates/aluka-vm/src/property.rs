@@ -40,20 +40,51 @@ impl Vm {
         self.own_value(idx, key).is_some()
     }
 
+    /// Ordinary 对象属性表内忽略 ASCII 大小写扫描，返回实际键名。
+    ///
+    /// Windows `process.env` 语义专用：Node 22 在 Windows 上对 env 键的
+    /// 查找/写入均大小写不敏感，但键保持环境块的原始大小写形态
+    /// （`Object.keys(process.env)` 仍返回 `Path` 等原始键）。
+    fn env_find_key(&self, idx: usize, key: &str) -> Option<String> {
+        match self.heap.get(idx) {
+            Some(HeapObject::Ordinary { props, .. }) => match props {
+                OrdinaryProps::Dict { properties } => properties
+                    .keys()
+                    .find(|k| k.eq_ignore_ascii_case(key))
+                    .cloned(),
+                OrdinaryProps::Shape { shape, .. } => self
+                    .shape_table
+                    .shape(*shape)?
+                    .names()
+                    .find(|n| n.eq_ignore_ascii_case(key))
+                    .map(str::to_owned),
+            },
+            _ => None,
+        }
+    }
+
     /// 枚举 Ordinary 对象自有属性（键 + 值，快速模式为槽位序 = 插入序；
-    /// 字典模式为哈希序；均跳过删除项）。
+    /// 字典模式为哈希序；均跳过删除项；访问器键并入，值取访问器函数）。
     pub(crate) fn own_entries(&self, idx: usize) -> Vec<(String, Value)> {
-        let Some(HeapObject::Ordinary { props, deleted, .. }) = self.heap.get(idx) else {
+        let Some(HeapObject::Ordinary {
+            props,
+            deleted,
+            non_enum,
+            getters,
+            setters,
+            ..
+        }) = self.heap.get(idx)
+        else {
             return Vec::new();
         };
-        match props {
+        let mut out = match props {
             OrdinaryProps::Shape { shape, slots } => {
                 let Some(s) = self.shape_table.shape(*shape) else {
                     return Vec::new();
                 };
                 let mut out = Vec::with_capacity(s.len());
                 for (i, name) in s.names().enumerate() {
-                    if deleted.contains(name) {
+                    if deleted.contains(name) || non_enum.contains(name) {
                         continue;
                     }
                     out.push((
@@ -68,10 +99,24 @@ impl Vm {
             }
             OrdinaryProps::Dict { properties } => properties
                 .iter()
-                .filter(|(k, _)| !deleted.contains(*k))
+                .filter(|(k, _)| !deleted.contains(*k) && !non_enum.contains(*k))
                 .map(|(k, v)| (k.clone(), *v))
                 .collect(),
+        };
+        // 访问器键并入（Object.keys/entries 应包含可枚举访问器属性；
+        // 值取访问器函数值——parser 类惰性 getter 的求值结果即该函数）
+        for (k, g) in getters.iter() {
+            if !non_enum.contains(k) && !out.iter().any(|(k2, _)| k2 == k) {
+                out.push((k.clone(), *g));
+            }
         }
+        // 纯 setter 键亦并入（值以 undefined 占位；getter 键已由上一循环并入）
+        for k in setters.keys() {
+            if !non_enum.contains(k) && !out.iter().any(|(k2, _)| k2 == k) {
+                out.push((k.clone(), Value::Undefined));
+            }
+        }
+        out
     }
 
     /// 删除 Ordinary 对象的自有属性（快速模式清槽 + 记入删除集 + 代数递增，
@@ -181,16 +226,24 @@ impl Vm {
         }
         // 内置对象的方法按需物化（process.nextTick 等属性访问先于调用）
         if key == "env" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
-            // process.env：物化为环境变量对象
+            // process.env：对象单例缓存（Node 语义：process.env === process.env 恒等）
+            if let Some(env_id) = self.env_object {
+                return Ok(Value::Object(env_id));
+            }
             let env_obj = self.alloc_ordinary();
             for (k, v) in std::env::vars() {
                 let s_ref = self.alloc_string(v);
                 let _ = self.set_property(Value::Object(env_obj), &k, Value::Object(s_ref));
             }
+            self.env_object = Some(env_obj);
             return Ok(Value::Object(env_obj));
         }
         if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             return Ok(Value::Object(self.alloc_native_fn("nextTick")));
+        }
+        if key == "exit" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
+            // process.exit(code)：立即终止（Node 语义；handler 抛 VmError::Exit）
+            return Ok(Value::Object(self.alloc_native_fn("process.exit")));
         }
         // process.stderr/stdout：流面（isTTY 假 + write 落 stderr/stdout；
         // depd 的 log 读 isTTY 决定彩色、write 输出弃用消息）
@@ -274,6 +327,16 @@ impl Vm {
                 }
             }
         }
+        // process.env 单例：Windows 下键查找大小写不敏感（Node 22 实测对齐——
+        // `process.env.PATH`/`Path`/`path` 等效命中；键保持原始大小写形态）
+        if let Some(env_id) = self.env_object {
+            if obj == Value::Object(env_id) && self.own_value(env_id.0 as usize, key).is_none() {
+                if let Some(actual) = self.env_find_key(env_id.0 as usize, key) {
+                    // 递归一次：以实际键名走精确路径（字面不同必然精确命中）
+                    return self.get_property(obj, &actual);
+                }
+            }
+        }
         let mut cur = obj;
         let mut depth = 0;
         while let Value::Object(r) = cur {
@@ -287,8 +350,8 @@ impl Vm {
             }
             match &self.heap[idx] {
                 HeapObject::Ordinary { getters, proto, .. } => {
-                    if let Some(&g_idx) = getters.get(key) {
-                        return self.invoke_function(g_idx, obj, &[], Vec::new());
+                    if let Some(g_val) = getters.get(key) {
+                        return self.invoke_accessor(*g_val, obj, &[]);
                     }
                     if let Some(v) = self.own_value(idx, key) {
                         return Ok(v);
@@ -300,13 +363,30 @@ impl Vm {
                     }
                 }
                 HeapObject::Closure {
-                    properties, proto, ..
+                    properties,
+                    getters,
+                    proto,
+                    ..
                 } => {
+                    if let Some(g_val) = getters.get(key) {
+                        return self.invoke_accessor(*g_val, obj, &[]);
+                    }
                     if let Some(v) = properties.get(key) {
                         return Ok(*v);
                     }
                     if let Some(parent) = *proto {
                         cur = Value::Object(parent);
+                    } else if matches!(key, "bind" | "call" | "apply" | "toString") {
+                        // 函数方法面按需物化（闭包以 None 原型登记；属性读取面
+                        // 对齐 JS 的 Function.prototype——真实包 `fn.bind` /
+                        // `fn.call` 属性读取依赖此合成，调用经注册表 handler）
+                        let f = self.alloc_native_fn(match key {
+                            "bind" => "Function.prototype.bind",
+                            "call" => "Function.prototype.call",
+                            "apply" => "Function.prototype.apply",
+                            _ => "Function.prototype.toString",
+                        });
+                        return Ok(Value::Object(f));
                     } else {
                         break;
                     }
@@ -541,6 +621,16 @@ impl Vm {
                 return self.proxy_set(r, key, val, obj);
             }
         }
+        // process.env：Windows 下键写入大小写不敏感——命中既有键的原始大小写
+        // 形态时以其实际键名重定向（Node 22 实测：`env.PATH = v` 更新 `Path` 键）。
+        // 递归一次即收敛：实际键名字面不同，必然走精确命中路径。
+        if let Some(env_id) = self.env_object {
+            if obj == Value::Object(env_id) && self.own_value(env_id.0 as usize, key).is_none() {
+                if let Some(actual) = self.env_find_key(env_id.0 as usize, key) {
+                    return self.set_property(obj, &actual, val);
+                }
+            }
+        }
         // globalThis：属性写入直通全局变量表
         if let Value::Object(r) = obj {
             if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
@@ -576,8 +666,8 @@ impl Vm {
                     HeapObject::Ordinary { setters, .. } => setters.get(key).copied(),
                     _ => None,
                 };
-                if let Some(s_idx) = setter {
-                    self.invoke_function(s_idx, obj, &[val], Vec::new())?;
+                if let Some(s_val) = setter {
+                    self.invoke_accessor(s_val, obj, &[val])?;
                     return Ok(());
                 }
                 match &mut self.heap[idx] {
@@ -744,6 +834,26 @@ impl Vm {
                     HeapObject::Ordinary { .. } => {
                         return self.own_entries(idx);
                     }
+                    HeapObject::Closure {
+                        properties,
+                        getters,
+                        non_enum,
+                        ..
+                    } => {
+                        // 函数对象的自有面（Object.keys(require('body-parser'))
+                        // 等：prototype + defineProperty 挂载的访问器键）
+                        let mut out: Vec<(String, Value)> = properties
+                            .iter()
+                            .filter(|(k, _)| !non_enum.contains(*k))
+                            .map(|(k, v)| (k.clone(), *v))
+                            .collect();
+                        for (k, g) in getters.iter() {
+                            if !non_enum.contains(k) && !out.iter().any(|(k2, _)| k2 == k) {
+                                out.push((k.clone(), *g));
+                            }
+                        }
+                        return out;
+                    }
                     HeapObject::Array { elements, .. } => {
                         let mut out = Vec::with_capacity(elements.len() + 1);
                         for (i, v) in elements.iter().enumerate() {
@@ -866,6 +976,28 @@ impl Vm {
         }
     }
 
+    /// 调用访问器函数值（Getter/Setter 共用）。
+    ///
+    /// 访问器表存闭包对象值：闭包须携带 upvalue 捕获（延迟调用时闭包引用
+    /// 的模块/外层变量仍可解析，如 body-parser 的 getter → loadParser）；
+    /// 其余可调用形态（原生函数等）走通用调用协议。
+    fn invoke_accessor(
+        &mut self,
+        val: Value,
+        this: Value,
+        args: &[Value],
+    ) -> Result<Value, VmError> {
+        if let Value::Object(r) = val {
+            if let Some(HeapObject::Closure {
+                func_idx, upvalues, ..
+            }) = self.heap.get(r.0 as usize)
+            {
+                return self.invoke_function(*func_idx, this, args, upvalues.clone());
+            }
+        }
+        self.invoke_callable(val, this, args)
+    }
+
     /// 合成对象属性的特性描述对象（`Object.getOwnPropertyDescriptor` 底层）。
     ///
     /// 本运行时数据属性恒为可写/可枚举/可配置（无属性位存储）；访问器经
@@ -878,9 +1010,8 @@ impl Vm {
         if !self.has_property(obj, key) {
             return Ok(Value::Undefined);
         }
-        // 访问器描述优先（getter/setter 表命中即访问器属性）。getter/setter
-        // 表存函数模板索引（非堆闭包），描述面以占位 NativeFn 暴露函数性
-        // （typeof desc.get === "function"）。
+        // 访问器描述优先（getter/setter 表命中即访问器属性）。表存访问器
+        // 函数值（闭包/原生），描述面直接暴露该函数（对齐 JS 语义）。
         if let Value::Object(r) = obj {
             if let Some(HeapObject::Ordinary {
                 getters, setters, ..
@@ -891,30 +1022,10 @@ impl Vm {
                 if g.is_some() || s.is_some() {
                     let desc = self.alloc_ordinary();
                     if let Some(gf) = g {
-                        let placeholder = self.alloc_native_fn("accessor.getter");
-                        self.set_native_fn_property(
-                            placeholder,
-                            "_template_index",
-                            Value::Number(gf as f64),
-                        );
-                        let _ = self.set_property(
-                            Value::Object(desc),
-                            "get",
-                            Value::Object(placeholder),
-                        );
+                        let _ = self.set_property(Value::Object(desc), "get", gf);
                     }
                     if let Some(sf) = s {
-                        let placeholder = self.alloc_native_fn("accessor.setter");
-                        self.set_native_fn_property(
-                            placeholder,
-                            "_template_index",
-                            Value::Number(sf as f64),
-                        );
-                        let _ = self.set_property(
-                            Value::Object(desc),
-                            "set",
-                            Value::Object(placeholder),
-                        );
+                        let _ = self.set_property(Value::Object(desc), "set", sf);
                     }
                     let _ =
                         self.set_property(Value::Object(desc), "enumerable", Value::Boolean(true));
@@ -947,6 +1058,16 @@ impl Vm {
         desc: Value,
     ) -> Result<(), VmError> {
         let get_v = |vm: &mut Vm, k: &str| -> Result<Value, VmError> { vm.get_property(desc, k) };
+        // enumerable 位：缺省 false（JS 规范 defineProperty 语义）；
+        // 本运行时记录到 non_enum 集合，供 Object.keys/entries 过滤
+        let enumerable = get_v(self, "enumerable")
+            .map(|v| v.is_truthy())
+            .unwrap_or(false);
+        let remember_enumerable = |non_enum: &mut std::collections::HashSet<String>, key: &str| {
+            if !enumerable {
+                non_enum.insert(key.to_owned());
+            }
+        };
         let has_get = self.has_property(desc, "get") && {
             let g = get_v(self, "get")?;
             !matches!(g, Value::Undefined)
@@ -956,21 +1077,21 @@ impl Vm {
             !matches!(s, Value::Undefined)
         };
         if has_get || has_set {
-            // 访问器属性：注册 getter/setter 到 Ordinary 访问器表
-            // （表存函数模板索引；函数值经 func_template_index_of 解析）
+            // 访问器属性：注册 getter/setter 到访问器表（存访问器函数值，
+            // 保留闭包 upvalue 捕获——延迟调用语义）
             let Value::Object(r) = obj else {
                 return Ok(());
             };
             let idx = r.0 as usize;
-            let g_idx = if has_get {
+            let g_val = if has_get {
                 let g = get_v(self, "get")?;
-                self.func_template_index_of(g)
+                Some(g)
             } else {
                 None
             };
-            let s_idx = if has_set {
+            let s_val = if has_set {
                 let s = get_v(self, "set")?;
-                self.func_template_index_of(s)
+                Some(s)
             } else {
                 None
             };
@@ -978,43 +1099,49 @@ impl Vm {
                 getters,
                 setters,
                 has_accessors,
+                non_enum,
                 ..
             }) = self.heap.get_mut(idx)
             {
-                if let Some(g) = g_idx {
+                if let Some(g) = g_val {
                     getters.insert(key.to_owned(), g);
                 }
-                if let Some(s) = s_idx {
+                if let Some(s) = s_val {
                     setters.insert(key.to_owned(), s);
                 }
                 *has_accessors = 1;
+                remember_enumerable(non_enum, key);
+            } else if let Some(HeapObject::Closure {
+                getters, non_enum, ..
+            }) = self.heap.get_mut(idx)
+            {
+                // 闭包（如 body-parser 的 `exports = module.exports = fn`）静态面
+                // 访问器注册；Closure 无 setter 表，set 语义走 set_property 数据路径
+                if let Some(g) = g_val {
+                    getters.insert(key.to_owned(), g);
+                }
+                remember_enumerable(non_enum, key);
             }
             return Ok(());
         }
         let value = get_v(self, "value")?;
-        self.set_property(obj, key, value)
-    }
-
-    /// 解析函数值为函数模板索引（Ordinary 访问器表存储形态）。
-    ///
-    /// 闭包直接取模板索引；访问器描述占位 NativeFn 经 `_template_index`
-    /// 属性还原；其余形态（原生函数等）不可注册，返回 `None` 忽略。
-    pub(crate) fn func_template_index_of(&self, val: Value) -> Option<usize> {
-        match val {
-            Value::Object(r) => match self.heap.get(r.0 as usize) {
-                Some(HeapObject::Closure { func_idx, .. }) => Some(*func_idx),
-                Some(HeapObject::NativeFn { .. }) => {
-                    match self.get_native_fn_property(r, "_template_index") {
-                        Some(Value::Number(n)) => Some(n as usize),
-                        _ => None,
-                    }
+        if !enumerable {
+            if let Value::Object(r) = obj {
+                if let Some(HeapObject::Ordinary {
+                    non_enum, props, ..
+                }) = self.heap.get_mut(r.0 as usize)
+                {
+                    // 数据属性不可枚举：记 non_enum（自身存储仍走数据路径）
+                    non_enum.insert(key.to_owned());
+                    let _ = props;
+                } else if let Some(HeapObject::Closure { non_enum, .. }) =
+                    self.heap.get_mut(r.0 as usize)
+                {
+                    non_enum.insert(key.to_owned());
                 }
-                // 裸函数模板句柄（heap index == 模板索引的历史形态）
-                _ if (r.0 as usize) < self.module_functions.len() => Some(r.0 as usize),
-                _ => None,
-            },
-            _ => None,
+            }
         }
+        self.set_property(obj, key, value)
     }
 
     /// 检查 l instanceof r（沿着 l 的原型链查找 r.prototype）。

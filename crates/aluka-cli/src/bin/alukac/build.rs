@@ -285,13 +285,18 @@ fn source_candidates(p: &Path) -> Option<PathBuf> {
     if p.is_file() {
         return Some(p.to_path_buf());
     }
-    let mut js = p.to_path_buf();
-    js.set_extension("js");
+    // Node CJS 解析语义：扩展名是**追加**而非替换（`./util.inspect` →
+    // `util.inspect.js`；`Path::set_extension` 会把含点文件名误拆为
+    // `util.js`，故这里用 OsString 追加）
+    let mut js = p.as_os_str().to_os_string();
+    js.push(".js");
+    let js = PathBuf::from(js);
     if js.is_file() {
         return Some(js);
     }
-    let mut cjs = p.to_path_buf();
-    cjs.set_extension("cjs");
+    let mut cjs = p.as_os_str().to_os_string();
+    cjs.push(".cjs");
+    let cjs = PathBuf::from(cjs);
     if cjs.is_file() {
         return Some(cjs);
     }

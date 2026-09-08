@@ -9,6 +9,7 @@ use aluka_bytecode::{ClassTemplate, Constant, FuncTemplate, Instr, Op, TryEntry}
 use aluka_core::{ObjectRef, ShapeTable};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 /// 执行期可能发生的错误。
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +28,9 @@ pub enum VmError {
     Yielded(Value),
     /// `AWAIT` 未完成 Promise 的挂起信号（携带 promise 句柄，由 async 驱动层捕获）
     Awaited(aluka_core::ObjectRef),
+    /// `process.exit(code)` 终止信号（Node 语义立即终止事件循环；
+    /// 不参与 try/catch 匹配，沿调用链直达宿主）
+    Exit(i32),
     /// 遇到了当前里程碑尚未实现的操作码
     UnimplementedOpcode(Op),
 }
@@ -41,6 +45,7 @@ impl std::fmt::Display for VmError {
             Self::Thrown(_) => write!(f, "未捕获的 JS 异常"),
             Self::Yielded(_) => write!(f, "生成器挂起信号（不应逃逸到顶层）"),
             Self::Awaited(_) => write!(f, "async 挂起信号（不应逃逸到顶层）"),
+            Self::Exit(code) => write!(f, "process.exit({code})"),
             Self::UnimplementedOpcode(op) => write!(f, "未实现的操作码: {op:?}"),
         }
     }
@@ -134,6 +139,10 @@ pub struct Vm {
     pub fs_object: Option<ObjectRef>,
     /// `require` 原生函数句柄（`setup_cjs` 后可用）
     pub require_fn: Option<ObjectRef>,
+    /// 模块专属 require 函数实例 → 其模块目录（`require('./x')` 相对闭包
+    /// 所属模块解析；Node 语义：require 为模块闭包捕获，延迟调用仍解析
+    /// 到模块自身目录，而非当前加载栈顶）
+    pub(crate) require_bases: HashMap<ObjectRef, PathBuf>,
     /// CJS 模块缓存：规范化路径 → exports
     pub(crate) module_exports: HashMap<String, Value>,
     /// 模块解析基准目录（入口文件所在目录）
@@ -203,6 +212,8 @@ pub struct Vm {
     pub ctor_cache: std::collections::HashMap<String, ObjectRef>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
+    /// `process.env` 对象单例缓存（物化一次；键大小写不敏感语义见 property.rs）
+    pub(crate) env_object: Option<ObjectRef>,
     /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
     pub path_module: Option<ObjectRef>,
     /// `os` 内置模块单例（platform/homedir/tmpdir 拦截；EOL 属性读取特判）
@@ -342,6 +353,7 @@ impl Vm {
             symbol_proto: None,
             ctor_cache: std::collections::HashMap::new(),
             process_object: None,
+            env_object: None,
             path_module: None,
             os_module: None,
             stream_module: None,
@@ -355,6 +367,7 @@ impl Vm {
             require_base_stack: Vec::new(),
             entry_file: String::new(),
             require_fn: None,
+            require_bases: HashMap::new(),
             fs_object: None,
         };
         // Object.prototype：原型链顶端（[[Prototype]] 为 null）。保持
@@ -849,6 +862,10 @@ impl Vm {
             }
             "setInterval" => {
                 let f = self.alloc_native_fn("setInterval");
+                Value::Object(f)
+            }
+            "setImmediate" => {
+                let f = self.alloc_native_fn("setImmediate");
                 Value::Object(f)
             }
             "clearTimeout" => {
@@ -1548,8 +1565,12 @@ impl Vm {
                 },
                 Err(err) => {
                     // Awaited / Yielded 是正常的协程挂起信号（async/生成器由
-                    // 帧收割层处理），不是执行错误，不打日志直接上抛
-                    if !matches!(err, VmError::Awaited(_) | VmError::Yielded(_)) {
+                    // 帧收割层处理）；Exit 是 process.exit 正常终止信号，
+                    // 都不是执行错误，不打日志直接上抛
+                    if !matches!(
+                        err,
+                        VmError::Awaited(_) | VmError::Yielded(_) | VmError::Exit(_)
+                    ) {
                         eprintln!(
                             "[vm-err] func={} pc={} stack={} err={err:?}",
                             self.current_func_idx,
@@ -2132,6 +2153,25 @@ impl Vm {
                                 Some(HeapObject::Array { elements, .. }) => {
                                     (0..elements.len()).map(|i| i.to_string()).collect()
                                 }
+                                Some(HeapObject::Closure {
+                                    properties,
+                                    getters,
+                                    non_enum,
+                                    ..
+                                }) => {
+                                    // 函数对象自有面（express/body-parser 的
+                                    // exports=fn + defineProperty 静态访问器；
+                                    // prototype/不可枚举面过滤）
+                                    let mut ks: Vec<String> = properties
+                                        .keys()
+                                        .filter(|k| !non_enum.contains(*k))
+                                        .cloned()
+                                        .collect();
+                                    ks.extend(
+                                        getters.keys().filter(|k| !non_enum.contains(*k)).cloned(),
+                                    );
+                                    ks
+                                }
                                 _ => Vec::new(),
                             },
                             _ => Vec::new(),
@@ -2173,6 +2213,15 @@ impl Vm {
                                             .map(|(k, _)| k)
                                             .filter(|k| !crate::symbol::is_symbol_key(k)),
                                     );
+                                    ks
+                                }
+                                Some(HeapObject::Closure {
+                                    properties,
+                                    getters,
+                                    ..
+                                }) => {
+                                    let mut ks: Vec<String> = properties.keys().cloned().collect();
+                                    ks.extend(getters.keys().cloned());
                                     ks
                                 }
                                 _ => Vec::new(),
@@ -3620,43 +3669,84 @@ impl Vm {
                             // 普通对象方法调用
                             let method_val = self.get_property(receiver, &method_name)?;
                             if let Value::Object(m_ref) = method_val {
-                                // 原生函数方法（如 node:test spy）：保持 receiver 为 this，
-                                // 经注册表分派 spy 处理器
-                                let native = match self.heap.get(m_ref.0 as usize) {
-                                    Some(HeapObject::NativeFn { name, .. }) => {
-                                        crate::builtins::set_pending_native_name(name);
-                                        crate::builtins::set_pending_callee(method_val);
-                                        self.builtin_registry.lookup(name)
+                                // Promise resolver/rejecter（Promise.withResolvers 的
+                                // resolve/reject 属性）：按解析器标志兑现目标 promise
+                                let resolver = match self.heap.get(m_ref.0 as usize) {
+                                    Some(HeapObject::PromiseResolver { promise, resolve }) => {
+                                        Some((*promise, *resolve))
                                     }
                                     _ => None,
                                 };
-                                if let Some(handler) = native {
-                                    crate::builtins::set_current_receiver(receiver);
-                                    let ret = handler(self, args)?;
-                                    self.stack.push(ret);
-                                } else {
-                                    let (f_idx, uvs) = if let Some(HeapObject::Closure {
-                                        func_idx,
-                                        upvalues,
-                                        ..
-                                    }) = self.heap.get(m_ref.0 as usize)
-                                    {
-                                        (Some(*func_idx), upvalues.clone())
-                                    } else if (m_ref.0 as usize) < self.module_functions.len() {
-                                        (Some(m_ref.0 as usize), Vec::new())
+                                if let Some((promise, resolve)) = resolver {
+                                    let value = args.first().copied().unwrap_or(Value::Undefined);
+                                    if resolve {
+                                        self.fulfill_promise(promise, value)?;
                                     } else {
-                                        (None, Vec::new())
+                                        self.reject_promise(promise, value)?;
+                                    }
+                                    self.stack.push(Value::Undefined);
+                                } else {
+                                    // 原生函数方法（如 node:test spy）：保持 receiver 为 this，
+                                    // 经注册表分派 spy 处理器
+                                    let native = match self.heap.get(m_ref.0 as usize) {
+                                        Some(HeapObject::NativeFn { name, .. }) => {
+                                            crate::builtins::set_pending_native_name(name);
+                                            crate::builtins::set_pending_callee(method_val);
+                                            self.builtin_registry.lookup(name)
+                                        }
+                                        _ => None,
                                     };
-
-                                    if let Some(fi) = f_idx {
-                                        let ret = self.invoke_function(fi, receiver, args, uvs)?;
+                                    if let Some(handler) = native {
+                                        crate::builtins::set_current_receiver(receiver);
+                                        let ret = handler(self, args)?;
                                         self.stack.push(ret);
                                     } else {
-                                        self.stack.push(Value::Undefined);
+                                        let (f_idx, uvs) = if let Some(HeapObject::Closure {
+                                            func_idx,
+                                            upvalues,
+                                            ..
+                                        }) = self.heap.get(m_ref.0 as usize)
+                                        {
+                                            (Some(*func_idx), upvalues.clone())
+                                        } else if (m_ref.0 as usize) < self.module_functions.len() {
+                                            (Some(m_ref.0 as usize), Vec::new())
+                                        } else {
+                                            (None, Vec::new())
+                                        };
+
+                                        if let Some(fi) = f_idx {
+                                            let ret =
+                                                self.invoke_function(fi, receiver, args, uvs)?;
+                                            self.stack.push(ret);
+                                        } else {
+                                            // 方法值不可解析为函数：按 JS 语义抛
+                                            // TypeError（此前静默 undefined 掩盖缺陷）
+                                            let desc = self.format_value(method_val);
+                                            let err = self.alloc_error_instance(&format!(
+                                                "{desc} is not a function"
+                                            ));
+                                            let name = self.alloc_string("TypeError".to_owned());
+                                            let _ = self.set_property(
+                                                Value::Object(err),
+                                                "name",
+                                                Value::Object(name),
+                                            );
+                                            return Err(VmError::Thrown(Value::Object(err)));
+                                        }
                                     }
                                 }
                             } else {
-                                self.stack.push(Value::Undefined);
+                                // 方法属性 undefined/非对象：同样抛 TypeError
+                                let err = self.alloc_error_instance(&format!(
+                                    "{method_name} is not a function"
+                                ));
+                                let name = self.alloc_string("TypeError".to_owned());
+                                let _ = self.set_property(
+                                    Value::Object(err),
+                                    "name",
+                                    Value::Object(name),
+                                );
+                                return Err(VmError::Thrown(Value::Object(err)));
                             }
                         }
                     } else {
@@ -3670,9 +3760,23 @@ impl Vm {
                     let args = call_args.as_slice();
                     let callee = self.pop()?;
                     if self.is_native_fn(callee, "require") {
-                        // require(spec)：CJS 模块加载（缓存 + 循环依赖占位）
+                        // require(spec)：CJS 模块加载（缓存 + 循环依赖占位）。
+                        // 模块专属实例（require_bases 登记过）相对其模块目录
+                        // 解析——getter/回调延迟调用仍保持 Node 闭包捕获语义
                         let spec = args.first().copied().unwrap_or(Value::Undefined);
-                        let exports = self.call_require(spec)?;
+                        let module_base = match callee {
+                            Value::Object(r) => self.require_bases.get(&r).cloned(),
+                            _ => None,
+                        };
+                        let exports = match module_base {
+                            Some(base) => {
+                                self.require_base_stack.push(base);
+                                let r = self.call_require(spec);
+                                self.require_base_stack.pop();
+                                r?
+                            }
+                            None => self.call_require(spec)?,
+                        };
                         self.stack.push(exports);
                     } else if self.is_native_fn(callee, "String") {
                         // String(value)：全局字符串转换
@@ -3708,6 +3812,19 @@ impl Vm {
                                 self.reject_promise(promise, value)?;
                             }
                             self.stack.push(Value::Undefined);
+                        } else if self.is_native_fn(Value::Object(r), "setImmediate") {
+                            // setImmediate(cb)：延时 0 的单次宏任务（Node 语义，
+                            // express router 的 next 链核心调度）
+                            let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            self.timer_counter += 1;
+                            let id = self.timer_counter;
+                            let last_due = self
+                                .macro_tasks
+                                .back()
+                                .map(|(_, d, _, _, _)| *d)
+                                .unwrap_or(0);
+                            self.macro_tasks.push_back((id, last_due, 0, cb, false));
+                            self.stack.push(Value::Number(id as f64));
                         } else if self.is_native_fn(Value::Object(r), "setTimeout")
                             || self.is_native_fn(Value::Object(r), "setInterval")
                         {
@@ -3970,20 +4087,14 @@ impl Vm {
                     let fn_val = self.pop()?;
                     let obj = self.peek()?;
                     if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
-                        let f_idx = if let Some(HeapObject::Closure { func_idx, .. }) =
-                            self.heap.get(f_ref.0 as usize)
-                        {
-                            *func_idx
-                        } else {
-                            f_ref.0 as usize
-                        };
+                        let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             getters,
                             has_accessors,
                             ..
                         }) = self.heap.get_mut(o_ref.0 as usize)
                         {
-                            getters.insert(key.into_owned(), f_idx);
+                            getters.insert(key.into_owned(), fn_val);
                             *has_accessors = 1;
                         }
                     }
@@ -3993,20 +4104,14 @@ impl Vm {
                     let fn_val = self.pop()?;
                     let obj = self.peek()?;
                     if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
-                        let f_idx = if let Some(HeapObject::Closure { func_idx, .. }) =
-                            self.heap.get(f_ref.0 as usize)
-                        {
-                            *func_idx
-                        } else {
-                            f_ref.0 as usize
-                        };
+                        let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             setters,
                             has_accessors,
                             ..
                         }) = self.heap.get_mut(o_ref.0 as usize)
                         {
-                            setters.insert(key.into_owned(), f_idx);
+                            setters.insert(key.into_owned(), fn_val);
                             *has_accessors = 1;
                         }
                     }
@@ -4017,20 +4122,14 @@ impl Vm {
                     let key = self.to_property_key(key_val);
                     let obj = self.peek()?;
                     if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
-                        let f_idx = if let Some(HeapObject::Closure { func_idx, .. }) =
-                            self.heap.get(f_ref.0 as usize)
-                        {
-                            *func_idx
-                        } else {
-                            f_ref.0 as usize
-                        };
+                        let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             getters,
                             has_accessors,
                             ..
                         }) = self.heap.get_mut(o_ref.0 as usize)
                         {
-                            getters.insert(key, f_idx);
+                            getters.insert(key, fn_val);
                             *has_accessors = 1;
                         }
                     }
@@ -4041,20 +4140,14 @@ impl Vm {
                     let key = self.to_property_key(key_val);
                     let obj = self.peek()?;
                     if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
-                        let f_idx = if let Some(HeapObject::Closure { func_idx, .. }) =
-                            self.heap.get(f_ref.0 as usize)
-                        {
-                            *func_idx
-                        } else {
-                            f_ref.0 as usize
-                        };
+                        let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             setters,
                             has_accessors,
                             ..
                         }) = self.heap.get_mut(o_ref.0 as usize)
                         {
-                            setters.insert(key, f_idx);
+                            setters.insert(key, fn_val);
                             *has_accessors = 1;
                         }
                     }

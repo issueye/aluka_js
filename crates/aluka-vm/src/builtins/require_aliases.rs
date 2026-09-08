@@ -46,6 +46,8 @@ fn build_process(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRe
     // 事件面（depd/on-finished 等在模块顶层调用 process.listenerCount）
     register_handler(registry, "process", "listenerCount", process_listener_count);
     register_handler(registry, "process", "listeners", process_listeners);
+    register_handler(registry, "process", "exit", process_exit);
+    register_handler(registry, "process", "cwd", process_cwd);
     for method in ["on", "once", "removeListener", "removeAllListeners", "emit"] {
         let f = vm.alloc_native_fn(&format!("process.{method}"));
         let _ = vm.set_property(
@@ -67,6 +69,18 @@ fn build_process(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRe
         "listeners",
         Value::Object(ls),
     );
+    let cwd = vm.alloc_native_fn("process.cwd");
+    let _ = vm.set_property(
+        Value::Object(vm.process_object.unwrap()),
+        "cwd",
+        Value::Object(cwd),
+    );
+    let exit = vm.alloc_native_fn("process.exit");
+    let _ = vm.set_property(
+        Value::Object(vm.process_object.unwrap()),
+        "exit",
+        Value::Object(exit),
+    );
     vm.process_object.ok_or_else(|| {
         VmError::Thrown(Value::Object(
             vm.alloc_string("process global missing".to_string()),
@@ -77,6 +91,24 @@ fn build_process(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRe
 /// process 事件面空实现（真实包仅在模块顶层探测性调用）。
 fn process_listener_count(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Number(0.0))
+}
+
+/// `process.exit(code)`：立即终止（Node 语义，绕过 try/catch 直达宿主；
+/// 退出码省略或非数字时按 0）。
+pub(crate) fn process_exit(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let code = args
+        .first()
+        .map(|v| crate::ops::to_number(*v) as i32)
+        .unwrap_or(0);
+    Err(VmError::Exit(code))
+}
+
+/// `process.cwd()`：当前工作目录（express 路由/文件路径推理常用）。
+pub(crate) fn process_cwd(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| ".".to_owned());
+    Ok(Value::Object(vm.alloc_string(cwd)))
 }
 
 fn process_listeners(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {

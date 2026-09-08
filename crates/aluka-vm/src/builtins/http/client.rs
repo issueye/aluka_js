@@ -99,9 +99,10 @@ pub(crate) fn create_request_object(
                     method = m;
                 }
                 if url.is_empty() {
-                    if let Some(h) = get(vm, "host") {
-                        url = format!("{proto}://{h}");
-                    }
+                    // Node 语义：options 未给 host 时默认 localhost
+                    // （Go oracle 对齐；真实包 http.request({port,path}) 形态）
+                    let h = get(vm, "host").unwrap_or_else(|| "localhost".to_owned());
+                    url = format!("{proto}://{h}");
                     if let Some(p) = get(vm, "port") {
                         url = format!("{}:{p}", url.trim_end_matches('/'));
                     }
@@ -489,7 +490,14 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                         deliveries.push(Delivery::Aborted(c.obj));
                         continue;
                     }
-                    let addr = format!("{}:{}", c.host, c.port);
+                    // Windows 上 localhost 常解析为 IPv6 ::1，而本 VM server
+                    // 仅绑 IPv4（0.0.0.0）；显式映射 127.0.0.1 保证本机自连可用
+                    let dial_host = if c.host.eq_ignore_ascii_case("localhost") {
+                        "127.0.0.1".to_owned()
+                    } else {
+                        c.host.clone()
+                    };
+                    let addr = format!("{}:{}", dial_host, c.port);
                     // Agent keepAlive：优先复用池内存活连接，未命中才新建
                     let attempt = match super::state::pool_take(&addr) {
                         Some(stream) => Some(stream),

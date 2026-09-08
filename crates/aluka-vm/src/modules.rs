@@ -235,9 +235,10 @@ impl Vm {
             .unwrap_or_else(|| PathBuf::from("."));
         let filename = Value::Object(self.alloc_string(resolved.display().to_string()));
         let dirname = Value::Object(self.alloc_string(module_dir.display().to_string()));
-        let require_fn = self
-            .require_fn
-            .unwrap_or_else(|| self.alloc_native_fn("require"));
+        // 模块专属 require 实例：闭包捕获语义（Node）——模块内函数延迟调用
+        // require 时仍解析到本模块目录（解释器 Op::Call 经 require_bases 查表）
+        let require_fn = self.alloc_native_fn("require");
+        self.require_bases.insert(require_fn, module_dir.clone());
         let saved_globals = ["exports", "module", "__filename", "__dirname", "require"]
             .map(|k| (k, self.globals.get(k).copied()));
         // 注入值双写：模块作用域（模块内函数命中）+ 共享全局（入口/兜底）
