@@ -55,7 +55,7 @@
 |---|---|---|:---:|
 | **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[x]` |
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
-| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[ ]` |
+| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[x]` |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[ ]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
