@@ -4461,7 +4461,7 @@ fn format_radix(n: i128, radix: u32) -> String {
 
 /// SameValueZero 相等（`Array.prototype.includes` 语义：NaN 视为相等，
 /// `+0`/`-0` 相等；对象按引用身份）。
-fn values_same_zero(a: Value, b: Value) -> bool {
+pub(crate) fn values_same_zero(a: Value, b: Value) -> bool {
     if let (Value::Number(x), Value::Number(y)) = (a, b) {
         if x.is_nan() && y.is_nan() {
             return true;

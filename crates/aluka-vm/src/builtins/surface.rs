@@ -294,6 +294,9 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
     ] {
         let f = vm.alloc_native_fn(&format!("Array.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(arr_p), m, Value::Object(f));
+        // 真 handler：真实包（express application）`Array.prototype.slice.call`
+        // 形态——占位会抛 not-a-function
+        register_handler(registry, "Array.prototype", m, array_method_dispatch);
     }
 
     // Set/Map/WeakSet/WeakMap/WeakRef 容器原型方法面（属性存在性）
@@ -575,6 +578,133 @@ fn regexp_to_string_dispatch(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmEr
     let re = super::current_receiver();
     let s = vm.format_value(re);
     Ok(Value::Object(vm.alloc_string(s)))
+}
+
+/// `Array.prototype.X.call(arr, ...)` 形态分派（express 的
+/// `$slice.call(arguments)` 等）：按方法实现核心语义，未实现返回 undefined。
+fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    use crate::value::Value as V;
+    let full = super::pending_native_name();
+    let name = full
+        .rsplit("Array.prototype.")
+        .next()
+        .unwrap_or(&full)
+        .to_owned();
+    let this = super::current_receiver();
+    let Value::Object(r) = this else {
+        return Ok(Value::Undefined);
+    };
+    let elems = |vm: &Vm, r: aluka_core::ObjectRef| -> Vec<Value> {
+        match vm.heap.get(r.0 as usize) {
+            Some(HeapObject::Array { elements, .. }) => elements.clone(),
+            _ => Vec::new(),
+        }
+    };
+    match name.as_str() {
+        "slice" => {
+            let parts = elems(vm, r);
+            let len = parts.len() as i64;
+            let norm = |v: Option<&Value>| -> usize {
+                match v {
+                    Some(V::Number(n)) => {
+                        if *n < 0.0 {
+                            ((len + *n as i64).max(0)) as usize
+                        } else {
+                            (*n as usize).min(parts.len())
+                        }
+                    }
+                    _ => 0,
+                }
+            };
+            let start = norm(args.first());
+            let end = match args.get(1) {
+                Some(V::Number(n)) => {
+                    if *n < 0.0 {
+                        ((len + *n as i64).max(0)) as usize
+                    } else {
+                        (*n as usize).min(parts.len())
+                    }
+                }
+                None => parts.len(),
+                _ => parts.len(),
+            };
+            let out = if start < end {
+                parts[start..end].to_vec()
+            } else {
+                Vec::new()
+            };
+            Ok(Value::Object(vm.alloc_array(out)))
+        }
+        "concat" => {
+            let mut out = elems(vm, r);
+            for a in args {
+                if let Value::Object(ar) = a
+                    && matches!(vm.heap.get(ar.0 as usize), Some(HeapObject::Array { .. }))
+                {
+                    out.extend(elems(vm, *ar));
+                } else {
+                    out.push(*a);
+                }
+            }
+            Ok(Value::Object(vm.alloc_array(out)))
+        }
+        "join" => {
+            let sep = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
+            let text = elems(vm, r)
+                .iter()
+                .map(|v| vm.format_value(*v))
+                .collect::<Vec<_>>()
+                .join(&sep);
+            Ok(Value::Object(vm.alloc_string(text)))
+        }
+        "toString" => {
+            let text = elems(vm, r)
+                .iter()
+                .map(|v| vm.format_value(*v))
+                .collect::<Vec<_>>()
+                .join(",");
+            Ok(Value::Object(vm.alloc_string(text)))
+        }
+        "push" => {
+            let mut parts = elems(vm, r);
+            for a in args {
+                vm.gc_write_barrier(r, *a);
+                parts.push(*a);
+            }
+            let len = parts.len();
+            if let Some(HeapObject::Array { elements, .. }) = vm.heap.get_mut(r.0 as usize) {
+                *elements = parts;
+            }
+            Ok(Value::Number(len as f64))
+        }
+        "pop" => {
+            let mut parts = elems(vm, r);
+            let out = parts.pop().unwrap_or(Value::Undefined);
+            if let Some(HeapObject::Array { elements, .. }) = vm.heap.get_mut(r.0 as usize) {
+                *elements = parts;
+            }
+            Ok(out)
+        }
+        "indexOf" => {
+            let needle = args.first().copied().unwrap_or(Value::Undefined);
+            let pos = elems(vm, r)
+                .iter()
+                .position(|e| crate::interpreter::values_same_zero(*e, needle));
+            Ok(Value::Number(pos.map(|i| i as f64).unwrap_or(-1.0)))
+        }
+        "includes" => {
+            let needle = args.first().copied().unwrap_or(Value::Undefined);
+            let hit = elems(vm, r)
+                .iter()
+                .any(|e| crate::interpreter::values_same_zero(*e, needle));
+            Ok(Value::Boolean(hit))
+        }
+        "length" => Ok(Value::Number(elems(vm, r).len() as f64)),
+        _ => Ok(Value::Undefined),
+    }
 }
 
 /// `Function.prototype.toString`（真实 handler）：函数对象文本面，无源码
