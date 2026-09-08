@@ -44,4 +44,5 @@ cargo test --workspace --all-features           # 全绿 0 failed（phase5_http 
    - ⑤ **parser ASI**：`return` 换行未终止语句，下一行 if 被当 return 表达式（raw-body onEnd err 检查丢失/无条件 done 的最终根因——received 写丢亦同源）；
    - ⑥ **Array 构造语义**：`new Array(n)` 曾无条件空数组（raw-body `new Array(arguments.length)` 致回调参数全丢）、`Array(...)` 直调崩；
    - **结果：6 场景全部与 oracle 逐字一致**
-2. 剩余收尾：`express_e2e_test.rs` 固化测试（6 场景已绿，待创建）；S5/S10 字符串实例原型链规范面；F3 JSON.parse 错误类型（抛 TypeError 而非 SyntaxError）
+2. 剩余收尾：~~`express_e2e_test.rs` 固化测试~~（已完成于 72fb1a2，6 场景断言固化并通过）；S5/S10 字符串实例原型链规范面；F3 JSON.parse 错误类型（抛 TypeError 而非 SyntaxError）
+3. **M2.4 结项核实（本轮）**：`express_e2e_test` 1 passed；全量 `cargo test --workspace --all-features` 72 套件全绿 0 failed；里程碑表 M2/M2.4 已标记 `[x]`（证据：72fb1a2 提交说明 + oracle 逐字对拍 + E2E 固化测试）

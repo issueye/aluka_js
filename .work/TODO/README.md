@@ -54,7 +54,7 @@
 | 里程碑 | 核心目标 | 关键验收指标 | 状态 |
 |---|---|---|:---:|
 | **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[x]` |
-| **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[ ]` |
+| **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[ ]` |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[ ]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
@@ -111,7 +111,7 @@
   - 规范级 `import.meta` 对象（`url`, `filename`, `dirname`, `resolve`）；
   - 支持 ESM 默认导入 CommonJS 模块时的导出属性自动推断；
   - 验收：双模块混合调用集成测试全绿。
-- [ ] **M2.4 真实第三方生态里程碑：Express 100% 跑通**
+- [x] **M2.4 真实第三方生态里程碑：Express 100% 跑通**
   - 排除 http-errors 等前置依赖加载障碍，实现 Express 依赖树完整无误加载；
   - 跑通 6 大核心场景测试：`GET /`、`GET /echo/:word`、`POST /json`、并发压力场景、自定义 Content-Type 与进程优雅退出；
   - 验收：固化 `express_e2e_test.rs` 集成测试，对齐 Node 22 输出。
