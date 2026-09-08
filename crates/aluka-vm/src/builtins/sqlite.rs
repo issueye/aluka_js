@@ -1,4 +1,4 @@
-﻿//! `sqlite` 内置模块（Phase 7）：Node 22 `node:sqlite` 原生 `DatabaseSync`。
+//! `sqlite` 内置模块（Phase 7）：Node 22 `node:sqlite` 原生 `DatabaseSync`。
 //!
 //! 语义严格对齐 Node.js 22 LTS 规范：
 //! - `new DatabaseSync(path)`（别名 `Database`）打开数据库（`:memory:` 或文件路径）；
@@ -525,10 +525,7 @@ fn stmt_set_read_big_ints(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
     let Value::Object(r) = receiver else {
         return Ok(Value::Undefined);
     };
-    let flag = args
-        .first()
-        .copied()
-        .unwrap_or(Value::Undefined);
+    let flag = args.first().copied().unwrap_or(Value::Undefined);
     let flag = vm.truthy(flag);
     with_map(&STMTS, |m| {
         if let Some(entry) = m.get_mut(&r.0) {

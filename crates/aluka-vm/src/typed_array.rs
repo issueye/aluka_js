@@ -796,15 +796,13 @@ impl Vm {
                     match method {
                         "map" => mapped.push(r),
                         "filter" if tr => filtered.push(*e),
-                        "find" | "findIndex" | "findLast" | "findLastIndex" if tr => {
-                            match hit {
-                                None => hit = Some((i, *e)),
-                                Some(_) if method.starts_with("findLast") => {
-                                    hit = Some((i, *e));
-                                }
-                                _ => {}
+                        "find" | "findIndex" | "findLast" | "findLastIndex" if tr => match hit {
+                            None => hit = Some((i, *e)),
+                            Some(_) if method.starts_with("findLast") => {
+                                hit = Some((i, *e));
                             }
-                        }
+                            _ => {}
+                        },
                         "some" if tr => return Ok(Value::Boolean(true)),
                         "every" if !tr => return Ok(Value::Boolean(false)),
                         _ => {}

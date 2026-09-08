@@ -282,11 +282,12 @@ impl<'src> Lexer<'src> {
                             // （pos 已消费完整序列，跳过末尾 +1）
                             self.pos += 1;
                             match read_hex_units(bytes, &mut self.pos, 2) {
-                                Some(v) => current_quasi
-                                    .push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+                                Some(v) => {
+                                    current_quasi.push(char::from_u32(v).unwrap_or('\u{FFFD}'))
+                                }
                                 None => current_quasi.push('x'),
                             }
-                            current_raw.extend(self.src[esc_start + 1..self.pos].chars());
+                            current_raw.push_str(&self.src[esc_start + 1..self.pos]);
                             continue;
                         }
                         b'u' => {
@@ -306,8 +307,7 @@ impl<'src> Lexer<'src> {
                                     end += 1;
                                 }
                                 if valid && end < bytes.len() && bytes[end] == b'}' {
-                                    current_quasi
-                                        .push(char::from_u32(v).unwrap_or('\u{FFFD}'));
+                                    current_quasi.push(char::from_u32(v).unwrap_or('\u{FFFD}'));
                                     self.pos = end + 1; // 越过 '}'
                                 } else {
                                     // 非法 \u{...：'u' 按字面，'{' 留给普通字符路径
@@ -326,8 +326,7 @@ impl<'src> Lexer<'src> {
                                                         + ((v - 0xD800) << 10)
                                                         + (lo - 0xDC00);
                                                     current_quasi.push(
-                                                        char::from_u32(cp)
-                                                            .unwrap_or('\u{FFFD}'),
+                                                        char::from_u32(cp).unwrap_or('\u{FFFD}'),
                                                     );
                                                     self.pos = probe;
                                                 } else {
@@ -340,12 +339,13 @@ impl<'src> Lexer<'src> {
                                             current_quasi.push('\u{FFFD}');
                                         }
                                     }
-                                    Some(v) => current_quasi
-                                        .push(char::from_u32(v).unwrap_or('\u{FFFD}')),
+                                    Some(v) => {
+                                        current_quasi.push(char::from_u32(v).unwrap_or('\u{FFFD}'))
+                                    }
                                     None => current_quasi.push('u'),
                                 }
                             }
-                            current_raw.extend(self.src[esc_start + 1..self.pos].chars());
+                            current_raw.push_str(&self.src[esc_start + 1..self.pos]);
                             continue;
                         }
                         other => current_quasi.push(other as char),
@@ -703,10 +703,7 @@ mod tests {
         );
         // \x41 → 'A'
         let mut lexer = Lexer::new("'\\x41'");
-        assert_eq!(
-            lexer.next_token().kind,
-            TokenKind::String("A".to_owned())
-        );
+        assert_eq!(lexer.next_token().kind, TokenKind::String("A".to_owned()));
         // 模板字符串内的 \uFFFD
         let mut lexer = Lexer::new("`\\uFFFD`");
         let t = lexer.next_token();

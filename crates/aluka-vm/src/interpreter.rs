@@ -1721,7 +1721,8 @@ impl Vm {
                 // 4. 位运算与逻辑非
                 Op::Not => {
                     let top = self.pop()?;
-                    self.stack.push(Value::Boolean(!to_boolean(top, &self.heap)));
+                    self.stack
+                        .push(Value::Boolean(!to_boolean(top, &self.heap)));
                 }
                 Op::BitNot => {
                     let top = self.pop()?;
@@ -1924,8 +1925,22 @@ impl Vm {
                     // bind：同样必须走 Function.prototype 语义——NativeFn
                     // receiver 的 try_dispatch 回退会错误地把 bind 分派到
                     // 函数自身方法（如 AsyncResource.runInAsyncScope.bind 被
-                    // 劫持成 runInAsyncScope 调用，raw-body 依赖此形态）
-                    if method_name.as_ref() == "bind" {
+                    // 劫持成 runInAsyncScope 调用，raw-body 依赖此形态）。
+                    // 守卫：仅函数对象（Closure/NativeFn/NativeCtor）的 bind
+                    // 才是 Function.prototype.bind；非函数 receiver 的 bind
+                    // 是真实实例方法（dgram.Socket.bind() 等），必须走常规
+                    // 方法分派——09-09 一刀切曾把 dgram bind 吞成绑定函数
+                    let receiver_is_fn = matches!(
+                        receiver,
+                        Value::Object(rb)
+                            if matches!(
+                                self.heap.get(rb.0 as usize),
+                                Some(HeapObject::Closure { .. })
+                                    | Some(HeapObject::NativeFn { .. })
+                                    | Some(HeapObject::NativeCtor { .. })
+                            )
+                    );
+                    if method_name.as_ref() == "bind" && receiver_is_fn {
                         crate::builtins::set_current_receiver(receiver);
                         crate::builtins::set_pending_native_name("Function.prototype.bind");
                         let res = crate::builtins::surface::fn_proto_bind(self, args)?;
@@ -3771,10 +3786,8 @@ impl Vm {
                                 crate::builtins::set_current_receiver(receiver);
                                 let full = format!("Number.prototype.{method_name}");
                                 crate::builtins::set_pending_native_name(&full);
-                                let res = crate::builtins::surface::num_method_dispatch(
-                                    self,
-                                    args,
-                                )?;
+                                let res =
+                                    crate::builtins::surface::num_method_dispatch(self, args)?;
                                 self.stack.push(res);
                             }
                             _ => self.stack.push(Value::Undefined),

@@ -46,8 +46,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         register_handler(registry, "global", name, *handler);
     }
 
-    // Number：转换调用 + 数值静态面
-    let number = vm.alloc_native_ctor("Number", vm.object_prototype);
+    // Number：转换调用 + 数值静态面（prototype 指向方法面单例——真实包
+    // `Number.prototype.toString` 存槽后 `.call` 调用依赖方法属性存在）
+    let num_p = crate::builtins::surface::num_proto(vm);
+    let number = vm.alloc_native_ctor("Number", Some(num_p));
     let statics: &[(&str, Value)] = &[
         ("MAX_SAFE_INTEGER", Value::Number(9007199254740991.0)),
         ("MIN_SAFE_INTEGER", Value::Number(-9007199254740991.0)),
@@ -76,13 +78,18 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     vm.globals
         .insert("Number".to_owned(), Value::Object(number));
 
-    // Boolean：转换调用
-    let boolean = vm.alloc_native_ctor("Boolean", vm.object_prototype);
+    // Boolean：转换调用（prototype 指向方法面单例）
+    let bool_p = crate::builtins::surface::bool_proto(vm);
+    let boolean = vm.alloc_native_ctor("Boolean", Some(bool_p));
     vm.globals
         .insert("Boolean".to_owned(), Value::Object(boolean));
 
-    // String：静态方法 fromCharCode/fromCodePoint（iconv-lite 等真实包依赖）
-    let string = vm.alloc_native_ctor("String", vm.object_prototype);
+    // String：静态方法 fromCharCode/fromCodePoint（iconv-lite 等真实包依赖）；
+    // prototype 指向方法面单例——express 依赖树（get-intrinsic/call-bound 等）
+    // 顶层存 `String.prototype.slice/indexOf/...` 槽位再 `.call` 调用，取属性
+    // 必须是真实方法值（曾指向 object_prototype 空对象导致全链 undefined）
+    let str_p = crate::builtins::surface::str_proto(vm);
+    let string = vm.alloc_native_ctor("String", Some(str_p));
     for (method, handler) in [
         ("fromCharCode", string_from_char_code as BuiltinHandler),
         ("fromCodePoint", string_from_code_point as BuiltinHandler),
@@ -91,10 +98,14 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         let _ = vm.set_property(Value::Object(string), method, Value::Object(f));
         register_handler(registry, "String", method, handler);
     }
-    vm.globals.insert("String".to_owned(), Value::Object(string));
+    vm.globals
+        .insert("String".to_owned(), Value::Object(string));
 
-    // Date：now 静态 + 实例最小面（getTime/toISOString/valueOf/toString）
-    let date = vm.alloc_native_ctor("Date", vm.object_prototype);
+    // Date：now 静态 + 实例最小面（getTime/toISOString/valueOf/toString）。
+    // prototype 为独立普通对象（曾与 Object.prototype 共享同一空对象，
+    // 构造器原型互相污染）
+    let date_proto = vm.alloc_ordinary_with_proto(vm.object_prototype);
+    let date = vm.alloc_native_ctor("Date", Some(date_proto));
     let now = vm.alloc_native_fn("Date.now");
     let _ = vm.set_property(Value::Object(date), "now", Value::Object(now));
     register_handler(registry, "Date", "now", date_now);
@@ -487,8 +498,8 @@ fn decode_component_impl(
             }
         }
     }
-    Ok(Value::Object(
-        vm.alloc_string(match String::from_utf8(out) {
+    Ok(Value::Object(vm.alloc_string(
+        match String::from_utf8(out) {
             Ok(s) => s,
             Err(_) => {
                 let err = vm.alloc_string("URI malformed".to_owned());
@@ -496,8 +507,8 @@ fn decode_component_impl(
                 let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
                 return Err(VmError::Thrown(Value::Object(err)));
             }
-        }),
-    ))
+        },
+    )))
 }
 
 fn encode_uri_component(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {

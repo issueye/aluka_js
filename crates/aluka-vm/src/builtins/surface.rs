@@ -619,9 +619,11 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
                 .first()
                 .map(|v| crate::ops::to_number(*v))
                 .unwrap_or(0.0);
-            Ok(Value::Object(vm.alloc_string(
-                format!("{:.*e}", digits.clamp(0.0, 100.0) as usize, n),
-            )))
+            Ok(Value::Object(vm.alloc_string(format!(
+                "{:.*e}",
+                digits.clamp(0.0, 100.0) as usize,
+                n
+            ))))
         }
         "toPrecision" => {
             let p = args
