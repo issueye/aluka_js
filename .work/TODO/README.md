@@ -145,14 +145,17 @@
   - 支持 `Body` 混入（`json()`, `text()`, `arrayBuffer()`, `blob()`, `formData()`）；
   - 支持自动遵循重定向、流式下载响应体；
   - 验收：Fetch 规范测试套件通过。
-- [ ] **M4.2 Web Streams 与 Node Streams 原生互转**
+  - 进度（20260908）：全局 `fetch()`（sync HTTP/1.1）、`Response.status/.ok/.text()/.json()/.arrayBuffer()`、`Headers` 构造器已实现；`Request`/重定向/流式下载待实现。
+- [x] **M4.2 Web Streams 与 Node Streams 原生互转**（ef11dc7，20260908）
   - 规范实现 `ReadableStream`, `WritableStream`, `TransformStream`；
   - 支持 `Readable.toWeb(stream)` 与 `Readable.fromWeb(webStream)` 双向零拷贝桥接；
   - 验收：Web Streams 管道处理用例对齐 Node.js 22。
+  - 交付：`Readable/Writable.fromWeb/toWeb` 四向 live 桥（挂桥补交既有队列 + 实时转发）；差分用例 `19-m4-web-streams-abort.cjs` 7 场景与 Node.js 22 逐字节一致；顺带修复 `Readable.from` 形态键缺失（静默建空流）缺陷。
 - [ ] **M4.3 `AbortController` / `AbortSignal` 全系统级联动**
   - 全局注入 `AbortController` 与 `AbortSignal`；
   - 联动所有异步 I/O、HTTP Fetch 请求、定时器与网络 Socket，支持信号触发即时取消；
   - 验收：超时中止与手动中断场景对拍一致。
+  - 进度（20260908）：`AbortController`/`AbortSignal`（`aborted`/`reason`/`abort(reason)` 幂等 + `'abort'` 监听器）已全局注入，fetch 前置+后置中断联动已通（差分一致）；定时器/Socket 信号取消待接入。修复 `new AbortController()`/`new Headers()` 构造器分派键缺失缺陷。
 - [ ] **M4.4 Web 标准事件基类与表单**
   - `EventTarget` 与 `CustomEvent` 作为全系统事件模型抽象；
   - `FormData` 与 multipart/form-data 标准编码与分块解析；
