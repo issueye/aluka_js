@@ -499,8 +499,11 @@ impl Vm {
         let message_ref = self.alloc_string(message.to_owned());
         let name_ref = self.alloc_string("Error".to_owned());
         // 走 shape 迁移（root → +message → +name），与其他对象构造共用同一
-        // shape 树，属性读写路径与 `set_property` 完全一致。
-        let obj = self.alloc_ordinary_with_exact_proto(self.object_prototype);
+        // shape 树，属性读写路径与 `set_property` 完全一致。实例原型指向
+        // 独立 Error.prototype（链 Object.prototype）——普通对象字面量原型
+        // 链不含 Error.prototype，`{} instanceof Error` 为 false
+        let err_proto = self.error_prototype.or(self.object_prototype);
+        let obj = self.alloc_ordinary_with_exact_proto(err_proto);
         let _ = self.set_property(Value::Object(obj), "message", Value::Object(message_ref));
         let _ = self.set_property(Value::Object(obj), "name", Value::Object(name_ref));
         obj

@@ -123,6 +123,10 @@ pub struct Vm {
     pub math_object: Option<ObjectRef>,
     /// `Error` 原生构造器单例
     pub error_ctor: Option<ObjectRef>,
+    /// `Error.prototype` 独立单例（链 `object_prototype`；曾与 Object.prototype
+    /// 共享同一对象导致任意普通对象 `instanceof Error` 误判 true——http-errors
+    /// createError 的 props 对象被当作 Error 的根因）
+    pub error_prototype: Option<ObjectRef>,
     /// `Array` 原生构造器单例
     pub array_ctor: Option<ObjectRef>,
     /// `Object` 原生构造器单例
@@ -318,6 +322,7 @@ impl Vm {
             array_prototype: None,
             math_object: None,
             error_ctor: None,
+            error_prototype: None,
             array_ctor: None,
             object_ctor: None,
             regexp_ctor: None,
@@ -409,7 +414,13 @@ impl Vm {
         vm.fs_object = Some(vm.alloc_ordinary());
         // 三个原生构造器（`new` 由解释器拦截求值；instanceof 经 prototype 属性判定）
         let obj_proto = vm.object_prototype;
-        vm.error_ctor = Some(vm.alloc_native_ctor("Error", obj_proto));
+        // Error.prototype 独立单例（链 Object.prototype）：普通对象字面量的
+        // 原型链只含 object_prototype，`{} instanceof Error` 必须为 false——
+        // 曾共享 obj_proto 使任意对象 instanceof Error 恒真（http-errors
+        // createError 的 props 对象被误判为 Error 实例，message 丢失）
+        let err_proto = vm.alloc_ordinary_with_proto(obj_proto);
+        vm.error_prototype = Some(err_proto);
+        vm.error_ctor = Some(vm.alloc_native_ctor("Error", Some(err_proto)));
         vm.array_ctor = Some(vm.alloc_native_ctor("Array", vm.array_prototype));
         vm.object_ctor = Some(vm.alloc_native_ctor("Object", obj_proto));
         // RegExp 构造器与原型：字面量 RegExp 对象的 source/flags/lastIndex/
@@ -742,7 +753,10 @@ impl Vm {
         if let Some(c) = self.ctor_cache.get(name) {
             return Value::Object(*c);
         }
-        let c = self.alloc_native_ctor(name, None);
+        // 子类 prototype 链独立 Error.prototype（如 `TypeError.prototype` 可读、
+        // 错误实例 instanceof TypeError 沿链命中——曾为 None 致 prototype 缺失）
+        let proto = self.error_prototype;
+        let c = self.alloc_native_ctor(name, proto);
         self.ctor_cache.insert(name.to_owned(), c);
         Value::Object(c)
     }

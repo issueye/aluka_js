@@ -180,6 +180,10 @@ impl Vm {
             if ctor_name.as_deref() == Some("Proxy") {
                 return self.construct_proxy(args);
             }
+            // `Array(...)` 无 new 直调等价 `new Array(...)`（ES §23.1.1）
+            if ctor_name.as_deref() == Some("Array") {
+                return self.do_construct(callee, args);
+            }
             // Number(value)/Boolean(value)：转换为原始值（不加 new 语义）
             if ctor_name.as_deref() == Some("Number") {
                 return Ok(Value::Number(self.to_number_value(
@@ -321,7 +325,43 @@ impl Vm {
                         }
                         return Ok(Value::Object(promise));
                     }
-                    "Array" => return Ok(Value::Object(self.alloc_array(Vec::new()))),
+                    "Array" => {
+                        // new Array(...)（ES §23.1.1 Array 构造语义）：
+                        // - 单数值参数 n → 稀疏数组（length=n，槽位 undefined）
+                        // - 其余形态（无参/多参/单非数值）→ 参数即元素
+                        // raw-body `new Array(arguments.length)` 依赖 length
+                        // 语义——曾无条件空数组导致 done 回调参数全丢
+                        if args.len() == 1
+                            && let Value::Number(n) = args[0]
+                        {
+                            if n.fract() == 0.0 && (0.0..4294967296.0).contains(&n) {
+                                let len = n as usize;
+                                // VM 数组为密集 Vec 表示（无稀疏字段），巨大
+                                // length 会撑爆内存——与 Node 稀疏语义的差异点，
+                                // 上限保护（真实包 length 均很小）
+                                if len > 4_000_000 {
+                                    let err = self.alloc_error_instance("Invalid array length");
+                                    let name = self.alloc_string("RangeError".to_owned());
+                                    let _ = self.set_property(
+                                        Value::Object(err),
+                                        "name",
+                                        Value::Object(name),
+                                    );
+                                    return Err(VmError::Thrown(Value::Object(err)));
+                                }
+                                return Ok(Value::Object(
+                                    self.alloc_array(vec![Value::Undefined; len]),
+                                ));
+                            }
+                            // 非整数/负数/越界：RangeError（Node 语义）
+                            let err = self.alloc_error_instance("Invalid array length");
+                            let name = self.alloc_string("RangeError".to_owned());
+                            let _ =
+                                self.set_property(Value::Object(err), "name", Value::Object(name));
+                            return Err(VmError::Thrown(Value::Object(err)));
+                        }
+                        return Ok(Value::Object(self.alloc_array(args.to_vec())));
+                    }
                     "Object" => return Ok(Value::Object(self.alloc_ordinary())),
                     "RegExp" => return self.construct_regexp(args),
                     "Map" => return Ok(Value::Object(self.alloc_map(Vec::new()))),

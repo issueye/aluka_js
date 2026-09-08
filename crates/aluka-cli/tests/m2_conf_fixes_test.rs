@@ -73,3 +73,78 @@ fn broadcast_channel_post_reaches_other_instances_only() {
         "postMessage 必须广播到同频道其它实例（node22 06 用例口径）"
     );
 }
+
+/// 无分号 ASI（自动分号插入）：return 换行后语句必须独立解析（restricted
+/// production）。raw-body readStream onEnd 的「if (complete) return 换行 if (err)
+/// return done(err)」曾把下一行 if 当 return 表达式解析——err 检查丢失。
+#[test]
+fn asi_return_newline_terminates_statement() {
+    let lines = run_script(
+        "function readStream() {\n\
+         var complete = false;\n\
+         var log = [];\n\
+         function done(err) { log.push('done:' + err); }\n\
+         function onEnd(err) {\n\
+           if (complete) return\n\
+           if (err) return done(err)\n\
+           log.push('cont')\n\
+         }\n\
+         onEnd(undefined);\n\
+         onEnd('boom');\n\
+         console.log(log.join(','));\n\
+         }\n\
+         readStream();",
+    );
+    assert_eq!(
+        lines,
+        vec!["cont,done:boom".to_owned()],
+        "return 后换行必须 ASI 终止语句（node22 语义）"
+    );
+}
+
+/// Error.prototype 独立于 Object.prototype：普通对象字面量 instanceof Error
+/// 必须为 false，错误实例为 true（http-errors createError props 被误判的根因）。
+#[test]
+fn error_prototype_distinct_from_object_prototype() {
+    let lines = run_script(
+        "console.log('i1:' + ({} instanceof Error));\n\
+         console.log('i2:' + (new Error('x') instanceof Error));\n\
+         console.log('i3:' + (new TypeError('t') instanceof TypeError));\n\
+         console.log('i4:' + ({} instanceof Object));",
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "i1:false".to_owned(),
+            "i2:true".to_owned(),
+            "i3:true".to_owned(),
+            "i4:true".to_owned(),
+        ],
+        "Error.prototype 链必须与 Object.prototype 区分"
+    );
+}
+
+/// Array 构造语义：单数值参数 → length=n 稀疏数组；多参/直调 → 元素数组。
+/// raw-body new Array(arguments.length) 曾得空数组致回调参数全丢。
+#[test]
+fn array_ctor_single_numeric_length_semantics() {
+    let lines = run_script(
+        "console.log('a1:' + new Array(2).length);\n\
+         console.log('a2:' + new Array(2, 3).join(','));\n\
+         console.log('a3:' + Array(5).length);\n\
+         var a = new Array(3); a[1] = 'x';\n\
+         console.log('a4:' + a.length + ':' + a[1]);\n\
+         console.log('a5:' + new Array('k').join(','));",
+    );
+    assert_eq!(
+        lines,
+        vec![
+            "a1:2".to_owned(),
+            "a2:2,3".to_owned(),
+            "a3:5".to_owned(),
+            "a4:3:x".to_owned(),
+            "a5:k".to_owned(),
+        ],
+        "Array 构造（new/直调/多参/单非数值）必须对齐 node22"
+    );
+}

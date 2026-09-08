@@ -427,10 +427,17 @@ impl<'src> Parser<'src> {
         }
 
         if self.match_keyword("return") {
-            let expr = if self.check_punct(";")
+            // ASI（自动分号插入）：return 与后续代码之间出现换行时，语句在
+            // return 处终止（ECMAScript restricted production）——npm 包无分号
+            // 风格 `return\nif (...)` 依赖此规则；缺失会把下一行 if 当 return
+            // 表达式解析（raw-body onEnd 实测错乱：err 检查丢失、done 无条件执行）
+            let kw_start = self.tokens[self.pos - 1].start;
+            let terminated = self.check_punct(";")
                 || self.check_punct("}")
                 || self.peek().kind == TokenKind::Eof
-            {
+                || (self.pos < self.tokens.len()
+                    && self._src[kw_start..self.peek().start].contains('\n'));
+            let expr = if terminated {
                 None
             } else {
                 Some(self.parse_expr())

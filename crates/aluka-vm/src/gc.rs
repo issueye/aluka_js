@@ -173,6 +173,7 @@ impl Vm {
             self.symbol_proto,
             self.function_ctor,
             self.error_ctor,
+            self.error_prototype,
             self.array_ctor,
             self.object_ctor,
             self.promise_ctor,
