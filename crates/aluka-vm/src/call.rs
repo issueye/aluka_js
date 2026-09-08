@@ -194,18 +194,31 @@ impl Vm {
                         .is_truthy(),
                 ));
             }
+            // String(value)：无 new 直调 = 字符串化（真实包顶层大量
+            // `String(x)` 形态，如 depd 的 containsNamespace）
+            if ctor_name.as_deref() == Some("String") {
+                let v = args.first().copied().unwrap_or(Value::Undefined);
+                let s = self.alloc_string(self.format_value(v));
+                return Ok(Value::Object(s));
+            }
+            // Symbol([description])：无 new 直调 = 创建符号
+            if ctor_name.as_deref() == Some("Symbol") {
+                return Ok(self.symbol_create(args));
+            }
             // Date(value) 无 new 直调等价 new Date(value)
             if ctor_name.as_deref() == Some("Date") {
                 return self.construct_date(args);
             }
-            // eval / Function 动态求值拦截（直接/间接形态与动态函数模板）
+            // eval / Function 动态求值拦截（直接/间接形态与动态函数模板；
+            // Function 构造器为 NativeCtor 单例后同样命中——无 new 直调
+            // `Function("return 8")` 语义等价 new）
             if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
                 if name == "eval" || name == "eval.direct" {
                     return self.call_eval(name == "eval.direct", args);
                 }
-                if name == "Function" {
-                    return self.construct_function(args);
-                }
+            }
+            if ctor_name.as_deref() == Some("Function") {
+                return self.construct_function(args);
             }
             // `revoke()`：捕获的撤销闭包面（自有属性 `_revokes` 存 proxy 句柄；
             // 处理器签名无法拿到自身 fn 对象，故在此特判）
@@ -218,7 +231,10 @@ impl Vm {
                 }
             }
             let handler = match self.heap.get(r.0 as usize) {
-                Some(HeapObject::NativeFn { name, .. }) => self.builtin_registry.lookup(name),
+                Some(HeapObject::NativeFn { name, .. }) => {
+                    crate::builtins::set_pending_native_name(name);
+                    self.builtin_registry.lookup(name)
+                }
                 _ => None,
             };
             if let Some(handler) = handler {
@@ -233,6 +249,17 @@ impl Vm {
         // 调用不可调用值：JS 语义抛 TypeError（此前静默返回 undefined，
         // 掩盖真实缺陷）
         let desc = self.format_value(callee);
+        if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+            let tname = self
+                .module_functions
+                .get(self.current_func_idx.max(0) as usize)
+                .map(|t| format!("{}#{}", t.name, t.source_file))
+                .unwrap_or_default();
+            eprintln!(
+                "[req-dbg] not-callable: desc={desc:?} func={} ({tname}) pc={}",
+                self.current_func_idx, self.last_pc
+            );
+        }
         let err = self.alloc_error_instance(&format!("{desc} is not a function"));
         let name = self.alloc_string("TypeError".to_owned());
         let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
@@ -545,6 +572,14 @@ impl Vm {
         self.try_stack = saved_frame.try_stack;
         self.current_try_table = old_try_table;
         self.current_func_idx = old_func_idx;
+        if std::env::var("ALUKA_ERR_TRACE").is_ok() {
+            if let Err(VmError::Thrown(_)) = &ret {
+                eprintln!(
+                    "[err-trace] 穿过函数 func_idx={func_idx} name={} src={} pc={}",
+                    tmpl.name, tmpl.source_file, self.last_pc
+                );
+            }
+        }
         match ret {
             // async 函数（同步完成）：结果包装为 fulfilled Promise
             Ok(v) if tmpl.is_async => {

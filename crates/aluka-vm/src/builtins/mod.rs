@@ -54,6 +54,7 @@ pub mod sqlite;
 pub mod stream;
 pub mod stream_web;
 pub mod string_decoder;
+pub mod surface;
 pub mod sys;
 pub mod test;
 pub mod test_reporters;
@@ -145,6 +146,21 @@ pub fn set_current_receiver(v: Value) {
 /// 获取当前分派调用的接收者（this）。
 pub fn current_receiver() -> Value {
     CURRENT_RECEIVER.with(|r| *r.borrow())
+}
+
+thread_local! {
+    /// 当前分派调用的 NativeFn 全名（同一 handler 注册多键时区分方法）
+    static PENDING_NATIVE_NAME: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// 记录当前分派调用的 NativeFn 全名（handler 分派前设置）。
+pub fn set_pending_native_name(name: &str) {
+    PENDING_NATIVE_NAME.with(|n| *n.borrow_mut() = name.to_owned());
+}
+
+/// 读取当前分派调用的 NativeFn 全名。
+pub fn pending_native_name() -> String {
+    PENDING_NATIVE_NAME.with(|n| n.borrow().clone())
 }
 
 /// 内置方法处理器：`(vm, 实参) -> 返回值`。
@@ -254,6 +270,8 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
         let module_ref = (def.build)(vm, &mut registry)?;
         registry.modules.insert(def.name, module_ref);
     }
+    // 原型方法面（属性挂载 + Function.prototype.toString handler）
+    crate::builtins::surface::register_surface(vm, &mut registry);
     vm.builtin_registry = registry;
     Ok(())
 }

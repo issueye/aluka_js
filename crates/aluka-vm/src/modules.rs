@@ -20,7 +20,32 @@ use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_bytecode::BytecodeModule;
 use aluka_core::ObjectRef;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+/// CJS 模块作用域记录：与函数表 append 平行（`fn_start..fn_start+fn_count`
+/// 区间归属本模块）。注入名（`exports`/`module`/`require`/`__filename`/
+/// `__dirname`）按模块隔离存储，模块 main 与其子函数经「函数 → 模块」归属
+/// 命中各自作用域。
+///
+/// 不能继续用共享全局表：模块 main 结束后加载器若恢复全局，本模块子函数
+/// 稍后执行 `LOAD_GLOBAL exports` 会读到**当时活跃模块**的注入值（M2.4
+/// 实测：debug.js 的 selectColor 在 finalhandler 加载期间被调用，读到
+/// finalhandler 的 exports={} → `exports.colors` undefined 崩溃）。
+#[derive(Default, Clone)]
+pub(crate) struct ModuleScopeRecord {
+    /// 本模块函数模板区间起点（module_functions 全局表索引）
+    pub(crate) fn_start: u32,
+    /// 本模块函数模板数
+    pub(crate) fn_count: u32,
+    /// 注入名 → 值（模块加载时写入，main 的 STORE_GLOBAL 亦落此处）
+    pub(crate) vars: HashMap<String, Value>,
+}
+
+/// CJS 注入名集合：LOAD_GLOBAL/STORE_GLOBAL 命中这些名字时按函数归属
+/// 路由到模块作用域（其余名字仍走共享全局表）。
+pub(crate) const CJS_INJECTED_NAMES: [&str; 5] =
+    ["exports", "module", "require", "__filename", "__dirname"];
 
 impl Vm {
     /// 开启 CJS 模块上下文：注入 `require` 原生函数并记录入口基准目录。
@@ -178,6 +203,12 @@ impl Vm {
                 .map(|f| std::rc::Rc::new(f.constants.clone())),
         );
         self.module_classes.extend(classes);
+        // 模块作用域登记：fn_base 区间归属本模块（函数 → 模块查表依据）
+        self.module_scopes.push(crate::modules::ModuleScopeRecord {
+            fn_start: fn_base,
+            fn_count: module.functions.len() as u32,
+            vars: std::collections::HashMap::new(),
+        });
 
         // 模块级全局绑定 + 基准目录压栈。
         // CJS 模块存在两种编译形态，加载器都要支持：
@@ -197,6 +228,16 @@ impl Vm {
             .unwrap_or_else(|| self.alloc_native_fn("require"));
         let saved_globals = ["exports", "module", "__filename", "__dirname", "require"]
             .map(|k| (k, self.globals.get(k).copied()));
+        // 注入值双写：模块作用域（模块内函数命中）+ 共享全局（入口/兜底）
+        if let Some(scope) = self.module_scopes.last_mut() {
+            scope.vars.insert("exports".to_owned(), exports);
+            scope.vars.insert("module".to_owned(), module_obj);
+            scope.vars.insert("__filename".to_owned(), filename);
+            scope.vars.insert("__dirname".to_owned(), dirname);
+            scope
+                .vars
+                .insert("require".to_owned(), Value::Object(require_fn));
+        }
         self.set_global("exports", exports);
         self.set_global("module", module_obj);
         self.set_global("__filename", filename);
@@ -210,7 +251,13 @@ impl Vm {
             // 防止模块体完成值/残留泄漏污染外层调用帧的栈序（真实包
             // `module.exports = <表达式>` 为末语句时必现）
             let stack_base = self.stack.len();
+            // main 帧函数归属：注入名（LOAD_GLOBAL/STORE_GLOBAL）按
+            // current_func_idx 路由模块作用域，模块 main 必须以自身
+            // 函数索引执行（run_func 不换该字段）
+            let saved_cf = self.current_func_idx;
+            self.current_func_idx = main_idx as i64;
             let closure = self.run_func(&self.module_functions[main_idx].clone());
+            self.current_func_idx = saved_cf;
             self.stack.truncate(stack_base);
             let closure = closure?;
 
@@ -281,6 +328,7 @@ impl Vm {
             if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
                 let detail = match err {
                     VmError::Thrown(exc) => {
+                        let raw = self.format_value(*exc);
                         let name = self
                             .get_property(*exc, "name")
                             .ok()
@@ -291,7 +339,7 @@ impl Vm {
                             .ok()
                             .map(|v| self.format_value(v))
                             .unwrap_or_default();
-                        format!("{name}: {msg} (last_pc={})", self.last_pc)
+                        format!("{name}: {msg} (raw={raw} last_pc={})", self.last_pc)
                     }
                     other => format!("{other:?}"),
                 };
@@ -493,6 +541,13 @@ fn module_candidates(p: &Path) -> Option<PathBuf> {
             bc.is_file().then_some(bc)
         }
         _ => {
+            // 1) 原样路径追加 `.bc`：spec 无扩展名但文件名含点（如
+            // `require('./util.inspect')` —— `with_extension` 会把
+            // "inspect" 误当扩展名替换成 util.bc）→ util.inspect.bc
+            let direct_bc = PathBuf::from(format!("{}.bc", p.display()));
+            if direct_bc.is_file() {
+                return Some(direct_bc);
+            }
             let bc = p.with_extension("bc");
             if bc.is_file() {
                 return Some(bc);

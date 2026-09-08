@@ -61,6 +61,9 @@ pub enum HeapObject {
         deleted: HashSet<String>,
         /// 删除代数（每次删除 +1；PIC 快速路径守卫：0 即无删除）
         deleted_gen: u32,
+        /// 不可枚举属性键集合（`Object.defineProperty(.. enumerable:false)`
+        /// 与原型方法面挂载；`for...in` 枚举时过滤）
+        non_enum: HashSet<String>,
         /// 访问器粘性标记（0/1）：注册过 getter/setter 即置 1 永不回退，
         /// PIC 快速路径守卫（有访问器的对象不得跳过访问器语义）
         has_accessors: u32,
@@ -267,6 +270,7 @@ impl Vm {
             proto,
             deleted: HashSet::new(),
             deleted_gen: 0,
+            non_enum: HashSet::new(),
             has_accessors: 0,
         })
     }

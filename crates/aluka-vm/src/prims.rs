@@ -116,6 +116,20 @@ impl Vm {
                 _ => None,
             })
         }
+        // 索引类参数按 JS ToInteger 语义强转：数字直用，字符串解析数值
+        //（如 `charCodeAt('1')` → 1，对齐 Node），其余非数字为 NaN
+        fn arg_index_num(vm: &Vm, args: &[Value], i: usize) -> f64 {
+            match args.get(i) {
+                Some(Value::Number(n)) => *n,
+                Some(Value::Object(r)) => match vm.heap.get(r.0 as usize) {
+                    Some(HeapObject::String(s)) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
+                    _ => f64::NAN,
+                },
+                Some(Value::Boolean(true)) => 1.0,
+                Some(Value::Boolean(false)) | Some(Value::Null) => 0.0,
+                _ => f64::NAN,
+            }
+        }
         macro_rules! ret_str {
             ($v:expr) => {
                 return Some(Ok(Value::Object(self.alloc_string($v))))
@@ -135,19 +149,27 @@ impl Vm {
             "toUpperCase" => ret_str!(text.to_uppercase()),
             "toLowerCase" => ret_str!(text.to_lowercase()),
             "charAt" => {
-                let i = arg_num(args, 0).unwrap_or(0.0);
-                let ch = chars
-                    .get(i as usize)
-                    .map(|c| c.to_string())
-                    .unwrap_or_default();
+                let i = arg_index_num(self, args, 0);
+                let ch = if i.is_nan() || i < 0.0 {
+                    String::new()
+                } else {
+                    chars
+                        .get(i as usize)
+                        .map(|c| c.to_string())
+                        .unwrap_or_default()
+                };
                 ret_str!(ch);
             }
             "charCodeAt" => {
-                let i = arg_num(args, 0).unwrap_or(0.0);
-                let code = chars
-                    .get(i as usize)
-                    .map(|c| (*c as u32) as f64)
-                    .unwrap_or(f64::NAN);
+                let i = arg_index_num(self, args, 0);
+                let code = if i.is_nan() || i < 0.0 {
+                    f64::NAN
+                } else {
+                    chars
+                        .get(i as usize)
+                        .map(|c| (*c as u32) as f64)
+                        .unwrap_or(f64::NAN)
+                };
                 Some(Ok(Number(code)))
             }
             "indexOf" => {
@@ -230,6 +252,24 @@ impl Vm {
                 if start > end {
                     std::mem::swap(&mut start, &mut end);
                 }
+                let sub: String = chars[start..end].iter().collect();
+                ret_str!(sub);
+            }
+            // substr(start, length)（历史 API，Node 全兼容）：start 负值从
+            // 尾部倒数；第二参为截取**长度**（缺省到末尾，<=0 为空串）
+            "substr" => {
+                let len = chars.len();
+                let start_f = arg_num(args, 0).unwrap_or(0.0);
+                let start = if start_f < 0.0 {
+                    ((len as f64) + start_f).max(0.0) as usize
+                } else {
+                    (start_f as usize).min(len)
+                };
+                let end = match arg_num(args, 1) {
+                    Some(n) if n > 0.0 => (start + (n as usize)).min(len),
+                    Some(_) => start, // 长度 <= 0：空串（end == start）
+                    None => len,
+                };
                 let sub: String = chars[start..end].iter().collect();
                 ret_str!(sub);
             }

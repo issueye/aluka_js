@@ -907,17 +907,16 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             } else if let Some(&uv_idx) = unit.upvalue_map.get(name) {
                 unit.code.push(Instr::new(Op::Dup, 0));
                 unit.code.push(Instr::new(Op::StoreUpvalue, uv_idx as u32));
-            } else if unit.implicit_globals {
-                // 隐式全局模式（eval）：未声明赋值落全局表（JS 脚本语义）
+            } else {
+                // 未声明名赋值落全局表（与 Ident 读取的 LoadGlobal 对称）。
+                // 禁止「写自动建局部槽、读走全局」的不对称：CJS 注入名
+                // （exports/module/require 等）经此写入全局后，模块内嵌套
+                // 函数的 LoadGlobal 才能读到新值（debug.js `exports =
+                // module.exports = createDebug` 后子函数引用 exports.colors
+                // 即依赖此对称性）；sloppy 脚本的隐式全局赋值同理。
                 let name_idx = add_constant(unit, Constant::String(name.clone()));
                 unit.code.push(Instr::new(Op::Dup, 0));
                 unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
-            } else {
-                let slot = unit.locals;
-                unit.locals += 1;
-                unit.symbol_map.insert(name.clone(), slot);
-                unit.code.push(Instr::new(Op::Dup, 0));
-                unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
             }
         }
         Expr::Unary { op, expr } => {

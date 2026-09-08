@@ -192,9 +192,22 @@ impl Vm {
         if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             return Ok(Value::Object(self.alloc_native_fn("nextTick")));
         }
-        // Symbol 构造器的知名符号物化（Symbol.iterator 等属性读取）
-        if self.is_native_fn(obj, "Symbol") && crate::symbol::WELL_KNOWN_NAMES.contains(&key) {
-            return Ok(self.well_known_symbol(key));
+        // Symbol 构造器的知名符号物化（Symbol.iterator 等属性读取；
+        // 构造器为 NativeCtor 单例——NativeFn 与 NativeCtor 名都认）
+        if crate::symbol::WELL_KNOWN_NAMES.contains(&key) {
+            let is_symbol_ctor = matches!(
+                obj,
+                Value::Object(r)
+                    if matches!(
+                        self.heap.get(r.0 as usize),
+                        Some(HeapObject::NativeFn { name, .. })
+                            | Some(HeapObject::NativeCtor { name, .. })
+                            if name == "Symbol"
+                    )
+            );
+            if is_symbol_ctor {
+                return Ok(self.well_known_symbol(key));
+            }
         }
         // 闭包函数：`name` / `length` 读模板元数据（Go 前端编译产物携带函数名）。
         // 先判断键再取模板：普通属性（尤其热路径中的 `prototype`/自定义键）
@@ -704,6 +717,7 @@ impl Vm {
                 HeapObject::Ordinary {
                     props,
                     deleted,
+                    non_enum,
                     proto,
                     ..
                 } => {
@@ -713,14 +727,14 @@ impl Vm {
                             .shape(*shape)
                             .map(|s| {
                                 s.names()
-                                    .filter(|n| !deleted.contains(*n))
+                                    .filter(|n| !deleted.contains(*n) && !non_enum.contains(*n))
                                     .map(str::to_owned)
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default(),
                         OrdinaryProps::Dict { properties } => properties
                             .keys()
-                            .filter(|k| !deleted.contains(*k))
+                            .filter(|k| !deleted.contains(*k) && !non_enum.contains(*k))
                             .cloned()
                             .collect(),
                     };

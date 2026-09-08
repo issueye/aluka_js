@@ -163,6 +163,15 @@ impl Vm {
             self.object_prototype,
             self.array_prototype,
             self.math_object,
+            self.str_proto,
+            self.bool_proto,
+            self.num_proto,
+            self.fn_proto,
+            self.regexp_proto,
+            self.array_proto_surface,
+            self.container_proto,
+            self.symbol_proto,
+            self.function_ctor,
             self.error_ctor,
             self.array_ctor,
             self.object_ctor,
@@ -287,6 +296,16 @@ impl Vm {
                 if let Some(crate::exception::Completion::Return(v)) = h.completion {
                     out.push(v);
                 }
+            }
+        }
+        // 原型面构造器缓存（String/Boolean/Number/... NativeCtor 单例）
+        for c in self.ctor_cache.values() {
+            out.push(Value::Object(*c));
+        }
+        // CJS 模块作用域表：注入名值（module/exports/require 等）是活跃根
+        for scope in &self.module_scopes {
+            for v in scope.vars.values() {
+                out.push(*v);
             }
         }
         // 模块导出缓存与内置注册表单例

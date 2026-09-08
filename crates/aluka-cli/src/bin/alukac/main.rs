@@ -444,7 +444,13 @@ fn format_operand(op: Op, operand: u32, current_pc: usize, constants: &[Constant
         OperandKind::TryIdx => format!("try #{operand}"),
         OperandKind::Count => format!("count {operand}"),
         OperandKind::SignedOff => {
-            let off = (operand as i32) / 4;
+            // 24 位有符号相对偏移（与 VM compute_jump_target 同款符号扩展）
+            let signed = if operand & 0x80_0000 != 0 {
+                (operand | 0xFF00_0000) as i32
+            } else {
+                operand as i32
+            };
+            let off = signed / 4;
             let target_pc = (current_pc as i32 + 1 + off) * 4;
             format!("{off:+} -> 0x{target_pc:04x}")
         }

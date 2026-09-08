@@ -464,6 +464,7 @@ fn measure_pic_layout() -> aluka_jit::ctx::JitLayout {
         setters: HashMap::new(),
         proto: None,
         deleted: HashSet::new(),
+        non_enum: HashSet::new(),
         deleted_gen: 0,
         has_accessors: 0,
     };
@@ -538,6 +539,7 @@ mod pic_layout_tests {
             setters: HashMap::new(),
             proto: None,
             deleted: std::collections::HashSet::new(),
+            non_enum: std::collections::HashSet::new(),
             deleted_gen: 0,
             has_accessors: 0,
         };

@@ -178,6 +178,29 @@ pub struct Vm {
     /// 保存帧寄存器：嵌套执行期间被换出的外层帧状态（GC 根集合成员，
     /// 见 [`crate::gc::SavedFrameState`]；漏登记 = 换出帧悬垂复用）
     pub(crate) gc_saved_frames: Vec<crate::gc::SavedFrameState>,
+    /// CJS 模块作用域表（与函数表 append 平行；注入名按模块隔离，
+    /// 见 [`crate::modules::ModuleScopeRecord`]）
+    pub(crate) module_scopes: Vec<crate::modules::ModuleScopeRecord>,
+    /// `Function` 全局构造器单例（M2.4：函数对象面补全——prototype 链）
+    pub function_ctor: Option<ObjectRef>,
+    /// 原型方法面单例（surface 模块挂载；`X.prototype` 对象与方法属性）
+    pub str_proto: Option<ObjectRef>,
+    /// `Boolean.prototype` 原型面单例
+    pub bool_proto: Option<ObjectRef>,
+    /// `Number.prototype` 原型面单例
+    pub num_proto: Option<ObjectRef>,
+    /// `Function.prototype` 原型面单例
+    pub fn_proto: Option<ObjectRef>,
+    /// `RegExp.prototype` 原型面单例
+    pub regexp_proto: Option<ObjectRef>,
+    /// `Array.prototype` 原型面单例
+    pub array_proto_surface: Option<ObjectRef>,
+    /// Set/Map/WeakSet/WeakMap/WeakRef 共享原型面单例
+    pub container_proto: Option<ObjectRef>,
+    /// `Symbol.prototype` 原型面单例
+    pub symbol_proto: Option<ObjectRef>,
+    /// 原型面构造器单例缓存（String/Boolean/Number/Set/Map/... 名 → NativeCtor）
+    pub ctor_cache: std::collections::HashMap<String, ObjectRef>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `path` 内置模块单例（join/basename/dirname/extname/resolve 拦截）
@@ -307,6 +330,17 @@ impl Vm {
             last_entry_async_promise: None,
             gc_pinned: Vec::new(),
             gc_saved_frames: Vec::new(),
+            module_scopes: Vec::new(),
+            function_ctor: None,
+            str_proto: None,
+            bool_proto: None,
+            num_proto: None,
+            fn_proto: None,
+            regexp_proto: None,
+            array_proto_surface: None,
+            container_proto: None,
+            symbol_proto: None,
+            ctor_cache: std::collections::HashMap::new(),
             process_object: None,
             path_module: None,
             os_module: None,
@@ -649,7 +683,64 @@ impl Vm {
         self.resolve_global(name)
     }
 
+    /// `Function` 构造器单例（惰性构建：NativeCtor + prototype 函数对象面；
+    /// prototype 由 surface 模块统一挂载方法属性）。
+    pub(crate) fn function_ctor_value(&mut self) -> Value {
+        if let Some(c) = self.function_ctor {
+            return Value::Object(c);
+        }
+        let proto = crate::builtins::surface::fn_proto(self);
+        let ctor = self.alloc_native_ctor("Function", Some(proto));
+        self.function_ctor = Some(ctor);
+        Value::Object(ctor)
+    }
+
+    /// 原型面构造器全局（String/Boolean/Number/Set/Map/WeakSet/WeakMap/WeakRef）：
+    /// 单例 NativeCtor，prototype 指向 surface 建好的原型对象（`X.prototype`
+    /// 可读、方法属性可取——真实包顶层存 `String.prototype.match` 等槽位）。
+    pub(crate) fn proto_ctor_value(&mut self, name: &str) -> Value {
+        if let Some(c) = self.ctor_cache.get(name) {
+            return Value::Object(*c);
+        }
+        let proto = match name {
+            "String" => Some(crate::builtins::surface::str_proto(self)),
+            "Symbol" => Some(crate::builtins::surface::symbol_proto(self)),
+            "Boolean" => Some(crate::builtins::surface::bool_proto(self)),
+            "Number" => Some(crate::builtins::surface::num_proto(self)),
+            "Set" | "Map" | "WeakSet" | "WeakMap" | "WeakRef" => {
+                Some(crate::builtins::surface::container_proto(self))
+            }
+            _ => None,
+        };
+        let c = self.alloc_native_ctor(name, proto);
+        self.ctor_cache.insert(name.to_owned(), c);
+        Value::Object(c)
+    }
+
+    /// 当前执行帧（函数模板索引）归属的模块作用域下标。
+    pub(crate) fn module_scope_of(&self, func_idx: i64) -> Option<usize> {
+        if func_idx < 0 {
+            return None;
+        }
+        let fi = func_idx as u32;
+        self.module_scopes
+            .iter()
+            .position(|m| fi >= m.fn_start && fi < m.fn_start + m.fn_count)
+    }
+
+    /// CJS 注入名的模块作用域解析（无归属时回落共享全局）。
+    fn resolve_cjs_injected(&self, name: &str) -> Option<Value> {
+        if !crate::modules::CJS_INJECTED_NAMES.contains(&name) {
+            return None;
+        }
+        let si = self.module_scope_of(self.current_func_idx)?;
+        self.module_scopes.get(si)?.vars.get(name).copied()
+    }
+
     pub(crate) fn resolve_global(&mut self, name: &str) -> Value {
+        if let Some(v) = self.resolve_cjs_injected(name) {
+            return v;
+        }
         if let Some(v) = self.globals.get(name) {
             return *v;
         }
@@ -747,18 +838,17 @@ impl Vm {
                 let f = self.alloc_native_fn("clearInterval");
                 Value::Object(f)
             }
+            "Boolean" => self.proto_ctor_value("Boolean"),
+            "Number" => self.proto_ctor_value("Number"),
+            "WeakSet" => self.proto_ctor_value("WeakSet"),
+            "WeakMap" => self.proto_ctor_value("WeakMap"),
+            "WeakRef" => self.proto_ctor_value("WeakRef"),
             "queueMicrotask" => {
                 let f = self.alloc_native_fn("queueMicrotask");
                 Value::Object(f)
             }
-            "String" => {
-                let f = self.alloc_native_fn("String");
-                Value::Object(f)
-            }
-            "Symbol" => {
-                let f = self.alloc_native_fn("Symbol");
-                Value::Object(f)
-            }
+            "String" => self.proto_ctor_value("String"),
+            "Symbol" => self.proto_ctor_value("Symbol"),
             "JSON" => {
                 // JSON 全局对象：stringify + parse
                 let obj = self.alloc_ordinary();
@@ -784,11 +874,9 @@ impl Vm {
                 let f = self.alloc_native_fn("eval.direct");
                 Value::Object(f)
             }
-            // Function 构造器（动态函数模板）
-            "Function" => {
-                let f = self.alloc_native_fn("Function");
-                Value::Object(f)
-            }
+            // Function 构造器（动态函数模板）：单例 NativeCtor，prototype
+            // 挂函数对象面（toString 等；call/apply/bind 走解释器通用协议）
+            "Function" => self.function_ctor_value(),
             // import.meta 元属性（CJS 内联形态经全局解析；ESM wrapper 形态
             // 由 invoke_cjs_entry 注入实例）
             // ESM import 加载器（M2.2）：__aluka_import__(source)
@@ -808,6 +896,31 @@ impl Vm {
         }
     }
 
+    /// 原型方法挂载：不可枚举数据属性（JS 原型方法语义——`for...in` 不
+    /// 泄漏原型方法；M2.4 surface 补全后 Object.prototype 11 个方法曾
+    /// 使 `for (k in STATUS_CODES)` 多出原型键）。
+    pub(crate) fn define_proto_method(
+        &mut self,
+        obj: Value,
+        key: &str,
+        val: Value,
+    ) -> Result<(), VmError> {
+        let desc = self.alloc_ordinary();
+        let _ = self.set_property(Value::Object(desc), "value", val);
+        let _ = self.set_property(Value::Object(desc), "writable", Value::Boolean(true));
+        let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(false));
+        let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
+        self.ordinary_define_property(obj, key, Value::Object(desc))?;
+        // 登记不可枚举键（for-in 过滤依据）
+        if let Value::Object(r) = obj
+            && let Some(crate::heap::HeapObject::Ordinary { non_enum, .. }) =
+                self.heap.get_mut(r.0 as usize)
+        {
+            non_enum.insert(key.to_owned());
+        }
+        Ok(())
+    }
+
     /// 写入全局绑定（模块级 require/exports 等注入用）。
     pub(crate) fn set_global(&mut self, name: &str, val: Value) {
         self.globals.insert(name.to_owned(), val);
@@ -821,6 +934,21 @@ impl Vm {
                 if matches!(
                     self.heap.get(r.0 as usize),
                     Some(HeapObject::NativeFn { name: n, .. }) if n == name
+                )
+        )
+    }
+
+    /// Symbol 构造器判定：NativeFn（旧形态）或 NativeCtor 单例（原型面
+    /// 补全后形态）名皆为 "Symbol"。
+    pub(crate) fn is_symbol_ctor(&self, val: Value) -> bool {
+        matches!(
+            val,
+            Value::Object(r)
+                if matches!(
+                    self.heap.get(r.0 as usize),
+                    Some(HeapObject::NativeFn { name, .. })
+                        | Some(HeapObject::NativeCtor { name, .. })
+                        if name == "Symbol"
                 )
         )
     }
@@ -1080,7 +1208,11 @@ impl Vm {
     /// （状态存 [`REGEX_LAST_INDEX`]，键为 RegExp 对象句柄）。
     ///
     /// 语法错误与回溯超限都以 JS 异常值上抛（`VmError::Thrown`）。
-    fn regexp_exec(&mut self, re: Value, subject: &str) -> Result<Option<Value>, VmError> {
+    pub(crate) fn regexp_exec(
+        &mut self,
+        re: Value,
+        subject: &str,
+    ) -> Result<Option<Value>, VmError> {
         let Value::Object(r) = re else {
             return Err(VmError::LocalOutOfRange);
         };
@@ -1963,7 +2095,7 @@ impl Vm {
                         let arr = self.alloc_array(elems);
                         self.stack.push(Value::Object(arr));
                     } else if matches!(method_name.as_ref(), "for" | "keyFor")
-                        && self.is_native_fn(receiver, "Symbol")
+                        && self.is_symbol_ctor(receiver)
                     {
                         // Symbol.for(key) / Symbol.keyFor(sym)
                         let out = if method_name == "for" {
@@ -3461,7 +3593,7 @@ impl Vm {
                     } else if self.is_native_fn(callee, "JSON.parse") {
                         let out = self.json_parse(args)?;
                         self.stack.push(out);
-                    } else if self.is_native_fn(callee, "Symbol") {
+                    } else if self.is_symbol_ctor(callee) {
                         // Symbol([description])：唯一符号原语
                         let sym = self.symbol_create(args);
                         self.stack.push(sym);
@@ -3986,10 +4118,18 @@ impl Vm {
 
                 // 15. 全局赋值与一元运算符
                 Op::StoreGlobal => {
-                    // 不带声明符的全局赋值写入全局变量表（对齐 Go 版 globalObj.Set）
+                    // 不带声明符的全局赋值写入全局变量表（对齐 Go 版 globalObj.Set）；
+                    // CJS 注入名在模块函数帧内写入所属模块作用域（模块隔离）
                     let name = constant_string(&constants, instr.operand as usize);
                     let val = self.pop()?;
-                    self.globals.insert(name.into_owned(), val);
+                    if crate::modules::CJS_INJECTED_NAMES.contains(&name.as_ref())
+                        && let Some(si) = self.module_scope_of(self.current_func_idx)
+                        && let Some(scope) = self.module_scopes.get_mut(si)
+                    {
+                        scope.vars.insert(name.into_owned(), val);
+                    } else {
+                        self.globals.insert(name.into_owned(), val);
+                    }
                 }
                 Op::In => {
                     let r = self.pop()?;
