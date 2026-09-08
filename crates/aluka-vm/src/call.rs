@@ -209,6 +209,21 @@ impl Vm {
             if ctor_name.as_deref() == Some("Date") {
                 return self.construct_date(args);
             }
+            // Error 族无 new 直调等价 new（TypeError('msg') 常见形态）
+            if matches!(
+                ctor_name.as_deref(),
+                Some(
+                    "Error"
+                        | "TypeError"
+                        | "RangeError"
+                        | "SyntaxError"
+                        | "ReferenceError"
+                        | "EvalError"
+                        | "URIError"
+                )
+            ) {
+                return self.do_construct(callee, args);
+            }
             // eval / Function 动态求值拦截（直接/间接形态与动态函数模板；
             // Function 构造器为 NativeCtor 单例后同样命中——无 new 直调
             // `Function("return 8")` 语义等价 new）
@@ -239,6 +254,7 @@ impl Vm {
             };
             if let Some(handler) = handler {
                 crate::builtins::set_current_receiver(this_val);
+                crate::builtins::set_pending_callee(callee);
                 return handler(self, args);
             }
         }
@@ -249,17 +265,6 @@ impl Vm {
         // 调用不可调用值：JS 语义抛 TypeError（此前静默返回 undefined，
         // 掩盖真实缺陷）
         let desc = self.format_value(callee);
-        if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
-            let tname = self
-                .module_functions
-                .get(self.current_func_idx.max(0) as usize)
-                .map(|t| format!("{}#{}", t.name, t.source_file))
-                .unwrap_or_default();
-            eprintln!(
-                "[req-dbg] not-callable: desc={desc:?} func={} ({tname}) pc={}",
-                self.current_func_idx, self.last_pc
-            );
-        }
         let err = self.alloc_error_instance(&format!("{desc} is not a function"));
         let name = self.alloc_string("TypeError".to_owned());
         let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
@@ -281,13 +286,20 @@ impl Vm {
             };
             if let Some(ref name) = ctor_name {
                 match name.as_str() {
-                    "Error" => {
-                        // message 未传或为 undefined 时按规范置空串
+                    "Error" | "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError"
+                    | "EvalError" | "URIError" => {
+                        // message 未传或为 undefined 时按规范置空串；
+                        // 子类实例 name 置子类名（对齐 Node：e.name === 'TypeError'）
                         let message = match args.first() {
                             Some(Value::Undefined) | None => String::new(),
                             Some(v) => self.format_value(*v),
                         };
-                        return Ok(Value::Object(self.alloc_error_instance(&message)));
+                        let err = self.alloc_error_instance(&message);
+                        if name != "Error" {
+                            let n = self.alloc_string(name.clone());
+                            let _ = self.set_property(Value::Object(err), "name", Value::Object(n));
+                        }
+                        return Ok(Value::Object(err));
                     }
                     "Promise" => {
                         // new Promise(executor)：创建 pending promise，以
@@ -499,7 +511,6 @@ impl Vm {
         let frame_base = self.stack.len();
 
         self.bind_call_args(this_val, args, tmpl.num_params as usize, tmpl.is_var_args);
-
         // `arguments` 对象注入（对齐 Go：编译器给出槽位 + 未引用标记；
         // 仅对引用 arguments 的函数构建，性能零影响）
         if let Some(extras) = self.module_header_extras.get(func_idx) {
@@ -552,6 +563,12 @@ impl Vm {
                 return Ok(Value::Object(p_obj));
             }
         }
+
+        // 本帧逻辑栈收割：嵌套调用/异常路径可能在栈上残留本帧垃圾值，
+        // 返回前按 frame_base 截断（共享栈模型——残留会污染调用者栈序，
+        // M2.4 实测：GetIntrinsic 内层 stringToPath 的数组元素残留致
+        // call-bound 的 callBindBasic 调用 callee 错位）
+        self.stack.truncate(frame_base);
 
         // 正常路径：函数返回前，关闭当前帧所有未关闭的 open upvalues
         for (slot, uv) in &self.open_upvalues {

@@ -285,11 +285,13 @@ impl Vm {
                 ret_str!(out);
             }
             "replace" => {
-                // RegExp 实参：正则替换（`g` 标志替换全部，否则首个）
+                // RegExp 实参：正则替换（`g` 标志替换全部，否则首个）；
+                // 第二实参为函数时按 replacer 回调语义（get-intrinsic 的
+                // stringToPath 用 `$replace(str, rePropName, fn)` 形态）
                 if let Some(re) = args.first().copied() {
                     if self.is_regexp_obj(re) {
-                        let to = arg_str(self, args, 1);
-                        match self.regexp_replace(re, text, &to, false) {
+                        let replacer = replacer_of(self, args, 1);
+                        match self.regexp_replace(re, text, &replacer, false) {
                             Ok(s) => ret_str!(s),
                             Err(e) => return Some(Err(e)),
                         }
@@ -303,8 +305,8 @@ impl Vm {
             "replaceAll" => {
                 if let Some(re) = args.first().copied() {
                     if self.is_regexp_obj(re) {
-                        let to = arg_str(self, args, 1);
-                        match self.regexp_replace(re, text, &to, true) {
+                        let replacer = replacer_of(self, args, 1);
+                        match self.regexp_replace(re, text, &replacer, true) {
                             Ok(s) => ret_str!(s),
                             Err(e) => return Some(Err(e)),
                         }
@@ -415,7 +417,7 @@ impl Vm {
         &mut self,
         re: Value,
         text: &str,
-        to: &str,
+        to: &Replacer,
         replace_all: bool,
     ) -> Result<String, VmError> {
         let (pattern, flags) = match re {
@@ -454,14 +456,36 @@ impl Vm {
                 .iter()
                 .map(|g| g.map(|(a, b)| (consumed + a, consumed + b)))
                 .collect();
-            out.push_str(&expand_replacement(
-                to,
-                &cs,
-                abs_start,
-                abs_end,
-                &groups,
-                &group_names,
-            ));
+            match to {
+                Replacer::Str(rep) => out.push_str(&expand_replacement(
+                    rep,
+                    &cs,
+                    abs_start,
+                    abs_end,
+                    &groups,
+                    &group_names,
+                )),
+                Replacer::Fn(cb) => {
+                    // 回调参数：match 全串、捕获组（未参与 undefined）、offset、subject
+                    let mut cb_args: Vec<Value> = Vec::with_capacity(groups.len() + 3);
+                    let full: String = cs[abs_start..abs_end].iter().collect();
+                    cb_args.push(Value::Object(self.alloc_string(full)));
+                    for g in &groups {
+                        match g {
+                            Some((a, b)) => {
+                                let txt: String = cs[*a..*b].iter().collect();
+                                cb_args.push(Value::Object(self.alloc_string(txt)));
+                            }
+                            None => cb_args.push(Value::Undefined),
+                        }
+                    }
+                    cb_args.push(Value::Number(abs_start as f64));
+                    let subject = self.alloc_string(text.to_owned());
+                    cb_args.push(Value::Object(subject));
+                    let ret = self.invoke_callable(*cb, Value::Undefined, &cb_args)?;
+                    out.push_str(&self.format_value(ret));
+                }
+            }
             consumed = if abs_end == abs_start {
                 abs_end + 1
             } else {
@@ -475,6 +499,21 @@ impl Vm {
             out.extend(&cs[consumed..]);
         }
         Ok(out)
+    }
+}
+
+/// `replace` 的替换物：静态串或 replacer 函数（回调模式）。
+pub(crate) enum Replacer {
+    Str(String),
+    Fn(Value),
+}
+
+/// 从调用实参构造替换物（函数实参 → 回调模式；其余按字符串格式化）。
+fn replacer_of(vm: &mut Vm, args: &[Value], i: usize) -> Replacer {
+    match args.get(i).copied() {
+        Some(v) if vm.resolve_callable(v).0.is_some() => Replacer::Fn(v),
+        Some(v) => Replacer::Str(vm.format_value(v)),
+        None => Replacer::Str("undefined".to_owned()),
     }
 }
 

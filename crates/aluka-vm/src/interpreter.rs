@@ -439,6 +439,7 @@ impl Vm {
         let dirname_fn = vm.alloc_native_fn("path.dirname");
         let extname_fn = vm.alloc_native_fn("path.extname");
         let resolve_fn = vm.alloc_native_fn("path.resolve");
+        let relative_fn = vm.alloc_native_fn("path.relative");
         let _ = vm.set_property(Value::Object(path_mod), "join", Value::Object(join_fn));
         let _ = vm.set_property(
             Value::Object(path_mod),
@@ -459,6 +460,11 @@ impl Vm {
             Value::Object(path_mod),
             "resolve",
             Value::Object(resolve_fn),
+        );
+        let _ = vm.set_property(
+            Value::Object(path_mod),
+            "relative",
+            Value::Object(relative_fn),
         );
         vm.path_module = Some(path_mod);
         // stream 内置模块
@@ -717,6 +723,17 @@ impl Vm {
         Value::Object(c)
     }
 
+    /// Error 子类构造器单例（TypeError/RangeError/... 名 → NativeCtor；
+    /// `new` 与无 new 直调都构造带子类 name 的 Error 实例）。
+    pub(crate) fn error_subclass_ctor(&mut self, name: &str) -> Value {
+        if let Some(c) = self.ctor_cache.get(name) {
+            return Value::Object(*c);
+        }
+        let c = self.alloc_native_ctor(name, None);
+        self.ctor_cache.insert(name.to_owned(), c);
+        Value::Object(c)
+    }
+
     /// 当前执行帧（函数模板索引）归属的模块作用域下标。
     pub(crate) fn module_scope_of(&self, func_idx: i64) -> Option<usize> {
         if func_idx < 0 {
@@ -778,6 +795,10 @@ impl Vm {
                 .error_ctor
                 .map(Value::Object)
                 .unwrap_or(Value::Undefined),
+            // Error 子类构造器（TypeError 等：es-errors 包 `module.exports =
+            // TypeError` 直接导出全局——缺失会令 `new $TypeError` 崩）
+            "TypeError" | "RangeError" | "SyntaxError" | "ReferenceError" | "EvalError"
+            | "URIError" => self.error_subclass_ctor(name),
             "Array" => self
                 .array_ctor
                 .map(Value::Object)
@@ -1031,7 +1052,7 @@ impl Vm {
     }
 
     /// `node:path` 轻量方法实现（平台分隔符语义；符号参数规范化处理）。
-    fn path_method(&self, method: &str, args: &[Value]) -> String {
+    pub(crate) fn path_method(&self, method: &str, args: &[Value]) -> String {
         use std::path::{Path, PathBuf};
         let parts: Vec<String> = args.iter().map(|v| self.format_value(*v)).collect();
         match method {
@@ -1070,6 +1091,36 @@ impl Vm {
                 .extension()
                 .map(|e| format!(".{}", e.to_string_lossy()))
                 .unwrap_or_default(),
+            // relative(from, to)：Node 语义——clean 后按段找公共前缀，
+            // from 剩余段上溯 `..`，再接 to 剩余段
+            "relative" => {
+                let norm = |v: &str| -> Vec<String> {
+                    v.replace('\\', "/")
+                        .split('/')
+                        .filter(|s| !s.is_empty() && *s != ".")
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                };
+                let from = parts.first().map(String::as_str).unwrap_or("");
+                let to = parts.get(1).map(String::as_str).unwrap_or("");
+                let fs = norm(from);
+                let ts = norm(to);
+                let mut common = 0usize;
+                while common < fs.len() && common < ts.len() && fs[common] == ts[common] {
+                    common += 1;
+                }
+                let mut out: Vec<String> = Vec::new();
+                for _ in common..fs.len() {
+                    out.push("..".to_owned());
+                }
+                out.extend(ts[common..].iter().cloned());
+                let joined = if out.is_empty() {
+                    String::new()
+                } else {
+                    out.join("/")
+                };
+                self.win_leading_slash(&joined)
+            }
             _ => {
                 // resolve：当前目录为基座
                 let mut buf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -1749,6 +1800,7 @@ impl Vm {
                 // 6. 局部变量与全局变量
                 Op::LoadLocal => {
                     let slot = instr.operand as usize;
+
                     let val = self
                         .locals
                         .get(slot)
@@ -2091,6 +2143,45 @@ impl Vm {
                                 let s = self.alloc_string(k);
                                 Value::Object(s)
                             })
+                            .collect();
+                        let arr = self.alloc_array(elems);
+                        self.stack.push(Value::Object(arr));
+                    } else if method_name == "getOwnPropertyNames"
+                        && self
+                            .object_ctor
+                            .is_some_and(|c| receiver == Value::Object(c))
+                    {
+                        // Object.getOwnPropertyNames(obj)：自有全部字符串键
+                        //（含不可枚举；符号键由 getOwnPropertySymbols 返回）
+                        let keys: Vec<String> = match args.first() {
+                            Some(Value::Object(r)) if self.proxy_parts(*r).is_some() => {
+                                self.proxy_own_keys(*r).unwrap_or_default()
+                            }
+                            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::Ordinary { .. }) => self
+                                    .own_entries(r.0 as usize)
+                                    .into_iter()
+                                    .map(|(k, _)| k)
+                                    .filter(|k| !crate::symbol::is_symbol_key(k))
+                                    .collect(),
+                                Some(HeapObject::Array { elements, .. }) => {
+                                    let mut ks: Vec<String> =
+                                        (0..elements.len()).map(|i| i.to_string()).collect();
+                                    ks.extend(
+                                        self.own_entries(r.0 as usize)
+                                            .into_iter()
+                                            .map(|(k, _)| k)
+                                            .filter(|k| !crate::symbol::is_symbol_key(k)),
+                                    );
+                                    ks
+                                }
+                                _ => Vec::new(),
+                            },
+                            _ => Vec::new(),
+                        };
+                        let elems: Vec<Value> = keys
+                            .into_iter()
+                            .map(|k| Value::Object(self.alloc_string(k)))
                             .collect();
                         let arr = self.alloc_array(elems);
                         self.stack.push(Value::Object(arr));
@@ -2814,7 +2905,7 @@ impl Vm {
                         self.stack.push(Value::Object(r));
                     } else if matches!(
                         method_name.as_ref(),
-                        "join" | "basename" | "dirname" | "extname" | "resolve"
+                        "join" | "basename" | "dirname" | "extname" | "resolve" | "relative"
                     ) && self
                         .path_module
                         .is_some_and(|m| receiver == Value::Object(m))
@@ -3533,6 +3624,8 @@ impl Vm {
                                 // 经注册表分派 spy 处理器
                                 let native = match self.heap.get(m_ref.0 as usize) {
                                     Some(HeapObject::NativeFn { name, .. }) => {
+                                        crate::builtins::set_pending_native_name(name);
+                                        crate::builtins::set_pending_callee(method_val);
                                         self.builtin_registry.lookup(name)
                                     }
                                     _ => None,
@@ -3838,6 +3931,7 @@ impl Vm {
                 Op::GetProp => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let obj = self.pop()?;
+
                     let val = self.get_property(obj, &key)?;
                     self.stack.push(val);
                 }

@@ -258,6 +258,24 @@ impl Regex {
                     (None, true) => cont(pos, caps),
                 }
             }
+            Node::Lookahead { negated, node } => {
+                // 先行断言：子模式从当前位置尝试匹配（不消费输入，零宽）。
+                // 匹配尝试经独立结束检查——子模式匹配到哪里都算成功。
+                let mut try_caps = caps.clone();
+                let ok = self.match_node(node, pos, ctx, &mut try_caps, &|_p, _ctx| true);
+                if ctx.exceeded.get() {
+                    return false;
+                }
+                match (ok, negated) {
+                    (true, false) => {
+                        // 捕获组在断言内更新的信息回填（对齐 lookbehind 行为）
+                        *caps = try_caps;
+                        cont(pos, caps)
+                    }
+                    (false, true) => cont(pos, caps),
+                    _ => false,
+                }
+            }
             // 反向引用：组已参与时逐字符（含 i 折叠）重放组文本；
             // 组未参与时按规范匹配空串成功。
             Node::Backref(gi) => match caps.get(*gi).copied().flatten() {

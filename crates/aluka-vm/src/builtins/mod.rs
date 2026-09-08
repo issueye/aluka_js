@@ -163,6 +163,22 @@ pub fn pending_native_name() -> String {
     PENDING_NATIVE_NAME.with(|n| n.borrow().clone())
 }
 
+thread_local! {
+    /// 当前被调用的 NativeFn 函数对象（普通函数调用时 this 为 undefined，
+    /// handler 需要函数对象本体——BoundFunction 的目标/属性存储于此）
+    static PENDING_CALLEE: std::cell::RefCell<Value> = const { std::cell::RefCell::new(Value::Undefined) };
+}
+
+/// 记录当前被调用的 NativeFn 函数对象。
+pub fn set_pending_callee(v: Value) {
+    PENDING_CALLEE.with(|c| *c.borrow_mut() = v);
+}
+
+/// 读取当前被调用的 NativeFn 函数对象。
+pub fn pending_callee() -> Value {
+    PENDING_CALLEE.with(|c| *c.borrow())
+}
+
 /// 内置方法处理器：`(vm, 实参) -> 返回值`。
 pub type BuiltinHandler = fn(&mut Vm, &[Value]) -> Result<Value, VmError>;
 
@@ -272,8 +288,61 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
     }
     // 原型方法面（属性挂载 + Function.prototype.toString handler）
     crate::builtins::surface::register_surface(vm, &mut registry);
+    // path 模块方法值调用 handler（NativeFn 名 "path.X" → path_method 语义）
+    for m in [
+        "join", "basename", "dirname", "extname", "resolve", "relative",
+    ] {
+        register_handler(&mut registry, "path", m, path_method_dispatch);
+    }
+    // process.stdout/stderr.write：readline 等把提示与输出写到流对象
+    register_handler(
+        &mut registry,
+        "process.stdout",
+        "write",
+        stream_write_stdout,
+    );
+    register_handler(
+        &mut registry,
+        "process.stderr",
+        "write",
+        stream_write_stderr,
+    );
     vm.builtin_registry = registry;
     Ok(())
+}
+
+/// `process.stdout.write(text[, enc])`：原样直写标准输出（无自动换行——
+/// stdout_records 是行模型收尾统一补换行，流写入需逐字输出；readline
+/// 提示与后续 console.log 同行的场景依赖此直写）。
+fn stream_write_stdout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let text = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    print!("{text}");
+    Ok(Value::Boolean(true))
+}
+
+/// `process.stderr.write(text[, enc])`：写到标准错误（不经对拍输出流）。
+fn stream_write_stderr(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let text = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    eprint!("{text}");
+    Ok(Value::Boolean(true))
+}
+
+/// `path.join/basename/...` 值调用分派（NativeFn 名 `path.X`；方法名经
+/// pending_native_name 取末段）。
+fn path_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let method = pending_native_name()
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    let out = vm.path_method(&method, args);
+    Ok(Value::Object(vm.alloc_string(out)))
 }
 
 /// 模块注册表便捷宏：声明模块与方法的处理器映射。
@@ -417,6 +486,8 @@ pub fn try_dispatch(
     };
     let handler = vm.builtin_registry.lookup(&key)?;
     set_current_receiver(receiver);
+    set_pending_native_name(&key);
+
     Some(handler(vm, args))
 }
 

@@ -60,6 +60,13 @@ pub(crate) enum Node {
         /// 断言子模式
         node: Box<Node>,
     },
+    /// 先行断言 `(?=...)` / `(?!...)`：子模式从当前位置匹配即成功（零宽）
+    Lookahead {
+        /// `true` 为负向先行 `(?!...)`
+        negated: bool,
+        /// 断言子模式
+        node: Box<Node>,
+    },
     /// 捕获组反向引用 `\k<name>` 与 `\1..`\9`
     Backref(usize),
     /// 词边界断言 `\b` / `\B`（词字符 = 字母数字或 `_`）
@@ -267,6 +274,19 @@ impl Parser {
                 Some(':') => {
                     self.pos += 1;
                     None
+                }
+                // 先行断言 `(?=...)` / `(?!...)`（零宽；捕获组号不受影响）
+                Some('=') | Some('!') => {
+                    let negated = self.peek() == Some('!');
+                    self.pos += 1;
+                    let node = self.parse_alt()?;
+                    if !self.eat(')') {
+                        return Err(self.err("unbalanced parenthesis"));
+                    }
+                    return Ok(Node::Lookahead {
+                        negated,
+                        node: Box::new(node),
+                    });
                 }
                 // 命名捕获组 `(?<name>...)`：命名组同样占用组号
                 Some('<') if self.peek_ahead_is(Some('=')) || self.peek_ahead_is(Some('!')) => {

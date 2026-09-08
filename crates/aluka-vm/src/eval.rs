@@ -124,12 +124,24 @@ impl Vm {
             }
         }
         while self.module_header_extras.len() < fn_base as usize {
-            self.module_header_extras.push(Default::default());
+            self.module_header_extras
+                .push(aluka_bytecode::FuncHeaderExtras {
+                    arguments_slot: -1,
+                    no_arguments_object: true,
+                    new_target_slot: -1,
+                    inlinable: false,
+                });
         }
         self.module_header_extras
             .extend(module.header_extras.iter().cloned());
         while self.module_header_extras.len() < fn_base as usize + funcs.len() {
-            self.module_header_extras.push(Default::default());
+            self.module_header_extras
+                .push(aluka_bytecode::FuncHeaderExtras {
+                    arguments_slot: -1,
+                    no_arguments_object: true,
+                    new_target_slot: -1,
+                    inlinable: false,
+                });
         }
         self.module_functions
             .extend(funcs.iter().cloned().map(std::rc::Rc::new));

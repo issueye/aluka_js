@@ -542,16 +542,15 @@ fn date_to_iso_string(t: f64, ms_precision: bool) -> String {
 
 /// Object 静态方法统一分派。
 fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let receiver = current_receiver();
-    let method = match receiver {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
-            Some(HeapObject::NativeFn { name, .. }) => {
-                name.clone().split('.').next_back().unwrap_or("").to_owned()
-            }
-            _ => String::new(),
-        },
-        _ => String::new(),
-    };
+    // 方法名优先取 pending_native_name（try_dispatch/注册表分派均登记）；
+    // 回退 receiver 本体 NativeFn 名（`.call` 形态）
+    let method = super::pending_native_name()
+        .split('.')
+        .next_back()
+        .unwrap_or("")
+        .to_owned();
+
+    let _ = current_receiver();
     let target = args.first().copied().unwrap_or(Value::Undefined);
     match method.as_str() {
         "defineProperty" => {

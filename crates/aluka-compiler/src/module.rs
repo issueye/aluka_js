@@ -385,7 +385,14 @@ impl ModuleCompiler {
                     );
                     top_unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
                 } else {
+                    top_unit.code.push(Instr::new(Op::Dup, 0));
                     top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    // 名字写全局：嵌套函数跨层 LOAD_GLOBAL 可见（depd deprecate→log）
+                    let name_idx = crate::codegen::add_constant(
+                        &mut top_unit,
+                        Constant::String(func_def.name.clone()),
+                    );
+                    top_unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
                 }
             }
         }
@@ -418,7 +425,14 @@ impl ModuleCompiler {
                         );
                         top_unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
                     } else {
+                        top_unit.code.push(Instr::new(Op::Dup, 0));
                         top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                        // 名字写全局：嵌套函数跨层 LOAD_GLOBAL 可见
+                        let name_idx = crate::codegen::add_constant(
+                            &mut top_unit,
+                            Constant::String(func_def.name.clone()),
+                        );
+                        top_unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
                     }
                 }
                 Stmt::Class {

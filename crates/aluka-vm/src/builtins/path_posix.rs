@@ -1,4 +1,4 @@
-﻿//! `path/posix` 内置模块：POSIX（`/`）分隔符语义的路径操作。
+//! `path/posix` 内置模块：POSIX（`/`）分隔符语义的路径操作。
 //!
 //! 语义实测对齐 Node.js 22 LTS 标准（`nodeos.NewPathPosix`）→ Go 标准库 `path` 包：
 //! - `join` 空元素跳过、结果 Clean（`.`/`..` 折叠、`//` 归并）；
@@ -25,12 +25,13 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
-    let methods: [(&str, BuiltinHandler); 5] = [
+    let methods: [(&str, BuiltinHandler); 6] = [
         ("join", join),
         ("basename", basename),
         ("dirname", dirname),
         ("extname", extname),
         ("resolve", resolve),
+        ("relative", relative),
     ];
     for (name, handler) in methods {
         let f = vm.alloc_native_fn(&format!("path/posix.{name}"));
@@ -94,6 +95,46 @@ fn resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
     let s = vm.alloc_string(posix_clean(&resolved));
     Ok(Value::Object(s))
+}
+
+/// `relative(from, to)`：Node POSIX 语义——公共目录前缀剥离，剩余 `from`
+/// 段以上溯 `../` 补偿（depd 的 formatLocation 用其缩短调用路径显示）。
+fn relative(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let from = args
+        .first()
+        .map(|v| posix_clean(&vm.format_value(*v)))
+        .unwrap_or_default();
+    let to = args
+        .get(1)
+        .map(|v| posix_clean(&vm.format_value(*v)))
+        .unwrap_or_default();
+    let out = posix_relative(&from, &to);
+    Ok(Value::Object(vm.alloc_string(out)))
+}
+
+fn posix_relative(from: &str, to: &str) -> String {
+    if from == to {
+        return String::new();
+    }
+    let from_segs: Vec<&str> = from.split('/').filter(|s| !s.is_empty()).collect();
+    let to_segs: Vec<&str> = to.split('/').filter(|s| !s.is_empty()).collect();
+    // 公共前缀段数
+    let mut common = 0usize;
+    while common < from_segs.len() && common < to_segs.len() && from_segs[common] == to_segs[common]
+    {
+        common += 1;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for _ in common..from_segs.len() {
+        out.push("..".to_owned());
+    }
+    for seg in &to_segs[common..] {
+        out.push((*seg).to_owned());
+    }
+    if out.is_empty() {
+        return ".".to_owned();
+    }
+    out.join("/")
 }
 
 // ---- Go 标准库 `path` 包移植（逐字对齐） ----

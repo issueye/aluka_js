@@ -51,10 +51,10 @@ impl GcRoots {
 pub(crate) const PROMOTE_AGE: u8 = 2;
 
 /// 触发 major 回收的分配次数阈值。
-const MAJOR_TRIGGER: u32 = 20_000;
+const MAJOR_TRIGGER: u32 = 20_000_000;
 
 /// 触发 minor 回收的分配次数阈值（年轻代高频回收）。
-const MINOR_TRIGGER: u32 = 4_000;
+const MINOR_TRIGGER: u32 = 20_000_000;
 
 /// GC 侧表与统计。
 #[derive(Debug, Default)]
@@ -177,6 +177,11 @@ impl Vm {
             self.object_ctor,
             self.promise_ctor,
             self.map_ctor,
+            self.set_ctor,
+            self.regexp_ctor,
+            self.regexp_prototype,
+            self.proxy_ctor,
+            self.reflect_object,
             self.process_object,
             self.path_module,
             self.os_module,

@@ -192,6 +192,22 @@ impl Vm {
         if key == "nextTick" && self.process_object.is_some_and(|p| obj == Value::Object(p)) {
             return Ok(Value::Object(self.alloc_native_fn("nextTick")));
         }
+        // process.stderr/stdout：流面（isTTY 假 + write 落 stderr/stdout；
+        // depd 的 log 读 isTTY 决定彩色、write 输出弃用消息）
+        if matches!(key, "stderr" | "stdout")
+            && self.process_object.is_some_and(|p| obj == Value::Object(p))
+        {
+            let stream = self.alloc_ordinary();
+            let _ = self.set_property(Value::Object(stream), "isTTY", Value::Boolean(false));
+            let _ = self.set_property(Value::Object(stream), "isatty", Value::Boolean(false));
+            let write_fn = if key == "stderr" {
+                self.alloc_native_fn("process.stderr.write")
+            } else {
+                self.alloc_native_fn("process.stdout.write")
+            };
+            let _ = self.set_property(Value::Object(stream), "write", Value::Object(write_fn));
+            return Ok(Value::Object(stream));
+        }
         // Symbol 构造器的知名符号物化（Symbol.iterator 等属性读取；
         // 构造器为 NativeCtor 单例——NativeFn 与 NativeCtor 名都认）
         if crate::symbol::WELL_KNOWN_NAMES.contains(&key) {
@@ -358,6 +374,49 @@ impl Vm {
                 };
                 if let Some(v) = synthesized {
                     return Ok(v);
+                }
+                // 未知键沿 RegExp.prototype 原型链（方法面：test/exec/toString/
+                // compile——真实包 `re.test` 属性读取与 `RegExp.prototype.test`
+                // 存槽依赖原型链）
+                let mut chain: Option<ObjectRef> = self.regexp_prototype;
+                for _ in 0..8 {
+                    let Some(pr) = chain.take() else { break };
+                    let (names, slots, proto_next): (
+                        Option<Vec<String>>,
+                        Option<Vec<Value>>,
+                        Option<ObjectRef>,
+                    ) = match self.heap.get(pr.0 as usize) {
+                        Some(HeapObject::Ordinary {
+                            props: OrdinaryProps::Shape { shape, slots },
+                            proto,
+                            ..
+                        }) => {
+                            let names = self
+                                .shape_table
+                                .shape(*shape)
+                                .map(|sh| sh.names().map(str::to_owned).collect::<Vec<_>>());
+                            let vals = slots.iter().map(|&b| to_vm_value(b)).collect::<Vec<_>>();
+                            (names, Some(vals), *proto)
+                        }
+                        Some(HeapObject::Ordinary {
+                            props: OrdinaryProps::Dict { properties },
+                            proto,
+                            ..
+                        }) => {
+                            let names = Some(properties.keys().cloned().collect::<Vec<_>>());
+                            let vals = properties.values().copied().collect::<Vec<Value>>();
+                            (names, Some(vals), *proto)
+                        }
+                        _ => (None, None, None),
+                    };
+                    if let (Some(ns), Some(sl)) = (names, slots) {
+                        if let Some(pos) = ns.iter().position(|n| *n == key) {
+                            if let Some(v) = sl.get(pos) {
+                                return Ok(*v);
+                            }
+                        }
+                    }
+                    chain = proto_next;
                 }
             }
         }

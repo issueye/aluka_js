@@ -187,12 +187,24 @@ impl Vm {
         // header_extras 与函数表平行对齐：先补默认到 fn_base，追加后不足
         // 再补默认（无 extras 的函数等价「无 arguments」默认头）
         while self.module_header_extras.len() < fn_base as usize {
-            self.module_header_extras.push(Default::default());
+            self.module_header_extras
+                .push(aluka_bytecode::FuncHeaderExtras {
+                    arguments_slot: -1,
+                    no_arguments_object: true,
+                    new_target_slot: -1,
+                    inlinable: false,
+                });
         }
         self.module_header_extras
             .extend(module.header_extras.iter().cloned());
         while self.module_header_extras.len() < fn_base as usize + funcs.len() {
-            self.module_header_extras.push(Default::default());
+            self.module_header_extras
+                .push(aluka_bytecode::FuncHeaderExtras {
+                    arguments_slot: -1,
+                    no_arguments_object: true,
+                    new_target_slot: -1,
+                    inlinable: false,
+                });
         }
         self.module_functions
             .extend(funcs.iter().cloned().map(std::rc::Rc::new));
@@ -534,6 +546,28 @@ impl Vm {
 /// `require` 目标的字节码候选：`.json` 原样；`X.js/cjs/mjs` → `X.bc`；
 /// 裸路径 → `X.bc` → `X/index.bc` → `X/main.bc`。
 fn module_candidates(p: &Path) -> Option<PathBuf> {
+    // 包目录（目录名可能含点，如 ipaddr.js/）：extension 分支会误把目录名
+    // 当文件扩展名处理——目录一律走 index/main/package.json 解析
+    if p.is_dir() {
+        let index = p.join("index.bc");
+        if index.is_file() {
+            return Some(index);
+        }
+        let main = p.join("main.bc");
+        if main.is_file() {
+            return Some(main);
+        }
+        let pkg = p.join("package.json");
+        if pkg.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&pkg) {
+                if let Some(main_field) = extract_json_string_field(&text, "main") {
+                    let main_path = normalize_path(&p.join(main_field.trim()));
+                    return module_candidates(&main_path);
+                }
+            }
+        }
+        return None;
+    }
     match p.extension().and_then(|e| e.to_str()) {
         Some("json") => p.is_file().then(|| p.to_path_buf()),
         Some("js" | "cjs" | "mjs" | "mts" | "ts") => {

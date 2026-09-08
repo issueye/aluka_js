@@ -24,6 +24,31 @@ use aluka_core::ObjectRef;
 
 /// 原型方法面注册（幂等；`Vm::new` 的 register_all 中调用一次）。
 pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
+    // 构造器 prototype 统一：Vm::new 预建的 ctor 原型是无方法面的空对象，
+    // 方法面挂在本模块原型单例上——把 ctor 的 `prototype` 属性重定向到
+    // 单例（RegExp/Set/Map/Array：真实包取 `RegExp.prototype.test` 等存槽）
+    for (ctor_field, proto) in [
+        (vm.regexp_ctor, regexp_proto(vm)),
+        (vm.set_ctor, container_proto(vm)),
+        (vm.map_ctor, container_proto(vm)),
+        (vm.array_ctor, array_proto(vm)),
+    ] {
+        if let Some(c) = ctor_field
+            && let Some(crate::heap::HeapObject::NativeCtor { properties, .. }) =
+                vm.heap.get_mut(c.0 as usize)
+        {
+            properties.insert("prototype".to_owned(), Value::Object(proto));
+        }
+    }
+    // RegExp 字面量对象的原型字段统一（Vm::new 预建的 regexp_prototype 是
+    // 无方法面的空对象——字面量 /re/ 的 `.test/.exec` 经原型链读取依赖
+    // 本模块方法面单例）
+    vm.regexp_prototype = Some(regexp_proto(vm));
+    // 数组实例原型统一（alloc_array 用 array_prototype 字段——ctor 的
+    // prototype 已重定向到方法面单例，实例链必须同源否则
+    // `[] instanceof Array` 失效）
+    vm.array_prototype = Some(array_proto(vm));
+
     // Object.prototype（单例已由 Vm 初始化，面只做补挂）
     let obj_proto = match vm.object_prototype {
         Some(p) => p,
@@ -190,15 +215,13 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
     register_handler(registry, "Function.prototype", "call", fn_proto_call_apply);
     register_handler(registry, "Function.prototype", "apply", fn_proto_call_apply);
     register_handler(registry, "Function.prototype", "bind", fn_proto_bind);
-    register_handler(
-        registry,
-        "Function.prototype.bound",
-        "call",
-        bound_fn_invoke,
-    );
+    register_handler(registry, "Function.prototype", "bound", bound_fn_invoke);
 
     // RegExp 实例方法面
     let re_p = regexp_proto(vm);
+    if let Some(rc) = vm.regexp_ctor {
+        let _ = vm.define_proto_method(Value::Object(re_p), "constructor", Value::Object(rc));
+    }
     for m in [
         "exec",
         "test",
@@ -322,6 +345,9 @@ proto_getter!(container_proto, container_proto);
 /// helpers 的 `bind.call($call, $apply)` 形态即依赖此实现）。
 fn fn_proto_call_apply(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let name = super::pending_native_name();
+    // call/apply 语义的目标函数 = 调用 this（`fn.call(...)` 的 fn；
+    // BoundFunction 转发时 this 即被绑目标——普通函数调用形态的
+    // this 对 call/apply 无意义，不会到达本 handler）
     let this_fn = super::current_receiver();
     let this_arg = args.first().copied().unwrap_or(Value::Undefined);
     let call_args: Vec<Value> = if name.ends_with(".call") {
@@ -359,7 +385,9 @@ fn fn_proto_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 绑定函数调用：目标函数 + 绑定 this + 预设参 + 调用实参。
 fn bound_fn_invoke(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let b = super::current_receiver();
+    // 被调函数对象 = 绑定函数（普通调用 this 为 undefined，handler 经
+    // pending_callee 取函数本体——_target/_this/_args 存于其 properties）
+    let b = super::pending_callee();
     let target = match b {
         Value::Object(r) => vm
             .get_native_fn_property(r, "_target")
