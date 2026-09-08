@@ -46,3 +46,26 @@ cargo test --workspace --all-features           # 全绿 0 failed（phase5_http 
    - **结果：6 场景全部与 oracle 逐字一致**
 2. 剩余收尾：~~`express_e2e_test.rs` 固化测试~~（已完成于 72fb1a2，6 场景断言固化并通过）；S5/S10 字符串实例原型链规范面；F3 JSON.parse 错误类型（抛 TypeError 而非 SyntaxError）
 3. **M2.4 结项核实（本轮）**：`express_e2e_test` 1 passed；全量 `cargo test --workspace --all-features` 72 套件全绿 0 failed；里程碑表 M2/M2.4 已标记 `[x]`（证据：72fb1a2 提交说明 + oracle 逐字对拍 + E2E 固化测试）
+
+---
+
+## M3 启动轮（Stream 背压状态机）
+
+### 已完成
+- **M3.1 Stream 背压状态机**（950a8a7 + 后续修复）：
+  - Writable 内部写队列 + 水位线（highWaterMark）：writable_length ≥ 水位线 → write 返回 false
+  - writeCb 完成回调扣减 writable_length → 队列清空发 drain 恢复上游
+  - pipe 背压联动：write false → 源流暂停 → dest drain → pipeDrain 恢复排空
+  - pipeline 错误级联：任一流 error → destroy 其余全部流 + cb(err) 一次
+  - write_fn 未调 cb → 同步完成自动出队
+  - Readable 实例改 Ordinary + _isReadable（与 Writable 同构）
+  - stream_computed_prop：writableLength/readableLength/destroyed 等计算属性
+  - 验收探针：s1（背压信号）s2（512KB pipe）s3（destroy 级联）s10（简化 16KB 完整性）全通过
+
+- **M3.4 异步 DNS**：dns.rs 414 行已有 lookup/resolve4/resolve6/promises 全套；
+  builtins_phase5_net_test 8/8 通过（含 DNS callback 家族 + promises）；功能稳定
+
+### 待完成（下轮入口）
+- M3.2 纯 Rust TLS 1.3（rustls）：tls.rs 288 行为 stub；需引入 rustls crate + tls.createServer/tls.connect/https 全链
+- M3.3 HTTP 1.1 chunked + Keep-Alive 连接池：http/mod.rs 564 行基础已有；需补 chunked 编解码 + Agent 连接池复用 + 超时回收
+- Stream pipe 大文件端到端（fs.createReadStream → pipe → fs.createWriteStream）真实文件 I/O 路径验证
