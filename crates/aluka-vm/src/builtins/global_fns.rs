@@ -125,6 +125,27 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     }
     vm.globals.insert("Date".to_owned(), Value::Object(date));
 
+    // ===== M4: Fetch API + AbortController =====
+    let fetch_fn = vm.alloc_native_fn("fetch");
+    vm.globals
+        .insert("fetch".to_owned(), Value::Object(fetch_fn));
+    register_handler(registry, "fetch", "fetch", global_fetch);
+
+    let abort_ctor = vm.alloc_native_ctor("AbortController", None);
+    vm.globals
+        .insert("AbortController".to_owned(), Value::Object(abort_ctor));
+    register_handler(
+        registry,
+        "AbortController",
+        "ctor",
+        abort_controller_ctor_impl,
+    );
+
+    let headers_ctor = vm.alloc_native_ctor("Headers", None);
+    vm.globals
+        .insert("Headers".to_owned(), Value::Object(headers_ctor));
+    register_handler(registry, "Headers", "ctor", headers_ctor_impl);
+
     // ===== Object 静态方法面（真实包硬需求）=====
     if let Some(octor) = vm.object_ctor {
         vm.builtin_registry.register_module_object("Object", octor);
@@ -776,4 +797,218 @@ fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
         )),
         _ => Ok(Value::Undefined),
     }
+}
+
+// ---- M4: Fetch API + AbortController ----
+
+/// `fetch(url[, options]) -> Promise<Response>`：同步 HTTP 请求后
+/// 构造 Response 对象并以 Promise 包装返回。
+fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let url_val = args.first().copied().unwrap_or(Value::Undefined);
+    let url = vm.format_value(url_val);
+
+    // 解析 options
+    let opts = args.get(1).copied().unwrap_or(Value::Undefined);
+    let method = vm
+        .get_property(opts, "method")
+        .ok()
+        .map(|v| vm.format_value(v).to_uppercase())
+        .filter(|m| !m.is_empty())
+        .unwrap_or_else(|| "GET".to_owned());
+
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if let Ok(Value::Object(hdr_obj)) = vm.get_property(opts, "headers") {
+        for (k, v) in vm.own_entries(hdr_obj.0 as usize) {
+            headers.push((k, vm.format_value(v)));
+        }
+    }
+
+    let body = vm.get_property(opts, "body").ok();
+
+    // AbortSignal 检查
+    let signal = vm.get_property(opts, "signal").unwrap_or(Value::Undefined);
+    if let Value::Object(sig_ref) = signal {
+        if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
+            let err = vm.alloc_error_instance("This operation was aborted");
+            let name = vm.alloc_string("AbortError".to_owned());
+            let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+            let promise = vm.alloc_rejected_promise(Value::Object(err));
+            return Ok(Value::Object(promise));
+        }
+    }
+
+    // 同步 HTTP 请求
+    let (status, body_text) = do_sync_http_request(vm, &url, &method, &headers, body.as_ref())?;
+
+    // 构造 Response 对象
+    let response = vm.alloc_ordinary();
+    let _ = vm.set_property(
+        Value::Object(response),
+        "status",
+        Value::Number(status as f64),
+    );
+    let _ = vm.set_property(
+        Value::Object(response),
+        "ok",
+        Value::Boolean((200..300).contains(&status)),
+    );
+    let body_ref = vm.alloc_string(body_text.clone());
+    let _ = vm.set_property(
+        Value::Object(response),
+        "_bodyText",
+        Value::Object(body_ref),
+    );
+    let _ = vm.set_property(Value::Object(response), "_isResponse", Value::Boolean(true));
+
+    // .text() 方法：返回 body 文本
+    let text_fn = vm.alloc_native_fn("Response.text");
+    let _ = vm.set_property(Value::Object(response), "text", Value::Object(text_fn));
+    // .json() 方法
+    let json_fn = vm.alloc_native_fn("Response.json");
+    let _ = vm.set_property(Value::Object(response), "json", Value::Object(json_fn));
+
+    // Promise<Response>
+    let promise = vm.alloc_fulfilled_promise(Value::Object(response));
+    Ok(Value::Object(promise))
+}
+
+/// 同步 HTTP 请求 → (status, body_text)
+fn do_sync_http_request(
+    vm: &mut Vm,
+    url: &str,
+    method: &str,
+    headers: &[(String, String)],
+    body: Option<&Value>,
+) -> Result<(u16, String), VmError> {
+    let (host, port, path) = parse_http_url(vm, url)?;
+
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpStream;
+    let addr = format!("{host}:{port}");
+    let mut stream = TcpStream::connect(&addr).map_err(|e| {
+        let msg = vm.alloc_string(format!("fetch: connect: {e}"));
+        VmError::Thrown(Value::Object(msg))
+    })?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
+
+    let mut request = format!(
+        "{method} {path} HTTP/1.1
+Host: {host}
+Connection: close
+"
+    );
+    for (k, v) in headers {
+        request.push_str(&format!(
+            "{k}: {v}
+"
+        ));
+    }
+    if let Some(b) = body {
+        let bs = vm.format_value(*b);
+        request.push_str(&format!(
+            "Content-Length: {}
+",
+            bs.len()
+        ));
+    }
+    request.push_str("\r\n");
+    if let Some(b) = body {
+        request.push_str(&vm.format_value(*b));
+    }
+    stream.write_all(request.as_bytes()).map_err(|e| {
+        VmError::Thrown(Value::Object(vm.alloc_string(format!("fetch write: {e}"))))
+    })?;
+
+    let mut response_bytes = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => response_bytes.extend_from_slice(&buf[..n]),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(_) => break,
+        }
+    }
+
+    let text = String::from_utf8_lossy(&response_bytes).to_string();
+    let body_start = text
+        .find(
+            "
+
+",
+        )
+        .map(|i| i + 4)
+        .unwrap_or(text.len());
+    let status_line = &text[..text
+        .find(
+            "
+",
+        )
+        .unwrap_or(text.len())];
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let body_text = text.get(body_start..).unwrap_or("").to_owned();
+
+    Ok((status, body_text))
+}
+
+/// 解析 HTTP(S) URL → (host, port, path)
+fn parse_http_url(_vm: &mut Vm, url: &str) -> Result<(String, u16, String), VmError> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    let (host_port, path) = match rest.find('/') {
+        Some(i) => (rest[..i].to_owned(), rest[i..].to_owned()),
+        None => (rest.to_owned(), "/".to_owned()),
+    };
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(80)),
+        None => (host_port, 80),
+    };
+    Ok((host, port, path))
+}
+
+/// `AbortController` 构造器：创建 { signal: { aborted, _abortId }, abort() } 对象。
+static ABORT_ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn next_abort_id() -> u32 {
+    ABORT_ID_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
+fn abort_controller_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let abort_id = crate::builtins::global_fns::next_abort_id();
+    let controller = vm.alloc_ordinary();
+    let signal = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(signal), "aborted", Value::Boolean(false));
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "_abortId",
+        Value::Number(abort_id as f64),
+    );
+    let abort_fn = vm.alloc_native_fn("AbortSignal.abort");
+    let _ = vm.set_property(Value::Object(signal), "abort", Value::Object(abort_fn));
+    let _ = vm.set_property(Value::Object(controller), "signal", Value::Object(signal));
+    let abort_method = vm.alloc_native_fn("AbortController.abort");
+    let _ = vm.set_property(
+        Value::Object(controller),
+        "abort",
+        Value::Object(abort_method),
+    );
+    Ok(Value::Object(controller))
+}
+
+/// `Headers` 构造器：创建空 Headers 对象。
+fn headers_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let headers = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(headers), "_isHeaders", Value::Boolean(true));
+    Ok(Value::Object(headers))
 }
