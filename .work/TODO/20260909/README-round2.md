@@ -36,6 +36,8 @@ cargo test --workspace --all-features           # 全绿 0 failed（phase5_http 
 
 ## 4. 遗留问题（下轮入口）
 
-1. **POST /json 场景**：`POST` 请求处理崩于 `getDecoder`（func 885→900，raw-body→iconv-lite 解码链），09-09 轮"POST body 空"同源阻塞；
-2. S5/S10 语义：`Object.getPrototypeOf('') === String.prototype` 仍 false（字符串实例原型链与 ctor.prototype 未统一——非本轮 express 阻塞，规范面遗留）；
-3. `express_e2e_test.rs` 固化测试尚未创建（待 6 场景全绿后补）。
+1. **POST /json 场景（第二轮进展）**：
+   - 已修复三链：iconv-lite getDecoder 崩（编译器 `collect_ident_uses` 漏 MultiVarDecl 初始化器收集 → 模块变量退化为 LoadGlobal）；raw-body invokeCallback 崩（upvalue 需求未上抛——孙级函数声明引用祖父层名时父函数不自引用即断链，补 `Stmt::Function` 递归收集）；StringDecoder.write/end 对 Buffer 参数按字节提取（`extract_bytes`）
+   - **剩余**：raw-body readStream 的 `received += chunk.length` 偶发写丢（插桩改变代码布局后行为变化——疑似编译器局部槽位/upvalue 编号布局敏感缺陷），以及 http-errors `createError` 在该链上返回 undefined 的次生现象；GET/ECHO/并发/CTYPE/优雅退出 5 场景已全绿
+2. S5/S10 语义：`Object.getPrototypeOf('') === String.prototype` 仍 false（非本轮 express 阻塞）
+3. `express_e2e_test.rs` 固化测试尚未创建（待 6 场景全绿后补）

@@ -79,8 +79,11 @@ fn write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Object(vm.alloc_string(String::new())));
     }
     let mut data = state_bytes(vm);
-    let chunk = vm.format_value(args[0]);
-    data.extend_from_slice(chunk.as_bytes());
+    // chunk 为 Buffer/字符串时按字节提取（format_value 会把 Buffer 输出为
+    // "[object Object]"——raw-body 解码链实测 body 变 "undefined" 的根源）
+    let chunk = crate::builtins::buffer::extract_bytes(vm, args[0])
+        .unwrap_or_else(|| vm.format_value(args[0]).into_bytes());
+    data.extend_from_slice(&chunk);
     let valid = utf8_valid_prefix(&data);
     set_state_bytes(vm, &data[valid..]);
     let out = String::from_utf8_lossy(&data[..valid]).into_owned();
@@ -92,7 +95,9 @@ fn end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut data = state_bytes(vm);
     if let Some(v) = args.first() {
         if !matches!(v, Value::Undefined) {
-            data.extend_from_slice(vm.format_value(*v).as_bytes());
+            let chunk = crate::builtins::buffer::extract_bytes(vm, *v)
+                .unwrap_or_else(|| vm.format_value(*v).into_bytes());
+            data.extend_from_slice(&chunk);
         }
     }
     set_state_bytes(vm, &[]);

@@ -161,12 +161,28 @@ fn stmt_declares(stmt: &Stmt, name: &str) -> bool {
 pub(crate) fn collect_ident_uses(stmt: &Stmt, uses: &mut Vec<String>) {
     match stmt {
         Stmt::Expr(expr) => collect_ident_uses_in_expr(expr, uses),
+        // 嵌套函数声明体递归收集（与函数表达式/访问器路径对齐）：孙级函数
+        // 对外层名的引用需求必须上抛到父函数捕获集——否则父函数自身不引用
+        // 该名时中间层 upvalue 链断裂，孙函数引用退化为 LoadGlobal
+        // （raw-body readStream → done → invokeCallback 的 cleanup 实测）
+        Stmt::Function(def) => {
+            for s in &def.body {
+                collect_ident_uses(s, uses);
+            }
+        }
         Stmt::VarDecl {
             init: Some(init), ..
         } => {
             collect_ident_uses_in_expr(init, uses);
         }
         Stmt::VarDecl { init: None, .. } => {}
+        Stmt::MultiVarDecl { decls, .. } => {
+            for (_, init) in decls {
+                if let Some(e) = init {
+                    collect_ident_uses_in_expr(e, uses);
+                }
+            }
+        }
         Stmt::DestructureDecl { init, .. } => {
             collect_ident_uses_in_expr(init, uses);
         }
