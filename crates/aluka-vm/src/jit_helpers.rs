@@ -535,7 +535,7 @@ mod pic_layout_tests {
         // Shape 探针（已在 pic_layout 内验证）；另测 Dict 探针判别式
         let dict_probe = HeapObject::Ordinary {
             props: OrdinaryProps::Dict {
-                properties: HashMap::new(),
+                properties: Vec::new(),
             },
             getters: HashMap::new(),
             setters: HashMap::new(),

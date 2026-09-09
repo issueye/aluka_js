@@ -84,3 +84,24 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
 # set-size: 3 ｜ set-forof: [1,2,3] ｜ set-entries: ["[1,1]","[2,2]","[3,3]"]
 # spread-map: [["k","v"]] ｜ spread-set: ["a","b"] ｜ Array 迭代器复用 sum: 6
 ```
+
+## 9. JSON.stringify 修复（对照 Node.js 22 LTS）
+
+- **`OrdinaryProps::Dict` 有序化**（`heap.rs`）：`HashMap` → `Vec<(String, Value)>` 保插入序（GC trace/GC 转换同步）；`set_property` shape→dict 转换按形状序物化、dict 分支原位更新或追加；
+- **`delete` 慢化语义**（`property.rs` `delete_property`）：命中快属性即整体迁移字典模式（V8 同构），「删除后重加」键落在键序**末尾**——`Object.keys`/`JSON.stringify` 顺序对齐 Node（实测：`{a,b,c}` 删 b 重加 → `a,c,b`）；
+- **序列化规则**（`prims.rs` `json_stringify`/`json_write`）：
+  - 对象键序 = 整数索引键升序前置（规范 [[OwnPropertyKeys]] 子集，`"0"`/`"1"` 无前导零判定）+ 其余创建序（不再字典序排序）；
+  - 属性值为 `undefined`/函数/符号 → 整键剔除；数组元素同值 → `"null"` 占位；
+  - 顶层 `undefined`/函数/符号 → 返回 `undefined`（原错误输出字符串 `"null"`）；
+- **差分测试**：新增 `aluka-cli/tests/builtins_json_stringify_test.rs` 3 用例与 Node 22 实拍全绿（键序/忽略值/40 键 dict 序/删除重加）；`core_semantics_test` 更新 `json2` 期望为 `undefined`（Node 语义）；14 项手工探针与 Node 逐行 diff 为空；
+- **回归**：aluka-vm 146+33、core_semantics 21、iter_protocol 5、four_quadrants/sync_builtins/frontend_features 全通过；clippy 零警告。
+
+```bash
+# 证据（Node 22 与 aluka 输出 diff 为空）：
+# JSON.stringify({b:2,a:1}) → {"b":2,"a":1}（创建序）
+# JSON.stringify({2:'x',1:'y',a:1}) → {"1":"y","2":"x","a":1}（整数键前置）
+# JSON.stringify({a:undefined,b:null,c:3}) → {"b":null,"c":3}（undefined 整键剔除）
+# JSON.stringify([1,undefined,fn,null]) → [1,null,null,null]
+# JSON.stringify(undefined) === undefined（顶层）
+# 40 键对象 JSON 保插入序；删 b 重加 → {"a":1,"c":3,"b":9}（末尾）
+```

@@ -111,7 +111,7 @@ fn basic_globals_match_go() {
             "isArray: true false false\n",
             "keys: 3 a b c\n",
             "json1: {\"a\":1,\"b\":\"x\"}\n",
-            "json2: null\n",
+            "json2: undefined\n",
             "json3: \"str\"",
         )
     );

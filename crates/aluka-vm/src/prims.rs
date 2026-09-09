@@ -1,13 +1,32 @@
 //! 内建原语补齐：`JSON.stringify`、字符串原型方法、`String`/`Symbol` 全局函数。
 //!
 //! 语义对齐 Node.js 22 LTS 规范：
-//! - `JSON.stringify(undefined)` 返回字符串 `"null"`；
-//! - 对象键序按**字典序**输出（受 `Ordinary` 哈希存储限制，与 util.inspect 一致）；
+//! - `JSON.stringify(undefined)` 返回 `undefined`；函数/符号同（顶层）；
+//! - 对象键序 = 整数索引键升序前置 + 其余按**创建序**（`Ordinary` 快速与
+//!   字典模式均保插入序，对齐 V8 键序）；
+//! - 对象属性值为 `undefined`/函数/符号 → 整键剔除；数组元素同值 → `"null"`；
 //! - 字符串方法直接在 `CALL_METHOD` 链求值，不物化原型方法占位。
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
+
+/// 对象属性值是否为 JSON 忽略值（整键剔除）：`undefined` / 函数 / 符号。
+fn is_json_ignored_value(vm: &Vm, v: Value) -> bool {
+    match v {
+        Value::Undefined => true,
+        Value::Object(r) => matches!(
+            vm.heap.get(r.0 as usize),
+            Some(
+                HeapObject::Closure { .. }
+                    | HeapObject::NativeFn { .. }
+                    | HeapObject::NativeCtor { .. }
+                    | HeapObject::Symbol { .. }
+            )
+        ),
+        _ => false,
+    }
+}
 
 impl Vm {
     /// 判断值是否为 JSON 全局对象（`_isJSON` 标记）。
@@ -19,17 +38,54 @@ impl Vm {
     }
 
     /// `JSON.stringify(value[, replacer[, space]])`（replacer/space 忽略）。
+    ///
+    /// 顶层 undefined / 函数 / 符号 → 返回 `undefined`（标准语义）；其余
+    /// 值序列化为字符串。
     pub(crate) fn json_stringify(&mut self, value: Value) -> Result<Value, VmError> {
+        // 顶层不可序列化值：undefined / 函数 / 符号 → undefined
+        if matches!(value, Value::Undefined) {
+            return Ok(Value::Undefined);
+        }
+        if let Value::Object(r) = value {
+            if matches!(
+                self.heap.get(r.0 as usize),
+                Some(
+                    HeapObject::Closure { .. }
+                        | HeapObject::NativeFn { .. }
+                        | HeapObject::NativeCtor { .. }
+                        | HeapObject::Symbol { .. }
+                )
+            ) {
+                return Ok(Value::Undefined);
+            }
+        }
         let mut out = String::new();
         self.json_write(&mut out, value, &mut Vec::new());
         Ok(Value::Object(self.alloc_string(out)))
     }
 
+    /// 判断字符串是否为 JSON 数组索引键（规范 [[OwnPropertyKeys]] 整数键前置）。
+    fn is_json_array_index(key: &str) -> bool {
+        if key.is_empty() || !key.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        // 无前导零（"0" 除外）
+        if key.len() > 1 && key.starts_with('0') {
+            return false;
+        }
+        key.parse::<u64>().map(|n| n <= 4294967294).unwrap_or(false)
+    }
+
     /// 递归序列化。`seen` 持有栈上对象句柄做循环引用检测（循环 → `"null"`，
     /// 对齐标准 `TypeError` 之外的常见降级；Go 侧实测无循环用例）。
+    ///
+    /// 语义对齐 Node.js 22 LTS：
+    /// - 对象键序 = 整数索引键升序前置 + 其余**创建序**（shape/dict 保插入序）；
+    /// - 对象属性值为 `undefined`/函数/符号 → 整键剔除（标准 SerializeJSONObject）；
+    /// - 数组元素 `undefined`/函数 → `"null"` 占位（标准）；
+    /// - 顶层 `undefined` 返回 `undefined`（见 [`json_stringify`]）。
     fn json_write(&self, out: &mut String, value: Value, seen: &mut Vec<u32>) {
         match value {
-            // Node.js 22 LTS 标准 怪癖：undefined 序列化为 "null"（实测 console.log 输出 null）
             Value::Undefined | Value::Null => out.push_str("null"),
             Value::Boolean(b) => out.push_str(if b { "true" } else { "false" }),
             Value::Number(n) => {
@@ -53,9 +109,22 @@ impl Vm {
                             if i > 0 {
                                 out.push(',');
                             }
-                            // 数组内的 undefined/null 均序列化为 "null"（标准）
+                            // 数组内的 undefined/函数/符号均序列化为 "null"（标准）
                             match el {
                                 Value::Undefined => out.push_str("null"),
+                                Value::Object(rr)
+                                    if matches!(
+                                        self.heap.get(rr.0 as usize),
+                                        Some(
+                                            HeapObject::Closure { .. }
+                                                | HeapObject::NativeFn { .. }
+                                                | HeapObject::NativeCtor { .. }
+                                                | HeapObject::Symbol { .. }
+                                        )
+                                    ) =>
+                                {
+                                    out.push_str("null")
+                                }
                                 v => self.json_write(out, *v, seen),
                             }
                         }
@@ -65,27 +134,36 @@ impl Vm {
                     Some(HeapObject::Ordinary { .. }) => {
                         seen.push(r.0);
                         out.push('{');
-                        // 字典序排序输出（对齐 util.inspect；槽位序 = 插入序，
-                        // 但既有输出契约按字典序，保持排序）。符号键不参与 JSON
-                        // 序列化（标准语义）
-                        let mut items: Vec<(String, Value)> = self
+                        // 键序（规范 [[OwnPropertyKeys]] 的 JSON 子集）：
+                        // 整数索引键按数值升序前置，其余键保持创建序（VM 的
+                        // shape/字典两模式均保插入序）。符号键不参与（标准）。
+                        let items: Vec<(String, Value)> = self
                             .own_entries(r.0 as usize)
                             .into_iter()
-                            .filter(|(k, _)| !crate::symbol::is_symbol_key(k))
+                            .filter(|(k, v)| {
+                                !crate::symbol::is_symbol_key(k) && !is_json_ignored_value(self, *v)
+                            })
                             .collect();
-                        items.sort_by(|a, b| a.0.cmp(&b.0));
-                        for (i, (k, v)) in items.iter().enumerate() {
+                        // 稳定分区：整数键（已升序收集）前置，非整数键保创建序
+                        let mut idx_items: Vec<(String, Value)> = Vec::new();
+                        let mut str_items: Vec<(String, Value)> = Vec::new();
+                        for it in items {
+                            if Self::is_json_array_index(&it.0) {
+                                idx_items.push(it);
+                            } else {
+                                str_items.push(it);
+                            }
+                        }
+                        // 整数键字典序 == 数值序（无前导零的十进制串）
+                        idx_items.sort_by(|a, b| a.0.cmp(&b.0));
+                        idx_items.extend(str_items);
+                        for (i, (k, v)) in idx_items.iter().enumerate() {
                             if i > 0 {
                                 out.push(',');
                             }
                             out.push_str(&json_quote(k));
                             out.push(':');
-                            // 对象属性值为 undefined 时整键剔除（标准）；此处简化
-                            // 与 Go 对齐：undefined 值 → "null"（实测行为一致）
-                            match v {
-                                Value::Undefined => out.push_str("null"),
-                                v => self.json_write(out, *v, seen),
-                            }
+                            self.json_write(out, *v, seen);
                         }
                         out.push('}');
                         seen.pop();

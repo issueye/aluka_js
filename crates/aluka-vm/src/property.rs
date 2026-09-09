@@ -6,7 +6,6 @@ use crate::jit_helpers::{from_vm_value, to_vm_value};
 use crate::ops::to_number;
 use crate::value::Value;
 use aluka_core::ObjectRef;
-use std::collections::HashMap;
 
 /// flags 规范序（JS canonical order 子集）。
 fn canonical_regexp_flags(flags: &str) -> String {
@@ -31,7 +30,9 @@ impl Vm {
                 let slot = self.shape_table.shape(*shape)?.lookup(key)?;
                 slots.get(slot).map(|&b| to_vm_value(b))
             }
-            OrdinaryProps::Dict { properties } => properties.get(key).copied(),
+            OrdinaryProps::Dict { properties } => {
+                properties.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+            }
         }
     }
 
@@ -49,9 +50,9 @@ impl Vm {
         match self.heap.get(idx) {
             Some(HeapObject::Ordinary { props, .. }) => match props {
                 OrdinaryProps::Dict { properties } => properties
-                    .keys()
-                    .find(|k| k.eq_ignore_ascii_case(key))
-                    .cloned(),
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    .map(|(k, _)| k.clone()),
                 OrdinaryProps::Shape { shape, .. } => self
                     .shape_table
                     .shape(*shape)?
@@ -63,8 +64,8 @@ impl Vm {
         }
     }
 
-    /// 枚举 Ordinary 对象自有属性（键 + 值，快速模式为槽位序 = 插入序；
-    /// 字典模式为哈希序；均跳过删除项；访问器键并入，值取访问器函数）。
+    /// 枚举 Ordinary 对象自有属性（键 + 值，快速/字典两模式均保插入序；
+    /// 跳过删除项；访问器键并入，值取访问器函数）。
     pub(crate) fn own_entries(&self, idx: usize) -> Vec<(String, Value)> {
         let Some(HeapObject::Ordinary {
             props,
@@ -99,7 +100,7 @@ impl Vm {
             }
             OrdinaryProps::Dict { properties } => properties
                 .iter()
-                .filter(|(k, _)| !deleted.contains(*k) && !non_enum.contains(*k))
+                .filter(|(k, _)| !deleted.contains(k) && !non_enum.contains(k))
                 .map(|(k, v)| (k.clone(), *v))
                 .collect(),
         };
@@ -119,9 +120,12 @@ impl Vm {
         out
     }
 
-    /// 删除 Ordinary 对象的自有属性（快速模式清槽 + 记入删除集 + 代数递增，
-    /// 字典模式直接移除；shape 语义与哈希语义统一为「删除后不可见」）。
-    /// 非 Ordinary 或无该属性时为无操作。Proxy 对象经 deleteProperty trap 派发。
+    /// 删除 Ordinary 对象的自有属性。
+    ///
+    /// **V8 键序语义**：`delete` 使快速属性对象**慢化为字典模式**（与 V8 一致
+    /// ——快属性删除会让隐藏类失效），保证「删除后重加」的键落在键序**末尾**
+    /// （`Object.keys` / `JSON.stringify` 顺序对齐 Node 22）。字典模式直接
+    /// 移除实体。非 Ordinary 或无该属性时为无操作。Proxy 经 trap 派发。
     pub(crate) fn delete_property(&mut self, obj: Value, key: &str) {
         // Proxy 对象：经 deleteProperty trap 派发（假值抛 TypeError 由 trap 层处理）
         if let Value::Object(r) = obj {
@@ -140,16 +144,37 @@ impl Vm {
             {
                 match props {
                     OrdinaryProps::Shape { shape, slots } => {
-                        if let Some(slot) =
-                            self.shape_table.shape(*shape).and_then(|s| s.lookup(key))
-                        {
-                            if slot < slots.len() {
-                                slots[slot] = aluka_jit::valbox::UNDEFINED;
+                        let hit = self
+                            .shape_table
+                            .shape(*shape)
+                            .and_then(|s| s.lookup(key))
+                            .is_some_and(|slot| slot < slots.len());
+                        if hit {
+                            // 命中 → 整体迁移字典模式（跳过本键与既有删除键；
+                            // 槽位值保插入序；重加键将由 set_property append）
+                            let slot_vals: Vec<Value> =
+                                slots.iter().map(|&b| to_vm_value(b)).collect();
+                            let names: Vec<String> = self
+                                .shape_table
+                                .shape(*shape)
+                                .map(|s| s.names().map(str::to_owned).collect())
+                                .unwrap_or_default();
+                            let mut properties: Vec<(String, Value)> =
+                                Vec::with_capacity(names.len());
+                            for (i, name) in names.iter().enumerate() {
+                                if name == key || deleted.contains(name) {
+                                    continue;
+                                }
+                                properties.push((
+                                    name.clone(),
+                                    slot_vals.get(i).copied().unwrap_or(Value::Undefined),
+                                ));
                             }
+                            *props = OrdinaryProps::Dict { properties };
                         }
                     }
                     OrdinaryProps::Dict { properties } => {
-                        properties.remove(key);
+                        properties.retain(|(k, _)| k != key);
                     }
                 }
                 deleted.insert(key.to_owned());
@@ -508,9 +533,15 @@ impl Vm {
                             proto,
                             ..
                         }) => {
-                            let names = Some(properties.keys().cloned().collect::<Vec<_>>());
-                            let vals = properties.values().copied().collect::<Vec<Value>>();
-                            (names, Some(vals), *proto)
+                            let names = Some(
+                                properties
+                                    .iter()
+                                    .map(|(k, _)| k.clone())
+                                    .collect::<Vec<_>>(),
+                            );
+                            let vals =
+                                Some(properties.iter().map(|(_, v)| *v).collect::<Vec<Value>>());
+                            (names, vals, *proto)
                         }
                         _ => (None, None, None),
                     };
@@ -707,48 +738,57 @@ impl Vm {
                 }
                 match &mut self.heap[idx] {
                     HeapObject::Ordinary { props, deleted, .. } => {
-                        // 曾删除的 key：清除删除标记后直写（快速模式 shape 仍保留槽位）
-                        if !deleted.is_empty() {
-                            deleted.remove(key);
-                        }
+                        // 曾删除的 key：清除删除标记（删除本身已把 shape 慢化为
+                        // dict 模式——见 delete_property；此处 dict 分支原位更新/追加）
+                        deleted.remove(key);
                         let next: Option<OrdinaryProps> = match props {
                             OrdinaryProps::Shape { shape, slots } => {
-                                match self.shape_table.shape(*shape).and_then(|s| s.lookup(key)) {
-                                    Some(slot) if slot < slots.len() => {
-                                        slots[slot] = from_vm_value(val);
-                                        None
-                                    }
-                                    // 新属性且已达字典阈值：整体转字典模式，
-                                    // 避免 shape transition 树对海量键 O(n²) 克隆
-                                    _ if slots.len() >= crate::heap::DICT_THRESHOLD => {
-                                        let mut properties =
-                                            HashMap::with_capacity(slots.len() + 1);
-                                        if let Some(s) = self.shape_table.shape(*shape) {
-                                            for (i, name) in s.names().enumerate() {
-                                                // 盒 → VM Value 物化进字典
-                                                properties.insert(
-                                                    name.to_owned(),
-                                                    slots
-                                                        .get(i)
-                                                        .map(|&b| to_vm_value(b))
-                                                        .unwrap_or(Value::Undefined),
-                                                );
+                                // 未删除过的新属性/命中：原位写槽或派生追加
+                                if let Some(slot) = self
+                                    .shape_table
+                                    .shape(*shape)
+                                    .and_then(|s| s.lookup(key))
+                                    .filter(|&slot| slot < slots.len())
+                                {
+                                    slots[slot] = from_vm_value(val);
+                                    None
+                                } else if slots.len() >= crate::heap::DICT_THRESHOLD {
+                                    // 达字典阈值：整体转字典模式（避免 shape 树 O(n²)
+                                    // 克隆）；已删除键不迁入（重加按 append 语义）
+                                    let mut properties: Vec<(String, Value)> =
+                                        Vec::with_capacity(slots.len() + 1);
+                                    if let Some(s) = self.shape_table.shape(*shape) {
+                                        for (i, name) in s.names().enumerate() {
+                                            if deleted.contains(name) {
+                                                continue;
                                             }
+                                            // 盒 → VM Value 物化进字典（保形状序 = 插入序）
+                                            properties.push((
+                                                name.to_owned(),
+                                                slots
+                                                    .get(i)
+                                                    .map(|&b| to_vm_value(b))
+                                                    .unwrap_or(Value::Undefined),
+                                            ));
                                         }
-                                        properties.insert(key.to_owned(), val);
-                                        Some(OrdinaryProps::Dict { properties })
                                     }
-                                    _ => {
-                                        // 新属性：沿 shape transition 派生子隐藏类，追加槽位
-                                        let new_shape = self.shape_table.transition(*shape, key);
-                                        slots.push(from_vm_value(val));
-                                        *shape = new_shape;
-                                        None
-                                    }
+                                    properties.push((key.to_owned(), val));
+                                    Some(OrdinaryProps::Dict { properties })
+                                } else {
+                                    // 沿 shape transition 派生子隐藏类，追加槽位
+                                    let new_shape = self.shape_table.transition(*shape, key);
+                                    slots.push(from_vm_value(val));
+                                    *shape = new_shape;
+                                    None
                                 }
                             }
                             OrdinaryProps::Dict { properties } => {
-                                properties.insert(key.to_owned(), val);
+                                // 有序语义：既有键原位更新（保插入位置），否则追加
+                                if let Some(slot) = properties.iter_mut().find(|(k, _)| *k == key) {
+                                    slot.1 = val;
+                                } else {
+                                    properties.push((key.to_owned(), val));
+                                }
                                 None
                             }
                         };
@@ -940,9 +980,9 @@ impl Vm {
                             })
                             .unwrap_or_default(),
                         OrdinaryProps::Dict { properties } => properties
-                            .keys()
-                            .filter(|k| !deleted.contains(*k) && !non_enum.contains(*k))
-                            .cloned()
+                            .iter()
+                            .filter(|(k, _)| !deleted.contains(k) && !non_enum.contains(k))
+                            .map(|(k, _)| k.clone())
                             .collect(),
                     };
                     (ks, *proto)
