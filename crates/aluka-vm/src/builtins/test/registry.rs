@@ -23,6 +23,8 @@ pub struct TestNode {
     pub todo: bool,
     /// only 标记（套件 only 模式下过滤用）。
     pub only: bool,
+    /// 并发执行标记（concurrency 选项）。
+    pub concurrent: bool,
 }
 
 /// 套件内子项（按注册顺序执行——Node 语义）。
@@ -61,6 +63,8 @@ pub struct SuiteNode {
     pub todo: bool,
     /// 套件 only。
     pub only: bool,
+    /// 套件直接子用例并发执行（concurrency 选项）。
+    pub concurrent: bool,
 }
 
 /// suite 树注册表。
@@ -96,6 +100,7 @@ pub fn reset() {
                 skip: false,
                 todo: false,
                 only: false,
+                concurrent: false,
             }],
             tests: Vec::new(),
             stack: vec![0],
@@ -178,6 +183,8 @@ pub struct TestOpts {
     pub todo: bool,
     /// 仅运行。
     pub only: bool,
+    /// 并发执行（M5.4：concurrency 选项，布尔或 ≥2 数字）。
+    pub concurrency: bool,
 }
 
 /// 从 options 对象读取 skip/todo/only（对齐 Go `applyTestOpts`）。
@@ -190,6 +197,12 @@ pub fn apply_test_opts(vm: &mut crate::interpreter::Vm, o: Value, opts: &mut Tes
     }
     if let Ok(Value::Boolean(b)) = vm.get_property(o, "only") {
         opts.only = b;
+    }
+    // concurrency：true 或 ≥2 的数字均视为并发
+    match vm.get_property(o, "concurrency") {
+        Ok(Value::Boolean(b)) if b => opts.concurrency = true,
+        Ok(Value::Number(n)) if n >= 2.0 => opts.concurrency = true,
+        _ => {}
     }
 }
 

@@ -368,6 +368,52 @@ fn test_reporters_surface_e2e_matches_go() {
     );
 }
 
+/// M5.4：describe concurrency——并发批内各 async 用例体先于任何用例完成
+/// 即全部启动（batch-start 语义：长用例在飞期间短用例已开始）。
+#[test]
+fn test_concurrency_batch_starts_all_before_any_settles_e2e() {
+    let work = work_dir("test_conc");
+    std::fs::write(
+        work.join("probe.js"),
+        concat!(
+            "const t = require(\"node:test\");
+",
+            "const seq = [];
+",
+            "const sleeper = (ms) => new Promise((r) => setTimeout(r, ms));
+",
+            "t.describe(\"conc\", { concurrency: true }, () => {
+",
+            "  t.test(\"a\", async () => { seq.push(\"a-start\"); await sleeper(40); seq.push(\"a-end\"); });
+",
+            "  t.test(\"b\", async () => { seq.push(\"b-start\"); await sleeper(5); seq.push(\"b-end\"); });
+",
+            "});
+",
+            // 顺序对照组：无 concurrency 时 b 的启动发生在 a 结束后。
+            "t.describe(\"seqd\", () => {
+",
+            "  t.test(\"s1\", async () => { seq.push(\"s1-start\"); await sleeper(2); seq.push(\"s1-end\"); });
+",
+            "  t.test(\"s2\", async () => { seq.push(\"s2-start\"); await sleeper(2); seq.push(\"s2-end\"); });
+",
+            "});
+",
+            "t.test(\"probe\", () => console.log(\"SEQ> \" + seq.join(\",\")));
+",
+            "t.run();
+",
+        ),
+    )
+    .unwrap();
+    let out = common::assert_e2e_matches_go(&work, "probe.js");
+    // 并发批：b-start 在 a-end 之前（两体在飞）——顺序模式不可能出现。
+    assert!(
+        out.contains("SEQ> a-start,b-start"),
+        "并发批应全部启动后才 settle，实际: {out:?}"
+    );
+}
+
 /// test 运行模型（Go `aluka run` 语义）：注册不产生输出，仅 `run()` 在
 /// 事件循环存活时派发。
 #[test]

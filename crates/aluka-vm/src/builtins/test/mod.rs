@@ -195,6 +195,7 @@ fn register_it(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         skip: opts.skip,
         todo: opts.todo,
         only: opts.only,
+        concurrent: opts.concurrency,
     });
     Ok(Value::Undefined)
 }
@@ -218,6 +219,7 @@ fn register_describe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         skip: opts.skip,
         todo: opts.todo,
         only: opts.only,
+        concurrent: opts.concurrency,
     });
     // 同步执行 suite 函数体；注册期错误按 Go `ReportUncaught` 语义吞掉
     // （进程继续，剩余注册与运行不受影响）。
@@ -255,6 +257,7 @@ fn register_flagged(vm: &mut Vm, args: &[Value], flag: Flag) -> Result<Value, Vm
         skip: matches!(flag, Flag::Skip) || opts.skip,
         todo: matches!(flag, Flag::Todo) || opts.todo,
         only: matches!(flag, Flag::Only) || opts.only,
+        concurrent: opts.concurrency,
     });
     Ok(Value::Undefined)
 }

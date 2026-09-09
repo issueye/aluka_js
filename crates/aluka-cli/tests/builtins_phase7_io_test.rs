@@ -133,7 +133,7 @@ fn sqlite_file_db_reopen_e2e_matches_go() {
 /// 唯一约束等错误路径。
 #[test]
 fn sqlite_bigint_blob_errors_e2e_matches_go() {
-    let work = work_dir("sqlite_edges");
+    let work = work_dir("sqlite_edges_ta");
     std::fs::write(
         work.join("probe.js"),
         concat!(
@@ -143,7 +143,7 @@ fn sqlite_bigint_blob_errors_e2e_matches_go() {
             "db.exec(\"CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)\");\n",
             "db.prepare(\"INSERT INTO blobs (data) VALUES (?)\").run(Buffer.from([1, 2, 3, 250]));\n",
             "const r = db.prepare(\"SELECT data FROM blobs\").get();\n",
-            "console.log(\"blob:\", typeof r.data, typeof r.data.toString, r.data.toString(\"hex\"));\n",
+            "console.log(\"blob:\", typeof r.data, Buffer.isBuffer(r.data), [r.data[0], r.data[1], r.data[2], r.data[3]]);\n",
             "db.prepare(\"INSERT INTO blobs (data) VALUES (?)\").run(10n);\n",
             "const nums = db.prepare(\"SELECT id, typeof(data) AS t FROM blobs\").all();\n",
             "console.log(\"types:\", nums.map(x => x.id + \":\" + x.t).join(\" | \"));\n",
@@ -161,7 +161,8 @@ fn sqlite_bigint_blob_errors_e2e_matches_go() {
     )
     .unwrap();
     let out = common::assert_e2e_matches_go(&work, "probe.js");
-    assert!(out.contains("blob: object function 010203fa"));
+    // M5.3 对齐 Node 22：BLOB 读出为纯 Uint8Array（非 Buffer），字节透传
+    assert!(out.contains("blob: object false [ 1, 2, 3, 250 ]"));
     assert!(out.contains("bigint read: bigint 1"));
     assert!(out.contains(
         "bool: TypeError node:sqlite: provided value cannot be bound to SQLite parameter"

@@ -1,4 +1,4 @@
-﻿//! node:test 执行器（Phase 8）：suite/用例调度、skip/only 过滤、hook 顺序、
+//! node:test 执行器（Phase 8）：suite/用例调度、skip/only 过滤、hook 顺序、
 //! 子测试统计与结果收集。
 //!
 //! 逐函数移植 Node.js 22 LTS 标准（`nodetest/test_runner.go`）：按注册顺序执行
@@ -80,19 +80,44 @@ fn run_suite(
         }
     }
 
-    // 注册顺序执行 children（tests 与 suites 混合）。
+    // 注册顺序执行 children（tests 与 suites 混合）；concurrency 标记的
+    // 连续用例组成并发批（M5.4：async 体并发启动、事件循环交错驱动）。
     let children: Vec<Child> = suite.children.clone();
-    for child in children {
-        match child {
+    let suite_concurrent = suite.concurrent;
+    let mut idx = 0usize;
+    while idx < children.len() {
+        match children[idx] {
             Child::Suite(sub) => {
                 run_suite(vm, reg, sub, &pfx, results, skip, todo, only);
+                idx += 1;
             }
             Child::Test(t) => {
-                let name = reg.tests[t].name.clone();
-                let full = join_name(&pfx, &name);
-                if let Some(mut rs) = run_test_case(vm, reg, suite_idx, t, &full, skip, todo, only)
-                {
-                    results.append(&mut rs);
+                let concurrent = suite_concurrent || reg.tests[t].concurrent;
+                if !concurrent {
+                    let name = reg.tests[t].name.clone();
+                    let full = join_name(&pfx, &name);
+                    if let Some(mut rs) =
+                        run_test_case(vm, reg, suite_idx, t, &full, skip, todo, only)
+                    {
+                        results.append(&mut rs);
+                    }
+                    idx += 1;
+                } else {
+                    let mut batch = Vec::new();
+                    while idx < children.len() {
+                        match children[idx] {
+                            Child::Test(t2) if suite_concurrent || reg.tests[t2].concurrent => {
+                                batch.push(t2);
+                                idx += 1;
+                            }
+                            _ => break,
+                        }
+                    }
+                    if let Some(mut rs) =
+                        run_concurrent_batch(vm, reg, suite_idx, &batch, skip, todo, only)
+                    {
+                        results.append(&mut rs);
+                    }
                 }
             }
         }
@@ -521,4 +546,246 @@ fn invoke_sub_fn(vm: &mut Vm, fn_val: Value) -> Result<(), VmError> {
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// M5.4：并发批执行（concurrency 选项）
+// ---------------------------------------------------------------------------
+
+/// 单个并发用例的开始态：start 阶段登记，settle 后收尾。
+struct PendingTest {
+    /// 套件链（根 → 叶）。
+    chain: Vec<usize>,
+    /// 运行状态 id（plan/子测试/统计作用域）。
+    state_id: u64,
+    /// async 体返回的 promise（同步体为 None）。
+    promise: Option<Value>,
+    /// 同步抛错（start 阶段 invoke 直接 Err）。
+    sync_err: Option<VmError>,
+    /// 收尾结果（settle 后填）。
+    res: TestResult,
+}
+
+/// 并发执行一批用例：逐个 start（beforeEach + 调用函数体，async 体在首个
+/// await 处挂起），随后事件循环交错驱动直至全部落定，再逐个收尾
+/// （plan 校验 + 子测试 + afterEach）。返回整批结果（顺序 = 注册顺序）。
+#[allow(clippy::too_many_arguments)]
+fn run_concurrent_batch(
+    vm: &mut Vm,
+    reg: &Registry,
+    suite_idx: usize,
+    batch: &[usize],
+    suite_skip: bool,
+    suite_todo: bool,
+    only: bool,
+) -> Option<Vec<TestResult>> {
+    // 收集套件链（根 → 叶）。
+    let mut chain: Vec<usize> = Vec::new();
+    let mut cur = Some(suite_idx);
+    while let Some(idx) = cur {
+        chain.push(idx);
+        cur = reg.suites[idx].parent;
+    }
+    chain.reverse();
+
+    let mut out: Vec<TestResult> = Vec::new();
+    let mut pending: Vec<PendingTest> = Vec::new();
+
+    // ---- start 阶段：按注册顺序启动全部用例 ----
+    for &test_idx in batch {
+        let tc = reg.tests[test_idx].clone();
+        if only && !tc.only {
+            continue;
+        }
+        let full = suite_test_full_name(reg, suite_idx, &tc.name);
+        if suite_skip || tc.skip {
+            out.push(TestResult {
+                name: tc.name.clone(),
+                full_name: full,
+                passed: true,
+                skipped: true,
+                todo: false,
+                cancelled: false,
+                error: None,
+            });
+            continue;
+        }
+        let is_todo = tc.todo || suite_todo;
+        let mut res = TestResult {
+            name: tc.name.clone(),
+            full_name: full.clone(),
+            passed: true,
+            skipped: false,
+            todo: is_todo,
+            cancelled: false,
+            error: None,
+        };
+        // beforeEach（外层 → 内层）：失败 → 该用例标失败并跳过函数体。
+        let mut hook_err: Option<String> = None;
+        for &s in &chain {
+            let hooks: Vec<Value> = reg.suites[s].before_each.clone();
+            for h in hooks {
+                if let Err(e) = invoke_hook_fn(vm, h) {
+                    hook_err = Some(format!("beforeEach: {}", error_message(vm, &e)));
+                    res.passed = false;
+                    res.error = hook_err.clone();
+                    break;
+                }
+            }
+            if hook_err.is_some() {
+                break;
+            }
+        }
+        if hook_err.is_some() {
+            out.push(res);
+            continue;
+        }
+
+        // 调用函数体（t 参数）；async 体不在此排空——promise 挂起交由
+        // settle 阶段交错驱动（并发语义核心）。
+        let state_id = context::new_run_state(&tc.name, &full, tc.fn_val);
+        let t = context::new_test_context(vm);
+        let call_result = vm.invoke_callable(tc.fn_val, Value::Undefined, &[t]);
+        let (promise, sync_err) = match call_result {
+            Ok(v) if is_promise(vm, v) => (Some(v), None),
+            Ok(_) => (None, None),
+            Err(e) => (None, Some(e)),
+        };
+        pending.push(PendingTest {
+            chain: chain.clone(),
+            state_id,
+            promise,
+            sync_err,
+            res,
+        });
+    }
+
+    // ---- settle 阶段：微任务/宏任务交替排空，直至全部 promise 落定 ----
+    //（调用方 run_suite 返回 Option；错误在此转标记，防 `?` 型不匹配）
+    let mut settle_err: Option<VmError> = None;
+    let started = std::time::Instant::now();
+    loop {
+        let all_settled = pending
+            .iter()
+            .all(|p| p.promise.is_none_or(|pv| !promise_pending(vm, pv)));
+        if all_settled {
+            break;
+        }
+        if let Err(e) = vm.drain_microtasks() {
+            settle_err = Some(e);
+            break;
+        }
+        let all_settled = pending
+            .iter()
+            .all(|p| p.promise.is_none_or(|pv| !promise_pending(vm, pv)));
+        if all_settled {
+            break;
+        }
+        if !vm.macro_tasks.is_empty() || vm.has_active_event_sources() {
+            if let Err(e) = vm.drain_macro_tasks() {
+                settle_err = Some(e);
+                break;
+            }
+        } else if vm.microtask_queue.is_empty() {
+            // 无驱动工作却未落定（宿主 promise 永不兑现）：防自旋超时
+            if started.elapsed() > std::time::Duration::from_secs(120) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    if let Some(e) = settle_err {
+        for p in &mut pending {
+            p.res.passed = false;
+            p.res.error = Some(error_message(vm, &e));
+        }
+    }
+
+    // ---- 收尾阶段：按注册顺序逐个固化结果 ----
+    for mut p in pending {
+        let snapshot: InvokeSnapshot = context::scoped_current(p.state_id, || {
+            // t.mock 的 spy 在测试结束时自动还原（Node 语义）。
+            context::restore_current_mocks(vm);
+            if let Some(err) = p.sync_err.clone() {
+                return InvokeSnapshot::Error(err);
+            }
+            if let Some(pv) = p.promise {
+                if promise_rejected(vm, pv) {
+                    let msg = rejection_message(vm, pv);
+                    return InvokeSnapshot::Error(VmError::Thrown(Value::Object(
+                        vm.alloc_string(msg),
+                    )));
+                }
+            }
+            InvokeSnapshot::Done(context::plan_error(vm), context::current_sub_results())
+        });
+        context::drop_state(p.state_id);
+        let (mut invoke_err, plan_err, sub_results) = match snapshot {
+            InvokeSnapshot::Error(e) => (Some(e), None, Vec::new()),
+            InvokeSnapshot::Cancelled(_) => (None, None, Vec::new()),
+            InvokeSnapshot::Done(pe, sub_results) => (None, pe, sub_results),
+        };
+        if let Some(e) = invoke_err.take() {
+            if is_skip_error(vm, &e) {
+                p.res.skipped = true;
+            } else {
+                p.res.passed = false;
+                p.res.error = Some(error_message(vm, &e));
+            }
+        } else if let Some(pe) = plan_err {
+            p.res.passed = false;
+            p.res.error = Some(error_message(vm, &pe));
+        }
+        if p.res.passed && !p.res.skipped {
+            for sr in &sub_results {
+                if !sr.passed {
+                    p.res.passed = false;
+                    if p.res.error.is_none() {
+                        let err = sr.error.clone().unwrap_or_default();
+                        p.res.error = Some(format!("{}: {err}", sr.full_name));
+                    }
+                }
+            }
+        }
+        // afterEach（内层 → 外层）。
+        for &s in p.chain.iter().rev() {
+            let hooks: Vec<Value> = reg.suites[s].after_each.clone();
+            for h in hooks {
+                if let Err(e) = invoke_hook_fn(vm, h) {
+                    p.res.passed = false;
+                    p.res.error = Some(format!("afterEach: {}", error_message(vm, &e)));
+                    break;
+                }
+            }
+        }
+        let mut block = vec![p.res];
+        block.extend(sub_results);
+        out.extend(block);
+    }
+    Some(out)
+}
+
+/// 套件内用例的完整名（"root > suite > case"）。
+fn suite_test_full_name(reg: &Registry, suite_idx: usize, name: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut cur = Some(suite_idx);
+    while let Some(idx) = cur {
+        parts.push(reg.suites[idx].name.clone());
+        cur = reg.suites[idx].parent;
+    }
+    parts.reverse();
+    let mut pfx = String::new();
+    for part in parts {
+        pfx = join_name(&pfx, &part);
+    }
+    join_name(&pfx, name)
+}
+
+/// promise 是否仍挂起（settle 判定）。
+fn promise_pending(vm: &Vm, pv: Value) -> bool {
+    matches!(pv, Value::Object(r)
+    if matches!(
+        vm.heap.get(r.0 as usize),
+        Some(HeapObject::Promise { pending: true, .. })
+    ))
 }
