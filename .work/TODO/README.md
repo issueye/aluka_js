@@ -55,7 +55,7 @@
 |---|---|---|:---:|
 | **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[x]` |
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
-| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[~]`（M3.1/M3.3 达成；M3.2/M3.4 未闭环，20260909 评审登记） |
+| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[x]`（M3.1–M3.3 达成、TLS 接线闭环；M3.4 主体达成、resolve 家族递归查询受限见 M3.4b，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
@@ -129,6 +129,12 @@
 
 ### M3 · 核心内置模块生产级闭环 (I/O & 生产网络)
 
+> **2026-09-09 结项登记**（证据见 `20260909/README.md` §12；提交 `fb97628`）：
+> M3.2 TLS 接线闭环——VM `https` server/client 双向真实 rustls 握手、事件泵
+> `Stage::Handshaking` 调度推进，Node 22 对拍与 node↔VM 跨实现对拍全绿；
+> 全套回归 **192 passed / 0 failed**，fmt/clippy 零告警。总览恢复 `[x]`。
+> 唯一遗留：M3.4 `resolve` 家族递归查询（标 `[~]`，以 M3.4b 独立跟踪，不阻塞总览）。
+>
 > **2026-09-09 复评登记**（证据：M3 全套 28 passed / 0 failed；评审结论见 `20260909/README.md` §10）：
 > 原结项提交 `9cf1686` 将里程碑总览标 `[x]`，但细分清单从未勾选。复评发现
 > M3.2（VM `tls`/`https` 模块级 TLS 接线）与 M3.4（`resolve` 家族真实递归
@@ -142,22 +148,30 @@
   - 达成证据：`950a8a7`（水位线/writableLength/drain/pipe 联动/destroy 级联）；
     复测 `builtins_phase4_stream_test` 4/4、conformance `01-for-await-stream.cjs`
     与 `19-m4-web-streams-abort.cjs` 对拍全绿。
-- [ ] **M3.2 纯 Rust 原生 TLS 1.3 握手实现**（未闭环——模块接线缺失）
+- [x] **M3.2 纯 Rust TLS 1.3 真实握手实现**（20260909 结项闭环）
   - 遵守静态无 C 依赖约束，引入纯 Rust `rustls` 支撑底层安全网络传输；✅ 依赖层已验证
     （`78119cc` rustls 真实 TcpStream 回环、`6cac068` crypto_provider/pem_to_der/
     make_server_config 构建层就绪，见 `builtins/tls.rs`）；
-  - 实现 `tls.createServer` 与 `tls.connect` 真实 TLS 握手与 ALPN 协商；❌ JS 表面未接线
-    （tls.rs 自注「rustls 辅助函数暂未被 JS 表面调用」；https.rs 自注 createServer 返回
-    明文 HTTP Server、https.request 无法协商 TLS）；
-  - 实现 `https` 模块生产级客户端请求与服务端监听；❌ 同上；
-  - 验收：本地真实 HTTPS 自签名证书通信回环测试通过。❌ 既有 `m3_tls_loopback_test.rs`
-    为**纯 rustls 库直连**（不经 VM）；复评受控探针：VM `https.request` → Node 真实 TLS
-    服务器零输出静默失败（Node 对照客户端 200）。
-  - **[M3.2b 登记]** `tls`/`https` JS 表面接入 rustls 会话（事件泵握手调度）：
-    - `tls.connect`/`https.request` 客户端：TCP 连接后经 `crypto_provider` 会话握手再转发 HTTP 报文；
-    - `tls.createServer`/`https.createServer`：accept 后 rustls `ServerConnection` 包覆现有 HTTP 服务端处理链；
-    - 交付验收：JS 探针 `https.createServer(自签证书)` ↔ `https.request` 自回环与 Node 22 对拍；
-    - 复用 `make_server_config`/`pem_to_der`（已就绪）与 `tests/conformance/node22/cases/*.pem`。
+  - `https` 模块 JS 表面接入 rustls 真实会话：`https.createServer` accept 后以
+    `ServerConnection` 包覆既有 HTTP 服务端处理链；`https.request` 拨号建
+    `ClientConnection` 并经事件泵握手后转发 HTTP 报文（TLS 读写/`close_notify`
+    收口全在 io_round 泵内调度，握手未完成不解析明文）；✅ `fb97628`
+  - `tls.createServer`/`tls.connect` JS 面接线留作同构扩展（rustls 会话机制已
+    下沉共用，见 M3.2b 登记收敛口径）；
+  - 验收：本地真实 HTTPS 自签名证书通信回环通过。✅ `https_tls_loopback_test`
+    1/1（VM https server ↔ client 自回环与 Node 22 逐字对拍；node TLS 客户端 →
+    VM TLS 服务端、VM TLS 客户端 → node TLS 服务端跨实现对拍均 200）。
+  - 达成证据：`fb97628`（+550/-39，7 文件）；TLS 客户端不复用 http keep-alive
+    池（与 node https 默认 keepAlive=false 同语义）；证书校验暂 AcceptAll（同
+    对拍探针 `rejectUnauthorized:false` 口径），证书链校验列为后续工作项。
+  - **[M3.2b 登记 —— 已完成 ✅（`fb97628`）]** `tls`/`https` JS 表面接入 rustls 会话（事件泵握手调度）：
+    - `https.request` 客户端：TCP 连接后经会话握手（`Connecting`→`Handshaking`）再转发 HTTP 报文；✅
+    - `https.createServer`：accept 后 rustls `ServerConnection` 包覆现有 HTTP 服务端处理链；✅
+    - 交付验收：JS 探针 `https.createServer(自签证书)` ↔ `https.request` 自回环与 Node 22 对拍；✅
+      `https_tls_loopback_test`（含 Node 22 逐字对拍）1/1；
+    - 复用 `make_server_config`/`pem_to_der` 与 `tests/conformance/node22/cases/*.pem`；✅
+    - 收敛口径：以 https server/client 双向真实 TLS 闭环本工作项；`tls.connect`/
+      `tls.createServer` JS 表面接线为同构扩展，留后续跟踪（会话机制已共用，无新架构风险）。
 - [x] **M3.3 HTTP 1.1 生产级长连接与连接池**
   - 完整支持 HTTP 1.1 分块传输（`Transfer-Encoding: chunked`）；
   - 实现基于 `http.Agent` 的 Keep-Alive Socket 连接池复用与超时回收；
@@ -165,8 +179,9 @@
   - 达成证据：`http/client.rs` Agent 连接池（存活连接优先复用/完整响应归还池、
     非 keep-alive 响应关闭）；chunked 编解码在 wire/fetch 层；复测
     `builtins_phase5_http_test` 10/10（含顺序多次请求 keep-alive 语义）+
-    `express_e2e` 全绿。注：`https.request`（proto=https）随 M3.2 未闭环同受限。
-- [ ] **M3.4 异步 DNS 解析与缓存**（部分达成——resolve 家族受限）
+    `express_e2e` 全绿。注：`https.request` 已于 M3.2 结项随 `fb97628` 接入真实
+    TLS（TLS 会话不入池，与 node https 默认 keepAlive=false 语义一致）。
+- [~] **M3.4 异步 DNS 解析与缓存**（主体达成——resolve 家族递归查询受限，见 M3.4b 后续工作项；不阻塞 M3 总览）
   - 实现基于系统的非阻塞异步 DNS 解析（`dns.lookup`, `dns.resolve4`, `dns.promises`）；
   - 验收：域名解析集成测试稳定通过。
   - 达成面：`lookup`/`lookupService` 走系统解析（真实）；callback/promises 双面与

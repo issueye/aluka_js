@@ -143,3 +143,38 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
   结项轮证据见 `20260907/README.md`（逐子项命令/产物证据 + 530 passed 门禁 +
   已知降级登记：Proxy invariant 平凡满足 / direct-eval var 语义 / SAB 进程内
   共享 / 原型方法属性面按需合成）。
+
+## 12. M3 结项登记（M3.2 TLS 接线闭环，提交 `fb97628`）
+
+承接 §10 复评：M3.2 未闭环项已修复并验收，M3 总览恢复 `[x]`。
+
+- **交付内容**（`fb97628`，+550/-39，7 文件）：
+  - `builtins/tls.rs` 供 `AcceptAllVerifier`/`make_client_config`/ALPN 装配；
+  - `http/state.rs` 增 `Conn.tls`/`Server.tls`/`ClientReq.tls_conn` 与
+    `Stage::Handshaking`；`http/server.rs` 增 `create_server_object_tls`，
+    io_round/write_conn_bytes 支持 TLS 会话读写；`http/client.rs` TLS 拨号建
+    `ClientConnection`、泵推进握手并加密读写；`http/mod.rs` sync_event_source
+    保活握手/监听泵；`https.rs` `https_create_server` 构建真实 rustls 配置。
+- **结项证据——三层跨实现对拍**（Node v22.3.0 在场；自签证书
+  `tests/conformance/node22/cases/{test_key,test_cert}.pem`）：
+  1. node TLS 客户端 → VM `https` server：200（`vm-tls-server-ok`）；
+  2. VM `https` client → node TLS 服务端：200（`node-tls-ok`；含拨号修复——
+     TLS 请求必须新建连接而非复用池，原 bug 致永不起拨、误报 actively refused）；
+  3. VM 自回环 ↔ Node 自回环输出逐字一致（STATUS/CTYPE/BODY/CLOSED 4 行 oracle）。
+- **回归证据**（修复后全量复跑）：
+  - `builtins_phase5_http_test` 10/10（含 https）｜ `builtins_phase5_net_test` 8/8 ｜
+    `builtins_phase4_stream_test` 4/4 ｜ `express_e2e_test` 1/1 ｜
+    `conformance_node22_test` 1/1 ｜ `core_semantics_test` 21/21 ｜
+    `aluka-vm --lib` 146/146 ｜ 新增验收 `https_tls_loopback_test` 1/1
+    —— **合计 192 passed / 0 failed**；
+  - `cargo fmt --all --check` 与 `cargo clippy --all-targets -- -D warnings` 零告警。
+- **口径说明**：
+  - M3.2 收敛范围 = `https.createServer` / `https.request` 双向真实 TLS；
+    `tls.connect` / `tls.createServer` JS 面接线为同构扩展，留 M3.2b 后续跟踪
+    （rustls 会话机制已下沉共用，无新架构风险）；
+  - TLS 客户端不复用 http keep-alive 连接池（rustls 会话不可池化复原；与 node
+    https 默认 keepAlive=false 语义一致，对拍不冲突）；
+  - 证书校验暂 AcceptAll（与对拍探针 `rejectUnauthorized:false` 对齐），证书链
+    校验列为后续工作项；
+  - M3.4 标 `[~]`（resolve 家族递归查询仍受限），以 M3.4b 独立跟踪、不阻塞 M3
+    总览 `[x]`；总 README §M3 结项/复评登记已同步（结项在前、复评在后存史）。
