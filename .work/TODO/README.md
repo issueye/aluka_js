@@ -57,7 +57,7 @@
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
-| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
+| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3/M5.4 未闭环，20260909 评审登记见 §M5） |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
@@ -242,22 +242,53 @@
 ---
 
 ### M5 · 多线程并发与系统级扩展
-- [ ] **M5.1 `worker_threads` 跨物理线程支持**
-  - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；
-  - 实现 `MessageChannel`、`MessagePort` 与结构化克隆传值；
-  - 验收：多 Worker 并发计算与消息通信用例对拍全绿。
-- [ ] **M5.2 `cluster` 进程池模型**
-  - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；
-  - 验收：多进程集群 HTTP 端口共享测试通过。
-- [ ] **M5.3 `node:sqlite` 生产级支持**
-  - 规范实现 `DatabaseSync` 类与 SQL 语句预编译 `StatementSync`；
-  - 支持事务控制（`BEGIN`, `COMMIT`, `ROLLBACK`）与复杂类型映射；
-  - 验收：对齐 Node 22 原生 SQLite 操作测试。
-- [ ] **M5.4 `node:test` 进阶测试套件**
-  - 支持并发测试执行（`concurrency` 选项）；
-  - 支持函数/方法 Mock、Timer Mock 推进；
-  - 支持 Spec、TAP、LCOV 覆盖率报告生成；
-  - 验收：官方 node:test 兼容性测试套件全量通过。
+> **2026-09-09 评审登记**（证据见 `20260909/README.md` §15）：
+> 四项均**部分达成**，不能整体验收——M5.1 主体达成（真物理线程 + Node 对拍
+> 全绿，结构化克隆降级为 JSON 往返）；M5.2 端口共享真实达成（self-exe 多进程
+> + OS 内核分发，21-m5 对拍绿）但 IPC 面降级且 bc 模式多 fetch P0 挂死未修；
+> M5.3 表面 + rusqlite 真实执行落地但**验收对拍缺失**（4 e2e 均为本地断言，
+> 不比对 Node）；M5.4 仅 concurrency 与 Mock 达成（13-mock 对拍绿），Timer
+> Mock / 报告接线 / LCOV / CLI 运行器未闭环。总览改 `[~]`，按项登记。
+- [~] **M5.1 `worker_threads` 跨物理线程支持**（主体达成——结构化克隆缺口，20260909 评审）
+  - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；✅ 真
+    `std::thread` + 独立 Vm（runtime 装配钩子），通道为 std mpsc（crossbeam
+    仅 dns_resolver 在用；登记口径以「真线程 + 通道桥」为准）；
+  - 实现 `MessageChannel`、`MessagePort` 与结构化克隆传值；⚠️ 表面齐，
+    传值为 JSON 往返克隆（原始值/数组/普通对象；ArrayBuffer/TypedArray/
+    函数 → null；transfer list 未实现）；
+  - 验收：多 Worker 并发计算与消息通信用例对拍全绿。✅ `20-m5` Node 逐字节
+    对拍 PASS + phase6 3 用例。缺口：结构化克隆/transfer、`eval:true`、
+    `postMessageToThread` 真线程分支（未登记风险）、文件头注释过时。
+- [~] **M5.2 `cluster` 进程池模型**（端口共享达成——IPC 面降级 + P0 遗留，20260909 评审）
+  - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
+    （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
+    OS 内核分发（非 IPC 句柄传递）；worker.send 恒 true、isConnected/
+    isDead 恒值、exit code 硬编码 0、无 RR 调度；
+  - 验收：多进程集群 HTTP 端口共享测试通过。✅ `21-m5` Node 逐字节对拍 PASS
+    （bc 模式实测）。遗留：⚠️ **P0** bc 模式 cluster + fetch ≥2 连接挂死
+    （round4 登记，src 模式正常）；listen 错误载体为字符串非 Error 对象。
+- [ ] **M5.3 `node:sqlite` 生产级支持**（实现落地——验收对拍缺失，20260909 评审）
+  - 规范实现 `DatabaseSync` 类与 SQL 语句预编译 `StatementSync`；⚠️ 表面齐 +
+    rusqlite 真实执行，但非真预编译（每次执行重编译）；`columns().type` 恒空；
+    无 ctor options；错误文本对齐 Go modernc 驱动而非 Node 22；
+  - 支持事务控制（`BEGIN`, `COMMIT`, `ROLLBACK`）与复杂类型映射；✅ exec 直写
+    + `transaction()` 包装器；类型映射含 bigint/blob→Uint8Array/Boolean→
+    TypeError；⚠️ 事务路径零自动化测试、`isTransaction` 在包装器路径不同步；
+  - 验收：对齐 Node 22 原生 SQLite 操作测试。❌ 4 个 e2e 全为本地 contains
+    断言（`assert_e2e_matches_go` 别名不比对 Node）；声称的 Node 22 差分
+    用例仓库不存在。裸名 `require('sqlite')` 可用（Node 22 应 MODULE_NOT_
+    FOUND，有意折衷需登记）。
+- [ ] **M5.4 `node:test` 进阶测试套件**（仅 concurrency + Mock 达成，20260909 评审）
+  - 支持并发测试执行（`concurrency` 选项）；✅ 单线程 async 交错（与 Node
+    协作式并发语义一致），phase8 e2e 绿；
+  - 支持函数/方法 Mock、Timer Mock 推进；✅ Mock 族（fn/method/getter/
+    setter/property + spy.mock.calls）`13-mock.cjs` Node 逐字节一致；❌ Timer
+    Mock 零代码；
+  - 支持 Spec、TAP、LCOV 覆盖率报告生成；❌ 报告器 write 吞数据恒 true、
+    格式化纯函数未接线、LCOV 无实现、CLI `aluka test` 入口不存在；
+  - 验收：官方 node:test 兼容性测试套件全量通过。❌ 本仓无该套件；语料
+    15/16 因含故意失败用例被判 INVALID 从未真对拍；`test.skip` 等函数属性
+    形态降级（options 形态可用）。
 
 ---
 

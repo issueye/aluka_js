@@ -243,3 +243,89 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
   3. `resolveAny` 保持系统近似路径（无真实 ANY 报文），已注明；
   4. 真实 HTTP/2 帧协议不在 M3.3 验收文字内；总 README 总览指标已修正措辞
      「HTTP 1.1 生产级长连接与连接池（http2 表面）」消除歧义。
+
+## 15. M5 评审登记（评审轮：M5 独立复审，2026-09-09）
+
+**结论：M5 不能整体验收**——四项均部分达成；总览 `[ ]`→`[~]`，细分按项登记
+（M5.1/M5.2 主体达成标 `[~]`；M5.3/M5.4 未闭环保持 `[ ]`）。评审基于四路
+源码勘察 + 本机实测（Node v22.3.0 在场；HEAD `703a23e`，工作树干净）。
+
+### M5.1 worker_threads —— 主体达成（缺口：结构化克隆）
+
+- **达成**：真物理线程——`aluka-runtime::install_worker_entry` 以
+  `std::thread::Builder` spawn，worker 文件在独立 `Vm`（独立堆）上解释执行
+  （`builtins/worker_threads.rs` 1198 行 + `vm.worker_entry` 钩子 + `real_
+  workers` 事件源泵非阻塞 try_recv 回桥）；MessageChannel/MessagePort/
+  BroadcastChannel/workerData/isMainThread/threadId 真实语义（threadId 主
+  0、worker ≥1）；`worker exit` 双发竞态已修（worker.rs/1057 行注释）。
+  实测 `20-m5-worker-threads.cjs` Node 逐字节对拍 **PASS**；phase6 3 用例绿。
+- **缺口/降级**：跨线程传值 = **JSON 往返**（对象键排序、undefined→null、
+  ArrayBuffer/TypedArray/函数等一律 null），非结构化克隆；transfer list、
+  `markAsUntransferable` no-op；`eval:true` 走 error+exit(1)；port
+  ref/unref/start 占位；`postMessageToThread` 未接真线程分支（未登记风险）；
+  `new MessagePort()` 未抛 ERR_ILLEGAL_CONSTRUCTOR；模块头注释（threadId
+  恒 0）与真线程现状矛盾需更新；通道为 std mpsc（dns_resolver 注释称
+  crossbeam 复用于 M5.1 未落地——口径修正「真线程 + 通道桥」）。
+- **跟踪项**：结构化克隆/transfer 落地、eval worker、postMessageToThread
+  真线程分支、文件头注释修订。
+
+### M5.2 cluster —— 端口共享达成（缺口：IPC 面；遗留 P0）
+
+- **达成**：真多进程——`cluster_fork` 经 child_process `fork_spawn` 以
+  `std::env::current_exe()` 重启自身 + `ALUKA_WORKER_ID` 环境标记（cluster.rs
+  384 行）；端口共享走 socket2 `SO_REUSEADDR`（unix 追加 REUSEPORT）OS 内核
+  分发（net.rs `bind_shared_listener`，Windows 独占绑定语义对非 cluster
+  保留——M5 评审修复已含）；child_process 独立真实实现。实测
+  `21-m5-cluster-http.cjs`（2 worker 同端口 + fetch 探活）**PASS**（bc 模式
+  12.1s，Node 逐字节）；phase6 surface 测试绿。
+- **缺口/降级**：验收原文「IPC 通道分发套接字」未实现（OS 层分发替代）——
+  worker.send 恒 true、isConnected/isDead 恒值、exit code 硬编码 0、
+  schedulingPolicy 无 RR 调度；message/error 转接在 OS child 上不可达。
+- **遗留 P0**：bc 模式 cluster + fetch ≥2 TCP 连接挂死（round4 登记；
+  src 模式与单连接正常，疑 bc 主进程 fetch 同步阻塞与子进程泵线程死锁）；
+  net listen 失败 error 载体为字符串非 Error 对象。
+- **跟踪项**：P0 修复（修复后可把 conformance 22/24 中绕行用例回迁）、
+  IPC/worker.send 语义、exit code 真实化。
+
+### M5.3 node:sqlite —— 实现落地（缺口：验收对拍缺失）
+
+- **达成**：`builtins/sqlite.rs` 978 行——DatabaseSync（+Database 别名）/
+  StatementSync（run/get/all/iterate/columns/sourceSQL）真实调 rusqlite
+  bundled；exec 直写 BEGIN/COMMIT/ROLLBACK + `db.transaction(fn)` 包装器
+  （回调抛错自动 ROLLBACK）；类型映射 null/number/bigint（超界按文本）/
+  text/blob→纯 Uint8Array/Boolean→TypeError（对齐 Node 22 实测）。
+- **缺口/降级**：非真预编译（每执行重编译，prepare 校验后丢弃句柄）；
+  `columns().type` 恒空；无 ctor options（open 标志）；错误文本对齐 Go
+  modernc 驱动而非 Node；errstr 表为高频子集；`isTransaction` 在 transaction
+  包装器路径不同步；裸名 `require('sqlite')` 可用（Node 22 应
+  MODULE_NOT_FOUND——注册表剥 node: 前缀的有意折衷，docs manifest 已说明）。
+- **评审重点（验收证据缺口）**：4 个 e2e（builtins_phase7_io_test）全走
+  `assert_e2e_matches_go` = `rust_pipeline_run` 本地别名（common/mod.rs:
+  160-162），**不比对 Node**；`20260908` 记载的「Node 22 差分验证」在仓库
+  无对应自动化脚本；事务路径零自动化测试。即：实现已落地、Node 对拍未证。
+- **跟踪项**：补齐 assert_e2e_matches_node 的 sqlite 对拍用例（含事务/
+  bigint/blob/错误形态）、预编译语义或登记口径、columns().type、ctor
+  options、裸名折衷文档化。
+
+### M5.4 node:test —— 仅 concurrency + Mock 达成
+
+- **达成**：`builtins/test/` 7 文件 ≈3.5k 行 + test_reporters.rs——
+  test/it/describe/suite/hooks/skip/todo/only/mock/assert/register/run/
+  reporters 表面；concurrency（单线程 async 交错，与 Node 协作式并发语义
+  一致）；Mock 族（fn/method/getter/setter/property + spy.mock.calls +
+  t.mock 自动还原）实测 `13-mock.cjs` Node 逐字节一致；assert 独立模块。
+- **缺口/降级**：Timer Mock 零代码；报告器 write 吞数据恒 true、格式化
+  纯函数未接线、LCOV 无实现、CLI `aluka test`/`node --test` 入口不存在；
+  官方兼容套件不存在（语料 15/16 含故意失败用例 → harness 判 INVALID 从未
+  真对拍）；`test.skip`/`it.todo`/`describe.todo` 函数属性形态降级为普通
+  注册（options 形态正确标 SKIP）；snapshot 配置面 no-op、t.runOnly 占位；
+  mock.rs/文件头部分注释与现状矛盾（spy.mock.calls 已可用）需修订。
+- **跟踪项**：Timer Mock、报告器接线（spec/TAP/LCOV + CLI 子命令）、函数
+  属性形态 skip/todo、官方套件或自建差分语料、注释修订。
+
+### 评审动作（已随本登记提交）
+
+- 总 README §M5：加评审登记块；M5.1/M5.2 标 `[~]`、M5.3/M5.4 保持 `[ ]`；
+  总览 M5 `[ ]`→`[~]`（M5.1/M5.2 主体达成；M5.3/M5.4 未闭环）。
+- 建议下轮工作顺序：M5.3 对拍补齐（成本低、验收价值高）→ M5.2 P0 →
+  M5.1 结构化克隆 → M5.4 Timer Mock + CLI 运行器。
