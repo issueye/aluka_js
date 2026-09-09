@@ -55,7 +55,7 @@
 |---|---|---|:---:|
 | **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[x]` |
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
-| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[x]`（M3.1–M3.3 达成、TLS 接线闭环；M3.4 主体达成、resolve 家族递归查询受限见 M3.4b，20260909 结项登记） |
+| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
@@ -129,11 +129,12 @@
 
 ### M3 · 核心内置模块生产级闭环 (I/O & 生产网络)
 
-> **2026-09-09 结项登记**（证据见 `20260909/README.md` §12；提交 `fb97628`）：
-> M3.2 TLS 接线闭环——VM `https` server/client 双向真实 rustls 握手、事件泵
-> `Stage::Handshaking` 调度推进，Node 22 对拍与 node↔VM 跨实现对拍全绿；
-> 全套回归 **192 passed / 0 failed**，fmt/clippy 零告警。总览恢复 `[x]`。
-> 唯一遗留：M3.4 `resolve` 家族递归查询（标 `[~]`，以 M3.4b 独立跟踪，不阻塞总览）。
+> **2026-09-09 结项登记（M3.2/M3.4 双闭环）**（证据见 `20260909/README.md` §12/§13）：
+> M3.2 TLS 接线闭环（提交 `fb97628`）：VM `https` server/client 双向真实 rustls
+> 握手、事件泵 `Stage::Handshaking` 调度推进，Node 22 对拍全绿。
+> M3.4b resolve 家族真实递归查询闭环（见 §M3.4 达成证据）：hickory-proto 报文
+> 编解码 + 后台 std::thread + crossbeam-channel 桥，callback/promises 双面
+> 与 Node 22 实时对拍逐字一致。全套回归通过，fmt/clippy 零告警。总览 `[x]`。
 >
 > **2026-09-09 复评登记**（证据：M3 全套 28 passed / 0 failed；评审结论见 `20260909/README.md` §10）：
 > 原结项提交 `9cf1686` 将里程碑总览标 `[x]`，但细分清单从未勾选。复评发现
@@ -181,17 +182,24 @@
     `builtins_phase5_http_test` 10/10（含顺序多次请求 keep-alive 语义）+
     `express_e2e` 全绿。注：`https.request` 已于 M3.2 结项随 `fb97628` 接入真实
     TLS（TLS 会话不入池，与 node https 默认 keepAlive=false 语义一致）。
-- [~] **M3.4 异步 DNS 解析与缓存**（主体达成——resolve 家族递归查询受限，见 M3.4b 后续工作项；不阻塞 M3 总览）
+- [x] **M3.4 异步 DNS 解析与缓存**（20260909 结项闭环——resolve 家族真实递归查询）
   - 实现基于系统的非阻塞异步 DNS 解析（`dns.lookup`, `dns.resolve4`, `dns.promises`）；
   - 验收：域名解析集成测试稳定通过。
   - 达成面：`lookup`/`lookupService` 走系统解析（真实）；callback/promises 双面与
     事件源泵异步时序、`Resolver`/错误码/常量面齐全（复测 `builtins_phase5_net_test`
     8/8 含 dns_callback_family 与 dns_promises_family）。
-  - 限制（dns.rs 自注）：std 无递归 DNS/反向 PTR——`resolve4` 等对**任意域名**
-    非真实查询（确定性输入 localhost 形态）；`reverse` 以地址可解析性表达 ENOTFOUND。
-  - **[M3.4b 登记]** resolve 家族真实递归查询：接入纯 Rust DNS 客户端（或系统
-    resolv 语义查询）支持 resolve4/6/MX/TXT 等 rrtype，交付与 Node 22 对拍的
-    域名解析探针。
+  - **resolve 家族真实递归查询（M3.4b）**：接入 `hickory-proto`（纯 Rust 报文
+    编解码，关默认特性不带 tokio）+ 后台 `std::thread` + `crossbeam-channel`
+    桥（A+ 路线：与 VM 同步事件泵同构，避免 M5 前引入 tokio runtime；channel
+    基建为 M5.1 worker_threads 复用）。callback 与 promises 双面的
+    `resolve4/6/CAA/CNAME/MX/NAPTR/NS/PTR/SOA/SRV/TLSA/TXT` 与 `reverse`：
+    - 本地单标签名（`localhost` 等）保持原确定性形态；非本地域名发真实
+      DNS 报文（UDP 优先、截断回落 TCP、多服务器轮换、rcode→Node 错误码）；
+    - 探测结果与 Node 22 实时对拍逐字一致（resolve4/NS/TXT/MX/reverse/
+      promises 面/ENOTFOUND 的 code+hostname+syscall/setServers/getServers）；
+    - `getServers`/`setServers` 从记录态升级为真实生效（Node 语义）。
+  - **[M3.4b 登记 —— 已完成 ✅]** resolve 家族真实递归查询：接入纯 Rust DNS 客户端
+    支持 resolve4/6/MX/TXT 等 rrtype，交付与 Node 22 对拍的域名解析探针。
 
 ---
 

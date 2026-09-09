@@ -178,3 +178,43 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
     校验列为后续工作项；
   - M3.4 标 `[~]`（resolve 家族递归查询仍受限），以 M3.4b 独立跟踪、不阻塞 M3
     总览 `[x]`；总 README §M3 结项/复评登记已同步（结项在前、复评在后存史）。
+
+## 13. M3.4b 纯 Rust DNS 客户端接入（已完成——resolve 家族真实递归查询闭环）
+
+承接 §10/§12：M3.4b（resolve 家族递归查询）已实现并验收，M3.4 标 `[x]`。
+
+- **架构决策（A+ 路线，结合 M5 任务评估）**：
+  - 引入 `hickory-proto 0.25`（仅报文编解码；关默认特性、不带 tokio/ring 链）
+    + `crossbeam-channel`（M5.1 worker_threads 复用同款 channel 基建）；
+  - 查询在惰性 `std::thread` 工作线程同步执行（UDP 优先、截断回落 TCP、
+    多服务器轮换、2.5s 读超时、id 校验），结果写进程级静态表；
+  - VM 侧 `dns-resolve` 事件源泵每轮对账 token → records → VM Value →
+    既有 `enqueue_dns` 队列派发 callback / Promise 兑现/拒绝；
+  - **未引入 tokio**：M5.1 已定 OS 线程 + crossbeam-channel；M5.2/5.3 进程池
+    + sqlite FFI 同样只需「后台线程 + 事件泵桥」；tokio 双调度模型与 VM 同步
+    泵、thread_local 堆句柄（!Send）冲突，冷启动/常驻成本违背 AGENTS 愿景。
+- **路由口径**（callback 与 promises 双面一致）：
+  - A/AAAA/ANY 与本地单标签名（`localhost` 等）走系统解析（既有确定性路径）；
+  - 其余 rrtype（CAA/CNAME/MX/NAPTR/NS/PTR/SOA/SRV/TLSA/TXT）与 reverse 对
+    非回环 IP 发真实报文查询；NoError+空答案 → 空结果（Node 语义，非错误）；
+    NXDomain/ServFail/Refused/NotImp/FormErr → ENOTFOUND/ESERVFAIL/… 错误码
+    （err 附 code/errno/hostname/syscall，Node 形态）；
+  - `getServers`/`setServers` 升级为真实生效：默认服务器探测顺序
+    unix resolv.conf → Windows PowerShell 枚举适配器 DNS → 公共 DNS 兜底；
+    用户 setServers 后即用其服务器。
+- **验收证据——Node 22 实时逐字对拍**（探针含 resolve4/NS/TXT/MX/reverse、
+  promises 面、ENOTFOUND 的 code+hostname+syscall、setServers/getServers、
+  Resolver 实例，全部逐字一致；两次探针合计 14 行无 diff）：
+  - 真实记录形态：`resolveTxt('google.com')` 17 条 TXT、`resolveMx('gmail.com')`
+    5 条 MX（exchange+priority）、`resolveNs('example.com')`、
+    `resolve4('example.com')`、`reverse('8.8.8.8') → ['dns.google']`；
+  - 错误形态：`promises.resolve('nonexistent-zz.invalid','TXT')` →
+    `{code:'ENOTFOUND', hostname:'…', syscall:'queryTxt'}` 与 Node 一致；
+  - 本地单标签与回环保持原确定性形态（离线测试不触网）。
+- **回归证据**：`builtins_phase5_net_test` 8/8 ｜ `builtins_phase5_http_test`
+  10/10 ｜ `express_e2e_test` 1/1 ｜ `conformance_node22_test` 1/1 ｜
+  `core_semantics_test` 21/21 ｜ aluka-vm lib **151**/151（+5 dns_resolver 单测：
+  arpa 名生成/rrtype 覆盖/server 解析/报文编解码往返/rcode 解释）；
+  `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` 零告警。
+- **遗留说明**：ANY 混合记录保持系统近似路径（Node resolveAny 语义面已够）；
+  沙箱 DNS 代理吞 NXDomain 场景下 A 查询行为与 Node 一致（返回代理地址）。
