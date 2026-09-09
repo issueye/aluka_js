@@ -8,7 +8,9 @@ use crate::value::Value;
 const CALLSITE_FRAMES: usize = 12;
 
 pub(crate) fn error_capture_stack_trace(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(target) = args.first().copied() else { return Ok(Value::Undefined); };
+    let Some(target) = args.first().copied() else {
+        return Ok(Value::Undefined);
+    };
     let mut frames = Vec::with_capacity(CALLSITE_FRAMES);
     for _ in 0..CALLSITE_FRAMES {
         let site = vm.alloc_ordinary();
@@ -27,13 +29,18 @@ pub(crate) fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
     let receiver = current_receiver();
     let method = match receiver {
         Value::Object(r) => match vm.heap.get(r.0 as usize) {
-            Some(HeapObject::NativeFn { name, .. }) => name.clone().split('.').next_back().unwrap_or("").to_owned(),
+            Some(HeapObject::NativeFn { name, .. }) => {
+                name.clone().split('.').next_back().unwrap_or("").to_owned()
+            }
             _ => String::new(),
         },
         _ => String::new(),
     };
     let file = match receiver {
-        Value::Object(r) => vm.own_value(r.0 as usize, "_file").map(|v| vm.format_value(v)).unwrap_or_default(),
+        Value::Object(r) => vm
+            .own_value(r.0 as usize, "_file")
+            .map(|v| vm.format_value(v))
+            .unwrap_or_default(),
         _ => String::new(),
     };
     match method.as_str() {
@@ -41,7 +48,9 @@ pub(crate) fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
         "getLineNumber" | "getColumnNumber" => Ok(Value::Number(0.0)),
         "isNative" | "isEval" | "isConstructor" => Ok(Value::Boolean(false)),
         "getFunctionName" | "getTypeName" => Ok(Value::Undefined),
-        "toString" => Ok(Value::Object(vm.alloc_string(format!("at <anonymous> ({file})")))),
+        "toString" => Ok(Value::Object(
+            vm.alloc_string(format!("at <anonymous> ({file})")),
+        )),
         _ => Ok(Value::Undefined),
     }
 }

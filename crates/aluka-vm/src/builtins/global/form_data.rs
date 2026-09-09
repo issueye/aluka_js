@@ -92,7 +92,11 @@ pub(crate) fn form_data_method(vm: &mut Vm, args: &[Value]) -> Result<Value, VmE
             Ok(Value::Object(vm.alloc_array(vals)))
         }
         _ => {
-            let Some(cb) = args.first().copied().filter(|v| super::event::is_callable(vm, *v)) else {
+            let Some(cb) = args
+                .first()
+                .copied()
+                .filter(|v| super::event::is_callable(vm, *v))
+            else {
                 return Ok(Value::Undefined);
             };
             let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -172,7 +176,7 @@ pub(crate) fn form_data_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value,
     Ok(Value::Object(fd))
 }
 
-// ---- multipart/form-data ---- 
+// ---- multipart/form-data ----
 
 fn generate_boundary() -> String {
     let mut seed = std::time::SystemTime::now()

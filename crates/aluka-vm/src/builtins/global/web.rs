@@ -122,7 +122,10 @@ pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Va
     match method {
         "append" => {
             let r = current_receiver();
-            let k = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+            let k = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
             let v = args.get(1).map(|v| vm.format_value(*v)).unwrap_or_default();
             let mut e = usp_entries(vm, r);
             e.push((k, v));
@@ -131,7 +134,10 @@ pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Va
         }
         "get" => {
             let r = current_receiver();
-            let k = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+            let k = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
             match usp_entries(vm, r)
                 .iter()
                 .find(|(ek, _)| ek == &k)
@@ -143,7 +149,10 @@ pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Va
         }
         "getAll" => {
             let r = current_receiver();
-            let k = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+            let k = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
             let vs: Vec<Value> = usp_entries(vm, r)
                 .iter()
                 .filter(|(ek, _)| ek == &k)
@@ -153,14 +162,20 @@ pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Va
         }
         "has" => {
             let r = current_receiver();
-            let k = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+            let k = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
             Ok(Value::Boolean(
                 usp_entries(vm, r).iter().any(|(ek, _)| ek == &k),
             ))
         }
         "set" => {
             let r = current_receiver();
-            let k = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+            let k = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
             let v = args.get(1).map(|v| vm.format_value(*v)).unwrap_or_default();
             let entries = usp_entries(vm, r);
             let pos = entries.iter().position(|(ek, _)| ek == &k);
@@ -174,7 +189,10 @@ pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Va
         }
         "delete" => {
             let r = current_receiver();
-            let k = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+            let k = args
+                .first()
+                .map(|v| vm.format_value(*v))
+                .unwrap_or_default();
             let e: Vec<(String, String)> = usp_entries(vm, r)
                 .into_iter()
                 .filter(|(ek, _)| ek != &k)
@@ -308,10 +326,7 @@ pub(crate) fn blob_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErr
         for e in elements {
             let s = vm.format_value(e);
             if let Value::Object(er) = e {
-                if matches!(
-                    vm.heap.get(er.index()),
-                    Some(HeapObject::Array { .. })
-                ) {
+                if matches!(vm.heap.get(er.index()), Some(HeapObject::Array { .. })) {
                     let bytes: Vec<Value> = match vm.heap.get(er.index()) {
                         Some(HeapObject::Array { elements, .. }) => elements.clone(),
                         _ => Vec::new(),

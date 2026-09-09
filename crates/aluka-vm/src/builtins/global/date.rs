@@ -8,7 +8,8 @@ use crate::value::Value;
 fn date_now_ms() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as f64).unwrap_or(0.0)
+        .map(|d| d.as_millis() as f64)
+        .unwrap_or(0.0)
 }
 
 pub(crate) fn date_now(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
@@ -16,7 +17,10 @@ pub(crate) fn date_now(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 }
 
 pub(crate) fn date_parse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let text = args.first().map(|v| vm.format_value(*v)).unwrap_or_default();
+    let text = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
     let parsed = parse_iso_date(&text).unwrap_or(f64::NAN);
     Ok(Value::Number(parsed))
 }
@@ -48,8 +52,14 @@ fn parse_iso_date(text: &str) -> Option<f64> {
         hh = parts.first()?.parse().ok()?;
         mm = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
         let sec_part = parts.get(2).copied().unwrap_or("0");
-        if let Some(dot) = sec_part.find('.') { ss = sec_part[..dot].parse().ok()?; } else { ss = sec_part.parse().ok()?; }
-        if t.ends_with('Z') { tz_offset_ms = 0.0; }
+        if let Some(dot) = sec_part.find('.') {
+            ss = sec_part[..dot].parse().ok()?;
+        } else {
+            ss = sec_part.parse().ok()?;
+        }
+        if t.ends_with('Z') {
+            tz_offset_ms = 0.0;
+        }
     }
     let days = days_from_civil(y, m, d) as f64;
     Some(days * 86_400_000.0 + (hh * 3600 + mm * 60 + ss) as f64 * 1000.0 - tz_offset_ms)
@@ -72,7 +82,10 @@ impl Vm {
             None | Some(Value::Undefined) => date_now_ms(),
             Some(v) => match v {
                 Value::Number(n) => *n,
-                other => { let text = self.format_value(*other); parse_iso_date(&text).unwrap_or(f64::NAN) }
+                other => {
+                    let text = self.format_value(*other);
+                    parse_iso_date(&text).unwrap_or(f64::NAN)
+                }
             },
         };
         let inst = self.alloc_ordinary();
@@ -89,7 +102,9 @@ pub(crate) fn date_instance_method(vm: &mut Vm, _args: &[Value]) -> Result<Value
     let receiver = current_receiver();
     let method = match receiver {
         Value::Object(r) => match vm.heap.get(r.0 as usize) {
-            Some(HeapObject::NativeFn { name, .. }) => name.clone().split('.').next_back().unwrap_or("").to_owned(),
+            Some(HeapObject::NativeFn { name, .. }) => {
+                name.clone().split('.').next_back().unwrap_or("").to_owned()
+            }
             _ => String::new(),
         },
         _ => String::new(),
@@ -105,12 +120,18 @@ pub(crate) fn date_instance_method(vm: &mut Vm, _args: &[Value]) -> Result<Value
 }
 
 fn date_to_iso_string(t: f64, ms_precision: bool) -> String {
-    if t.is_nan() { return "Invalid Date".to_owned(); }
+    if t.is_nan() {
+        return "Invalid Date".to_owned();
+    }
     let secs_total = (t / 1000.0).floor() as i64;
     let millis = (t - secs_total as f64 * 1000.0).round() as i64;
     let days = secs_total.div_euclid(86400);
     let secs_of_day = secs_total.rem_euclid(86400);
-    let (h, m, sec) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+    let (h, m, sec) = (
+        secs_of_day / 3600,
+        (secs_of_day % 3600) / 60,
+        secs_of_day % 60,
+    );
     let z = days + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;
     let doe = z - era * 146097;
@@ -121,6 +142,12 @@ fn date_to_iso_string(t: f64, ms_precision: bool) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let mth = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mth <= 2 { y + 1 } else { y };
-    if ms_precision { format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, mth, d, h, m, sec, millis) }
-    else { format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mth, d, h, m, sec) }
+    if ms_precision {
+        format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+            y, mth, d, h, m, sec, millis
+        )
+    } else {
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, mth, d, h, m, sec)
+    }
 }

@@ -14,10 +14,22 @@ pub(crate) fn alloc_abort_signal(vm: &mut Vm) -> Result<ObjectRef, VmError> {
     let abort_id = next_abort_id();
     let signal = vm.alloc_ordinary();
     let _ = vm.set_property(Value::Object(signal), "aborted", Value::Boolean(false));
-    let _ = vm.set_property(Value::Object(signal), "_abortId", Value::Number(abort_id as f64));
-    let _ = vm.set_property(Value::Object(signal), "_isAbortSignal", Value::Boolean(true));
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "_abortId",
+        Value::Number(abort_id as f64),
+    );
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "_isAbortSignal",
+        Value::Boolean(true),
+    );
     let listeners = vm.alloc_array(Vec::new());
-    let _ = vm.set_property(Value::Object(signal), "_listeners", Value::Object(listeners));
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "_listeners",
+        Value::Object(listeners),
+    );
     for method in ["addEventListener", "removeEventListener"] {
         let fn_ref = vm.alloc_native_fn(&format!("AbortSignal.{method}"));
         let _ = vm.set_property(Value::Object(signal), method, Value::Object(fn_ref));
@@ -25,7 +37,11 @@ pub(crate) fn alloc_abort_signal(vm: &mut Vm) -> Result<ObjectRef, VmError> {
     let abort_fn = vm.alloc_native_fn("AbortSignal.abort");
     let _ = vm.set_property(Value::Object(signal), "abort", Value::Object(abort_fn));
     let tia_fn = vm.alloc_native_fn("AbortSignal.throwIfAborted");
-    let _ = vm.set_property(Value::Object(signal), "throwIfAborted", Value::Object(tia_fn));
+    let _ = vm.set_property(
+        Value::Object(signal),
+        "throwIfAborted",
+        Value::Object(tia_fn),
+    );
     Ok(signal)
 }
 
@@ -41,7 +57,11 @@ pub(crate) fn apply_abort(vm: &mut Vm, signal: Value, reason: Value) -> Result<(
         return Ok(());
     }
     let _ = vm.set_property(signal, "aborted", Value::Boolean(true));
-    let reason = if matches!(reason, Value::Undefined) { default_abort_error(vm) } else { reason };
+    let reason = if matches!(reason, Value::Undefined) {
+        default_abort_error(vm)
+    } else {
+        reason
+    };
     let _ = vm.set_property(signal, "reason", reason);
     if let Ok(Value::Object(arr)) = vm.get_property(signal, "_listeners") {
         let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {
@@ -53,7 +73,9 @@ pub(crate) fn apply_abort(vm: &mut Vm, signal: Value, reason: Value) -> Result<(
             let type_str = vm.alloc_string("abort".to_owned());
             let _ = vm.set_property(Value::Object(event), "type", Value::Object(type_str));
             let event_val = Value::Object(event);
-            for cb in elements { let _ = vm.invoke_callable(cb, Value::Undefined, &[event_val]); }
+            for cb in elements {
+                let _ = vm.invoke_callable(cb, Value::Undefined, &[event_val]);
+            }
         }
     }
     Ok(())
@@ -64,7 +86,11 @@ pub(crate) fn abort_controller_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result
     let signal = alloc_abort_signal(vm)?;
     let _ = vm.set_property(Value::Object(controller), "signal", Value::Object(signal));
     let abort_method = vm.alloc_native_fn("AbortController.abort");
-    let _ = vm.set_property(Value::Object(controller), "abort", Value::Object(abort_method));
+    let _ = vm.set_property(
+        Value::Object(controller),
+        "abort",
+        Value::Object(abort_method),
+    );
     Ok(Value::Object(controller))
 }
 
@@ -83,8 +109,13 @@ pub(crate) fn abort_signal_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Val
 
 pub(crate) fn abort_signal_abort_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = crate::builtins::current_receiver();
-    let is_signal = matches!(vm.get_property(this, "_isAbortSignal"), Ok(Value::Boolean(true)));
-    if is_signal { return signal_abort_impl(vm, args); }
+    let is_signal = matches!(
+        vm.get_property(this, "_isAbortSignal"),
+        Ok(Value::Boolean(true))
+    );
+    if is_signal {
+        return signal_abort_impl(vm, args);
+    }
     let signal = alloc_abort_signal(vm)?;
     let reason = args.first().copied().unwrap_or(Value::Undefined);
     apply_abort(vm, Value::Object(signal), reason)?;
@@ -113,8 +144,12 @@ fn signal_abort_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 pub(crate) fn signal_add_event_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = crate::builtins::current_receiver();
     let ty = args.first().copied().unwrap_or(Value::Undefined);
-    if vm.format_value(ty) != "abort" { return Ok(Value::Undefined); }
-    let Some(cb) = args.get(1).copied() else { return Ok(Value::Undefined); };
+    if vm.format_value(ty) != "abort" {
+        return Ok(Value::Undefined);
+    }
+    let Some(cb) = args.get(1).copied() else {
+        return Ok(Value::Undefined);
+    };
     let arr = match vm.get_property(this, "_listeners") {
         Ok(Value::Object(r)) => r,
         _ => vm.alloc_array(Vec::new()),
@@ -128,11 +163,19 @@ pub(crate) fn signal_add_event_listener(vm: &mut Vm, args: &[Value]) -> Result<V
 pub(crate) fn signal_remove_event_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = crate::builtins::current_receiver();
     let ty = args.first().copied().unwrap_or(Value::Undefined);
-    if vm.format_value(ty) != "abort" { return Ok(Value::Undefined); }
-    let Some(cb) = args.get(1).copied() else { return Ok(Value::Undefined); };
+    if vm.format_value(ty) != "abort" {
+        return Ok(Value::Undefined);
+    }
+    let Some(cb) = args.get(1).copied() else {
+        return Ok(Value::Undefined);
+    };
     if let Ok(Value::Object(arr)) = vm.get_property(this, "_listeners") {
-        if let Some(crate::heap::HeapObject::Array { elements, .. }) = vm.heap.get_mut(arr.0 as usize) {
-            if let Some(pos) = elements.iter().position(|e| e == &cb) { elements.remove(pos); }
+        if let Some(crate::heap::HeapObject::Array { elements, .. }) =
+            vm.heap.get_mut(arr.0 as usize)
+        {
+            if let Some(pos) = elements.iter().position(|e| e == &cb) {
+                elements.remove(pos);
+            }
         }
     }
     Ok(Value::Undefined)
