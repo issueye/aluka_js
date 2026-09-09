@@ -175,6 +175,7 @@ fn database_sync_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
     // `isOpen` 以数据属性维护（open 时 true，close 后置 false）。
     set_module_prop(vm, obj, "isOpen", Value::Boolean(true))?;
+    set_module_prop(vm, obj, "isTransaction", Value::Boolean(false))?;
 
     let id = obj.0;
     DBS.with(|g| {
@@ -203,8 +204,30 @@ fn db_exec(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         })
     });
     match outcome {
-        Ok(()) => Ok(Value::Undefined),
+        Ok(()) => {
+            sync_is_transaction(vm, id, &sql);
+            Ok(Value::Undefined)
+        }
         Err(msg) => Err(sqlite_throw(vm, &msg)),
+    }
+}
+
+/// 依 exec 的 SQL 首 token 维护 `isTransaction` 数据属性
+/// （BEGIN → true；COMMIT/ROLLBACK/END → false；其余不动）。
+fn sync_is_transaction(vm: &mut Vm, id: u32, sql: &str) {
+    let first = sql
+        .split(|c: char| c.is_whitespace() || c == ';')
+        .find(|t| !t.is_empty())
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    let in_txn = match first.as_str() {
+        "BEGIN" => Some(true),
+        "COMMIT" | "ROLLBACK" | "END" => Some(false),
+        _ => None,
+    };
+    if let Some(v) = in_txn {
+        // DBS 表键即数据库对象句柄
+        let _ = set_module_prop(vm, ObjectRef(id), "isTransaction", Value::Boolean(v));
     }
 }
 
@@ -805,10 +828,16 @@ fn sql_value_to_js(vm: &mut Vm, read_big_ints: bool, value: &SqlValue) -> Value 
         }
         SqlValue::Real(f) => Value::Number(*f),
         SqlValue::Text(s) => Value::Object(vm.alloc_string(s.clone())),
-        SqlValue::Blob(b) => Value::Object(crate::builtins::buffer::create_buffer_instance(
-            vm,
-            b.clone(),
-        )),
+        // 对齐 Node 22：BLOB 读出为纯 Uint8Array（非 Buffer 子类）
+        SqlValue::Blob(b) => {
+            let ab = vm.alloc_array_buffer(b.clone(), false, false, 0);
+            Value::Object(vm.alloc_typed_array(
+                crate::typed_array::TypedKind::Uint8,
+                ab,
+                0,
+                b.len(),
+            ))
+        }
     }
 }
 
