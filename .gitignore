@@ -8,6 +8,11 @@
 .DS_Store
 Thumbs.db
 m1_io.txt
+
 # 依赖与临时缓存
 node_modules/
 .aluka/
+.work/scratch/m4_audit/*
+
+# PI-Desktop 会话产物（计划草稿等）
+.pi/
