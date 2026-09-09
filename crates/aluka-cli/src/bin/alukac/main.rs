@@ -10,8 +10,6 @@ use aluka_bytecode::{BytecodeModule, Constant, Op, OperandKind};
 use aluka_compiler::{compile_source_unit, optimize_ast};
 use aluka_parser::source_unit::{LanguageRegistry, ModuleKind};
 
-mod build;
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// CLI 运行配置选项
@@ -83,7 +81,7 @@ fn run() -> ExitCode {
             input,
             output,
             optimize,
-        } => build::run_build(&input, output.as_deref(), optimize),
+        } => aluka_compiler::build::run_build(&input, output.as_deref(), optimize),
     }
 }
 

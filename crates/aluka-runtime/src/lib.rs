@@ -15,6 +15,10 @@ use aluka_parser::source_unit::{LanguageRegistry, ModuleKind, SourceUnitError};
 use aluka_vm::{Value, Vm, VmError};
 use aluka_webapi::Capability;
 
+/// 字节码入口执行装配（`aluka run *.bc` / `aluvm run` 单一事实来源）。
+pub mod bc_entry;
+pub use bc_entry::execute_bc;
+
 /// 运行时装配、编译或执行失败的原因。
 #[derive(Debug, Clone, PartialEq)]
 pub enum RuntimeError {

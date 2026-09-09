@@ -1,4 +1,4 @@
-//! `alukac build`：依赖图遍历构建（express 级 node_modules 链路）。
+//! 依赖图遍历构建（express 级 node_modules 链路；`alukac build` / `aluka build` 共用）。
 //!
 //! 从入口出发解析 require 闭包，编译为镜像 .bc 树：
 //! - 相对 require 相对当前文件目录；裸包名沿 node_modules 逐级向上
@@ -12,7 +12,7 @@
 //! 与 vm 侧 `resolve_module`（aluka-vm/src/modules.rs）的候选规则互为
 //! 镜像，两侧需同步演化。
 
-use aluka_compiler::{compile_source_unit, optimize_ast};
+use crate::{compile_source_unit, optimize_ast};
 use aluka_parser::source_unit::{LanguageRegistry, ModuleKind};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
@@ -99,14 +99,14 @@ pub fn run_build(input: &Path, output: Option<&Path>, optimize: bool) -> ExitCod
 
     let entry_rel = rel_from(&input_abs, &root);
     let entry_bc = outdir.join(entry_rel).with_extension("bc");
-    println!(
+    eprintln!(
         "构建完成: 编译 {compiled} 个模块, 拷贝 {copied} 个 .json, 失败 {}",
         failed.len()
     );
     for f in failed.iter().take(10) {
         eprintln!("  失败: {f}");
     }
-    println!("入口: {}", entry_bc.display());
+    eprintln!("入口: {}", entry_bc.display());
     if failed.is_empty() {
         ExitCode::SUCCESS
     } else {

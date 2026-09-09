@@ -33,9 +33,11 @@ aluka-parser = { workspace = true }
 aluka-compiler = { workspace = true }
 
 aluka-runtime = { workspace = true, optional = true }
+aluka-npm = { workspace = true }
 aluka-builtins = { workspace = true, optional = true }
 
 [dev-dependencies]
+serde_json = "1"
 aluka-runtime = { workspace = true }
 rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "custom-provider"] }

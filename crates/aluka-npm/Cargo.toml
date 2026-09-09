@@ -1,0 +1,30 @@
+[package]
+name = "aluka-npm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "aluka 包管理器：npm 功能复刻（registry 拉取 / 依赖解析 / node_modules 布局 / 脚本生命周期）。"
+
+[[bin]]
+name = "aluka-npm"
+path = "src/bin/aluka-npm.rs"
+
+[dependencies]
+# JSON（package.json / packument / lockfile）：serde + serde_json，纯 Rust。
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# npm semver 范围语义手工实现（src/semver.rs），与真实 semver 包黄金对拍——
+# 不引 semver crate（Cargo 方言，不支持 npm 的 x-range/连字符/前导 v 等面）。
+# registry HTTPS：ureq（阻塞式，rustls 纯 Rust TLS；关 cookie/socks 等非必要特性）。
+ureq = { version = "2", default-features = false, features = ["tls", "gzip", "json"] }
+# tarball 解包：tar（ustar/pax/GNU 长名）+ flate2（miniz_oxide 纯 Rust 后端）。
+tar = "0.4"
+flate2 = "1"
+# SRI 完整性校验（dist.integrity = sha512-<base64>）。
+sha2 = "0.10"
+base64 = "0.22"
+
+[lints]
+workspace = true

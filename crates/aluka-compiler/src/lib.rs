@@ -2,6 +2,8 @@
 //!
 //! 提供语法树遍历生成、跳转回填及函数模板导出。
 
+/// 依赖闭包镜像构建（`alukac build` / `aluka build` 共用）
+pub mod build;
 /// 语法树遍历与指令生成
 pub mod codegen;
 /// S-expression 领域特定语言（DSL）编译器

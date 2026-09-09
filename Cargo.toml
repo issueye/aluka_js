@@ -14,6 +14,7 @@ members = [
     "crates/aluka-cli",
     "crates/alisp",
     "crates/aluka-jit",
+    "crates/aluka-npm",
 ]
 
 [workspace.package]
@@ -35,6 +36,7 @@ aluka-module = { path = "crates/aluka-module" }
 aluka-builtins = { path = "crates/aluka-builtins" }
 aluka-webapi = { path = "crates/aluka-webapi" }
 aluka-runtime = { path = "crates/aluka-runtime" }
+aluka-npm = { path = "crates/aluka-npm" }
 
 [workspace.lints.rust]
 # 业务 crate 默认禁 unsafe；仅 aluka-core 的分配器/GC 与未来 JIT 后端可显式解禁

@@ -1,18 +1,13 @@
 //! Number 构造器静态方法。
 
-use crate::builtins::current_receiver;
-use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 
 pub(crate) fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let name = match current_receiver() {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
-            Some(HeapObject::NativeFn { name, .. }) => name.clone(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    };
+    // 方法名取自被调函数（`Number.isInteger`），而非 receiver——普通调用
+    // `Number.isInteger(3)` 的 receiver 是 Number 构造器对象（NativeCtor），
+    // 按.receiver 推导会得到空名落进 `_ => undefined`（is-odd 生态实测暴露）。
+    let name = crate::builtins::pending_native_name();
     let method = name.split('.').next_back().unwrap_or("");
     let v = args.first().copied().unwrap_or(Value::Undefined);
     let to_num = |vm: &mut Vm, v: Value| -> f64 { vm.to_number_value(v) };

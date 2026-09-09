@@ -10,6 +10,8 @@ description = "AST → 字节码，含 TS 注解剥离与指令生成。"
 [dependencies]
 aluka-core = { workspace = true }
 aluka-parser = { workspace = true }
+# build（依赖闭包镜像构建）读 package.json exports/imports 条件映射
+aluka-module = { workspace = true }
 aluka-bytecode = { workspace = true }
 
 [lints]
