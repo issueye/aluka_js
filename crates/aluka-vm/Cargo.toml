@@ -20,7 +20,7 @@ brotli = "7"
 ruzstd = "0.8"
 # node:sqlite 唯一获准的 C 依赖（AGENTS.md FFI 边界例外）：bundled 把
 # SQLite C amalgamation 静态编进二进制，保持单文件零运行时依赖。
-rusqlite = { version = "0.37", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype", "column_metadata"] }
 base64 = "0.22"
 # cluster 端口共享（M5.2）：SO_REUSEADDR/REUSEPORT 纯 Rust 绑定
 socket2 = "0.5"

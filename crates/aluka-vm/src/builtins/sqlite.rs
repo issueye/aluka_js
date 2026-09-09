@@ -1,12 +1,21 @@
 //! `sqlite` 内置模块（Phase 7）：Node 22 `node:sqlite` 原生 `DatabaseSync`。
 //!
-//! 语义严格对齐 Node.js 22 LTS 规范：
+//! 语义严格对齐 Node.js 22 LTS（v22.23.1 实测）：
 //! - `new DatabaseSync(path)`（别名 `Database`）打开数据库（`:memory:` 或文件路径）；
 //! - `db.exec(sql)` 执行多语句；`db.prepare(sql) -> StatementSync`；
-//!   `db.transaction(fn)` 返回事务包装函数；`db.close()`；`isOpen` 数据属性；
-//! - `StatementSync.run/get/all/iterate/setReadBigInts/columns`，支持位置与命名参数；
-//! - 值类型：`null` / `number` / `bigint`（`setReadBigInts`）/ `string` / `Buffer`；
-//! - 错误文本复刻 modernc.org/sqlite 驱动形态（`errstr: errmsg (extcode)`）。
+//!   `db.close()`；`isOpen`/`isTransaction` 数据属性；
+//! - `StatementSync.run/get/all/iterate/setReadBigInts/columns/sourceSQL`，
+//!   位置与命名参数；绑定规则（缺位 NULL 补齐/超位 column index out of
+//!   range/未知命名键 Unknown named parameter/undefined 与布尔 TypeError）；
+//! - 值类型：`null` / `number` / `bigint`（`setReadBigInts`）/ `string` /
+//!   Uint8Array（Buffer 亦按 blob）；BLOB 读回纯 `Uint8Array`；
+//! - 错误对象对齐 Node 22 实测：`message` = errmsg 原文（无 `node:sqlite:`
+//!   前缀与扩展码尾缀），SQL 错误挂 `code: ERR_SQLITE_ERROR` +
+//!   `errcode`（扩展码，如 UNIQUE 撞 INTEGER PRIMARY KEY = 1555）+ `errstr`
+//!   （主码文本）；参数校验 TypeError 挂 `code: ERR_INVALID_ARG_TYPE`；
+//! - 事务控制以 `exec(BEGIN/COMMIT/ROLLBACK)` + `isTransaction` 对齐 Node 22；
+//!   **`db.transaction(fn)` 为 Aluka 超集扩展**（Node 22 LTS 无此方法，Node
+//!   23.8+ 才有；保留以便 better-sqlite3 风格代码迁移，不进 Node 对拍）。
 //!
 //! # FFI 边界说明（AGENTS.md 例外条款）
 //!
@@ -153,18 +162,43 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     Ok(obj)
 }
 
+/// 取 JS 字符串堆值(非字符串返回 `None`)。
+fn as_string_value(vm: &Vm, v: Value) -> Option<String> {
+    match v {
+        Value::Object(r) => match vm.heap.get(r.index()) {
+            Some(HeapObject::String(s)) => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// `new DatabaseSync(path)`：打开数据库连接并返回实例。
 fn database_sync_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let path = args
-        .first()
-        .map(|v| vm.format_value(*v))
-        .unwrap_or_default();
-    let conn = Connection::open(&path).map_err(|e| {
-        sqlite_throw(
-            vm,
-            &format!("node:sqlite: cannot open \"{path}\": {}", fmt_open_err(&e)),
-        )
-    })?;
+    let raw = args.first().copied().unwrap_or(Value::Undefined);
+    // Node 22 validator：path 必须为 string / Uint8Array / URL，否则 TypeError。
+    let path = match as_string_value(vm, raw) {
+        Some(s) => s,
+        None => {
+            // Buffer/Uint8Array 字节按 UTF-8 无损转换（Node 接受 Uint8Array 路径）。
+            if let Value::Object(_) = raw {
+                if let Some(bytes) = crate::builtins::buffer::extract_bytes(vm, raw) {
+                    String::from_utf8_lossy(&bytes).into_owned()
+                } else {
+                    return Err(type_error_throw(
+                        vm,
+                        "The \"path\" argument must be a string, Uint8Array, or URL without null bytes.",
+                    ));
+                }
+            } else {
+                return Err(type_error_throw(
+                    vm,
+                    "The \"path\" argument must be a string, Uint8Array, or URL without null bytes.",
+                ));
+            }
+        }
+    };
+    let conn = Connection::open(&path).map_err(|e| sqlite_throw_ext(vm, SqErr::from_driver(&e)))?;
 
     let obj = vm.alloc_ordinary();
     let ns = ns_value(vm, "sqlite:db");
@@ -188,19 +222,21 @@ fn database_sync_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `db.exec(sql)`：执行一段（可含多语句的）SQL，无返回行。
 fn db_exec(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(sql) = args.first().map(|v| vm.format_value(*v)) else {
-        return Err(sqlite_throw(vm, "node:sqlite: exec requires SQL string"));
-    };
+    let sql = args
+        .first()
+        .copied()
+        .and_then(|v| as_string_value(vm, v))
+        .ok_or_else(|| type_error_throw(vm, "The \"sql\" argument must be a string."))?;
     let id = require_db_id(vm)?;
     let outcome = DBS.with(|g| {
         with_map(g, |m| {
             let Some(entry) = m.get_mut(&id) else {
-                return Err("node:sqlite: sql: database is closed".to_owned());
+                return Err(SqErr::text("database is not open"));
             };
             entry
                 .conn
                 .execute_batch(&sql)
-                .map_err(|e| format!("node:sqlite: {}", fmt_driver_err(&e)))
+                .map_err(|e| SqErr::from_driver(&e))
         })
     });
     match outcome {
@@ -208,7 +244,7 @@ fn db_exec(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             sync_is_transaction(vm, id, &sql);
             Ok(Value::Undefined)
         }
-        Err(msg) => Err(sqlite_throw(vm, &msg)),
+        Err(sq) => Err(sqlite_throw_ext(vm, sq)),
     }
 }
 
@@ -233,25 +269,27 @@ fn sync_is_transaction(vm: &mut Vm, id: u32, sql: &str) {
 
 /// `db.prepare(sql)`：编译语句并返回 `StatementSync` 实例。
 fn db_prepare(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(sql) = args.first().map(|v| vm.format_value(*v)) else {
-        return Err(sqlite_throw(vm, "node:sqlite: prepare requires SQL string"));
-    };
+    let sql = args
+        .first()
+        .copied()
+        .and_then(|v| as_string_value(vm, v))
+        .ok_or_else(|| type_error_throw(vm, "The \"sql\" argument must be a string."))?;
     let db_id = require_db_id(vm)?;
-    // prepare 期即校验语法（对齐 Go：非法 SQL 在 prepare 时报错）。
+    // prepare 期即校验语法（对齐 Node：非法 SQL 在 prepare 时报错）。
     let prep = DBS.with(|g| {
         with_map(g, |m| {
             let Some(entry) = m.get_mut(&db_id) else {
-                return Err("node:sqlite: sql: database is closed".to_owned());
+                return Err(SqErr::text("database is not open"));
             };
             entry
                 .conn
                 .prepare(&sql)
                 .map(|_| ())
-                .map_err(|e| format!("node:sqlite: {}", fmt_driver_err(&e)))
+                .map_err(|e| SqErr::from_driver(&e))
         })
     });
-    if let Err(msg) = prep {
-        return Err(sqlite_throw(vm, &msg));
+    if let Err(sq) = prep {
+        return Err(sqlite_throw_ext(vm, sq));
     }
 
     let obj = vm.alloc_ordinary();
@@ -279,7 +317,7 @@ fn db_prepare(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Object(obj))
 }
 
-/// `db.close()`：关闭连接、清理语句并把 `isOpen` 置 false。
+/// `db.close()`：关闭连接、清理语句并把 `isOpen` 置 false（二次 close 报错）。
 fn db_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let Value::Object(r) = receiver else {
@@ -291,11 +329,11 @@ fn db_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
             m.retain(|_, e| e.db_id != id);
         })
     });
-    DBS.with(|g| {
-        with_map(g, |m| {
-            m.remove(&id);
-        })
-    });
+    let removed = DBS.with(|g| with_map(g, |m| m.remove(&id).is_some()));
+    if !removed {
+        // Node：已关闭的连接再 close 报错（先于 isOpen 置位检查）。
+        return Err(sqlite_throw_ext(vm, SqErr::text("database is not open")));
+    }
     set_module_prop(vm, r, "isOpen", Value::Boolean(false))?;
     Ok(Value::Undefined)
 }
@@ -332,34 +370,35 @@ fn txn_call(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let begun = DBS.with(|g| {
         with_map(g, |m| {
             let Some(entry) = m.get_mut(&db_id) else {
-                return Err("node:sqlite: sql: database is closed".to_owned());
+                return Err(SqErr::text("database is not open"));
             };
             entry
                 .conn
                 .execute_batch("BEGIN")
-                .map_err(|e| format!("node:sqlite: begin transaction: {}", fmt_driver_err(&e)))
+                .map_err(|e| SqErr::from_driver(&e))
         })
     });
-    if let Err(msg) = begun {
-        return Err(sqlite_throw(vm, &msg));
+    if let Err(sq) = begun {
+        return Err(sqlite_throw_ext(vm, sq));
     }
     match vm.invoke_callable(callback, Value::Undefined, args) {
         Ok(ret) => {
             let committed = DBS.with(|g| {
                 with_map(g, |m| {
                     let Some(entry) = m.get_mut(&db_id) else {
-                        return Err("node:sqlite: sql: database is closed".to_owned());
+                        return Err(SqErr::text("database is not open"));
                     };
-                    entry.conn.execute_batch("COMMIT").map_err(|e| {
-                        format!("node:sqlite: commit transaction: {}", fmt_driver_err(&e))
-                    })
+                    entry
+                        .conn
+                        .execute_batch("COMMIT")
+                        .map_err(|e| SqErr::from_driver(&e))
                 })
             });
             match committed {
                 Ok(()) => Ok(ret),
-                Err(msg) => {
+                Err(sq) => {
                     rollback_quiet(db_id);
-                    Err(sqlite_throw(vm, &msg))
+                    Err(sqlite_throw_ext(vm, sq))
                 }
             }
         }
@@ -386,9 +425,8 @@ fn require_db_id(vm: &mut Vm) -> Result<u32, VmError> {
     let receiver = current_receiver();
     match receiver {
         Value::Object(r) => Ok(r.0),
-        _ => Err(make_error(
+        _ => Err(sqlite_throw(
             vm,
-            "Error",
             "node:sqlite: receiver is not a DatabaseSync",
         )),
     }
@@ -409,11 +447,18 @@ fn stmt_run(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `run` 内核：raw_execute 取 changes，语句结束后取连接级 last rowid。
-fn run_inner(conn: &mut Connection, sql: &str, plan: &BindPlan) -> Result<(i64, i64), String> {
+///
+/// 对齐 Node 22：对返回行的语句（SELECT）`run` 不报错——changes /
+/// lastInsertRowid 回读最近一次写操作的值（sqlite3_changes 语义）。
+fn run_inner(conn: &mut Connection, sql: &str, plan: &BindPlan) -> Result<(i64, i64), SqErr> {
     let changes = {
-        let mut stmt = conn.prepare(sql).map_err(fmt_driver_err_owned)?;
+        let mut stmt = conn.prepare(sql).map_err(|e| SqErr::from_driver(&e))?;
         bind_plan(&mut stmt, plan)?;
-        stmt.raw_execute().map_err(fmt_driver_err_owned)? as i64
+        match stmt.raw_execute() {
+            Ok(n) => n as i64,
+            Err(rusqlite::Error::ExecuteReturnedResults) => conn.changes() as i64,
+            Err(e) => return Err(SqErr::from_driver(&e)),
+        }
     };
     let last_id = conn.last_insert_rowid();
     Ok((changes, last_id))
@@ -439,8 +484,8 @@ fn get_inner(
     conn: &mut Connection,
     sql: &str,
     plan: &BindPlan,
-) -> Result<Option<Vec<(String, SqlValue)>>, String> {
-    let mut stmt = conn.prepare(sql).map_err(fmt_driver_err_owned)?;
+) -> Result<Option<Vec<(String, SqlValue)>>, SqErr> {
+    let mut stmt = conn.prepare(sql).map_err(|e| SqErr::from_driver(&e))?;
     bind_plan(&mut stmt, plan)?;
     let names: Vec<String> = stmt
         .column_names()
@@ -448,11 +493,11 @@ fn get_inner(
         .map(|s| (*s).to_owned())
         .collect();
     let mut rows = stmt.raw_query();
-    match rows.next().map_err(fmt_driver_err_owned)? {
+    match rows.next().map_err(|e| SqErr::from_driver(&e))? {
         Some(row) => {
             let mut cells = Vec::with_capacity(names.len());
             for (i, name) in names.iter().enumerate() {
-                let v = row.get_ref(i).map_err(fmt_driver_err_owned)?;
+                let v = row.get_ref(i).map_err(|e| SqErr::from_driver(&e))?;
                 cells.push((name.clone(), owned_value(v)));
             }
             Ok(Some(cells))
@@ -509,8 +554,8 @@ fn rows_inner(
     conn: &mut Connection,
     sql: &str,
     plan: &BindPlan,
-) -> Result<Vec<Vec<(String, SqlValue)>>, String> {
-    let mut stmt = conn.prepare(sql).map_err(fmt_driver_err_owned)?;
+) -> Result<Vec<Vec<(String, SqlValue)>>, SqErr> {
+    let mut stmt = conn.prepare(sql).map_err(|e| SqErr::from_driver(&e))?;
     bind_plan(&mut stmt, plan)?;
     let names: Vec<String> = stmt
         .column_names()
@@ -520,11 +565,11 @@ fn rows_inner(
     let mut rows = stmt.raw_query();
     let mut out: Vec<Vec<(String, SqlValue)>> = Vec::new();
     loop {
-        match rows.next().map_err(fmt_driver_err_owned)? {
+        match rows.next().map_err(|e| SqErr::from_driver(&e))? {
             Some(row) => {
                 let mut cells = Vec::with_capacity(names.len());
                 for (i, name) in names.iter().enumerate() {
-                    let v = row.get_ref(i).map_err(fmt_driver_err_owned)?;
+                    let v = row.get_ref(i).map_err(|e| SqErr::from_driver(&e))?;
                     cells.push((name.clone(), owned_value(v)));
                 }
                 out.push(cells);
@@ -562,7 +607,9 @@ fn iter_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
             set_module_prop(vm, res, "value", Value::Object(value))?;
         }
         None => {
+            // Node 22：迭代结束后 next() 仍返回带 value: null 的 done 结果。
             set_module_prop(vm, res, "done", Value::Boolean(true))?;
+            set_module_prop(vm, res, "value", Value::Null)?;
         }
     }
     Ok(Value::Object(res))
@@ -586,35 +633,75 @@ fn stmt_set_read_big_ints(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
     Ok(Value::Undefined)
 }
 
-/// `stmt.columns()`：列信息数组（`{ name, type: "" }`）。
+/// `stmt.columns()`：列信息数组（Node 22 五键：column/database/name/table/type；
+/// 表达式列置 null；type 取声明类型 decltype）。源信息经 rusqlite 安全 API
+/// `columns()` / `columns_with_metadata()`（origin/table/database 与 Node
+/// sqlite3_column_*_name 同源，alias 投影也能取到源列名）。
 fn stmt_columns(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let key = current_stmt_key(vm)?;
     let found = stmt_entry(&key).map(|(db_id, sql, _)| (db_id, sql));
     let Some((db_id, sql)) = found else {
         return Ok(Value::Object(vm.alloc_array(Vec::new())));
     };
-    let names = DBS.with(|g| {
+    // 每列 (origin, database, name, table, decltype)。
+    type ColMeta = (
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+    );
+    let cols: Vec<ColMeta> = DBS.with(|g| {
         with_map(g, |m| {
             let Some(entry) = m.get_mut(&db_id) else {
                 return Vec::new();
             };
             match entry.conn.prepare(&sql) {
-                Ok(stmt) => stmt
-                    .column_names()
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect(),
+                Ok(stmt) => {
+                    let metas = stmt.columns_with_metadata();
+                    let decls = stmt.columns();
+                    let mut out = Vec::with_capacity(metas.len());
+                    for (i, meta) in metas.iter().enumerate() {
+                        let decltype = decls.get(i).and_then(|c| c.decl_type());
+                        out.push((
+                            meta.origin_name().map(str::to_owned),
+                            meta.database_name().map(str::to_owned),
+                            meta.name().to_owned(),
+                            meta.table_name().map(str::to_owned),
+                            decltype.map(str::to_owned),
+                        ));
+                    }
+                    out
+                }
                 Err(_) => Vec::new(),
             }
         })
     });
-    let mut elems: Vec<Value> = Vec::with_capacity(names.len());
-    for name in names {
+    let mut elems: Vec<Value> = Vec::with_capacity(cols.len());
+    for (origin, database, name, table, decltype) in cols {
         let ci = vm.alloc_ordinary();
-        let name_v = Value::Object(vm.alloc_string(name));
-        set_module_prop(vm, ci, "name", name_v)?;
-        let empty = Value::Object(vm.alloc_string(String::new()));
-        set_module_prop(vm, ci, "type", empty)?;
+        // 键序对齐 Node：column → database → name → table → type。
+        // （先取字符串句柄再写属性，避免同一表达式内双重可变借用。）
+        let o = origin.map(|s| vm.alloc_string(s));
+        set_module_prop(
+            vm,
+            ci,
+            "column",
+            o.map(Value::Object).unwrap_or(Value::Null),
+        )?;
+        let d = database.map(|s| vm.alloc_string(s));
+        set_module_prop(
+            vm,
+            ci,
+            "database",
+            d.map(Value::Object).unwrap_or(Value::Null),
+        )?;
+        let n = vm.alloc_string(name);
+        set_module_prop(vm, ci, "name", Value::Object(n))?;
+        let t = table.map(|s| vm.alloc_string(s));
+        set_module_prop(vm, ci, "table", t.map(Value::Object).unwrap_or(Value::Null))?;
+        let ty = decltype.map(|s| vm.alloc_string(s));
+        set_module_prop(vm, ci, "type", ty.map(Value::Object).unwrap_or(Value::Null))?;
         elems.push(Value::Object(ci));
     }
     Ok(Value::Object(vm.alloc_array(elems)))
@@ -625,9 +712,8 @@ fn current_stmt_key(vm: &mut Vm) -> Result<u32, VmError> {
     let receiver = current_receiver();
     match receiver {
         Value::Object(r) => Ok(r.0),
-        _ => Err(make_error(
+        _ => Err(sqlite_throw(
             vm,
-            "Error",
             "node:sqlite: receiver is not a StatementSync",
         )),
     }
@@ -650,118 +736,147 @@ fn stmt_read_big_ints(key: &u32) -> Option<bool> {
 
 /// 语句执行公共骨架：登记的 SQL → 连接重编译 → 绑定执行闭包。
 ///
-/// 返回 `Err(String)` 表示驱动层错误文本（由调用方包装为 `node:sqlite:` 异常）。
-fn exec_on_stmt<T, F>(key: &u32, f: F, plan: &BindPlan) -> Result<T, String>
+/// 返回 `Err(SqErr)` 表示驱动层错误（消息 + 扩展码，由调用方抛 Node 形态异常）。
+fn exec_on_stmt<T, F>(key: &u32, f: F, plan: &BindPlan) -> Result<T, SqErr>
 where
-    F: FnOnce(&mut Connection, &str, &BindPlan) -> Result<T, String>,
+    F: FnOnce(&mut Connection, &str, &BindPlan) -> Result<T, SqErr>,
 {
     let (db_id, sql) = stmt_entry(key)
         .map(|(db_id, sql, _)| (db_id, sql))
-        .ok_or_else(|| "node:sqlite: sql: database is closed".to_owned())?;
+        .ok_or_else(|| SqErr::text("statement has been finalized"))?;
     DBS.with(|g| {
         with_map(g, |m| {
             let Some(entry) = m.get_mut(&db_id) else {
-                return Err("node:sqlite: sql: database is closed".to_owned());
+                return Err(SqErr::text("database is not open"));
             };
             f(&mut entry.conn, &sql, plan)
         })
     })
 }
 
-/// 把 `exec_on_stmt` 的 `Err(String)` 转为 `node:sqlite: …` 异常。
-fn map_stmt_result<T>(vm: &mut Vm, outcome: Result<T, String>) -> Result<T, VmError> {
+/// 把 `exec_on_stmt` 的 `Err(SqErr)` 转为 Node 22 形态异常。
+fn map_stmt_result<T>(vm: &mut Vm, outcome: Result<T, SqErr>) -> Result<T, VmError> {
     match outcome {
         Ok(v) => Ok(v),
-        Err(msg) => {
-            // 驱动层文本统一补前缀；内部已带 `node:sqlite:` 的原样透传。
-            let full = if msg.starts_with("node:sqlite:") {
-                msg
-            } else {
-                format!("node:sqlite: {msg}")
-            };
-            Err(sqlite_throw(vm, &full))
-        }
+        Err(sq) => Err(sqlite_throw_ext(vm, sq)),
     }
 }
 
-/// 把绑定计划绑到语句上：位置参数校验数量，命名参数校验占位名。
-fn bind_plan(stmt: &mut Statement<'_>, plan: &BindPlan) -> Result<(), String> {
+/// 把绑定计划绑到语句上（对齐 Node 22.23.1 实测语义）：
+/// - 位置参数：缺位保持未绑定（SQLite 视 NULL，不报错）；**超位**报
+///   `column index out of range`；
+/// - 命名参数：先校验传入键均存在于语句命名占位符，未知键报
+///   `Unknown named parameter 'k'`；语句占位符无对应值（含 `?` 无名占位）
+///   保持未绑定 → NULL。
+fn bind_plan(stmt: &mut Statement<'_>, plan: &BindPlan) -> Result<(), SqErr> {
     let param_count = stmt.parameter_count();
     match plan {
         BindPlan::Positional(params) => {
-            if params.len() < param_count {
-                // 对齐 modernc 驱动：缺参按首个缺失下标报错（1 起）。
-                return Err(format!(
-                    "node:sqlite: missing argument with index {}",
-                    params.len() + 1
-                ));
+            if params.len() > param_count {
+                // Node 实测：多余位置参数报列越界文本（errcode SQLITE_RANGE=25）。
+                return Err(SqErr::text("column index out of range"));
             }
-            for (i, p) in params.iter().take(param_count).enumerate() {
+            for (i, p) in params.iter().enumerate() {
                 stmt.raw_bind_parameter(i + 1, p.to_sql_value())
-                    .map_err(fmt_driver_err_owned)?;
+                    .map_err(|e| SqErr::from_driver(&e))?;
             }
             Ok(())
         }
         BindPlan::Named(pairs) => {
-            let provided: HashMap<String, SqlParam> = pairs.iter().cloned().collect();
+            // 语句命名占位符名集合（去 `:` / `@` / `$` 前缀）。
+            let mut names: Vec<String> = Vec::new();
+            for i in 1..=param_count {
+                if let Some(pname) = stmt.parameter_name(i) {
+                    names.push(
+                        pname
+                            .trim_start_matches(':')
+                            .trim_start_matches('@')
+                            .trim_start_matches('$')
+                            .to_owned(),
+                    );
+                }
+            }
+            // 未知命名键 → Node "Unknown named parameter 'y'"。
+            for (k, _) in pairs {
+                if !names.iter().any(|n| n == k) {
+                    return Err(SqErr::text(format!("Unknown named parameter '{k}'")));
+                }
+            }
+            // 逐个命名占位符绑定（缺值保持 NULL；`?` 无名占位不绑）。
             for i in 1..=param_count {
                 let Some(pname) = stmt.parameter_name(i) else {
-                    // "?" 占位遇上纯命名参数：对齐 modernc 按序号报缺参。
-                    return Err(format!("node:sqlite: missing argument with index {i}"));
+                    continue;
                 };
                 let key = pname
                     .trim_start_matches(':')
                     .trim_start_matches('@')
                     .trim_start_matches('$');
-                let Some(value) = provided.get(key) else {
-                    return Err(format!("node:sqlite: missing named argument \"{key}\""));
-                };
-                stmt.raw_bind_parameter(i, value.to_sql_value())
-                    .map_err(fmt_driver_err_owned)?;
+                if let Some((_, value)) = pairs.iter().find(|(k, _)| k == key) {
+                    stmt.raw_bind_parameter(i, value.to_sql_value())
+                        .map_err(|e| SqErr::from_driver(&e))?;
+                }
             }
             Ok(())
         }
     }
 }
 
-/// JS 参数列表 → 绑定计划：单对象参数（无 `length` 属性且非空）视为命名参数。
+/// JS 参数列表 → 绑定计划（对齐 Node 22.23.1）：
+/// - 单对象参数且对象**不是**可直接绑定的字符串/BigInt/blob → 按命名参数展开
+///   （普通对象键、数组数字键一致展开；空对象 → 空命名集，占位保持 NULL）；
+/// - 其余一律位置参数（各值按位绑定，不可绑定值报带序号的 TypeError）。
 fn to_bind_plan(vm: &mut Vm, args: &[Value]) -> Result<BindPlan, VmError> {
     if args.len() == 1 {
         if let Value::Object(r) = args[0] {
-            let length_undefined = matches!(
-                vm.get_property(args[0], "length"),
-                Ok(Value::Undefined) | Err(_)
-            );
-            if length_undefined {
+            // 可直绑对象：字符串/BigInt/blob 载体（Buffer/TypedArray/ArrayBuffer/
+            // DataView）。**Array 除外**——Node 把数组参数按命名参数展开
+            // （数字键），extract_bytes 对数组会误判为字节序列。
+            let is_array = matches!(vm.heap.get(r.index()), Some(HeapObject::Array { .. }));
+            let bindable = !is_array
+                && (matches!(
+                    vm.heap.get(r.index()),
+                    Some(HeapObject::String(_) | HeapObject::BigInt(_))
+                ) || crate::builtins::buffer::extract_bytes(vm, args[0]).is_some());
+            if !bindable {
                 let pairs: Vec<(String, Value)> = match vm.heap.get(r.index()) {
                     Some(HeapObject::Ordinary { .. }) => vm.own_entries(r.index()),
+                    Some(HeapObject::Array { elements, .. }) => elements
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| (i.to_string(), *v))
+                        .collect(),
                     _ => Vec::new(),
                 };
-                if !pairs.is_empty() {
-                    let mut named = Vec::with_capacity(pairs.len());
-                    for (k, v) in pairs {
-                        named.push((k.clone(), js_to_param(vm, v)?));
-                    }
-                    return Ok(BindPlan::Named(named));
+                let mut named = Vec::with_capacity(pairs.len());
+                for (k, v) in pairs {
+                    named.push((k.clone(), js_to_param(vm, v, 1)?));
                 }
+                return Ok(BindPlan::Named(named));
             }
         }
     }
     let mut positional = Vec::with_capacity(args.len());
-    for a in args {
-        positional.push(js_to_param(vm, *a)?);
+    for (i, a) in args.iter().enumerate() {
+        positional.push(js_to_param(vm, *a, i + 1)?);
     }
     Ok(BindPlan::Positional(positional))
 }
 
-/// JS 值 → 驱动参数（布尔不可绑定，对齐 Node 22 实测）。
-fn js_to_param(vm: &mut Vm, v: Value) -> Result<SqlParam, VmError> {
+/// 不可绑定值的 TypeError（Node 文本带 1 起参数序号）。
+fn not_bindable(vm: &mut Vm, param_idx: usize) -> VmError {
+    type_error_throw(
+        vm,
+        &format!("Provided value cannot be bound to SQLite parameter {param_idx}."),
+    )
+}
+
+/// JS 值 → 驱动参数（对齐 Node 22 实测：`null` → NULL；`undefined`/布尔/
+/// 普通对象/数组 → TypeError；number 整值入 INTEGER；bigint 超 i64 按文本近似）。
+fn js_to_param(vm: &mut Vm, v: Value, param_idx: usize) -> Result<SqlParam, VmError> {
     match v {
-        Value::Undefined | Value::Null => Ok(SqlParam::Null),
-        Value::Boolean(_) => Err(type_error_throw(
-            vm,
-            "node:sqlite: provided value cannot be bound to SQLite parameter",
-        )),
+        Value::Undefined => Err(not_bindable(vm, param_idx)),
+        Value::Null => Ok(SqlParam::Null),
+        Value::Boolean(_) => Err(not_bindable(vm, param_idx)),
         Value::Number(n) => {
             if n.is_finite() && n == n.trunc() && n.abs() <= 9.2e18 {
                 Ok(SqlParam::Int(n as i64))
@@ -778,14 +893,20 @@ fn js_to_param(vm: &mut Vm, v: Value) -> Result<SqlParam, VmError> {
                 if let Ok(i) = digits.parse::<i64>() {
                     return Ok(SqlParam::Int(i));
                 }
-                // 超出 int64 的 bigint：按文本存储（对齐 Go 近似策略）。
+                // 超出 int64 的 bigint：按文本存储（近似策略，已登记）。
                 return Ok(SqlParam::Text(digits.clone()));
+            }
+            // 数组不是合法 SQLite 绑定值（Node：多参数位置绑定时报 TypeError；
+            // 单数组参数在上层已按命名展开）。必须在 extract_bytes 之前排除——
+            // 后者会把数组元素当字节序列。
+            if matches!(vm.heap.get(r.index()), Some(HeapObject::Array { .. })) {
+                return Err(not_bindable(vm, param_idx));
             }
             if let Some(bytes) = crate::builtins::buffer::extract_bytes(vm, v) {
                 return Ok(SqlParam::Blob(bytes));
             }
-            // 普通对象参数按文本绑定（对齐 Go `v.String()` 落点）。
-            Ok(SqlParam::Text(vm.format_value(v)))
+            // 普通对象/函数等：不可绑定（Node 22 抛 TypeError）。
+            Err(not_bindable(vm, param_idx))
         }
     }
 }
@@ -841,41 +962,53 @@ fn sql_value_to_js(vm: &mut Vm, read_big_ints: bool, value: &SqlValue) -> Value 
     }
 }
 
-/// `fmt_driver_err` 的值参形态（适配 `Result::map_err`）。
-fn fmt_driver_err_owned(e: rusqlite::Error) -> String {
-    fmt_driver_err(&e)
+/// 驱动层错误（Node 22 形态）：消息文本 + SQLite 扩展错误码。
+#[derive(Debug)]
+struct SqErr {
+    /// 错误消息（Node `message` = sqlite3_errmsg 原文，无前缀无扩展码尾缀）
+    msg: String,
+    /// sqlite3_extended_errcode（Node `errcode` 属性；0 = 非 SQLite 驱动错误）
+    ext: i32,
 }
 
-/// rusqlite 错误 → modernc 风格文本（`errstr: errmsg (ext)` / `errstr (ext)`）。
-fn fmt_driver_err(e: &rusqlite::Error) -> String {
-    match e {
-        rusqlite::Error::SqliteFailure(f, msg) => fmt_code_msg(f.extended_code, msg.as_deref()),
-        rusqlite::Error::SqlInputError { error, msg, .. } => {
-            fmt_code_msg(error.extended_code, Some(msg))
+impl SqErr {
+    /// rusqlite 错误 → Node 22 语义（消息 = errmsg，码 = extended）。
+    fn from_driver(e: &rusqlite::Error) -> SqErr {
+        match e {
+            rusqlite::Error::SqliteFailure(f, msg) => {
+                let primary = (f.extended_code & 0xFF) as u8;
+                // CANTOPEN：rusqlite 的 errmsg 会缀上失败路径
+                // （"unable to open database file: Z:/…"），Node 实测只报
+                // errstr 原文，统一裁到 errstr 短语。
+                let text = if primary == 14 {
+                    sqlite_errstr(primary).to_owned()
+                } else {
+                    msg.clone()
+                        .unwrap_or_else(|| sqlite_errstr(primary).to_owned())
+                };
+                SqErr {
+                    msg: text,
+                    ext: f.extended_code,
+                }
+            }
+            rusqlite::Error::SqlInputError { error, msg, .. } => SqErr {
+                msg: msg.clone(),
+                ext: error.extended_code,
+            },
+            other => SqErr {
+                msg: format!("{other}"),
+                ext: 0,
+            },
         }
-        other => format!("{other}"),
     }
-}
 
-/// 按 modernc 驱动的 `errstr(rc)` 语义拼装：errmsg 与 errstr 同文时省略前缀。
-fn fmt_code_msg(ext: i32, msg: Option<&str>) -> String {
-    let estr = sqlite_errstr((ext & 0xFF) as u8);
-    match msg {
-        Some(m) if m == estr => format!("{estr} ({ext})"),
-        Some(m) => format!("{estr}: {m} ({ext})"),
-        None => format!("{estr} ({ext})"),
-    }
-}
-
-/// `Connection::open` 失败文本：libsqlite3-sys 对 CANTOPEN 会把路径缀在
-/// errmsg 后，modernc 没有；对齐 Go 观测统一取 errstr 文本。
-fn fmt_open_err(e: &rusqlite::Error) -> String {
-    match e {
-        rusqlite::Error::SqliteFailure(f, _) => {
-            let ext = f.extended_code;
-            format!("{} ({ext})", sqlite_errstr((ext & 0xFF) as u8))
+    /// 纯文本错误（Node 侧校验错误：column index out of range / Unknown named
+    /// parameter / database is not open 等，无 SQLite 驱动码）。
+    fn text(msg: impl Into<String>) -> SqErr {
+        SqErr {
+            msg: msg.into(),
+            ext: 0,
         }
-        other => fmt_driver_err(other),
     }
 }
 
@@ -919,23 +1052,38 @@ fn ns_value(vm: &mut Vm, ns: &str) -> Value {
     Value::Object(vm.alloc_string(ns.to_owned()))
 }
 
-/// 抛 Node 错误对象（name=Error）。
+/// 抛 Node 形态错误对象（name=Error；code=ERR_SQLITE_ERROR；驱动错误带
+/// errcode=扩展码 / errstr=主码文本，对齐 Node 22.23.1 实测属性面）。
+fn sqlite_throw_ext(vm: &mut Vm, sq: SqErr) -> VmError {
+    let ext = (sq.ext != 0).then_some(sq.ext);
+    make_error(vm, "Error", "ERR_SQLITE_ERROR", &sq.msg, ext)
+}
+
+/// 抛无驱动码的 Error（内部/校验文本；仍挂 ERR_SQLITE_ERROR code）。
 fn sqlite_throw(vm: &mut Vm, msg: &str) -> VmError {
-    make_error(vm, "Error", msg)
+    make_error(vm, "Error", "ERR_SQLITE_ERROR", msg, None)
 }
 
-/// 抛 TypeError 错误对象。
+/// 抛 TypeError 错误对象（code=ERR_INVALID_ARG_TYPE，Node validator 形态）。
 fn type_error_throw(vm: &mut Vm, msg: &str) -> VmError {
-    make_error(vm, "TypeError", msg)
+    make_error(vm, "TypeError", "ERR_INVALID_ARG_TYPE", msg, None)
 }
 
-/// 构造带 `name`/`message` 属性的错误实例并包装为 VM 异常。
-fn make_error(vm: &mut Vm, name: &str, msg: &str) -> VmError {
+/// 构造带 `name`/`message`/`code`（及可选 `errcode`/`errstr`）属性的错误实例。
+fn make_error(vm: &mut Vm, name: &str, code: &str, msg: &str, ext: Option<i32>) -> VmError {
     let obj = vm.alloc_ordinary();
     let name_v = Value::Object(vm.alloc_string(name.to_owned()));
     let _ = vm.set_property(Value::Object(obj), "name", name_v);
     let msg_v = Value::Object(vm.alloc_string(msg.to_owned()));
     let _ = vm.set_property(Value::Object(obj), "message", msg_v);
+    let code_v = Value::Object(vm.alloc_string(code.to_owned()));
+    let _ = vm.set_property(Value::Object(obj), "code", code_v);
+    if let Some(ext) = ext {
+        let _ = vm.set_property(Value::Object(obj), "errcode", Value::Number(ext as f64));
+        let estr = sqlite_errstr((ext & 0xFF) as u8);
+        let sv = vm.alloc_string(estr.to_owned());
+        let _ = vm.set_property(Value::Object(obj), "errstr", Value::Object(sv));
+    }
     VmError::Thrown(Value::Object(obj))
 }
 

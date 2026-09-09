@@ -152,7 +152,7 @@ fn sqlite_bigint_blob_errors_e2e_matches_go() {
             "console.log(\"bigint read:\", typeof st.get(0).id, st.get(0).id);\n",
             "try { db.prepare(\"SELECT ?\").get(true); } catch (e) { console.log(\"bool:\", e.name, e.message); }\n",
             "const sp = db.prepare(\"SELECT ? AS v, ? AS w\");\n",
-            "try { sp.get(1); } catch (e) { console.log(\"missing:\", e.message); }\n",
+            "try { const gv = sp.get(1); console.log(\"missing-ok:\", gv.v, gv.w); } catch (e) { console.log(\"missing-err:\", e.message); }\n",
             "try { db.prepare(\"SELECT :x AS v\").get({ y: 1 }); } catch (e) { console.log(\"unknown:\", e.message); }\n",
             "db.exec(\"CREATE TABLE u (id INTEGER PRIMARY KEY, name TEXT)\");\n",
             "db.prepare(\"INSERT INTO u (id, name) VALUES (1, 'a')\").run();\n",
@@ -164,14 +164,14 @@ fn sqlite_bigint_blob_errors_e2e_matches_go() {
     // M5.3 对齐 Node 22：BLOB 读出为纯 Uint8Array（非 Buffer），字节透传
     assert!(out.contains("blob: object false [ 1, 2, 3, 250 ]"));
     assert!(out.contains("bigint read: bigint 1"));
-    assert!(out.contains(
-        "bool: TypeError node:sqlite: provided value cannot be bound to SQLite parameter"
-    ));
-    assert!(out.contains("missing: node:sqlite: missing argument with index 2"));
-    assert!(out.contains("unknown: node:sqlite: missing named argument \"x\""));
-    assert!(
-        out.contains("dup: node:sqlite: constraint failed: UNIQUE constraint failed: u.id (1555)")
-    );
+    // Node 22.23.1 实测：布尔/undefined 绑定 TypeError（无前缀、带参数序号）
+    assert!(out.contains("bool: TypeError Provided value cannot be bound to SQLite parameter 1."));
+    // 缺位置参数不再报错——未绑定占位按 NULL 补齐（Node 语义）
+    assert!(out.contains("missing-ok: 1 null"));
+    // 未知命名键文本（Node 22：Unknown named parameter，无 node:sqlite 前缀）
+    assert!(out.contains("unknown: Unknown named parameter 'y'"));
+    // 约束冲突消息 = errmsg 原文（无 errstr/extcode 包装）
+    assert!(out.contains("dup: UNIQUE constraint failed: u.id"));
 }
 
 /// sqlite：DatabaseSync 打开不存在目录 / exec 与 prepare 语法错误。
@@ -192,13 +192,40 @@ fn sqlite_open_and_sql_errors_e2e_matches_go() {
     )
     .unwrap();
     let out = common::assert_e2e_matches_go(&work, "probe.js");
+    // Node 22.23.1 实测：CANTOPEN 报 errstr 原文（无路径、无前缀、无扩展码）
+    assert!(out.contains("n: Error m: unable to open database file"));
+    // SQL 错误 message = errmsg 原文（无 errstr/extcode 包装）
+    assert!(out.contains("m: near \"NOT\": syntax error"));
+    assert!(out.contains("m2: incomplete input"));
+    // 无参/非字符串 sql → TypeError（Node validator 文本）
+    assert!(out.contains("e0: The \"sql\" argument must be a string."));
+    assert!(out.contains("p0: The \"sql\" argument must be a string."));
+}
+
+/// sqlite：**Node 22.23.1 全链路真对拍**（评审 M5.3 验收证据补缺）——探针
+/// 资源 `probes/node22_sqlite_probe.js` 覆盖 CRUD/语句结果/参数形态/iterate/
+/// columns 五键/sourceSQL/exec 事务 + isTransaction/bigint/blob/绑定拒绝
+/// （bool/undefined/数组 named 展开/未知命名键/缺位 NULL 补/超位越界）/
+/// 错误对象 attrs（code/errcode/errstr）/close 语义/path 与 sql validator，
+/// 输出与 Node 22 LTS 逐字一致（开发期 diff 见 round5 登记）。
+#[test]
+fn sqlite_node22_diff_e2e_matches_node() {
+    let work = work_dir("sqlite_node22_diff");
+    std::fs::write(
+        work.join("probe.js"),
+        include_str!("probes/node22_sqlite_probe.js"),
+    )
+    .unwrap();
+    // 与 Node 22 输出逐字对拍（Node 不可用环境自动跳过对拍侧，仍跑本地侧）
+    let out = common::assert_e2e_matches_node(&work, "probe.js");
+    // 锚点抽样：核心语义行必须出现（防对拍被静默跳过时失去验证）
+    assert!(out.contains("cols: [{\"column\":\"id\",\"database\":\"main\",\"name\":\"id\",\"table\":\"users\",\"type\":\"INTEGER\"}"));
+    assert!(out.contains("iter-end: true null"));
+    assert!(out.contains("missing: 1 null"));
     assert!(out.contains(
-        "n: Error m: node:sqlite: cannot open \"Z:/no/such/dir/x.db\": unable to open database file (14)"
+        "dup: ERR_SQLITE_ERROR 1555 constraint failed | UNIQUE constraint failed: users.id"
     ));
-    assert!(out.contains("m: node:sqlite: SQL logic error: near \"NOT\": syntax error (1)"));
-    assert!(out.contains("m2: node:sqlite: SQL logic error: incomplete input (1)"));
-    assert!(out.contains("e0: node:sqlite: exec requires SQL string"));
-    assert!(out.contains("p0: node:sqlite: prepare requires SQL string"));
+    assert!(out.contains("nopath: TypeError | The \"path\" argument must be a string, Uint8Array, or URL without null bytes."));
 }
 
 /// readline：模块表面 + Interface 方法面（fake output 收集提示符）。

@@ -30,9 +30,11 @@ impl Vm {
                 let slot = self.shape_table.shape(*shape)?.lookup(key)?;
                 slots.get(slot).map(|&b| to_vm_value(b))
             }
-            OrdinaryProps::Dict { properties } => {
-                properties.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
-            }
+            OrdinaryProps::Dict { properties, index } => index
+                .get(key)
+                .and_then(|&s| properties.get(s))
+                .filter(|(k, _)| k == key)
+                .map(|(_, v)| *v),
         }
     }
 
@@ -49,7 +51,7 @@ impl Vm {
     fn env_find_key(&self, idx: usize, key: &str) -> Option<String> {
         match self.heap.get(idx) {
             Some(HeapObject::Ordinary { props, .. }) => match props {
-                OrdinaryProps::Dict { properties } => properties
+                OrdinaryProps::Dict { properties, .. } => properties
                     .iter()
                     .find(|(k, _)| k.eq_ignore_ascii_case(key))
                     .map(|(k, _)| k.clone()),
@@ -98,7 +100,7 @@ impl Vm {
                 }
                 out
             }
-            OrdinaryProps::Dict { properties } => properties
+            OrdinaryProps::Dict { properties, .. } => properties
                 .iter()
                 .filter(|(k, _)| !deleted.contains(k) && !non_enum.contains(k))
                 .map(|(k, v)| (k.clone(), *v))
@@ -170,11 +172,22 @@ impl Vm {
                                     slot_vals.get(i).copied().unwrap_or(Value::Undefined),
                                 ));
                             }
-                            *props = OrdinaryProps::Dict { properties };
+                            let index = properties
+                                .iter()
+                                .enumerate()
+                                .map(|(i, (k, _))| (k.clone(), i))
+                                .collect();
+                            *props = OrdinaryProps::Dict { properties, index };
                         }
                     }
-                    OrdinaryProps::Dict { properties } => {
+                    OrdinaryProps::Dict { properties, index } => {
                         properties.retain(|(k, _)| k != key);
+                        // retain 后槽位整体前移：重建键 → 槽位索引（删除稀少，
+                        // O(n) 重建可接受；保持与列表严格同步）。
+                        index.clear();
+                        for (i, (k, _)) in properties.iter().enumerate() {
+                            index.insert(k.clone(), i);
+                        }
                     }
                 }
                 deleted.insert(key.to_owned());
@@ -529,7 +542,7 @@ impl Vm {
                             (names, Some(vals), *proto)
                         }
                         Some(HeapObject::Ordinary {
-                            props: OrdinaryProps::Dict { properties },
+                            props: OrdinaryProps::Dict { properties, .. },
                             proto,
                             ..
                         }) => {
@@ -773,7 +786,12 @@ impl Vm {
                                         }
                                     }
                                     properties.push((key.to_owned(), val));
-                                    Some(OrdinaryProps::Dict { properties })
+                                    let index = properties
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, (k, _))| (k.clone(), i))
+                                        .collect();
+                                    Some(OrdinaryProps::Dict { properties, index })
                                 } else {
                                     // 沿 shape transition 派生子隐藏类，追加槽位
                                     let new_shape = self.shape_table.transition(*shape, key);
@@ -782,12 +800,21 @@ impl Vm {
                                     None
                                 }
                             }
-                            OrdinaryProps::Dict { properties } => {
-                                // 有序语义：既有键原位更新（保插入位置），否则追加
-                                if let Some(slot) = properties.iter_mut().find(|(k, _)| *k == key) {
-                                    slot.1 = val;
-                                } else {
-                                    properties.push((key.to_owned(), val));
+                            OrdinaryProps::Dict { properties, index } => {
+                                // 有序语义：既有键原位更新（保插入位置），否则追加。
+                                // 键 → 槽位索引 O(1) 命中（顺序新键追加免全表扫描——
+                                // 否则海量键对象如 Buffer 数值下标退化为 O(N²)）。
+                                let hit = index
+                                    .get(key)
+                                    .copied()
+                                    .filter(|&s| properties.get(s).is_some_and(|(k, _)| k == key));
+                                match hit {
+                                    Some(s) => properties[s].1 = val,
+                                    None => {
+                                        let s = properties.len();
+                                        properties.push((key.to_owned(), val));
+                                        index.insert(key.to_owned(), s);
+                                    }
                                 }
                                 None
                             }
@@ -979,7 +1006,7 @@ impl Vm {
                                     .collect::<Vec<_>>()
                             })
                             .unwrap_or_default(),
-                        OrdinaryProps::Dict { properties } => properties
+                        OrdinaryProps::Dict { properties, .. } => properties
                             .iter()
                             .filter(|(k, _)| !deleted.contains(k) && !non_enum.contains(k))
                             .map(|(k, _)| k.clone())

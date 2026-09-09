@@ -35,11 +35,14 @@ pub enum OrdinaryProps {
     ///
     /// `Vec<(String, Value)>` 保持**插入序**——`JSON.stringify` / `Object.keys`
     /// / `for...in` 的输出顺序与 Node 22 一致（V8 对象键序 = 创建序；
-    /// 整数索引键由消费端按规范前置升序）。属性访问为线性查找（n 通常
-    /// 数十量级；超阈值对象避免 shape 树爆炸优先于 O(1) 命中）。
+    /// 整数索引键由消费端按规范前置升序）。伴生 `index` 提供键 → 槽位下标
+    /// O(1) 命中，避免顺序写入退化为 O(N²)（海量键对象如 Buffer 的 0..N
+    /// 数值下标；每次 push 后同步登记，delete 移除后整体重建）。
     Dict {
         /// 有序属性列表（键 → 值；删除经 retain，重加追加末尾）
         properties: Vec<(String, Value)>,
+        /// 键 → properties 槽位下标（与列表严格同步；retain 后重建）
+        index: HashMap<String, usize>,
     },
 }
 
@@ -540,7 +543,7 @@ impl HeapObject {
                             }
                         }
                     }
-                    OrdinaryProps::Dict { properties } => {
+                    OrdinaryProps::Dict { properties, .. } => {
                         for (_, v) in properties {
                             if let Value::Object(r) = v {
                                 f(r.0);

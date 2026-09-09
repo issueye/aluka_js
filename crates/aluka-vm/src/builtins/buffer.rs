@@ -32,7 +32,8 @@ fn get_buffer(id: u32) -> Option<Vec<u8>> {
     BUFFER_STORE.with(|g| g.borrow().as_ref()?.get(&id).cloned())
 }
 
-/// 提取任意 Value 的底层字节序列（支持 Buffer 实例、字符串、数组等）。
+/// 提取任意 Value 的底层字节序列（支持 Buffer 实例、字符串、数组、
+/// ArrayBuffer/TypedArray/DataView —— 视图按其底层 buffer 字节区间切取）。
 pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
     match val {
         Value::Object(r) => {
@@ -75,6 +76,44 @@ pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
                         Some(bytes)
                     } else {
                         None
+                    }
+                }
+                // 底层缓冲：ArrayBuffer 全量；TypedArray/DataView 按视图字节区间
+                // 切取（与 Node 结构化绑定语义一致；已分离缓冲不可提取）。
+                HeapObject::ArrayBuffer {
+                    data,
+                    detached: false,
+                    ..
+                } => Some(data.clone()),
+                HeapObject::TypedArray {
+                    kind,
+                    buffer,
+                    byte_offset,
+                    length,
+                } => {
+                    let end = byte_offset + length * kind.elem_size();
+                    match vm.heap.get(buffer.0 as usize) {
+                        Some(HeapObject::ArrayBuffer {
+                            data,
+                            detached: false,
+                            ..
+                        }) if data.len() >= end => Some(data[*byte_offset..end].to_vec()),
+                        _ => None,
+                    }
+                }
+                HeapObject::DataView {
+                    buffer,
+                    byte_offset,
+                    byte_length,
+                } => {
+                    let end = byte_offset + byte_length;
+                    match vm.heap.get(buffer.0 as usize) {
+                        Some(HeapObject::ArrayBuffer {
+                            data,
+                            detached: false,
+                            ..
+                        }) if data.len() >= end => Some(data[*byte_offset..end].to_vec()),
+                        _ => None,
                     }
                 }
                 _ => None,

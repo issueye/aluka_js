@@ -19,6 +19,34 @@ pub fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// e2e 子进程超时（默认 300s）。
+///
+/// 防御引擎性能回归（如字典属性写入退化 O(n²) 曾令 zlib 200KB 用例挂死
+/// 19 分钟）：超时即 kill 并以显式 panic 失败，绝不静默挂死门禁。
+pub const E2E_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 带超时的子进程收尾：轮询 try_wait，超时 kill 并 panic。
+fn finish_with_timeout(mut child: std::process::Child) -> std::process::Output {
+    let deadline = std::time::Instant::now() + E2E_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().expect("等待子进程失败"),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "e2e 子进程超过 {:.0}s 未结束，已终止——疑似引擎性能回归或死锁",
+                        E2E_TIMEOUT.as_secs_f64()
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(e) => panic!("轮询子进程失败: {e}"),
+        }
+    }
+}
+
 pub fn aluvm_exe() -> PathBuf {
     Path::new(env!("CARGO_BIN_EXE_aluvm")).to_path_buf()
 }
@@ -89,14 +117,18 @@ pub fn rust_pipeline_run(work: &Path, entry: &str) -> String {
     aluvm_run(&bc)
 }
 
-/// 运行 aluvm 并返回输出（trim 后）。
+/// 运行 aluvm 并返回输出（trim 后；带超时防护）。
 pub fn aluvm_run(bc: &Path) -> String {
-    let out = Command::new(aluvm_exe())
-        .arg("run")
-        .arg(bc)
-        .current_dir(bc.parent().expect("bc 有父目录"))
-        .output()
-        .expect("运行 aluvm 失败");
+    let out = finish_with_timeout(
+        Command::new(aluvm_exe())
+            .arg("run")
+            .arg(bc)
+            .current_dir(bc.parent().expect("bc 有父目录"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("运行 aluvm 失败"),
+    );
     assert!(
         out.status.success(),
         "aluvm 执行失败: {:?}",
@@ -108,14 +140,18 @@ pub fn aluvm_run(bc: &Path) -> String {
         .to_string()
 }
 
-/// 运行 Node.js 22 LTS 并返回输出（trim 后）。
+/// 运行 Node.js 22 LTS 并返回输出（trim 后；带超时防护）。
 pub fn node_run(js: &Path) -> Option<String> {
     let node_bin = std::env::var("NODE").unwrap_or_else(|_| "node".to_string());
-    let out = Command::new(node_bin)
-        .arg(js)
-        .current_dir(js.parent().unwrap_or(js))
-        .output()
-        .ok()?;
+    let out = finish_with_timeout(
+        Command::new(node_bin)
+            .arg(js)
+            .current_dir(js.parent().unwrap_or(js))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .ok()?,
+    );
     if out.status.success() {
         Some(
             String::from_utf8_lossy(&out.stdout)

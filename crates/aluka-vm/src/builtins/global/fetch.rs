@@ -53,6 +53,9 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
 
     let mut current_url = url;
     let mut result = None;
+    // Node 22：实际跟随过 ≥1 次重定向的最终响应 `redirected` 为 true
+    //（manual/error 模式与无重定向链保持 false）。
+    let mut followed_any = false;
     for _ in 0..20 {
         let attempt = do_sync_http_request(vm, &current_url, &method, &headers, body.as_ref());
         match attempt {
@@ -85,6 +88,7 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
                         _ => {
                             if let Some(loc) = &location {
                                 current_url = resolve_redirect_url(&current_url, loc);
+                                followed_any = true;
                                 continue;
                             }
                         }
@@ -121,7 +125,7 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
         &headers_text,
         &hdr_pairs,
         &body_text,
-        false,
+        followed_any,
         &current_url,
     )?;
     let promise = vm.alloc_fulfilled_promise(Value::Object(response));

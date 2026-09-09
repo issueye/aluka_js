@@ -57,7 +57,7 @@
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
-| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3/M5.4 未闭环，20260909 评审登记见 §M5） |
+| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3 ✅ 已闭环；M5.4 未闭环，见 §M5） |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
@@ -242,13 +242,12 @@
 ---
 
 ### M5 · 多线程并发与系统级扩展
-> **2026-09-09 评审登记**（证据见 `20260909/README.md` §15）：
-> 四项均**部分达成**，不能整体验收——M5.1 主体达成（真物理线程 + Node 对拍
-> 全绿，结构化克隆降级为 JSON 往返）；M5.2 端口共享真实达成（self-exe 多进程
-> + OS 内核分发，21-m5 对拍绿）但 IPC 面降级且 bc 模式多 fetch P0 挂死未修；
-> M5.3 表面 + rusqlite 真实执行落地但**验收对拍缺失**（4 e2e 均为本地断言，
-> 不比对 Node）；M5.4 仅 concurrency 与 Mock 达成（13-mock 对拍绿），Timer
-> Mock / 报告接线 / LCOV / CLI 运行器未闭环。总览改 `[~]`，按项登记。
+> **2026-09-09 评审 + round5 结项登记**（证据见 `20260909/README.md` §15 与
+> `README-round5.md`）：
+> M5.1/M5.2 主体达成（真物理线程/端口共享 + Node 对拍绿）；**M5.3 已闭环**
+> （Node 22.23.1 实测对齐——错误文本/绑定规则/columns 五键/close 语义全面
+> Node 化，44 行探针逐字一致真对拍固化）；M5.4 仅 concurrency 与 Mock 达成
+> （Timer Mock / 报告接线 / LCOV / CLI 运行器未闭环）。总览按项登记。
 - [~] **M5.1 `worker_threads` 跨物理线程支持**（主体达成——结构化克隆缺口，20260909 评审）
   - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；✅ 真
     `std::thread` + 独立 Vm（runtime 装配钩子），通道为 std mpsc（crossbeam
@@ -267,17 +266,22 @@
   - 验收：多进程集群 HTTP 端口共享测试通过。✅ `21-m5` Node 逐字节对拍 PASS
     （bc 模式实测）。遗留：⚠️ **P0** bc 模式 cluster + fetch ≥2 连接挂死
     （round4 登记，src 模式正常）；listen 错误载体为字符串非 Error 对象。
-- [ ] **M5.3 `node:sqlite` 生产级支持**（实现落地——验收对拍缺失，20260909 评审）
-  - 规范实现 `DatabaseSync` 类与 SQL 语句预编译 `StatementSync`；⚠️ 表面齐 +
-    rusqlite 真实执行，但非真预编译（每次执行重编译）；`columns().type` 恒空；
-    无 ctor options；错误文本对齐 Go modernc 驱动而非 Node 22；
-  - 支持事务控制（`BEGIN`, `COMMIT`, `ROLLBACK`）与复杂类型映射；✅ exec 直写
-    + `transaction()` 包装器；类型映射含 bigint/blob→Uint8Array/Boolean→
-    TypeError；⚠️ 事务路径零自动化测试、`isTransaction` 在包装器路径不同步；
-  - 验收：对齐 Node 22 原生 SQLite 操作测试。❌ 4 个 e2e 全为本地 contains
-    断言（`assert_e2e_matches_go` 别名不比对 Node）；声称的 Node 22 差分
-    用例仓库不存在。裸名 `require('sqlite')` 可用（Node 22 应 MODULE_NOT_
-    FOUND，有意折衷需登记）。
+- [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
+  - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
+    （每次执行重编译，语义等价）登记跟踪；`columns()` 对齐 Node 五键
+    （column/database/name/table/type，表达式列 null）；无 ctor options 登记；
+    错误文本全面 Node 化（message=errmsg 原文；code ERR_SQLITE_ERROR +
+    errcode 扩展码 + errstr；TypeError 挂 ERR_INVALID_ARG_TYPE）；
+  - 支持事务控制（`BEGIN`, `COMMIT`, `ROLLBACK`）与复杂类型映射；✅ exec
+    直写 + `isTransaction` 与 Node 22 实测一致；bigint/blob→Uint8Array/
+    Boolean→TypeError/缺参 NULL 补/超位越界/Unknown named parameter 对齐；
+    ⚠️ **`db.transaction(fn)` 为超集扩展**——Node 22 LTS 原型面无此方法
+    （Node 23.8+ 才有），wrapper 与 isTransaction 同步登记跟踪；
+  - 验收：对齐 Node 22 原生 SQLite 操作测试。✅ 新增 `sqlite_node22_diff_
+    e2e_matches_node` 真对拍（`probes/node22_sqlite_probe.js` 44 行输出与
+    Node 22.23.1 **逐字一致**）+ 既有 4 用例断言更新；裸名 `require('sqlite')`
+    可用（剥前缀折衷已登记）。**遗留**：ctor options、真预编译句柄语义、
+    wrapper 事务的 isTransaction 同步。
 - [ ] **M5.4 `node:test` 进阶测试套件**（仅 concurrency + Mock 达成，20260909 评审）
   - 支持并发测试执行（`concurrency` 选项）；✅ 单线程 async 交错（与 Node
     协作式并发语义一致），phase8 e2e 绿；

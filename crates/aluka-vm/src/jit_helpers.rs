@@ -536,6 +536,7 @@ mod pic_layout_tests {
         let dict_probe = HeapObject::Ordinary {
             props: OrdinaryProps::Dict {
                 properties: Vec::new(),
+                index: HashMap::new(),
             },
             getters: HashMap::new(),
             setters: HashMap::new(),
