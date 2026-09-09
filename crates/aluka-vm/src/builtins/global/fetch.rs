@@ -717,7 +717,16 @@ fn do_sync_http_request(
     loop {
         match stream.read(&mut buf) {
             Ok(0) => break,
-            Ok(n) => response_bytes.extend_from_slice(&buf[..n]),
+            Ok(n) => {
+                response_bytes.extend_from_slice(&buf[..n]);
+                // undici 语义：响应完整（头完成且 Content-Length 收满 /
+                // chunked 终止块已到）即返回，**不等连接关闭**——否则对
+                // keep-alive 服务器（响应后连接保持）空等到读超时。
+                // （P0 修复：fetch → aluka http server 每次请求 10s 的根因）
+                if response_complete(&response_bytes) {
+                    break;
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
             Err(_) => break,
         }
@@ -745,6 +754,38 @@ fn do_sync_http_request(
         raw_body
     };
     Ok((status, header_block, body_text))
+}
+
+/// 响应完整判定（undici 语义，不依赖连接关闭）：
+/// 头部结束标记存在且 (a) `Content-Length` 已收满，或
+/// (b) `Transfer-Encoding: chunked` 的终止块已出现。
+/// 无长度信息（HTTP/1.0 close 定界）时返回 false——由读循环等 EOF/超时。
+fn response_complete(bytes: &[u8]) -> bool {
+    let Some(he) = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|i| i + 4)
+    else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&bytes[..he]);
+    let lower = head.to_ascii_lowercase();
+    if lower.contains("transfer-encoding: chunked") {
+        // 终止块 "0\r\n\r\n"（允许 trailer 行存在，容忍实现简化）
+        return bytes[he..].windows(5).any(|w| w == b"0\r\n\r\n");
+    }
+    if let Some(cl) = head.lines().find_map(|l| {
+        let mut it = l.splitn(2, ':');
+        match (it.next(), it.next()) {
+            (Some(k), Some(v)) if k.trim().eq_ignore_ascii_case("content-length") => {
+                v.trim().parse::<usize>().ok()
+            }
+            _ => None,
+        }
+    }) {
+        return bytes.len() >= he + cl;
+    }
+    false
 }
 
 fn decode_chunked_body(raw: &str) -> String {

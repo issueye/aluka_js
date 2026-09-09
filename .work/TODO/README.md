@@ -264,8 +264,11 @@
     OS 内核分发（非 IPC 句柄传递）；worker.send 恒 true、isConnected/
     isDead 恒值、exit code 硬编码 0、无 RR 调度；
   - 验收：多进程集群 HTTP 端口共享测试通过。✅ `21-m5` Node 逐字节对拍 PASS
-    （bc 模式实测）。遗留：⚠️ **P0** bc 模式 cluster + fetch ≥2 连接挂死
-    （round4 登记，src 模式正常）；listen 错误载体为字符串非 Error 对象。
+    （bc 模式实测）。✅ **P0 已关闭**（round6：fetch 响应完成判定不依赖
+    连接关闭——原「挂死」实为每请求 10s 读超时叠加，修复后并发双 fetch
+    20s → 13ms、phase9 71s → 1.1s；conformance 全量绿）。遗留：⚠️ IPC 面
+    （worker.send/isConnected/isDead/exit code）降级、`Connection: close`
+    响应后关闭连接的 server 语义、listen 错误载体为字符串非 Error 对象。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
     （每次执行重编译，语义等价）登记跟踪；`columns()` 对齐 Node 五键

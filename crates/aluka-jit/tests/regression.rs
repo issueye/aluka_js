@@ -920,7 +920,10 @@ fn call_ic_does_not_leak_across_vms() {
     if gb.0 != ga.0 {
         // 前提不成立（两 VM 装配的分配数不同，如 builtins 装配变化）时本用例
         // 覆盖不到「句柄相同导致缓存误命中」的目标场景——跳过而非误报。
-        eprintln!("skip: 两 Vm 闭包句柄不同 ({}, {})，目标场景不可达", ga.0, gb.0);
+        eprintln!(
+            "skip: 两 Vm 闭包句柄不同 ({}, {})，目标场景不可达",
+            ga.0, gb.0
+        );
         return;
     }
     vm_b.globals
