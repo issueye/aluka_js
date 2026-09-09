@@ -272,7 +272,7 @@ fn read_result(vm: &mut Vm, value: Value, done: bool) -> Value {
 
 /// `new ReadableStream([underlyingSource])`：登记内部状态、挂最小表面并同步
 /// 调用 `start(controller)`（对齐 Go gstream.NewReadableStream）。
-fn readable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn readable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let stream = vm.alloc_ordinary();
     insert_state(
         stream.0,
@@ -314,7 +314,7 @@ fn readable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `new WritableStream([underlyingSink])`：登记 underlyingSink 回调与表面
 /// `getWriter` / `write` / `close`（M4 互通：sink 回调供 fromWeb 转发）。
-fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let stream = vm.alloc_ordinary();
     let mut sink_write = None;
     let mut sink_close = None;
@@ -353,7 +353,7 @@ fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `new TransformStream([transformer])`：`readable` / `writable` 两端为真实
 /// 构造器实例（属性存在性与身份探针可对拍）。
-fn transform_stream_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn transform_stream_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let ts = vm.alloc_ordinary();
     let readable = readable_stream_ctor(vm, &[])?;
     let writable = writable_stream_ctor(vm, &[])?;
