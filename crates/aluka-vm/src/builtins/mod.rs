@@ -321,6 +321,19 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
         stream_write_stderr,
     );
     vm.builtin_registry = registry;
+    if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+        let st = vm
+            .builtin_registry
+            .module("stream/promises")
+            .map(|r| {
+                matches!(
+                    vm.get_property(Value::Object(r), "finished"),
+                    Ok(Value::Object(_))
+                )
+            })
+            .unwrap_or(false);
+        eprintln!("[bisect] after register_all finished-fn={st}");
+    }
     // 装配完成：恢复回收（累积的分配计数在后续分配点触发补收）
     vm.gc_resume();
     Ok(())

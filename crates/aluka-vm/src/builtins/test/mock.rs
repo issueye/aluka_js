@@ -479,3 +479,17 @@ pub fn register_handlers(registry: &mut crate::builtins::BuiltinRegistry) {
     register_handler(registry, "test:mock", "reset", mock_reset);
     register_handler(registry, "test:mock", "restoreSpySlot", mock_spy_restore);
 }
+
+/// GC 根快照：spy 槽位的 target/原实现/替换实现值。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    SPY_STORE.with(|g| {
+        for spy in g.borrow().iter().flatten() {
+            if let Some(v) = spy.target {
+                out.push(v);
+            }
+            out.push(spy.original);
+            out.push(spy.impl_val);
+            out.push(spy.once_impl);
+        }
+    });
+}

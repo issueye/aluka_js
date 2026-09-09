@@ -561,6 +561,22 @@ impl Vm {
         let dv_ctor = vm.alloc_native_ctor("DataView", obj_proto);
         vm.globals
             .insert("DataView".to_owned(), Value::Object(dv_ctor));
+        if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+            let st = vm
+                .builtin_registry
+                .module("stream/promises")
+                .map(|r| {
+                    matches!(
+                        vm.get_property(Value::Object(r), "finished"),
+                        Ok(Value::Object(_))
+                    )
+                })
+                .unwrap_or(false);
+            eprintln!(
+                "[bisect] after Vm::new finished-fn={st} ptr={:p}",
+                &vm.builtin_registry
+            );
+        }
         vm
     }
 

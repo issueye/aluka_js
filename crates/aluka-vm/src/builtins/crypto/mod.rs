@@ -22,6 +22,9 @@
 
 mod aes;
 mod async_cb;
+
+/// GC 根快照再导出（async_cb 私有模块的投递回调表）。
+pub(crate) use async_cb::store_roots as async_cb_roots;
 mod der;
 mod digest;
 mod enc;

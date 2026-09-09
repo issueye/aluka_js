@@ -240,7 +240,9 @@ impl Vm {
     /// 就会补上（见 `jit_hot::jit_run` 的帧计数与 `JitCtx::frames_ptr`）。
     pub(crate) fn push_object(&mut self, obj: HeapObject) -> ObjectRef {
         let (minor_hit, major_hit) = self.gc.on_alloc();
-        if self.jit_frames == 0 {
+        // JIT 帧内无栈映射、builtin 装配窗口对象登记滞后——两种窗口内
+        // 一律跳过回收（计数继续累积，窗口结束后的首次分配补收）。
+        if self.jit_frames == 0 && self.gc_suspended == 0 {
             if major_hit {
                 self.collect_major_gc();
             } else if minor_hit {
@@ -267,11 +269,13 @@ impl Vm {
             self.heap[idx as usize] = obj;
             self.gc.ages[idx as usize] = 0;
             self.gc.is_free[idx as usize] = false;
+            self.gc.born[idx as usize] = self.gc.allocated;
             return ObjectRef(idx);
         }
         self.heap.push(obj);
         self.gc.ages.push(0);
         self.gc.is_free.push(false);
+        self.gc.born.push(self.gc.allocated);
         ObjectRef((self.heap.len() - 1) as u32)
     }
 
@@ -453,11 +457,11 @@ impl Vm {
     }
 
     /// 在堆上分配 Promise 解析器（resolve/reject 函数对象），返回句柄。
+    ///
+    /// 必须经 [`Self::push_object`] 漏斗：旁路 append 会让 ages/is_free 侧表
+    /// 与 heap 失配（major 清扫 OOB），且绕过 GC 触发点（M6.1 压力模式实测）。
     pub fn alloc_promise_resolver(&mut self, promise: ObjectRef, resolve: bool) -> ObjectRef {
-        let idx = self.heap.len() as u32;
-        self.heap
-            .push(HeapObject::PromiseResolver { promise, resolve });
-        ObjectRef(idx)
+        self.push_object(HeapObject::PromiseResolver { promise, resolve })
     }
 
     /// 在堆上分配 Proxy 对象，返回句柄。

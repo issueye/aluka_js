@@ -737,6 +737,13 @@ fn build_promises(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectR
         let fn_ref = vm.alloc_native_fn(&format!("stream/promises.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
     }
+    if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+        let ok = matches!(
+            vm.get_property(Value::Object(obj), "finished"),
+            Ok(Value::Object(_))
+        );
+        eprintln!("[bisect] build_promises: obj={} readback={ok}", obj.0);
+    }
 
     register_handler(registry, "stream/promises", "pipeline", promises_pipeline);
     register_handler(registry, "stream/promises", "finished", promises_finished);

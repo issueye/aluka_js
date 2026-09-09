@@ -168,10 +168,28 @@ $ cargo clippy --workspace --all-targets --all-features -- -D warnings  # 零告
 $ cargo test -p aluka-vm --lib gc        # 15 passed（含卡表粒度/晋升置卡/自适应阈值新用例）
 ```
 
-**已知项登记（下轮继续）**：极端压力（stress ≤1024，即 ≥4× 生产触发频率）
-下仍有个别悬垂路径（is-odd 链路可复现，探针 `node:stream/promises` +
-finished 消费者）。生产形态（≥4096 自适应）577 例全绿不受影响；stress
-模式 + ALUKA_GC_MODE 单路开关已内置，下轮按法继续收敛。
+**已知项收敛（本轮闭环）**：极端压力（stress 8–4096 全区间）复现并修复
+三类根因——
+1. **分配漏斗旁路**：`alloc_promise_resolver` 直接 `heap.push` 不登记
+   ages/is_free 侧表也不触发 GC（违反 push_object 唯一入口不变量），
+   major 清扫越界 panic——改走 push_object；
+2. **挂起守卫失效**：`gc_suspended` 计数字段/方法虽在，但 push_object
+   的 `&& gc_suspended == 0` 守卫因先前补丁脚本中途断言失败从未落地
+   （编译无告警——字段在 suspend/resume 方法里被读到）——补上守卫；
+3. **出生水位线**（`BIRTH_WATERMARK=4096`）：原生 handler 跨分配构建
+   对象（createHash/createServer/Readable 等）期间无 VM 侧根、单周期
+   宽限期不够（构建可跨两次回收）——出生后 N 次分配内不可回收，系统性
+   覆盖该类窗口；压力模式下 crypto/流实例实测验证。
+
+**压力验证终态**：`ALUKA_GC_STRESS=8/16/64/256/1024/4096` 全区间 +
+全量套件 **578 passed / 0 failed**；生产形态门禁同绿；GC 单测 16 例
+（新增出生水位线/宽限撤出/卡表粒度/晋升置卡/自适应阈值用例）。
+
+### gcPressure 基准（M6.1 验收线：对标 V8 峰值内存 ≤3x）
+
+**结论**：达成——**1.35x PASS**（aluka 183.3 MB vs node 136.2 MB 峰值
+工作集，2000 万对象波浪负载；`cargo run -p aluka-cli --features runtime
+--example gcpressure`，debug 构建、比值含 V8 逃逸优化偏保守因素）。
 
 - **偏差记录**：① registry 历史脏数据（`"engines": ">=0.10.40"` 字符串形态）
   需宽容反序列化——npm 生态元数据非规范形态客观存在；② `aluka run` 自动

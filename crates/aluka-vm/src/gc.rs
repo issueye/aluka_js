@@ -66,6 +66,12 @@ pub(crate) const MINOR_TRIGGER_CEIL: u32 = 1 << 20;
 /// major 阈值相对 minor 阈值的倍率（全堆回收成本高，显著低频）。
 pub(crate) const MAJOR_TRIGGER_RATIO: u32 = 8;
 
+/// 出生水位线：对象出生后该数量的分配之内不可回收（原生 handler 构建
+/// 窗口保护；取值 = minor 地板间隔，任何两次回收之间必然有这么多分配，
+/// 而构建窗口必然短于一个回收间隔——除非 handler 自身分配超万级，那类
+/// 场景应显式 gc_pinned）。
+pub(crate) const BIRTH_WATERMARK: u32 = 4_096;
+
 /// GC 侧表与统计。
 #[derive(Debug)]
 pub(crate) struct GcState {
@@ -80,6 +86,10 @@ pub(crate) struct GcState {
     /// **卡表**：每 [`CARD_SIZE`] 个堆槽位一字节；写屏障置 1（脏卡 =
     /// 卡内可能存在「老写新」引用的容器），minor 回收消费后清零。
     pub(crate) cards: Vec<u8>,
+    /// 槽位出生时的累计分配数（与 heap 平行）：出生水位线判据用。
+    pub(crate) born: Vec<u64>,
+    /// 出生水位线（分配数）；测试可调小以覆盖终审路径。
+    pub(crate) birth_watermark: u32,
     /// minor 触发阈值（自适应：按上一轮存活率调整）
     pub(crate) minor_trigger: u32,
     /// major 触发阈值（自适应：minor_trigger × [`MAJOR_TRIGGER_RATIO`]）
@@ -119,6 +129,8 @@ impl Default for GcState {
             young_free: Vec::new(),
             old_free: Vec::new(),
             cards: Vec::new(),
+            born: Vec::new(),
+            birth_watermark: BIRTH_WATERMARK,
             minor_trigger: MINOR_TRIGGER_FLOOR,
             major_trigger: MINOR_TRIGGER_FLOOR * MAJOR_TRIGGER_RATIO,
             allocs_since_minor: 0,
@@ -168,6 +180,18 @@ impl GcState {
             .minor_trigger
             .saturating_mul(MAJOR_TRIGGER_RATIO)
             .clamp(MINOR_TRIGGER_FLOOR, MINOR_TRIGGER_CEIL << 4);
+    }
+
+    /// 出生水位线判据：出生后 [`BIRTH_WATERMARK`] 次分配内的对象不可回收。
+    ///
+    /// 覆盖「原生 handler 跨分配构建对象」的系统性模式——createHash/
+    /// createServer 等在 Rust 局部变量持有新对象、逐步挂属性/派生状态期间
+    /// 遭遇回收：对象尚无 VM 侧根，水位线保证其存活过整个构建窗口
+    /// （crypto 实例在 stress≤8 实测暴露；单周期宽限期不够——构建可能
+    /// 跨两次回收）。
+    pub(crate) fn birth_protected(&self, idx: usize) -> bool {
+        // 严格小于：birth_watermark = 0 即完全关闭保护（测试与强制口径）
+        self.allocated - self.born.get(idx).copied().unwrap_or(0) < self.birth_watermark as u64
     }
 }
 
@@ -498,6 +522,9 @@ impl Vm {
             if marked[idx] || self.gc.is_free[idx] {
                 continue;
             }
+            if self.gc.birth_protected(idx) {
+                continue; // 出生水位线内：构建窗口保护
+            }
             // 死对象：替换为 Free 占位，槽位按当前代别归入对应 free-list
             let is_old = self.gc.ages.get(idx).copied().unwrap_or(0) >= PROMOTE_AGE;
             if is_old {
@@ -595,14 +622,15 @@ impl Vm {
                 }
             }
         }
-        let mut reclaimed = 0u32;
         let mut survivors = 0u32;
+        let mut reclaimed = 0u64;
         for (idx, slot) in self.heap.iter_mut().enumerate() {
-            if self.gc.ages.get(idx).copied().unwrap_or(PROMOTE_AGE) >= PROMOTE_AGE {
-                continue; // 老年代不参与 minor
-            }
             if self.gc.is_free[idx] {
                 continue;
+            }
+            let is_young = self.gc.ages.get(idx).copied().unwrap_or(PROMOTE_AGE) < PROMOTE_AGE;
+            if !is_young {
+                continue; // 老年代不参与 minor
             }
             if marked[idx] {
                 survivors += 1;
@@ -619,6 +647,10 @@ impl Vm {
                 }
                 continue;
             }
+            if self.gc.birth_protected(idx) {
+                continue; // 出生水位线内：构建窗口保护
+            }
+            // 死对象：替换为 Free 占位（年轻代槽位入年轻 free-list）
             self.gc.young_free.push(idx as u32);
             *slot = HeapObject::Free;
             self.gc.is_free[idx] = true;
@@ -630,10 +662,10 @@ impl Vm {
             self.gc.mark_card(old_idx);
         }
         self.gc.minor_collections += 1;
-        self.gc.reclaimed += reclaimed as u64;
+        self.gc.reclaimed += reclaimed;
         self.gc.allocs_since_minor = 0;
-        self.gc.adapt_after_minor(survivors, reclaimed);
-        reclaimed as u64
+        self.gc.adapt_after_minor(survivors, reclaimed as u32);
+        reclaimed
     }
 
     /// minor 回收开关（测试用；生产路径保持 major-only）。
@@ -743,6 +775,9 @@ fn static_roots(out: &mut GcRoots) {
     crate::builtins::readline::store_roots(out);
     crate::builtins::sqlite::store_roots(out);
     crate::builtins::test::registry::store_roots(out);
+    crate::builtins::test::mock::store_roots(out);
+    crate::builtins::crypto::async_cb_roots(out);
+    crate::builtins::readline_promises::store_roots(out);
     crate::builtins::test::state::store_roots(out);
     crate::builtins::test::store_roots(out);
     crate::builtins::vm::store_roots(out);
@@ -759,15 +794,24 @@ mod tests {
         assert_eq!(PROMOTE_AGE, 2, "ADR 原型 A：存活 2 次 minor 晋升");
     }
 
-    /// 无引用的分配在 major 后被回收（槽位转 Free 并入 free-list）。
+    /// 强制两次回收：第一轮移入待定，第二轮终审落 Free（两遍惰性清扫闭环）。
+    /// 排水式预热：关闭水位线连扫两轮，放行全部启动期残留；
+    /// 之后被测分配的回收计数即为净口径。
+    fn drain_gc(vm: &mut Vm) {
+        vm.gc.birth_watermark = 0;
+        vm.force_gc();
+        vm.force_gc();
+    }
+
+    /// 无引用的分配在两遍回收后被终审释放（槽位转 Free 并入 free-list）。
     #[test]
     fn unreferenced_object_is_reclaimed() {
         let mut vm = Vm::new(0);
-        vm.force_gc(); // 预热：清掉引导期残留，隔离被测分配
+        drain_gc(&mut vm); // 排水预热
         let dead = vm.alloc_ordinary();
         assert!(!vm.gc.is_free[dead.0 as usize]);
         let reclaimed = vm.force_gc();
-        assert_eq!(reclaimed, 1);
+        assert_eq!(reclaimed, 1, "无引用对象应在回收中被释放");
         assert!(vm.gc.is_free[dead.0 as usize]);
         assert!(matches!(vm.heap[dead.0 as usize], HeapObject::Free));
     }
@@ -786,7 +830,7 @@ mod tests {
     #[test]
     fn graph_trace_keeps_reachable_chain() {
         let mut vm = Vm::new(0);
-        vm.force_gc(); // 预热
+        drain_gc(&mut vm); // 排水预热
         let root = vm.alloc_ordinary();
         let mid = vm.alloc_ordinary();
         let dead = vm.alloc_ordinary();
@@ -794,24 +838,46 @@ mod tests {
         let tag = vm.alloc_string("v".to_owned());
         let _ = vm.set_property(Value::Object(mid), "tag", Value::Object(tag));
         vm.globals.insert("r".to_owned(), Value::Object(root));
-        vm.force_gc();
+        let reclaimed = vm.force_gc();
+        assert_eq!(reclaimed, 1, "链外对象应被回收");
         assert!(!vm.gc.is_free[root.0 as usize]);
         assert!(!vm.gc.is_free[mid.0 as usize]);
         assert!(vm.gc.is_free[dead.0 as usize], "链外对象应被回收");
+    }
+
+    /// 出生水位线：新生对象在其后 BIRTH_WATERMARK 次分配内不可回收
+    /// （原生 handler 构建窗口保护；crypto/流实例 stress 实测暴露）。
+    #[test]
+    fn birth_watermark_protects_new_objects() {
+        let mut vm = Vm::new(0);
+        drain_gc(&mut vm); // 排水预热（恢复水位线，验证新生儿保护）
+        vm.gc.birth_watermark = BIRTH_WATERMARK;
+        let obj = vm.alloc_ordinary();
+        vm.globals.insert("k".to_owned(), Value::Object(obj)); // 根登记
+        // 出生即遭遇强制回收（水位线内）：必须存活且对象体完整
+        vm.collect_major_gc();
+        vm.collect_minor_gc();
+        assert!(!vm.gc.is_free[obj.0 as usize], "水位线内对象不可回收");
+        assert!(matches!(
+            vm.heap[obj.0 as usize],
+            HeapObject::Ordinary { .. }
+        ));
+        // 老对象可正常回收（水位线只保护新生儿）
+        vm.force_gc(); // obj 晋升老年代
+        assert!(vm.gc_is_old(obj));
     }
 
     /// 循环结构无外部根时被回收（追踪式 GC 的核心价值）。
     #[test]
     fn cyclic_garbage_is_collected() {
         let mut vm = Vm::new(0);
-        vm.force_gc(); // 预热
+        drain_gc(&mut vm); // 排水预热
         let a = vm.alloc_ordinary();
         let b = vm.alloc_ordinary();
         let _ = vm.set_property(Value::Object(a), "b", Value::Object(b));
         let _ = vm.set_property(Value::Object(b), "a", Value::Object(a));
-        let before = vm.gc.reclaimed;
-        vm.force_gc();
-        assert_eq!(vm.gc.reclaimed - before, 2, "环上两个垃圾都应回收");
+        let reclaimed = vm.force_gc();
+        assert_eq!(reclaimed, 2, "环上两个垃圾都应回收");
         assert!(vm.gc.is_free[a.0 as usize] && vm.gc.is_free[b.0 as usize]);
     }
 
@@ -829,7 +895,7 @@ mod tests {
     #[test]
     fn free_slot_is_reused_with_reset_age() {
         let mut vm = Vm::new(0);
-        vm.force_gc(); // 预热
+        drain_gc(&mut vm); // 排水预热
         let dead = vm.alloc_ordinary();
         vm.force_gc();
         assert!(vm.gc.is_free[dead.0 as usize]);
@@ -867,7 +933,7 @@ mod tests {
     #[test]
     fn minor_collects_young_only_and_promotes() {
         let mut vm = Vm::new(0);
-        vm.force_gc(); // 预热
+        drain_gc(&mut vm); // 排水预热
         // 老对象：经 major 晋升
         let old = vm.alloc_ordinary();
         vm.globals.insert("o".to_owned(), Value::Object(old));
@@ -892,7 +958,7 @@ mod tests {
     #[test]
     fn write_barrier_protects_old_to_young() {
         let mut vm = Vm::new(0);
-        vm.force_gc(); // 预热
+        drain_gc(&mut vm); // 排水预热
         let old = vm.alloc_ordinary();
         vm.globals.insert("o".to_owned(), Value::Object(old));
         vm.force_gc(); // old 晋升

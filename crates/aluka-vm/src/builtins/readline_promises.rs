@@ -468,6 +468,22 @@ fn proto_noop(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// 编译期锚定：处理器签名与注册表一致。
+/// GC 根快照：Interface 会话的输入/输出流对象。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    IFACES.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for st in map.values() {
+                if let Some(v) = st.input {
+                    out.push(v);
+                }
+                if let Some(v) = st.output {
+                    out.push(v);
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -107,3 +107,12 @@ pub(crate) fn is_callable(vm: &Vm, v: Value) -> bool {
 pub(crate) fn throw_error(vm: &mut Vm, msg: &str) -> VmError {
     VmError::Thrown(Value::Object(vm.alloc_error_instance(msg)))
 }
+
+/// GC 根快照：待投递异步回调（漏登记 = 高频回收下回调悬垂）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    DELIVERY_QUEUE.with(|q| {
+        for d in q.borrow().iter() {
+            out.push(d.cb);
+        }
+    });
+}
