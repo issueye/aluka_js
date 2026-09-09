@@ -56,7 +56,7 @@
 | **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[x]` |
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[x]` |
-| **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[ ]` |
+| **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
@@ -140,26 +140,33 @@
 ---
 
 ### M4 · 现代 Web API 标准完全对齐
-- [ ] **M4.1 规范级 Fetch API 全家桶**
+- [x] **M4.1 规范级 Fetch API 全家桶**（20260909 收尾，证据见 `20260909/README-round4.md`）
   - 完整实现全局 `fetch()`, `Request`, `Response`, `Headers`；
   - 支持 `Body` 混入（`json()`, `text()`, `arrayBuffer()`, `blob()`, `formData()`）；
-  - 支持自动遵循重定向、流式下载响应体；
-  - 验收：Fetch 规范测试套件通过。
-  - 进度（20260908）：全局 `fetch()`（sync HTTP/1.1）、`Response.status/.ok/.text()/.json()/.arrayBuffer()`、`Headers` 构造器已实现；`Request`/重定向/流式下载待实现。
+  - 支持自动遵循重定向（`follow|manual|error` 三模式 ≤5 跳）、响应体解码
+    （chunked 传输分帧解码）；`https://` 显式 rejected TypeError 兜底；
+  - 交付：Request 继承+init 覆盖、fetch(request) 直传、Headers.get/has 大小写
+    不敏感；差分 `builtins_phase9_m4_test.rs` 与 Node 22 实时双对拍逐字一致。
 - [x] **M4.2 Web Streams 与 Node Streams 原生互转**（ef11dc7，20260908）
   - 规范实现 `ReadableStream`, `WritableStream`, `TransformStream`；
   - 支持 `Readable.toWeb(stream)` 与 `Readable.fromWeb(webStream)` 双向零拷贝桥接；
   - 验收：Web Streams 管道处理用例对齐 Node.js 22。
   - 交付：`Readable/Writable.fromWeb/toWeb` 四向 live 桥（挂桥补交既有队列 + 实时转发）；差分用例 `19-m4-web-streams-abort.cjs` 7 场景与 Node.js 22 逐字节一致；顺带修复 `Readable.from` 形态键缺失（静默建空流）缺陷。
-- [ ] **M4.3 `AbortController` / `AbortSignal` 全系统级联动**
+- [x] **M4.3 `AbortController` / `AbortSignal` 全系统级联动**（20260909 收尾）
   - 全局注入 `AbortController` 与 `AbortSignal`；
   - 联动所有异步 I/O、HTTP Fetch 请求、定时器与网络 Socket，支持信号触发即时取消；
-  - 验收：超时中止与手动中断场景对拍一致。
-  - 进度（20260908）：`AbortController`/`AbortSignal`（`aborted`/`reason`/`abort(reason)` 幂等 + `'abort'` 监听器）已全局注入，fetch 前置+后置中断联动已通（差分一致）；定时器/Socket 信号取消待接入。修复 `new AbortController()`/`new Headers()` 构造器分派键缺失缺陷。
-- [ ] **M4.4 Web 标准事件基类与表单**
+  - 交付：fetch 前置+后置中断；`setTimeout/setInterval/setImmediate`/
+    `timers-promises` signal 取消（abort → 等价 clearTimeout）；net
+    `connect/listen` signal（abort → socket 销毁 / server 关停）；差分用例
+    `24-m4-timers-signal.cjs` 与 Node 22 逐字一致。
+- [x] **M4.4 Web 标准事件基类与表单**（20260909）
   - `EventTarget` 与 `CustomEvent` 作为全系统事件模型抽象；
   - `FormData` 与 multipart/form-data 标准编码与分块解析；
-  - 验收：Web API 标准符合性测试通过。
+  - 交付：EventTarget（addEventListener/removeEventListener/dispatchEvent +
+    target 注入）/CustomEvent（type/detail）；FormData 全方法面（append/set[原
+    位置替换]/get/getAll/has/delete/entries/keys/values/forEach）+ multipart
+    编码 + urlencoded/multipart 解析（`Response.formData()`）；差分用例
+    `22-m4-web-standards.cjs` 与 Node 22 逐字一致。
 
 ---
 

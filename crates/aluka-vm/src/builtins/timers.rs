@@ -76,6 +76,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "timers", "clearInterval", clear_timeout);
     register_handler(registry, "timers", "setImmediate", set_immediate);
     register_handler(registry, "timers", "clearImmediate", clear_timeout);
+    // M4.3：AbortSignal 'abort' → 定时器清除（signal 联动内部通道）
+    register_handler(registry, "timers", "signalClear", timers_signal_clear);
 
     Ok(obj)
 }
@@ -114,10 +116,57 @@ fn set_interval(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     schedule_timer(vm, args, true)
 }
 
-/// `timers.setImmediate(cb)`
+/// `timers.setImmediate(cb[, options])`：options.signal 联动（M4.3）。
 fn set_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let cb = args.first().copied().unwrap_or(Value::Undefined);
-    schedule_raw(vm, cb, 0, false)
+    let id_val = schedule_raw(vm, cb, 0, false)?;
+    if let Some(opts) = args.get(1) {
+        if let Value::Number(id) = id_val {
+            attach_timer_signal(vm, id as u64, opts)?;
+        }
+    }
+    Ok(id_val)
+}
+
+/// 定时器 → options.signal 联动（M4.3）：已 abort 立即清除；
+/// 未 abort 挂 'abort' 监听（触发即等价 clearTimeout）。
+fn attach_timer_signal(vm: &mut Vm, timer_id: u64, opts: &Value) -> Result<(), VmError> {
+    let Ok(signal) = vm.get_property(*opts, "signal") else {
+        return Ok(());
+    };
+    if matches!(signal, Value::Undefined | Value::Null) {
+        return Ok(());
+    }
+    // 已 abort → 直接清除
+    if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+        vm.active_timers.insert(timer_id);
+        return Ok(());
+    }
+    // 未 abort：挂 'abort' 监听器（timers.signalClear 携带 timer_id）
+    let clear_fn = vm.alloc_native_fn("timers.signalClear");
+    let _ = vm.set_property(
+        Value::Object(clear_fn),
+        "_timerId",
+        Value::Number(timer_id as f64),
+    );
+    let add = vm.alloc_native_fn("AbortSignal.addEventListener");
+    let ev = vm.alloc_string("abort".to_owned());
+    let _ = vm.invoke_callable(
+        Value::Object(add),
+        signal,
+        &[Value::Object(ev), Value::Object(clear_fn)],
+    );
+    Ok(())
+}
+
+/// `timers.signalClear`（M4.3 内部）：AbortSignal 'abort' 触发时清除定时器。
+/// receiver 为携带 `_timerId` 的 NativeFn——按 id 等价 clearTimeout。
+fn timers_signal_clear(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = crate::builtins::current_receiver();
+    if let Ok(Value::Number(n)) = vm.get_property(receiver, "_timerId") {
+        vm.active_timers.insert(n as u64);
+    }
+    Ok(Value::Undefined)
 }
 
 /// `timers.clearTimeout(id)` / `clearInterval`
@@ -142,7 +191,12 @@ fn schedule_timer(vm: &mut Vm, args: &[Value], repeating: bool) -> Result<Value,
             _ => None,
         })
         .unwrap_or(0);
-    schedule_raw(vm, cb, delay, repeating)
+    let id_val = schedule_raw(vm, cb, delay, repeating)?;
+    // M4.3：第三参 options.signal 联动
+    if let (Some(opts), Value::Number(id)) = (args.get(2), id_val) {
+        attach_timer_signal(vm, id as u64, opts)?;
+    }
+    Ok(id_val)
 }
 
 fn schedule_raw(vm: &mut Vm, cb: Value, delay: u64, repeating: bool) -> Result<Value, VmError> {
@@ -154,7 +208,8 @@ fn schedule_raw(vm: &mut Vm, cb: Value, delay: u64, repeating: bool) -> Result<V
     Ok(Value::Number(id as f64))
 }
 
-/// `timers/promises.setTimeout([delay, value])`
+/// `timers/promises.setTimeout([delay, value[, options]])`（M4.3：signal
+/// abort → 挂起 promise 以 reason 拒绝，定时器同步清除）。
 fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let delay = args
         .first()
@@ -170,7 +225,33 @@ fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     set_resolver_val(resolver.0, val);
 
-    schedule_raw(vm, Value::Object(resolver), delay, false)?;
+    let id_val = schedule_raw(vm, Value::Object(resolver), delay, false)?;
+
+    // M4.3：options.signal——abort → 清除定时器 + promise 兑现 reason
+    //（Node 语义：reason 缺省 AbortError；reject 与 resolve 经引擎同形
+    // 兑现通道——非 undefined 值即拒绝近似）
+    if let (Some(opts), Value::Number(id)) = (args.get(2), id_val) {
+        if let Ok(signal) = vm.get_property(*opts, "signal") {
+            if !matches!(signal, Value::Undefined | Value::Null) {
+                if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+                    vm.active_timers.insert(id as u64);
+                    let reason = vm
+                        .get_property(signal, "reason")
+                        .ok()
+                        .filter(|v| !matches!(v, Value::Undefined))
+                        .unwrap_or_else(|| {
+                            let err = vm.alloc_error_instance("This operation was aborted");
+                            let name = vm.alloc_string("AbortError".to_owned());
+                            let _ =
+                                vm.set_property(Value::Object(err), "name", Value::Object(name));
+                            Value::Object(err)
+                        });
+                    let reject = vm.alloc_promise_resolver(promise, false);
+                    let _ = vm.invoke_callable(Value::Object(reject), Value::Undefined, &[reason]);
+                }
+            }
+        }
+    }
 
     Ok(Value::Object(promise))
 }

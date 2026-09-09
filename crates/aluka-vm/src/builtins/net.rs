@@ -206,6 +206,14 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "net", "isIPv6", net_is_ipv6);
     register_handler(registry, "net", "BlockList", net_blocklist_ctor);
     register_handler(registry, "net", "SocketAddress", net_socket_address_ctor);
+    // M4.3：AbortSignal 'abort' → socket 销毁 / server 关停
+    register_handler(registry, "net", "signalDestroy", net_signal_destroy);
+    register_handler(
+        registry,
+        "net",
+        "signalCloseServer",
+        net_signal_close_server,
+    );
 
     // 实例方法命名空间：socket / server 共用一套事件与工具方法。
     let table: &[(&str, BuiltinHandler)] = &[
@@ -385,6 +393,7 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut host = "127.0.0.1".to_owned();
     let mut port = 0u16;
     let mut connect_listener: Option<Value> = None;
+    let mut signal_opt: Option<Value> = None;
     for a in args {
         if is_function(vm, *a) {
             connect_listener = Some(*a);
@@ -399,6 +408,12 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
             if let Ok(Value::Number(n)) = vm.get_property(*a, "port") {
                 port = n as u16;
+            }
+            // M4.3：options.signal——连接中途 abort → socket 销毁
+            if let Ok(s) = vm.get_property(*a, "signal") {
+                if !matches!(s, Value::Undefined | Value::Null) {
+                    signal_opt = Some(s);
+                }
             }
         } else if let Value::Number(n) = a {
             port = *n as u16;
@@ -425,6 +440,27 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     });
     // 连接在泵里完成（保持 connect 回调异步于同步代码块）。
     vm.activate_event_source("net", net_pump);
+
+    // M4.3：signal 联动——已 abort 立即销毁；未 abort 挂监听（abort 时销毁）
+    if let Some(signal) = signal_opt {
+        if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+            close_socket_lifecycle(obj.0);
+        } else {
+            let destroy_fn = vm.alloc_native_fn("net.signalDestroy");
+            let _ = vm.set_property(
+                Value::Object(destroy_fn),
+                "_socketId",
+                Value::Number(obj.0 as f64),
+            );
+            let add = vm.alloc_native_fn("AbortSignal.addEventListener");
+            let ev = vm.alloc_string("abort".to_owned());
+            let _ = vm.invoke_callable(
+                Value::Object(add),
+                signal,
+                &[Value::Object(ev), Value::Object(destroy_fn)],
+            );
+        }
+    }
     Ok(Value::Object(obj))
 }
 
@@ -962,6 +998,17 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     } else {
         host
     };
+    // M4.3：options.signal（对象形态 listen({...}) 时读取）——abort → close
+    let mut signal_opt: Option<Value> = None;
+    for a in args.iter().skip(1) {
+        if is_plain_object(vm, *a) {
+            if let Ok(s) = vm.get_property(*a, "signal") {
+                if !matches!(s, Value::Undefined | Value::Null) {
+                    signal_opt = Some(s);
+                }
+            }
+        }
+    }
     match bind_shared_listener(&bind_host, port) {
         Ok(listener) => {
             let _ = listener.set_nonblocking(true);
@@ -990,6 +1037,26 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 });
             });
             vm.activate_event_source("net", net_pump);
+            // M4.3：listen signal——已 abort 立即关停；未 abort 挂监听
+            if let Some(signal) = signal_opt {
+                if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+                    let _ = net_server_close(vm, &[]);
+                } else {
+                    let close_fn = vm.alloc_native_fn("net.signalCloseServer");
+                    let _ = vm.set_property(
+                        Value::Object(close_fn),
+                        "_serverId",
+                        Value::Number(r.0 as f64),
+                    );
+                    let add = vm.alloc_native_fn("AbortSignal.addEventListener");
+                    let ev = vm.alloc_string("abort".to_owned());
+                    let _ = vm.invoke_callable(
+                        Value::Object(add),
+                        signal,
+                        &[Value::Object(ev), Value::Object(close_fn)],
+                    );
+                }
+            }
         }
         Err(e) => {
             // 对齐 Go：监听失败异步派发 'error'（OS 错误文案）。
@@ -1386,8 +1453,35 @@ fn emit_net_event(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> Re
     Ok(())
 }
 
-/// cluster 端口共享绑定（M5.2）：cluster worker 进程（`ALUKA_WORKER_ID`
-/// 环境标记）置 SO_REUSEADDR（Windows 允许同端口多重绑定）/ Unix 追加
+/// AbortSignal 'abort' → socket 销毁（M4.3 内部；receiver 携带 _socketId）。
+fn net_signal_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    if let Ok(Value::Number(id)) = vm.get_property(receiver, "_socketId") {
+        close_socket_lifecycle(id as u32);
+    }
+    Ok(Value::Undefined)
+}
+
+/// AbortSignal 'abort' → server 关停（M4.3 内部；receiver 携带 _serverId）。
+fn net_signal_close_server(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    if let Ok(Value::Number(id)) = vm.get_property(receiver, "_serverId") {
+        // 按 id 找 server 实例并 close（绕过 receiver 形态——_serverId 直查）
+        let target = with_net(|n| {
+            n.servers
+                .iter()
+                .find(|(sid, _)| *sid == id as u32)
+                .map(|(_, st)| st.obj)
+        });
+        if let Some(obj_val) = target {
+            let close = vm.alloc_native_fn("net:server.close");
+            let _ = vm.invoke_callable(Value::Object(close), obj_val, &[]);
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+/// cluster 端口共享绑定（M5.2）：cluster worker 进程（`ALUKA_WORKER_ID`/// 环境标记）置 SO_REUSEADDR（Windows 允许同端口多重绑定）/ Unix 追加
 /// SO_REUSEPORT，使多 worker 可同时监听同一端口（OS 层分发连接）。
 ///
 /// **非 cluster 场景保留独占绑定语义**（M5 评审修复）：SO_REUSEADDR 在

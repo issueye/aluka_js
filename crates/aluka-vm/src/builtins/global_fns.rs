@@ -161,10 +161,59 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     registry
         .dispatch
         .insert("Headers".to_owned(), headers_ctor_impl);
+    register_handler(registry, "Headers", "get", headers_get_impl);
+    register_handler(registry, "Headers", "has", headers_has_impl);
 
     // Response.text / Response.json handler（fetch 返回的 Response 对象方法）
     register_handler(registry, "Response", "text", response_text_handler);
     register_handler(registry, "Response", "json", response_json_handler);
+    register_handler(
+        registry,
+        "Response",
+        "arrayBuffer",
+        response_array_buffer_handler,
+    );
+    register_handler(registry, "Response", "formData", response_form_data_handler);
+
+    // ===== M4.1 Request 全局构造器（fetch(request) 直传形态）=====
+    let request_ctor = vm.alloc_native_ctor("Request", None);
+    vm.globals
+        .insert("Request".to_owned(), Value::Object(request_ctor));
+    registry
+        .dispatch
+        .insert("Request".to_owned(), request_ctor_impl);
+    register_handler(registry, "Request", "clone", request_noop_self);
+    register_handler(registry, "Request", "text", response_text_handler);
+
+    // ===== M4.4 EventTarget / CustomEvent / FormData 全局构造器 =====
+    let et_ctor = vm.alloc_native_ctor("EventTarget", None);
+    vm.globals
+        .insert("EventTarget".to_owned(), Value::Object(et_ctor));
+    registry
+        .dispatch
+        .insert("EventTarget".to_owned(), event_target_ctor_impl);
+    for method in ["addEventListener", "removeEventListener", "dispatchEvent"] {
+        register_handler(registry, "EventTarget", method, event_target_dispatch);
+    }
+
+    let ce_ctor = vm.alloc_native_ctor("CustomEvent", None);
+    vm.globals
+        .insert("CustomEvent".to_owned(), Value::Object(ce_ctor));
+    registry
+        .dispatch
+        .insert("CustomEvent".to_owned(), custom_event_ctor_impl);
+
+    let fd_ctor = vm.alloc_native_ctor("FormData", None);
+    vm.globals
+        .insert("FormData".to_owned(), Value::Object(fd_ctor));
+    registry
+        .dispatch
+        .insert("FormData".to_owned(), form_data_ctor_impl);
+    for method in [
+        "append", "set", "get", "getAll", "has", "delete", "entries", "keys", "values", "forEach",
+    ] {
+        register_handler(registry, "FormData", method, form_data_method);
+    }
 
     // ===== Object 静态方法面（真实包硬需求）=====
     if let Some(octor) = vm.object_ctor {
@@ -851,51 +900,99 @@ fn response_array_buffer_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, 
 
 fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let url_val = args.first().copied().unwrap_or(Value::Undefined);
-    let url = vm.format_value(url_val);
-
-    // 解析 options
     let opts = args.get(1).copied().unwrap_or(Value::Undefined);
-    let method = vm
-        .get_property(opts, "method")
-        .ok()
-        .map(|v| vm.format_value(v).to_uppercase())
-        .filter(|m| !m.is_empty())
-        .unwrap_or_else(|| "GET".to_owned());
 
-    let mut headers: Vec<(String, String)> = Vec::new();
-    if let Ok(Value::Object(hdr_obj)) = vm.get_property(opts, "headers") {
-        for (k, v) in vm.own_entries(hdr_obj.0 as usize) {
-            headers.push((k, vm.format_value(v)));
-        }
-    }
+    // M4.1：Request 对象形态 + init 归并
+    let input = parse_fetch_input(vm, url_val, opts)?;
+    let FetchInput {
+        url,
+        method,
+        headers,
+        body,
+        signal,
+        redirect,
+    } = input;
 
-    let body = vm.get_property(opts, "body").ok();
-
-    // AbortSignal 检查
-    let signal = vm.get_property(opts, "signal").unwrap_or(Value::Undefined);
+    // AbortSignal 前置检查
     if let Value::Object(sig_ref) = signal {
         if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
-            let err = vm.alloc_error_instance("This operation was aborted");
-            let name = vm.alloc_string("AbortError".to_owned());
-            let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
-            let promise = vm.alloc_rejected_promise(Value::Object(err));
+            let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
+                Ok(r) if !matches!(r, Value::Undefined) => r,
+                _ => default_abort_error(vm),
+            };
+            let promise = vm.alloc_rejected_promise(reason);
             return Ok(Value::Object(promise));
         }
     }
 
-    // 同步 HTTP 请求
-    let (status, body_text) = match do_sync_http_request(vm, &url, &method, &headers, body.as_ref())
-    {
-        Ok(pair) => pair,
-        Err(message) => {
-            // 规范语义：网络错误经 rejected promise 兑现，绝不同步抛出
-            let err = vm.alloc_error_instance(&message);
-            let name = vm.alloc_string("TypeError".to_owned());
-            let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
-            let promise = vm.alloc_rejected_promise(Value::Object(err));
-            return Ok(Value::Object(promise));
+    // M4.1：https:// 显式拒绝（无 TLS 栈——rejected TypeError 兜底，
+    // 不再静默走明文 TcpStream）
+    if url.starts_with("https://") {
+        let err = vm.alloc_error_instance("fetch: https is not supported yet");
+        let name = vm.alloc_string("TypeError".to_owned());
+        let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+        let promise = vm.alloc_rejected_promise(Value::Object(err));
+        return Ok(Value::Object(promise));
+    }
+
+    // 同步 HTTP 请求（follow 模式下 3xx Location 跟随 ≤5 跳）
+    let mut current_url = url;
+    let mut result = None;
+    let mut followed_redirect = false;
+    for _ in 0..5 {
+        let attempt = do_sync_http_request(vm, &current_url, &method, &headers, body.as_ref());
+        match attempt {
+            Err(message) => {
+                let err = vm.alloc_error_instance(&message);
+                let name = vm.alloc_string("TypeError".to_owned());
+                let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+                let promise = vm.alloc_rejected_promise(Value::Object(err));
+                return Ok(Value::Object(promise));
+            }
+            Ok((status, headers_text, body_text)) => {
+                // 解析 Location（跟随重定向判定；展示头在响应构造处统一解析）
+                let (_, location) = parse_response_headers(&headers_text);
+                let is_redirect = (300..400).contains(&status) && location.is_some();
+                if is_redirect {
+                    match redirect.as_str() {
+                        "manual" => {
+                            result = Some((status, headers_text, body_text));
+                            break;
+                        }
+                        "error" => {
+                            let err = vm.alloc_error_instance(&format!(
+                                "fetch: redirect mode 'error' blocked redirect to {location:?}"
+                            ));
+                            let name = vm.alloc_string("TypeError".to_owned());
+                            let _ =
+                                vm.set_property(Value::Object(err), "name", Value::Object(name));
+                            let promise = vm.alloc_rejected_promise(Value::Object(err));
+                            return Ok(Value::Object(promise));
+                        }
+                        _ => {
+                            // follow：拼接 Location（相对路径基于当前 URL）
+                            if let Some(loc) = &location {
+                                current_url = resolve_redirect_url(&current_url, loc);
+                                followed_redirect = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                result = Some((status, headers_text, body_text));
+                break;
+            }
         }
+    }
+    let Some((status, headers_text, body_text)) = result else {
+        let err = vm.alloc_error_instance("fetch: too many redirects");
+        let name = vm.alloc_string("TypeError".to_owned());
+        let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+        let promise = vm.alloc_rejected_promise(Value::Object(err));
+        return Ok(Value::Object(promise));
     };
+    // 展示头对象（小写规范键）
+    let (hdr_pairs, _) = parse_response_headers(&headers_text);
 
     // AbortSignal 后置检查：signal 在请求发起后（前序宏任务中）被 abort →
     // 兑现为携带 reason（缺省 AbortError）的 rejected promise，不返回 Response
@@ -930,26 +1027,128 @@ fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     );
     let _ = vm.set_property(Value::Object(response), "_isResponse", Value::Boolean(true));
 
+    // M4.1：headers 展示面（小写键头对象 + headers.get/has 分派面）
+    let headers_obj = vm.alloc_ordinary();
+    for (k, v) in &hdr_pairs {
+        let v_ref = vm.alloc_string(v.clone());
+        let _ = vm.set_property(
+            Value::Object(headers_obj),
+            &k.to_ascii_lowercase(),
+            Value::Object(v_ref),
+        );
+    }
+    let _ = vm.set_property(
+        Value::Object(headers_obj),
+        "_isHeaders",
+        Value::Boolean(true),
+    );
+    let ns_val = vm.alloc_string("Headers".to_owned());
+    let _ = vm.set_property(
+        Value::Object(headers_obj),
+        "_builtinNs",
+        Value::Object(ns_val),
+    );
+    let get_fn = vm.alloc_native_fn("Headers.get");
+    let _ = vm.set_property(Value::Object(headers_obj), "get", Value::Object(get_fn));
+    let has_fn = vm.alloc_native_fn("Headers.has");
+    let _ = vm.set_property(Value::Object(headers_obj), "has", Value::Object(has_fn));
+    let _ = vm.set_property(
+        Value::Object(response),
+        "headers",
+        Value::Object(headers_obj),
+    );
+    // 原始 content-type 备份（formData 解析用）
+    let ctype = hdr_pairs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
+    let ctype_ref = vm.alloc_string(ctype);
+    let _ = vm.set_property(
+        Value::Object(response),
+        "_contentType",
+        Value::Object(ctype_ref),
+    );
+    // 重定向标记（Node 语义：请求途中实际跟随过 3xx 跳转才 true；
+    // manual 模式返回的 3xx 响应本身未跟随 → false）
+    let _ = vm.set_property(
+        Value::Object(response),
+        "redirected",
+        Value::Boolean(followed_redirect),
+    );
+
     // .text() 方法：返回 body 文本
     let text_fn = vm.alloc_native_fn("Response.text");
     let _ = vm.set_property(Value::Object(response), "text", Value::Object(text_fn));
     // .json() 方法
     let json_fn = vm.alloc_native_fn("Response.json");
     let _ = vm.set_property(Value::Object(response), "json", Value::Object(json_fn));
+    // .arrayBuffer() / .formData()
+    let ab_fn = vm.alloc_native_fn("Response.arrayBuffer");
+    let _ = vm.set_property(Value::Object(response), "arrayBuffer", Value::Object(ab_fn));
+    let fd_fn = vm.alloc_native_fn("Response.formData");
+    let _ = vm.set_property(Value::Object(response), "formData", Value::Object(fd_fn));
 
     // Promise<Response>
     let promise = vm.alloc_fulfilled_promise(Value::Object(response));
     Ok(Value::Object(promise))
 }
 
-/// 同步 HTTP 请求 → (status, body_text)
+/// 解析响应头块（CRLF 行）→ (键值对, Location)。
+fn parse_response_headers(header_block: &str) -> (Vec<(String, String)>, Option<String>) {
+    let mut pairs = Vec::new();
+    let mut location = None;
+    for line in header_block.split("\r\n").skip(1) {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let v = v.trim();
+            pairs.push((k.trim().to_owned(), v.to_owned()));
+            if k.trim().eq_ignore_ascii_case("location") {
+                location = Some(v.to_owned());
+            }
+        }
+    }
+    (pairs, location)
+}
+
+/// 重定向 URL 拼接（绝对 URL 直用；相对路径基于当前 URL 归并）。
+fn resolve_redirect_url(current: &str, location: &str) -> String {
+    if location.contains("://") {
+        return location.to_owned();
+    }
+    // 剥 scheme + host
+    let rest = current
+        .strip_prefix("http://")
+        .or_else(|| current.strip_prefix("https://"))
+        .unwrap_or(current);
+    let (host_port, cur_path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let base = if location.starts_with('/') {
+        format!("http://{host_port}")
+    } else {
+        // 目录相对：取当前路径的目录前缀
+        let dir = match cur_path.rfind('/') {
+            Some(i) => &cur_path[..i + 1],
+            None => "/",
+        };
+        format!("http://{host_port}{dir}")
+    };
+    let location_trimmed = location.trim_start_matches('/');
+    format!("{base}/{location_trimmed}")
+}
+
+/// 同步 HTTP 请求 → (status, 原始头块, body_text)
 fn do_sync_http_request(
     vm: &mut Vm,
     url: &str,
     method: &str,
     headers: &[(String, String)],
     body: Option<&Value>,
-) -> Result<(u16, String), String> {
+) -> Result<(u16, String, String), String> {
     let (host, port, path) = parse_http_url(url);
 
     use std::io::{Read as _, Write as _};
@@ -994,21 +1193,62 @@ fn do_sync_http_request(
 
     let text = String::from_utf8_lossy(&response_bytes).to_string();
     // 头/体分隔与状态行均按 CRLF 分帧（RFC 9112）；兼容 LF-only 响应
-    let (header_block, body_text) = match text.find("\r\n\r\n") {
-        Some(i) => (&text[..i], text[i + 4..].to_owned()),
+    let (header_block, raw_body) = match text.find("\r\n\r\n") {
+        Some(i) => (text[..i].to_owned(), text[i + 4..].to_owned()),
         None => match text.find("\n\n") {
-            Some(i) => (&text[..i], text[i + 2..].to_owned()),
-            None => (text.as_str(), String::new()),
+            Some(i) => (text[..i].to_owned(), text[i + 2..].to_owned()),
+            None => (text.clone(), String::new()),
         },
     };
-    let status_line = header_block.split("\r\n").next().unwrap_or(header_block);
+    let status_line = header_block.split("\r\n").next().unwrap_or(&header_block);
     let status: u16 = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
 
-    Ok((status, body_text))
+    // M4.1：chunked 传输编码解码（Transfer-Encoding: chunked——Node http
+    // server 的默认分帧；未解码时 body 混入 chunk 尺寸行与尾帧）
+    let body_text = if header_block
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
+        decode_chunked_body(&raw_body)
+    } else {
+        raw_body
+    };
+
+    Ok((status, header_block, body_text))
+}
+
+/// 解码 chunked 报文体：按 `{hex-size}\r\n{data}\r\n` 帧序列拼接，遇
+/// `0\r\n` 终止（尾帧扩展块与 trailer 一并忽略）。
+fn decode_chunked_body(raw: &str) -> String {
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some(line_end) = rest.find("\r\n") {
+        // 帧头行：hex 尺寸（可带扩展；分号后忽略）
+        let size_line = &rest[..line_end];
+        let size_token = size_line.split(';').next().unwrap_or("").trim();
+        let Ok(size) = usize::from_str_radix(size_token, 16) else {
+            break;
+        };
+        if size == 0 {
+            break;
+        }
+        let data_start = line_end + 2;
+        let data_end = (data_start + size).min(rest.len());
+        let chunk = &rest[data_start..data_end];
+        let truncated = chunk.len() < size;
+        out.push_str(chunk);
+        // 跳过帧尾 CRLF；防御性截断（截断帧按已收内容处理）
+        let next = (data_end + 2).min(rest.len());
+        rest = &rest[next..];
+        if truncated {
+            break;
+        }
+    }
+    out
 }
 
 /// 解析 HTTP(S) URL → (host, port, path)
@@ -1176,5 +1416,718 @@ fn controller_abort_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 fn headers_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let headers = vm.alloc_ordinary();
     let _ = vm.set_property(Value::Object(headers), "_isHeaders", Value::Boolean(true));
+    // get/has 方法面（大小写不敏感查值；Node Headers 规范）
+    let get_fn = vm.alloc_native_fn("Headers.get");
+    let _ = vm.set_property(Value::Object(headers), "get", Value::Object(get_fn));
+    let has_fn = vm.alloc_native_fn("Headers.has");
+    let _ = vm.set_property(Value::Object(headers), "has", Value::Object(has_fn));
     Ok(Value::Object(headers))
+}
+
+/// `Headers.get(name)`：大小写不敏感取头值（无则 null）。
+fn headers_get_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let Some(name) = args.first().map(|v| vm.format_value(*v)) else {
+        return Ok(Value::Null);
+    };
+    if let Value::Object(r) = receiver {
+        for (k, v) in vm.own_entries(r.index()) {
+            if k.eq_ignore_ascii_case(&name) && !k.starts_with('_') {
+                let text = vm.format_value(v);
+                let s = vm.alloc_string(text);
+                return Ok(Value::Object(s));
+            }
+        }
+    }
+    Ok(Value::Null)
+}
+
+/// `Headers.has(name)`：大小写不敏感存在性。
+fn headers_has_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let Some(name) = args.first().map(|v| vm.format_value(*v)) else {
+        return Ok(Value::Boolean(false));
+    };
+    if let Value::Object(r) = receiver {
+        for (k, _) in vm.own_entries(r.index()) {
+            if k.eq_ignore_ascii_case(&name) && !k.starts_with('_') {
+                return Ok(Value::Boolean(true));
+            }
+        }
+    }
+    Ok(Value::Boolean(false))
+}
+
+// ---------------------------------------------------------------------------
+// M4.1 Request / 重定向 / Response.headers
+// ---------------------------------------------------------------------------
+
+/// `new Request(input[, options])`：URL 字符串或既有 Request + init 形态。
+/// options: { method, headers, body, signal, redirect }——统一落到实例属性，
+/// `fetch(request)` 直传时按属性读回。
+fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let input = args.first().copied().unwrap_or(Value::Undefined);
+    // input 为既有 Request → 继承其属性（init 覆盖）
+    let (url, inherited) = if let Value::Object(_) = input {
+        if let Ok(Value::Boolean(true)) = vm.get_property(input, "_isRequest") {
+            let u = vm.get_property(input, "url")?;
+            (u, Some(input))
+        } else {
+            (input, None)
+        }
+    } else {
+        (input, None)
+    };
+
+    let req = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(req), "_isRequest", Value::Boolean(true));
+    let _ = vm.set_property(Value::Object(req), "url", url);
+
+    let opts = args.get(1).copied().unwrap_or(Value::Undefined);
+
+    // method（继承 → init）
+    let method = vm
+        .get_property(opts, "method")
+        .ok()
+        .filter(|v| !matches!(v, Value::Undefined))
+        .or_else(|| {
+            inherited
+                .and_then(|i| vm.get_property(i, "method").ok())
+                .filter(|v| !matches!(v, Value::Undefined))
+        })
+        .unwrap_or(Value::Undefined);
+    let _ = vm.set_property(Value::Object(req), "method", method);
+
+    // headers（继承 → init）
+    let headers = vm
+        .get_property(opts, "headers")
+        .ok()
+        .filter(|v| !matches!(v, Value::Undefined))
+        .or_else(|| {
+            inherited
+                .and_then(|i| vm.get_property(i, "headers").ok())
+                .filter(|v| !matches!(v, Value::Undefined))
+        })
+        .unwrap_or(Value::Undefined);
+    let _ = vm.set_property(Value::Object(req), "headers", headers);
+
+    // body（继承 → init）
+    let body = vm
+        .get_property(opts, "body")
+        .ok()
+        .filter(|v| !matches!(v, Value::Undefined | Value::Null))
+        .or_else(|| {
+            inherited
+                .and_then(|i| vm.get_property(i, "body").ok())
+                .filter(|v| !matches!(v, Value::Undefined | Value::Null))
+        })
+        .unwrap_or(Value::Undefined);
+    let _ = vm.set_property(Value::Object(req), "body", body);
+
+    // signal（不继承——Request 规范：signal 属 init 专属）
+    let signal = vm
+        .get_property(opts, "signal")
+        .ok()
+        .filter(|v| !matches!(v, Value::Undefined))
+        .unwrap_or(Value::Undefined);
+    let _ = vm.set_property(Value::Object(req), "signal", signal);
+
+    // redirect 模式（默认 follow）
+    let redirect = vm
+        .get_property(opts, "redirect")
+        .ok()
+        .map(|v| vm.format_value(v))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "follow".to_owned());
+    let redirect_val = vm.alloc_string(redirect);
+    let _ = vm.set_property(Value::Object(req), "redirect", Value::Object(redirect_val));
+
+    // GET/HEAD 携带 body → TypeError（fetch 规范）
+    let method_text = vm
+        .get_property(Value::Object(req), "method")
+        .map(|v| vm.format_value(v))
+        .unwrap_or_default()
+        .to_uppercase();
+    if matches!(method_text.as_str(), "GET" | "HEAD")
+        && !matches!(body, Value::Undefined | Value::Null)
+    {
+        return Err(VmError::Thrown(Value::Object(vm.alloc_error_instance(
+            "Request constructor: GET/HEAD request cannot have a body",
+        ))));
+    }
+
+    Ok(Value::Object(req))
+}
+
+/// `request.clone()`：返回自身（简化——同步请求模型无共享状态问题）。
+fn request_noop_self(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    Ok(current_receiver())
+}
+
+/// 解析 fetch 输入形态：URL 字符串 / Request 对象 → (url, method, headers, body, signal, redirect)
+struct FetchInput {
+    url: String,
+    method: String,
+    headers: Vec<(String, String)>,
+    body: Option<Value>,
+    signal: Value,
+    redirect: String,
+}
+
+/// 从 fetch 第一参 + options 归并请求参数（Request 属性为底、init 覆盖）。
+fn parse_fetch_input(vm: &mut Vm, first: Value, opts: Value) -> Result<FetchInput, VmError> {
+    // Request 对象形态：init 可覆盖其属性
+    let is_request = matches!(first, Value::Object(_))
+        && matches!(
+            vm.get_property(first, "_isRequest"),
+            Ok(Value::Boolean(true))
+        );
+
+    let url = if is_request {
+        vm.get_property(first, "url")
+            .map(|v| vm.format_value(v))
+            .unwrap_or_default()
+    } else {
+        vm.format_value(first)
+    };
+
+    let mut method = if is_request {
+        vm.get_property(first, "method")
+            .map(|v| vm.format_value(v))
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "GET".to_owned())
+    } else {
+        "GET".to_owned()
+    };
+    if let Ok(m) = vm.get_property(opts, "method") {
+        let ms = vm.format_value(m);
+        if !ms.is_empty() {
+            method = ms.to_uppercase();
+        }
+    }
+
+    // headers：Request 属性 → init 追加覆盖
+    let mut headers: Vec<(String, String)> = Vec::new();
+    if is_request {
+        if let Ok(Value::Object(ho)) = vm.get_property(first, "headers") {
+            for (k, v) in vm.own_entries(ho.0 as usize) {
+                headers.push((k, vm.format_value(v)));
+            }
+        }
+    }
+    if let Ok(Value::Object(hdr_obj)) = vm.get_property(opts, "headers") {
+        for (k, v) in vm.own_entries(hdr_obj.0 as usize) {
+            if let Some(pos) = headers
+                .iter()
+                .position(|(hk, _)| hk.eq_ignore_ascii_case(&k))
+            {
+                headers[pos].1 = vm.format_value(v);
+            } else {
+                headers.push((k, vm.format_value(v)));
+            }
+        }
+    }
+
+    let mut body = if is_request {
+        vm.get_property(first, "body")
+            .ok()
+            .filter(|v| !matches!(v, Value::Undefined | Value::Null))
+    } else {
+        None
+    };
+    if let Ok(b) = vm.get_property(opts, "body") {
+        if !matches!(b, Value::Undefined | Value::Null) {
+            body = Some(b);
+        }
+    }
+
+    let mut signal = if is_request {
+        vm.get_property(first, "signal").unwrap_or(Value::Undefined)
+    } else {
+        Value::Undefined
+    };
+    if let Ok(s) = vm.get_property(opts, "signal") {
+        if !matches!(s, Value::Undefined) {
+            signal = s;
+        }
+    }
+
+    let mut redirect = if is_request {
+        vm.get_property(first, "redirect")
+            .map(|v| vm.format_value(v))
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "follow".to_owned())
+    } else {
+        "follow".to_owned()
+    };
+    if let Ok(r) = vm.get_property(opts, "redirect") {
+        let rs = vm.format_value(r);
+        if !rs.is_empty() {
+            redirect = rs;
+        }
+    }
+
+    Ok(FetchInput {
+        url,
+        method,
+        headers,
+        body,
+        signal,
+        redirect,
+    })
+}
+
+/// `Response.formData()` handler：解析 multipart 或 urlencoded body 为 FormData。
+fn response_form_data_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ctype = vm
+        .get_property(receiver, "_contentType")
+        .map(|v| vm.format_value(v))
+        .unwrap_or_default();
+    let body = vm.get_property(receiver, "_bodyText")?;
+    let text = vm.format_value(body);
+    parse_form_data_body(vm, &ctype, &text)
+}
+
+// ---------------------------------------------------------------------------
+// M4.4 EventTarget / CustomEvent
+// ---------------------------------------------------------------------------
+
+/// `new EventTarget()`：监听器注册表（_etListeners: { type: [cb] }）。
+fn event_target_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let target = vm.alloc_ordinary();
+    let _ = vm.set_property(
+        Value::Object(target),
+        "_isEventTarget",
+        Value::Boolean(true),
+    );
+    // 分派键：_builtinNs → "EventTarget.{method}"（try_dispatch 形态二）
+    let ns = vm.alloc_string("EventTarget".to_owned());
+    let _ = vm.set_property(Value::Object(target), "_builtinNs", Value::Object(ns));
+    let map = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(target), "_etListeners", Value::Object(map));
+    // addEventListener / removeEventListener / dispatchEvent 方法面
+    for method in ["addEventListener", "removeEventListener", "dispatchEvent"] {
+        let f = vm.alloc_native_fn(&format!("EventTarget.{method}"));
+        let _ = vm.set_property(Value::Object(target), method, Value::Object(f));
+    }
+    Ok(Value::Object(target))
+}
+
+/// EventTarget 三方法统一分派（addEventListener / removeEventListener / dispatchEvent）。
+fn event_target_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let name = crate::builtins::pending_native_name();
+    let target = current_receiver();
+    // 事件名：addEventListener/removeEventListener 第一参为字符串；
+    // dispatchEvent 第一参为事件对象（读其 type 属性）——统一归并为
+    // 字符串事件名后操作监听器表。
+    let first = args.first().copied().unwrap_or(Value::Undefined);
+    let ev = if let Ok(Value::Object(_)) = vm.get_property(first, "type") {
+        vm.get_property(first, "type")
+            .map(|v| vm.format_value(v))
+            .unwrap_or_default()
+    } else {
+        vm.format_value(first)
+    };
+    let cb = args.get(1).copied();
+    let map = match vm.get_property(target, "_etListeners") {
+        Ok(Value::Object(m)) => m,
+        _ => return Ok(Value::Undefined),
+    };
+    let arr = match vm.get_property(Value::Object(map), &ev) {
+        Ok(Value::Object(a)) => a,
+        _ => {
+            // 未命中：addEventListener 创建监听数组；其余无监听器直接返回
+            if name.ends_with("addEventListener") {
+                let new_arr = vm.alloc_array(Vec::new());
+                let _ = vm.set_property(Value::Object(map), &ev, Value::Object(new_arr));
+                new_arr
+            } else {
+                return Ok(match name.as_str() {
+                    "EventTarget.dispatchEvent" => Value::Boolean(false),
+                    _ => Value::Undefined,
+                });
+            }
+        }
+    };
+    match name.as_str() {
+        "EventTarget.addEventListener" => {
+            if let Some(cb) = cb.filter(|v| is_callable(vm, *v)) {
+                if let Some(crate::heap::HeapObject::Array { elements, .. }) =
+                    vm.heap.get_mut(arr.0 as usize)
+                {
+                    if !elements.contains(&cb) {
+                        elements.push(cb);
+                    }
+                }
+            }
+            Ok(Value::Undefined)
+        }
+        "EventTarget.removeEventListener" => {
+            if let Some(cb) = cb {
+                if let Some(crate::heap::HeapObject::Array { elements, .. }) =
+                    vm.heap.get_mut(arr.0 as usize)
+                {
+                    elements.retain(
+                        |e| !matches!((e, &cb), (Value::Object(a), Value::Object(b)) if a == b),
+                    );
+                }
+            }
+            Ok(Value::Undefined)
+        }
+        _ => {
+            // dispatchEvent：派发事件对象（type 命中则调用监听器，返回是否有监听器）
+            let callbacks: Vec<Value> = match vm.heap.get(arr.0 as usize) {
+                Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
+                _ => Vec::new(),
+            };
+            let has = !callbacks.is_empty();
+            // target 属性注入（Event 标准面）
+            if let Value::Object(e) = args.first().copied().unwrap_or(Value::Undefined) {
+                let _ = vm.set_property(Value::Object(e), "target", target);
+            }
+            let event_val = args.first().copied().unwrap_or(Value::Undefined);
+            for cb in callbacks {
+                let _ = vm.invoke_callable(cb, Value::Undefined, &[event_val]);
+            }
+            Ok(Value::Boolean(has))
+        }
+    }
+}
+
+/// `new CustomEvent(type[, options])`：{ type, detail, ... }。
+fn custom_event_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let ty = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let event = vm.alloc_ordinary();
+    let ty_val = vm.alloc_string(ty);
+    let _ = vm.set_property(Value::Object(event), "type", Value::Object(ty_val));
+    let opts = args.get(1).copied().unwrap_or(Value::Undefined);
+    let detail = vm.get_property(opts, "detail").unwrap_or(Value::Undefined);
+    let _ = vm.set_property(Value::Object(event), "detail", detail);
+    let _ = vm.set_property(Value::Object(event), "_isCustomEvent", Value::Boolean(true));
+    Ok(Value::Object(event))
+}
+
+// ---------------------------------------------------------------------------
+// M4.4 FormData + multipart/form-data
+// ---------------------------------------------------------------------------
+
+/// FormData 实例的内部形态：`_fdEntries: [{ name, value, filename? }]`（堆数组）。
+///（字符串键值序对即可覆盖 Node 22 差分面；文件面后续以 filename 扩展）
+///
+/// `new FormData()`：创建空表单（分派键 `_builtinNs` → `FormData.{method}`）。
+fn form_data_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let fd = vm.alloc_ordinary();
+    let _ = vm.set_property(Value::Object(fd), "_isFormData", Value::Boolean(true));
+    // 分派键：_builtinNs → "FormData.{method}"
+    let ns = vm.alloc_string("FormData".to_owned());
+    let _ = vm.set_property(Value::Object(fd), "_builtinNs", Value::Object(ns));
+    let entries = vm.alloc_array(Vec::new());
+    let _ = vm.set_property(Value::Object(fd), "_fdEntries", Value::Object(entries));
+    for method in [
+        "append", "set", "get", "getAll", "has", "delete", "entries", "keys", "values", "forEach",
+    ] {
+        let f = vm.alloc_native_fn(&format!("FormData.{method}"));
+        let _ = vm.set_property(Value::Object(fd), method, Value::Object(f));
+    }
+    Ok(Value::Object(fd))
+}
+
+/// 读取 FormData 条目快照 [(name, value)]。
+fn fd_entries(vm: &mut Vm, receiver: Value) -> Vec<(String, String)> {
+    let Ok(Value::Object(arr)) = vm.get_property(receiver, "_fdEntries") else {
+        return Vec::new();
+    };
+    let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {
+        Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
+        _ => Vec::new(),
+    };
+    elements
+        .iter()
+        .filter_map(|e| {
+            let Value::Object(_) = e else {
+                return None;
+            };
+            let name = vm
+                .get_property(*e, "name")
+                .map(|v| vm.format_value(v))
+                .unwrap_or_default();
+            let value = vm
+                .get_property(*e, "value")
+                .map(|v| vm.format_value(v))
+                .unwrap_or_default();
+            Some((name, value))
+        })
+        .collect()
+}
+
+/// 修改 FormData 条目（重建 _fdEntries 数组）。
+fn fd_rewrite(vm: &mut Vm, receiver: Value, entries: Vec<(String, String)>) {
+    let vals: Vec<Value> = entries
+        .into_iter()
+        .map(|(name, value)| {
+            let entry = vm.alloc_ordinary();
+            let n = vm.alloc_string(name);
+            let _ = vm.set_property(Value::Object(entry), "name", Value::Object(n));
+            let v = vm.alloc_string(value);
+            let _ = vm.set_property(Value::Object(entry), "value", Value::Object(v));
+            Value::Object(entry)
+        })
+        .collect();
+    let arr = vm.alloc_array(vals);
+    let _ = vm.set_property(receiver, "_fdEntries", Value::Object(arr));
+}
+
+/// FormData 全方法统一分派（按 pending_native_name 区分）。
+fn form_data_method(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let name = crate::builtins::pending_native_name();
+    let receiver = current_receiver();
+    let Some(key) = args.first().map(|v| vm.format_value(*v)) else {
+        return Ok(Value::Undefined);
+    };
+    let mut entries = fd_entries(vm, receiver);
+    match name.as_str() {
+        "FormData.append" => {
+            let value = args.get(1).map(|v| vm.format_value(*v)).unwrap_or_default();
+            entries.push((key, value));
+            fd_rewrite(vm, receiver, entries);
+            Ok(Value::Undefined)
+        }
+        "FormData.set" => {
+            let value = args.get(1).map(|v| vm.format_value(*v)).unwrap_or_default();
+            // Node 语义：set 替换既有键的原位置（无则追加末尾）
+            match entries.iter_mut().find(|(k, _)| k == &key) {
+                Some(slot) => slot.1 = value,
+                None => entries.push((key, value)),
+            }
+            fd_rewrite(vm, receiver, entries);
+            Ok(Value::Undefined)
+        }
+        "FormData.get" => Ok(entries
+            .iter()
+            .find(|(k, _)| k == &key)
+            .map(|(_, v)| {
+                let s = vm.alloc_string(v.clone());
+                Value::Object(s)
+            })
+            .unwrap_or(Value::Null)),
+        "FormData.getAll" => {
+            let vals: Vec<Value> = entries
+                .iter()
+                .filter(|(k, _)| k == &key)
+                .map(|(_, v)| {
+                    let s = vm.alloc_string(v.clone());
+                    Value::Object(s)
+                })
+                .collect();
+            Ok(Value::Object(vm.alloc_array(vals)))
+        }
+        "FormData.has" => Ok(Value::Boolean(entries.iter().any(|(k, _)| k == &key))),
+        "FormData.delete" => {
+            entries.retain(|(k, _)| k != &key);
+            fd_rewrite(vm, receiver, entries);
+            Ok(Value::Undefined)
+        }
+        "FormData.entries" => {
+            let pairs: Vec<Value> = entries
+                .iter()
+                .map(|(k, v)| {
+                    let ks = vm.alloc_string(k.clone());
+                    let vs = vm.alloc_string(v.clone());
+                    let pair = vm.alloc_array(vec![Value::Object(ks), Value::Object(vs)]);
+                    Value::Object(pair)
+                })
+                .collect();
+            Ok(Value::Object(vm.alloc_array(pairs)))
+        }
+        "FormData.keys" => {
+            let mut keys: Vec<String> = Vec::new();
+            for (k, _) in &entries {
+                if !keys.contains(k) {
+                    keys.push(k.clone());
+                }
+            }
+            let vals: Vec<Value> = keys
+                .into_iter()
+                .map(|k| {
+                    let s = vm.alloc_string(k);
+                    Value::Object(s)
+                })
+                .collect();
+            Ok(Value::Object(vm.alloc_array(vals)))
+        }
+        "FormData.values" => {
+            let vals: Vec<Value> = entries
+                .iter()
+                .map(|(_, v)| {
+                    let s = vm.alloc_string(v.clone());
+                    Value::Object(s)
+                })
+                .collect();
+            Ok(Value::Object(vm.alloc_array(vals)))
+        }
+        _ => {
+            // FormData.forEach(cb[, thisArg])——首参即回调（无键参）
+            let Some(cb) = args.first().copied().filter(|v| is_callable(vm, *v)) else {
+                return Ok(Value::Undefined);
+            };
+            let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+            for (k, v) in entries {
+                let vs = vm.alloc_string(v);
+                let ks = vm.alloc_string(k);
+                let _ = vm.invoke_callable(
+                    cb,
+                    this_arg,
+                    &[Value::Object(vs), Value::Object(ks), receiver],
+                );
+            }
+            Ok(Value::Undefined)
+        }
+    }
+}
+
+/// 判断值是否可调用（Closure / NativeFn / NativeCtor）——复用 readline 面。
+fn is_callable(vm: &Vm, v: Value) -> bool {
+    crate::builtins::readline::is_callable_value(vm, v)
+}
+
+/// multipart/form-data 边界生成（Node 语义近似：随机 12 段十六进制）。
+fn generate_boundary() -> String {
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x5eed_1234_abcd_5678);
+    let mut out = String::new();
+    for _ in 0..12 {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        out.push(char::from_digit((seed >> 33) as u32 % 16, 16).unwrap_or('0'));
+    }
+    out
+}
+
+/// FormData → multipart/form-data 请求体（boundary 回填 contentType）。
+pub fn encode_form_data_multipart(vm: &mut Vm, fd: Value) -> Result<(String, String), VmError> {
+    let entries = fd_entries(vm, fd);
+    let boundary = format!("----AlukaFormBoundary{}", generate_boundary());
+    let mut body = String::new();
+    for (name, value) in entries.iter() {
+        body.push_str("--");
+        body.push_str(&boundary);
+        body.push_str("\r\nContent-Disposition: form-data; name=\"");
+        body.push_str(&name.replace('\\', "\\\\").replace('"', "\\\""));
+        body.push_str("\"\r\n\r\n");
+        body.push_str(value);
+        body.push_str("\r\n");
+    }
+    if !entries.is_empty() {
+        body.push_str("--");
+        body.push_str(&boundary);
+        body.push_str("--\r\n");
+    }
+    let ctype = format!("multipart/form-data; boundary={boundary}");
+    Ok((body, ctype))
+}
+
+/// 解析 multipart/urlencoded 响应体为 FormData（Response.formData）。
+fn parse_form_data_body(vm: &mut Vm, ctype: &str, body: &str) -> Result<Value, VmError> {
+    let fd = form_data_ctor_impl(vm, &[])?;
+    if let Some(bi) = ctype.find("boundary=") {
+        let boundary = ctype[bi + "boundary=".len()..]
+            .split(';')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('"')
+            .to_owned();
+        let delim = format!("--{boundary}");
+        for part in body.split(&delim) {
+            let part = part.trim_start_matches('\r').trim_start_matches('\n');
+            if part.is_empty() || part.starts_with("--") {
+                continue;
+            }
+            let Some(hdr_end) = part.find("\r\n\r\n") else {
+                continue;
+            };
+            let headers = &part[..hdr_end];
+            let value = part[hdr_end + 4..]
+                .trim_end_matches('\r')
+                .trim_end_matches('\n');
+            let mut name = String::new();
+            for line in headers.split("\r\n") {
+                if let Some(rest) = line.strip_prefix("Content-Disposition:").map(str::trim) {
+                    for seg in rest.split(';') {
+                        let seg = seg.trim();
+                        if let Some(n) = seg.strip_prefix("name=") {
+                            name = n.trim_matches('"').to_owned();
+                        }
+                    }
+                }
+            }
+            if !name.is_empty() {
+                let name_val = vm.alloc_string(name);
+                let value_val = vm.alloc_string(value.to_owned());
+                let append = vm.alloc_native_fn("FormData.append");
+                let _ = vm.invoke_callable(
+                    Value::Object(append),
+                    fd,
+                    &[Value::Object(name_val), Value::Object(value_val)],
+                );
+            }
+        }
+    } else if ctype.starts_with("application/x-www-form-urlencoded") {
+        for pair in body.split('&') {
+            if pair.is_empty() {
+                continue;
+            }
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            let kd = vm.alloc_string(url_decode(k));
+            let vd = vm.alloc_string(url_decode(v));
+            let append = vm.alloc_native_fn("FormData.append");
+            let _ = vm.invoke_callable(
+                Value::Object(append),
+                fd,
+                &[Value::Object(kd), Value::Object(vd)],
+            );
+        }
+    }
+    Ok(fd)
+}
+
+/// 轻量百分号解码（urlencoded 表单体）。
+fn url_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() + 1 && i + 2 <= bytes.len() - 1 + 1 => {
+                if i + 2 < bytes.len() {
+                    let hex = &s[i + 1..i + 3];
+                    if let Ok(b) = u8::from_str_radix(hex, 16) {
+                        out.push(b);
+                        i += 3;
+                        continue;
+                    }
+                }
+                out.push(bytes[i]);
+                i += 1;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
 }
