@@ -1,4 +1,4 @@
-﻿//! `node:dns` 内置模块（Phase 5）：域名解析（callback 风格）。
+//! `node:dns` 内置模块（Phase 5）：域名解析（callback 风格）。
 //!
 //! 与 Node.js 22 LTS 标准（`nodenet/dns.go`）对齐：
 //! - `lookup(hostname[, options], callback)` → `cb(err, address, family)`；
@@ -21,7 +21,12 @@ use crate::builtins::dns_promises::{
     get_or_build_promises, is_function, is_plain_object, lookup_host_addrs, make_dns_error,
     port_service_name,
 };
+use crate::builtins::dns_resolver::{
+    self, arpa_name, needs_wire, query_meta, reverse_needs_wire, rrtype_uses_system,
+    start_callback_resolve, start_callback_reverse,
+};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
+use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
@@ -177,6 +182,18 @@ fn dns_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         let err = vm.alloc_error_instance("dns.resolve: requires hostname and callback");
         return Err(VmError::Thrown(Value::Object(err)));
     };
+    // A/AAAA/ANY 与本地单标签名走系统解析（既有确定性形态）；其余真实报文查询。
+    if rrtype_uses_system(&rrtype) || !needs_wire(&hostname) {
+        let result = dns_resolve_by_type(vm, &hostname, &rrtype);
+        enqueue_dns(vm, cb, vec![Value::Null, result]);
+        return Ok(Value::Undefined);
+    }
+    if let Some((shape, syscall)) = query_meta(&rrtype) {
+        if start_callback_resolve(vm, &hostname, &rrtype, syscall, shape, cb) {
+            return Ok(Value::Undefined);
+        }
+    }
+    // 未知 rrtype 或后台不可用：回落旧确定性形态。
     let result = dns_resolve_by_type(vm, &hostname, &rrtype);
     enqueue_dns(vm, cb, vec![Value::Null, result]);
     Ok(Value::Undefined)
@@ -203,12 +220,28 @@ fn dns_resolve_ip_cb(vm: &mut Vm, args: &[Value], version: u8) -> Result<Value, 
     Ok(Value::Undefined)
 }
 
-/// 无递归 DNS 记录类型的统一骨架：cb(null, [])（对齐 Go 对 localhost 实测）。
-fn dns_resolve_empty(vm: &mut Vm, args: &[Value], label: &str) -> Result<Value, VmError> {
-    let Some((_hostname, _rrtype, cb)) = parse_resolve_args(vm, args) else {
+/// 记录类 resolve 统一骨架：本地单标签名保持旧确定性空数组；
+/// 非本地名走真实报文查询（未知 rrtype 或后台不可用回落空数组）。
+fn dns_resolve_empty(
+    vm: &mut Vm,
+    args: &[Value],
+    label: &str,
+    rrtype: &str,
+) -> Result<Value, VmError> {
+    let Some((hostname, _rrtype, cb)) = parse_resolve_args(vm, args) else {
         let err = vm.alloc_error_instance(&format!("dns.{label}: requires hostname and callback"));
         return Err(VmError::Thrown(Value::Object(err)));
     };
+    if !needs_wire(&hostname) {
+        let result = Value::Object(vm.alloc_array(Vec::new()));
+        enqueue_dns(vm, cb, vec![Value::Null, result]);
+        return Ok(Value::Undefined);
+    }
+    if let Some((shape, syscall)) = query_meta(rrtype) {
+        if start_callback_resolve(vm, &hostname, rrtype, syscall, shape, cb) {
+            return Ok(Value::Undefined);
+        }
+    }
     let result = Value::Object(vm.alloc_array(Vec::new()));
     enqueue_dns(vm, cb, vec![Value::Null, result]);
     Ok(Value::Undefined)
@@ -227,40 +260,51 @@ fn dns_resolve_any(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `resolveCaa`。
 fn dns_resolve_caa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveCaa")
+    dns_resolve_empty(vm, args, "resolveCaa", "CAA")
 }
 
 /// `resolveCname`。
 fn dns_resolve_cname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveCname")
+    dns_resolve_empty(vm, args, "resolveCname", "CNAME")
 }
 
 /// `resolveMx`。
 fn dns_resolve_mx(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveMx")
+    dns_resolve_empty(vm, args, "resolveMx", "MX")
 }
 
 /// `resolveNaptr`。
 fn dns_resolve_naptr(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveNaptr")
+    dns_resolve_empty(vm, args, "resolveNaptr", "NAPTR")
 }
 
 /// `resolveNs`。
 fn dns_resolve_ns(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveNs")
+    dns_resolve_empty(vm, args, "resolveNs", "NS")
 }
 
 /// `resolvePtr`。
 fn dns_resolve_ptr(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolvePtr")
+    dns_resolve_empty(vm, args, "resolvePtr", "PTR")
 }
 
-/// `resolveSoa`。
+/// `resolveSoa`：本地名 → 空对象（旧确定性形态）；非本地名 → SOA 报文查询
+/// （无记录亦兑现空对象，Node 语义为 err/对象视域而定；离线保持空对象）。
 fn dns_resolve_soa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some((_hostname, _rrtype, cb)) = parse_resolve_args(vm, args) else {
+    let Some((hostname, _rrtype, cb)) = parse_resolve_args(vm, args) else {
         let err = vm.alloc_error_instance("dns.resolveSoa: requires hostname and callback");
         return Err(VmError::Thrown(Value::Object(err)));
     };
+    if !needs_wire(&hostname) {
+        let result = Value::Object(vm.alloc_ordinary());
+        enqueue_dns(vm, cb, vec![Value::Null, result]);
+        return Ok(Value::Undefined);
+    }
+    if let Some((shape, syscall)) = query_meta("SOA") {
+        if start_callback_resolve(vm, &hostname, "SOA", syscall, shape, cb) {
+            return Ok(Value::Undefined);
+        }
+    }
     let result = Value::Object(vm.alloc_ordinary());
     enqueue_dns(vm, cb, vec![Value::Null, result]);
     Ok(Value::Undefined)
@@ -268,17 +312,17 @@ fn dns_resolve_soa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `resolveSrv`。
 fn dns_resolve_srv(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveSrv")
+    dns_resolve_empty(vm, args, "resolveSrv", "SRV")
 }
 
 /// `resolveTlsa`。
 fn dns_resolve_tlsa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveTlsa")
+    dns_resolve_empty(vm, args, "resolveTlsa", "TLSA")
 }
 
 /// `resolveTxt`。
 fn dns_resolve_txt(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    dns_resolve_empty(vm, args, "resolveTxt")
+    dns_resolve_empty(vm, args, "resolveTxt", "TXT")
 }
 
 /// `dns.lookupService(address, port, callback)` → `cb(err, {hostname, service})`。
@@ -307,8 +351,8 @@ fn dns_lookup_service(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
-/// `dns.reverse(ip, callback)`：合法 IP 兑现数组（std 无反向 PTR，内容为空），
-/// 非法输入回调 ENOTFOUND（hostname 空串，对齐 Go asyncResolve 错误形态）。
+/// `dns.reverse(ip, callback)`：合法且非回环 IP 走真实 PTR 报文查询；
+/// 回环/非法输入保持旧确定性形态（空数组 / ENOTFOUND）。
 fn dns_reverse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if args.len() < 2 {
         let err = vm.alloc_error_instance("dns.reverse: requires ip and callback");
@@ -316,6 +360,13 @@ fn dns_reverse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
     let ip = vm.format_value(args[0]);
     let cb = args[1];
+    if ip.parse::<IpAddr>().is_ok() && reverse_needs_wire(&ip) {
+        if let Some(qname) = arpa_name(&ip) {
+            if start_callback_reverse(vm, &ip, &qname, cb) {
+                return Ok(Value::Undefined);
+            }
+        }
+    }
     let call = if ip.parse::<IpAddr>().is_ok() {
         vec![Value::Null, Value::Object(vm.alloc_array(Vec::new()))]
     } else {
@@ -325,13 +376,24 @@ fn dns_reverse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
-/// `dns.getServers()`：进程内列表（初始空数组，对齐 Go）。
+/// `dns.getServers()`：进程内列表（初始空数组，`setServers` 后回读设定值）。
 fn dns_get_servers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    Ok(Value::Object(vm.alloc_array(Vec::new())))
+    let servers = dns_resolver::get_servers();
+    let vals: Vec<Value> = servers
+        .into_iter()
+        .map(|s| Value::Object(vm.alloc_string(s)))
+        .collect();
+    Ok(Value::Object(vm.alloc_array(vals)))
 }
 
-/// `dns.setServers(servers)`：记录进程内列表（无实际解析效果）。
-fn dns_set_servers(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+/// `dns.setServers(servers)`：记录进程内列表（后续报文查询生效）。
+fn dns_set_servers(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if let Some(Value::Object(r)) = args.first().copied() {
+        if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
+            let servers: Vec<String> = elements.iter().map(|v| vm.format_value(*v)).collect();
+            dns_resolver::set_servers(servers);
+        }
+    }
     Ok(Value::Undefined)
 }
 

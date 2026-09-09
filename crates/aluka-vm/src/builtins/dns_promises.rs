@@ -1,4 +1,4 @@
-﻿//! `node:dns/promises` 内置模块（Phase 5）：Promise 版 DNS API 与共享解析逻辑。
+//! `node:dns/promises` 内置模块（Phase 5）：Promise 版 DNS API 与共享解析逻辑。
 //!
 //! 与 Node.js 22 LTS 标准（`nodenet/dns_promises.go`）对齐：
 //! - `lookup` → `Promise<{address, family}>`（成功路径与 Go 逐字对齐）；
@@ -21,6 +21,10 @@
 //! ("dns", dns_pump)` 泵派发，保证回调 / 兑现晚于同步代码块（对齐 Go
 //! goroutine + PostTask）。队列排空后自动注销事件源。
 
+use crate::builtins::dns_resolver::{
+    self, arpa_name, needs_wire, query_meta, reverse_needs_wire, rrtype_uses_system,
+    start_promise_resolve, start_promise_reverse,
+};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
@@ -471,6 +475,27 @@ fn promises_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .map(|v| vm.format_value(*v))
         .unwrap_or_else(|| "A".to_owned());
     let (promise, resolver) = alloc_resolver(vm);
+    // A/AAAA/ANY 与本地单标签名走系统解析（既有确定性形态）；其余真实报文查询。
+    if rrtype_uses_system(&rrtype) || !needs_wire(&hostname) {
+        let result = dns_resolve_by_type(vm, &hostname, &rrtype);
+        enqueue_dns(vm, resolver, vec![result]);
+        return Ok(Value::Object(promise));
+    }
+    if let Some((shape, syscall)) = query_meta(&rrtype) {
+        let reject = vm.alloc_promise_resolver(promise, false);
+        if start_promise_resolve(
+            vm,
+            &hostname,
+            &rrtype,
+            syscall,
+            shape,
+            resolver,
+            Value::Object(reject),
+        ) {
+            return Ok(Value::Object(promise));
+        }
+    }
+    // 未知 rrtype 或后台不可用：回落旧确定性形态。
     let result = dns_resolve_by_type(vm, &hostname, &rrtype);
     enqueue_dns(vm, resolver, vec![result]);
     Ok(Value::Object(promise))
@@ -517,14 +542,39 @@ fn promises_resolve_any(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Object(promise))
 }
 
-/// 无递归 DNS 支持的记录类型统一骨架：resolve 空数组
-/// （Go 对 localhost 的实测同形；reverse 的成功路径亦兑现数组）。
-fn promises_empty_result(vm: &mut Vm, args: &[Value], label: &str) -> Result<Value, VmError> {
-    let Some(_arg) = args.first().copied() else {
+/// 记录类 resolve 统一骨架：本地单标签名保持旧确定性空数组；
+/// 非本地名走真实报文查询（未知 rrtype 或后台不可用回落空数组）。
+fn promises_empty_result(
+    vm: &mut Vm,
+    args: &[Value],
+    label: &str,
+    rrtype: &str,
+) -> Result<Value, VmError> {
+    let Some(arg) = args.first().copied() else {
         let err = vm.alloc_error_instance(&format!("dns.promises.{label}: requires hostname"));
         return Err(VmError::Thrown(Value::Object(err)));
     };
+    let hostname = vm.format_value(arg);
     let (promise, resolver) = alloc_resolver(vm);
+    if !needs_wire(&hostname) {
+        let empty = Value::Object(vm.alloc_array(Vec::new()));
+        enqueue_dns(vm, resolver, vec![empty]);
+        return Ok(Value::Object(promise));
+    }
+    if let Some((shape, syscall)) = query_meta(rrtype) {
+        let reject = vm.alloc_promise_resolver(promise, false);
+        if start_promise_resolve(
+            vm,
+            &hostname,
+            rrtype,
+            syscall,
+            shape,
+            resolver,
+            Value::Object(reject),
+        ) {
+            return Ok(Value::Object(promise));
+        }
+    }
     let empty = Value::Object(vm.alloc_array(Vec::new()));
     enqueue_dns(vm, resolver, vec![empty]);
     Ok(Value::Object(promise))
@@ -532,80 +582,122 @@ fn promises_empty_result(vm: &mut Vm, args: &[Value], label: &str) -> Result<Val
 
 /// `resolveCaa`。
 fn promises_resolve_caa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveCaa")
+    promises_empty_result(vm, args, "resolveCaa", "CAA")
 }
 
 /// `resolveCname`。
 fn promises_resolve_cname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveCname")
+    promises_empty_result(vm, args, "resolveCname", "CNAME")
 }
 
 /// `resolveMx`。
 fn promises_resolve_mx(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveMx")
+    promises_empty_result(vm, args, "resolveMx", "MX")
 }
 
 /// `resolveNaptr`。
 fn promises_resolve_naptr(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveNaptr")
+    promises_empty_result(vm, args, "resolveNaptr", "NAPTR")
 }
 
 /// `resolveNs`。
 fn promises_resolve_ns(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveNs")
+    promises_empty_result(vm, args, "resolveNs", "NS")
 }
 
 /// `resolvePtr`。
 fn promises_resolve_ptr(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolvePtr")
+    promises_empty_result(vm, args, "resolvePtr", "PTR")
 }
 
 /// `resolveSrv`。
 fn promises_resolve_srv(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveSrv")
+    promises_empty_result(vm, args, "resolveSrv", "SRV")
 }
 
 /// `resolveTlsa`。
 fn promises_resolve_tlsa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveTlsa")
+    promises_empty_result(vm, args, "resolveTlsa", "TLSA")
 }
 
 /// `resolveTxt`。
 fn promises_resolve_txt(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    promises_empty_result(vm, args, "resolveTxt")
+    promises_empty_result(vm, args, "resolveTxt", "TXT")
 }
 
-/// `reverse`（Promise 版：错误也兑现空数组，对齐 Go）。
+/// `reverse`（Promise 版）：非回环合法 IP 走真实 PTR；回环/非法输入保持
+/// 旧确定性形态（空数组）。
 fn promises_reverse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(_arg) = args.first().copied() else {
+    let Some(arg) = args.first().copied() else {
         let err = vm.alloc_error_instance("dns.promises.reverse: requires ip");
         return Err(VmError::Thrown(Value::Object(err)));
     };
+    let ip = vm.format_value(arg);
     let (promise, resolver) = alloc_resolver(vm);
+    if ip.parse::<IpAddr>().is_ok() && reverse_needs_wire(&ip) {
+        if let Some(qname) = arpa_name(&ip) {
+            let reject = vm.alloc_promise_resolver(promise, false);
+            if start_promise_reverse(vm, &ip, &qname, resolver, Value::Object(reject)) {
+                return Ok(Value::Object(promise));
+            }
+        }
+    }
     let empty = Value::Object(vm.alloc_array(Vec::new()));
     enqueue_dns(vm, resolver, vec![empty]);
     Ok(Value::Object(promise))
 }
 
-/// `dns.promises.resolveSoa(hostname)` → 空对象 Promise（对齐 Go 近似）。
+/// `dns.promises.resolveSoa(hostname)`：本地名 → 空对象 Promise；
+/// 非本地名走 SOA 报文查询（无记录亦兑现空对象，保持旧形态；出错则拒绝）。
 fn promises_resolve_soa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(_arg) = args.first().copied() else {
+    let Some(arg) = args.first().copied() else {
         let err = vm.alloc_error_instance("dns.promises.resolveSoa: requires hostname");
         return Err(VmError::Thrown(Value::Object(err)));
     };
+    let hostname = vm.format_value(arg);
     let (promise, resolver) = alloc_resolver(vm);
+    if !needs_wire(&hostname) {
+        let result = Value::Object(vm.alloc_ordinary());
+        enqueue_dns(vm, resolver, vec![result]);
+        return Ok(Value::Object(promise));
+    }
+    if let Some((shape, syscall)) = query_meta("SOA") {
+        let reject = vm.alloc_promise_resolver(promise, false);
+        if start_promise_resolve(
+            vm,
+            &hostname,
+            "SOA",
+            syscall,
+            shape,
+            resolver,
+            Value::Object(reject),
+        ) {
+            return Ok(Value::Object(promise));
+        }
+    }
     let result = Value::Object(vm.alloc_ordinary());
     enqueue_dns(vm, resolver, vec![result]);
     Ok(Value::Object(promise))
 }
 
-/// `dns.promises.getServers()`：进程内列表（初始空数组）。
+/// `dns.promises.getServers()`：进程内列表（初始空数组，与 node:dns 共享）。
 fn promises_get_servers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    Ok(Value::Object(vm.alloc_array(Vec::new())))
+    let servers = dns_resolver::get_servers();
+    let vals: Vec<Value> = servers
+        .into_iter()
+        .map(|s| Value::Object(vm.alloc_string(s)))
+        .collect();
+    Ok(Value::Object(vm.alloc_array(vals)))
 }
 
-/// `dns.promises.setServers(servers)`：记录进程内列表（无实际解析效果）。
-fn promises_set_servers(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+/// `dns.promises.setServers(servers)`：记录进程内列表（后续报文查询生效）。
+fn promises_set_servers(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if let Some(Value::Object(r)) = args.first().copied() {
+        if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
+            let servers: Vec<String> = elements.iter().map(|v| vm.format_value(*v)).collect();
+            dns_resolver::set_servers(servers);
+        }
+    }
     Ok(Value::Undefined)
 }
 

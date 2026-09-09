@@ -25,6 +25,7 @@ pub mod dgram;
 pub mod diagnostics_channel;
 pub mod dns;
 pub mod dns_promises;
+pub mod dns_resolver;
 pub mod domain;
 pub mod events;
 pub mod fs;

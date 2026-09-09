@@ -28,6 +28,12 @@ socket2 = "0.5"
 # （无 ring/C/asm；评估能否满足 AGENTS 纯 Rust 约束下的真实 TLS 握手）
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "custom-provider"] }
 rustls-rustcrypto = "0.0.2-alpha"
+# DNS 递归查询（M3.4b A+ 路线）：hickory-proto 仅做 DNS 报文编解码
+# （纯 Rust、关默认特性——不带 tokio/hickory-resolver runtime 链）；
+# resolve* 家族经 std::thread 工作线程 + crossbeam-channel 与
+# VM 同步事件泵桥接（M5.1 worker_threads 将复用同款 channel 基建）。
+hickory-proto = { version = "0.25", default-features = false, features = ["std"] }
+crossbeam-channel = "0.5.17"
 
 [lints]
 workspace = true
