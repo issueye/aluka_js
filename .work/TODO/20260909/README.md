@@ -105,3 +105,25 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
 # JSON.stringify(undefined) === undefined（顶层）
 # 40 键对象 JSON 保插入序；删 b 重加 → {"a":1,"c":3,"b":9}（末尾）
 ```
+## 10. M3 复评与登记（评审轮：M2/M3 独立复审）
+
+- **复测证据**（Node v22.3.0 在场，7 套件串行实跑）：
+  - `m3_tls_loopback_test` 2/2 ｜ `builtins_phase5_http_test` 10/10 ｜
+    `builtins_phase5_net_test` 8/8 ｜ `builtins_phase4_stream_test` 4/4 ｜
+    `builtins_phase4_fs_promises_test` 2/2 ｜ `conformance_node22` 26 例对拍 ｜
+    `express_e2e` 1/1 —— **合计 28 passed / 0 failed**；前端单测
+    （aluka-module 9 / compiler / bytecode）与 M2 复测（express/cjs/esm/conformance）
+    全绿（详见 §8/§9 与 M2 复评结论）。
+- **评审结论**：
+  1. **M3.2 未闭环**：VM `tls`/`https` JS 表面未接真实 TLS（tls.rs/https.rs 自注）；
+     `m3_tls_loopback_test.rs` 为纯 rustls 库直连（不经 VM）；受控探针
+     `https.request → Node 真实 TLS 服务器`零输出静默失败（Node 对照 200）。
+  2. **M3.4 部分达成**：`lookup` 真实（系统解析）；`resolve` 家族对任意域名非真实
+     查询（std 无递归 DNS，dns.rs 自注）。
+  3. **M3.1 / M3.3 达成**：Stream 背压状态机与 http.Agent Keep-Alive 池实现在场，
+     模块测试 + express/conformance 佐证。
+- **登记动作**（总 TODO README §M3）：
+  - 总览 M3 `[x]` → `[~]`（M3.1/M3.3 达成；M3.2/M3.4 未闭环）；
+  - 细分：M3.1 `[x]`、M3.2 `[ ]`+M3.2b 工作项、M3.3 `[x]`、M3.4 `[ ]`+M3.4b 工作项；
+  - 新工作项 M3.2b（tls/https JS 面接入 rustls 会话，事件泵握手调度，自签证书
+    自回环 JS 探针与 Node 22 对拍）；M3.4b（resolve 家族真实递归查询）。
