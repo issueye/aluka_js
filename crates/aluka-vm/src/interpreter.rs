@@ -191,6 +191,8 @@ pub struct Vm {
     pub(crate) last_entry_async_promise: Option<Value>,
     /// GC 钉扎句柄（require 进行中的 module 对象；防嵌套加载期间被回收）
     pub(crate) gc_pinned: Vec<u32>,
+    /// GC 挂起计数（builtin 装配窗口；>0 时 push_object 跳过回收）
+    pub(crate) gc_suspended: u32,
     /// 保存帧寄存器：嵌套执行期间被换出的外层帧状态（GC 根集合成员，
     /// 见 [`crate::gc::SavedFrameState`]；漏登记 = 换出帧悬垂复用）
     pub(crate) gc_saved_frames: Vec<crate::gc::SavedFrameState>,
@@ -348,6 +350,7 @@ impl Vm {
             eval_provider: None,
             last_entry_async_promise: None,
             gc_pinned: Vec::new(),
+            gc_suspended: 0,
             gc_saved_frames: Vec::new(),
             module_scopes: Vec::new(),
             function_ctor: None,
@@ -519,7 +522,9 @@ impl Vm {
         vm.os_module = Some(os_mod);
         // 内置库注册表：必须在全部单例（fs/path/os/process/构造器）初始化之后
         // 预热（内置模块如 fs/os 的 build 复用已建单例）
-        let _ = crate::builtins::register_all(&mut vm);
+        if let Err(e) = crate::builtins::register_all(&mut vm) {
+            eprintln!("[reg] register_all ERR: {e}");
+        }
         // BroadcastChannel 全局类（node22 conformance 06）
         crate::builtins::broadcast_channel::register_global(&mut vm);
         // Object.prototype.hasOwnProperty 分派项（register_all 之后的注册才存活）
@@ -2542,8 +2547,10 @@ impl Vm {
                             };
                             if let Some((pending, value, is_rejected)) = state {
                                 if pending {
-                                    if let Some(HeapObject::Promise {
-                                        handlers, rejected, ..
+                                    let registered = if let Some(HeapObject::Promise {
+                                        handlers,
+                                        rejected,
+                                        ..
                                     }) = self.heap.get_mut(rr.0 as usize)
                                     {
                                         if method_name == "then" {
@@ -2555,6 +2562,13 @@ impl Vm {
                                             // catch：只在 reject 时调度（fulfill 不触发）
                                             rejected.push(cb);
                                         }
+                                        true
+                                    } else {
+                                        false
+                                    };
+                                    if registered {
+                                        // 写屏障：pending promise（容器）注册年轻回调
+                                        self.gc_write_barrier(rr, cb);
                                     }
                                 } else if is_rejected {
                                     // 已拒绝：then 的 onR / catch 的 cb 立即调度
@@ -2859,6 +2873,8 @@ impl Vm {
                                         } else {
                                             entries.push((key, value));
                                         }
+                                        // 写屏障：Map/Set 容器写入年轻值
+                                        self.gc_write_barrier(rr, value);
                                         result = receiver;
                                     }
                                     "get" => {

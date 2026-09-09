@@ -1,4 +1,4 @@
-﻿//! node:test 运行状态表（Phase 8）：用例/子测试状态的线程局部存储与访问器。
+//! node:test 运行状态表（Phase 8）：用例/子测试状态的线程局部存储与访问器。
 //!
 //! 移植 Node.js 22 LTS 标准（`nodetest/test_context.go`）的 `testRunState`：
 //! plan/asserts 计数、skip/todo 标记、子测试表与子结果收集；以线程局部
@@ -527,4 +527,38 @@ pub fn new_test_context(vm: &mut Vm) -> Value {
     let tracker = mock::new_tracker(vm, mock::TrackerScope::Scoped);
     let _ = vm.set_property(Value::Object(t), "mock", tracker);
     Value::Object(t)
+}
+
+/// GC 根快照：运行中用例的函数值与钩子（父用例 + 子测试）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    let push_run = |out: &mut crate::gc::GcRoots, fn_val: &Value, hooks: [&Vec<Value>; 4]| {
+        out.push(*fn_val);
+        for h in hooks {
+            for v in h {
+                out.push(*v);
+            }
+        }
+    };
+    RUN_STATES.with(|g| {
+        for r in g.borrow().values() {
+            push_run(
+                out,
+                &r.fn_val,
+                [
+                    &r.before_hooks,
+                    &r.after_hooks,
+                    &r.before_each,
+                    &r.after_each,
+                ],
+            );
+        }
+    });
+    SUBTEST_STATES.with(|g| {
+        for s in g.borrow().values() {
+            out.push(s.fn_val);
+            if let Some(p) = s.promise {
+                out.push(p);
+            }
+        }
+    });
 }

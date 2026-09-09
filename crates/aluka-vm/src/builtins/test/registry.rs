@@ -229,3 +229,12 @@ pub fn test_name_and_fn(vm: &mut crate::interpreter::Vm, args: &[Value]) -> (Str
     }
     ("anonymous".to_owned(), args[0])
 }
+
+/// GC 根快照：自定义断言函数表。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    CUSTOM_ASSERTS.with(|g| {
+        for v in g.borrow().values() {
+            out.push(*v);
+        }
+    });
+}

@@ -52,7 +52,7 @@
 | 4 | aluka-npm：依赖树解析 + 扁平布局 + bin shim + lockfile | `[x]` | npm 复刻 |
 | 5 | aluka-npm：install/run/ls/init/view 子命令 + e2e（express 对拍） | `[x]` | npm 复刻 |
 | 6 | M7.1：`aluka run` 自动构建 + `aluka build` + `aluka npm` 分发 | `[x]` | M7.1 |
-| 7 | M6.1：写屏障审计 + minor 启用 + 卡表 + 动态堆 | `[ ]` | M6.1 |
+| 7 | M6.1：卡表写屏障 + 根审计补漏 + 动态堆伸缩 + minor 生产启用 | `[x]`（基础闭环；极端压力残留项登记） | M6.1 |
 | 8 | M7.2：conformance 扩容（滚动） | `[ ]` | M7.2 |
 | 9 | 门禁验证（fmt / clippy -D warnings / cargo test 全绿） | `[ ]` | 门禁 |
 | 10 | 真实证据回填与 diff 复审 | `[ ]` | 证据闭环 |
@@ -124,6 +124,55 @@ sum passed: 575   # 77+ 测试目标，含 npm_install_e2e / semver_golden / con
 ## 5. 复审结论与偏差记录
 
 - **git diff 复审**：变更与今日目标一致，无无关夹带；
+### 待办 7 · M6.1 分代 GC 基础闭环
+
+**结论**：达成（基础闭环）——卡表写屏障 / 根审计补漏 / 自适应堆伸缩 /
+minor 生产启用全部落地；生产形态全量门禁 577 passed / 0 failed。
+
+**交付明细**：
+1. **卡表写屏障**：`GcState.cards`（每 64 槽位一字节）替换 `Vec<u32>` 记忆集
+   （原 `contains` O(n) 去重）；minor 按脏卡扫描「老写新」容器，存活期跨回收
+   的引用显式重卡；**晋升置卡守卫**（升代对象持年轻引用必须置卡——
+   perf_hooks 实测暴露的经典 tenuring 漏洞）；
+2. **变异点屏障补全**：Map.set/Set.add、Promise `.then` 处理器注册、
+   `Object.defineProperty` 访问器注册（中央漏斗 set_property 原已覆盖
+   Ordinary/Array/Closure/NativeCtor/NativeFn 全变体）；
+3. **根审计补漏（19 处）**：Vm 字段 `require_fn`/`fs_object`/`env_object`/
+   `objproto_has_own`/`last_entry_async_promise`/`require_bases` 键；
+   静态表 provider ×18（NS_EMITTERS、EMITTER_STORE、NET_SHARED、
+   DGRAM_SHARED、PORT_STATES/ENV_DATA、http LISTENERS/PENDING_EVENTS、
+   http2、zlib DELIVERIES、async_hooks、domain、diagnostics、readline、
+   sqlite TXNS、test ×3、vm/module 原型单例、**分派 TLS
+   CURRENT_RECEIVER/PENDING_CALLEE**）；`StreamState.errored` 补入既有
+   provider；**reflect::materialize 的 mem::take 窗口**钉扎补根；
+4. **builtin 装配窗口挂起回收**（`gc_suspended` 计数，与 JIT 帧内跳过
+   回收同一不变量；register_all 原以 `let _ =` 吞错改为暴露错误）；
+5. **自适应堆伸缩**：minor 阈值按上轮存活率动态调整（地板 4096，
+   存活率高抬升至多 16×/全死亡压回地板），major = 8×minor；
+   替换原固定 2000 万次分配阈值（实际从不触发）；
+6. **minor 生产启用**：push_object 分配漏斗内 minor/major 双代自然触发；
+7. **压力验证模式**：`ALUKA_GC_STRESS=<N>`（每 N 次分配强制回收）+
+   `ALUKA_GC_MODE=major|minor`（单路诊断）——审计从人工枚举转为机器验证。
+
+**压力模式实战揪出并修复的缺陷（非压力下全部潜伏）**：模块装配期悬垂
+（Cannot find module 间歇性）、require 入口函数被回收（`node:stream is not
+a function`）、Reflect 窗口全模块失根、晋升误收（performance 属性缺失）、
+分派 receiver 悬垂、流 errored 值丢失。
+
+**证据类型**：命令证据
+
+```bash
+$ cargo test --workspace --all-features   # 生产形态（自适应阈值）
+TEST-EXIT=0, sum passed: 577, 0 failed
+$ cargo clippy --workspace --all-targets --all-features -- -D warnings  # 零告警
+$ cargo test -p aluka-vm --lib gc        # 15 passed（含卡表粒度/晋升置卡/自适应阈值新用例）
+```
+
+**已知项登记（下轮继续）**：极端压力（stress ≤1024，即 ≥4× 生产触发频率）
+下仍有个别悬垂路径（is-odd 链路可复现，探针 `node:stream/promises` +
+finished 消费者）。生产形态（≥4096 自适应）577 例全绿不受影响；stress
+模式 + ALUKA_GC_MODE 单路开关已内置，下轮按法继续收敛。
+
 - **偏差记录**：① registry 历史脏数据（`"engines": ">=0.10.40"` 字符串形态）
   需宽容反序列化——npm 生态元数据非规范形态客观存在；② `aluka run` 自动
   构建的项目边界以最近 package.json 定界（避免祖先链 node_modules 误触）；

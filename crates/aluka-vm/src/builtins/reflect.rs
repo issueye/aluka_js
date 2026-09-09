@@ -25,9 +25,14 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 ///
 /// 13 个规范方法 + 属性挂接；重复调用物化新表面（resolve_global 每 epoch 一次）。
 pub fn materialize(vm: &mut Vm) -> ObjectRef {
-    // 注册表临时取出避免双可变借用
+    // 注册表临时取出避免双可变借用。窗口内模块单例不在 vm.builtin_registry
+    // 根集合里（M6.1 根审计：压力模式下此窗口的分配会回收全部模块对象），
+    // 以钉扎表补根，返回前弹出。
     let mut registry = std::mem::take(&mut vm.builtin_registry);
+    let pins: Vec<u32> = registry.module_handles().map(|r| r.0).collect();
+    vm.gc_pinned.extend_from_slice(&pins);
     let obj = materialize_with_registry(vm, &mut registry);
+    vm.gc_pinned.truncate(vm.gc_pinned.len() - pins.len());
     vm.builtin_registry = registry;
     obj
 }

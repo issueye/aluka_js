@@ -1200,3 +1200,23 @@ fn flush_worker_stdout(vm: &mut Vm) {
     }
     let _ = out.flush();
 }
+
+/// GC 根快照：端口消息队列、广播队列与 worker 环境表（线程局部静态持有）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    PORT_STATES.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for st in map.values() {
+                for v in &st.queue {
+                    out.push(*v);
+                }
+            }
+        }
+    });
+    ENV_DATA.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for v in map.values() {
+                out.push(*v);
+            }
+        }
+    });
+}

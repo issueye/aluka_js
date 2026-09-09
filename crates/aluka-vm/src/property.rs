@@ -1236,6 +1236,13 @@ impl Vm {
                 }
                 remember_enumerable(non_enum, key);
             }
+            // 写屏障：容器注册访问器函数值（g/s 可为年轻闭包）
+            if let Some(g) = g_val {
+                self.gc_write_barrier(r, g);
+            }
+            if let Some(s) = s_val {
+                self.gc_write_barrier(r, s);
+            }
             return Ok(());
         }
         let value = get_v(self, "value")?;

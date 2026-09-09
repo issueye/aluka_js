@@ -932,6 +932,32 @@ fn emitter_get_max_listeners(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
 }
 
 /// 编译期锚定：确保处理器签名与注册表一致。
+/// GC 根快照：domain 活动实例、成员与转发回调。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    GLOBAL.with(|g| {
+        if let Some(g) = g.borrow().as_ref() {
+            out.push(g.active);
+        }
+    });
+    DOMAINS.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for d in map.values() {
+                for v in &d.members {
+                    out.push(*v);
+                }
+                for v in d.forwarders.values() {
+                    out.push(*v);
+                }
+                for items in d.listeners.values() {
+                    for l in items {
+                        out.push(l.callback);
+                    }
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

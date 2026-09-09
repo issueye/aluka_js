@@ -578,6 +578,17 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 }
 
 /// 编译期锚定：确保处理器签名与注册表一致，并单测 zstd 帧自产自销。
+/// GC 根快照：待投递异步压缩回调。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    DELIVERIES.with(|g| {
+        if let Some(queue) = g.borrow().as_ref() {
+            for d in queue {
+                out.push(d.callback);
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

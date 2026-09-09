@@ -476,3 +476,12 @@ fn ordinary(vm: &mut Vm, entries: &[(&str, Value)]) -> ObjectRef {
     }
     obj
 }
+
+/// GC 根快照：运行流对象。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    RUN_STREAM.with(|g| {
+        if let Some(v) = g.borrow().as_ref() {
+            out.push(*v);
+        }
+    });
+}

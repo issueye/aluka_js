@@ -723,3 +723,18 @@ fn events_static_get_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value
     let max = with_emitter(r.0, |state| state.max_listeners);
     Ok(Value::Number(max as f64))
 }
+
+/// GC 根快照：EventEmitter 侧表监听器回调。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    EMITTER_STORE.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for state in map.values() {
+                for items in state.listeners.values() {
+                    for item in items {
+                        out.push(item.callback);
+                    }
+                }
+            }
+        }
+    });
+}

@@ -653,6 +653,23 @@ fn current_tracing_id() -> Option<u32> {
 }
 
 /// 编译期锚定：确保处理器签名与注册表一致。
+/// GC 根快照：通道实例对象、订阅回调与绑定 store。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    CHANNELS.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for c in map.values() {
+                out.push(Value::Object(c.obj));
+                for v in &c.subscribers {
+                    out.push(*v);
+                }
+                for v in &c.stores {
+                    out.push(*v);
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

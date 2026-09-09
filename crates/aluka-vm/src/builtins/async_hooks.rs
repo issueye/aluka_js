@@ -711,6 +711,26 @@ fn async_wrap_provider_names() -> &'static [&'static str] {
 }
 
 /// 编译期锚定：确保处理器签名与注册表一致。
+/// GC 根快照：AsyncHook 回调、调用栈与 ALS store 栈。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    HOOKS.with(|g| {
+        for (_, h) in g.borrow().iter() {
+            for cb in h.callbacks.iter().flatten() {
+                out.push(*cb);
+            }
+        }
+    });
+    ALS.with(|g| {
+        if let Some(als_map) = g.borrow().as_ref() {
+            for als in als_map.values() {
+                for v in &als.stack {
+                    out.push(*v);
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -384,3 +384,23 @@ pub(crate) fn update_response<R>(res_id: u32, f: impl FnOnce(&mut RespBinding) -
             .map(f)
     })
 }
+
+/// GC 根快照：http 事件监听器表与待派发事件值。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    LISTENERS.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for per_obj in map.values() {
+                for items in per_obj.values() {
+                    for item in items {
+                        out.push(item.callback);
+                    }
+                }
+            }
+        }
+    });
+    PENDING_EVENTS.with(|g| {
+        for (v, _) in g.borrow().iter() {
+            out.push(*v);
+        }
+    });
+}

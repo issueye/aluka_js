@@ -812,3 +812,36 @@ fn is_v4_family(ip: &IpAddr) -> bool {
         IpAddr::V6(v6) => v6.to_ipv4_mapped().is_some(),
     }
 }
+
+/// GC 根快照：dgram 侧表实例对象、监听器与待派发事件/回调。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    DGRAM_SHARED.with(|g| {
+        let binding = g.borrow();
+        let Some(shared) = binding.as_ref() else {
+            return;
+        };
+        for (_, s) in &shared.sockets {
+            out.push(s.obj);
+            for items in s.listeners.values() {
+                for l in items {
+                    out.push(l.cb);
+                }
+            }
+        }
+        for action in &shared.pending {
+            match action {
+                DgramAction::Emit { args, .. } => {
+                    for v in args {
+                        out.push(*v);
+                    }
+                }
+                DgramAction::Call { cb, args } => {
+                    out.push(*cb);
+                    for v in args {
+                        out.push(*v);
+                    }
+                }
+            }
+        }
+    });
+}

@@ -471,3 +471,17 @@ fn http2_create_secure_server(vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
     let obj = http::create_server_object(vm, handler);
     Ok(Value::Object(obj))
 }
+
+/// GC 根快照：http2 连接目标与流错误值。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    CONNECT_TARGETS.with(|g| {
+        for v in g.borrow().iter() {
+            out.push(*v);
+        }
+    });
+    STREAM_ERRORS.with(|g| {
+        for (v, _) in g.borrow().iter() {
+            out.push(*v);
+        }
+    });
+}

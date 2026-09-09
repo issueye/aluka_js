@@ -245,6 +245,22 @@ impl Vm {
                 self.collect_major_gc();
             } else if minor_hit {
                 self.collect_minor_gc();
+            } else if crate::gc::gc_stress_due(self.gc.allocated) {
+                // 压力验证模式（ALUKA_GC_STRESS=<N>）：漏登记的根/写屏障
+                // 确定性暴露为悬垂复用——全量套件在该模式下跑绿即审计闭环。
+                // ALUKA_GC_MODE=major|minor 可单跑一路（诊断分代 bug 用）。
+                match crate::gc::gc_stress_mode() {
+                    "major" => {
+                        self.collect_major_gc();
+                    }
+                    "minor" => {
+                        self.collect_minor_gc();
+                    }
+                    _ => {
+                        self.collect_major_gc();
+                        self.collect_minor_gc();
+                    }
+                }
             }
         }
         if let Some(idx) = self.gc.young_free.pop().or_else(|| self.gc.old_free.pop()) {

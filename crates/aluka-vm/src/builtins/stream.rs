@@ -336,6 +336,9 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
             if let Some(e) = s.errored {
                 out.push(e);
             }
+            if let Some(e) = s.errored {
+                out.push(e);
+            }
         }
     });
 }

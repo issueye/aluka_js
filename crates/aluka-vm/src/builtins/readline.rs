@@ -401,6 +401,19 @@ pub(crate) fn is_callable_value(vm: &Vm, v: Value) -> bool {
 }
 
 /// 编译期锚定：处理器签名与注册表一致。
+/// GC 根快照：Interface 会话的输出流对象。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    RL_STATES.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for st in map.values() {
+                if let Some(v) = st.output {
+                    out.push(v);
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

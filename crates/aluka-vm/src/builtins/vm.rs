@@ -424,6 +424,15 @@ fn source_exec_error(vm: &mut Vm, api: &str) -> VmError {
 }
 
 /// 编译期锚定：确保处理器签名与注册表一致。
+/// GC 根快照：`node:vm` 脚本原型单例。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    SCRIPT_PROTO.with(|g| {
+        if let Some(r) = g.borrow().as_ref() {
+            out.push(Value::Object(*r));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

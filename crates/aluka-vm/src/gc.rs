@@ -18,13 +18,19 @@
 //!    组合器状态、端口消息队列等）经各文件的 **root provider** 快照函数
 //!    统一登记（见 [`static_roots`]，漏登记 = 悬垂）。
 //!
-//! # 当前形态（对 ADR 的收敛偏差，已记录）
+//! # M6.1 形态：卡表写屏障 + 自适应堆伸缩 + 生产双代触发
 //!
-//! minor（年轻代，4k 分配阈值）+ major（全堆，20k 阈值）双触发，写屏障minor 回收与
-//! 覆盖全部「老写新」变异点，记忆集作为 minor 次级根。
-//! 全部「老对象写入年轻引用」的变异点（set_property/数组元素/Map/事件表/
-//! upvalue 写入…），变异点审计完成前启用有悬垂风险——见总 TODO M3 条目。
-//! age 计数与晋升逻辑已实现，major 存活对象直接晋升。
+//! - **卡表（Card Table）**：写屏障 O(1) 登记脏卡（每 [`CARD_SIZE`] 个堆槽位
+//!   一字节），minor 回收按脏卡收集「老写新」容器——替换原 `Vec<u32>` 记忆集
+//!   （`contains` O(n) 去重、内存无界）；
+//! - **自适应堆伸缩**：minor/major 触发阈值按上一轮**存活率**动态调整
+//!   （存活高 → 抬高阈值摊薄回收成本；存活低 → 压低阈值及时释放内存），
+//!   替换原固定 2000 万次分配阈值（实际运行从不触发）；
+//! - **生产双代**：minor 与 major 均在 `push_object` 分配漏斗内自然触发
+//!   （JIT 帧内除外，无栈映射期间回收不安全）；
+//! - **压力验证模式**：`ALUKA_GC_STRESS=<N>` 每 N 次分配强制 major（N/4
+//!   强制 minor）——漏登记的根/写屏障在该模式下确定性地表现为悬垂错误，
+//!   全量套件 + conformance 在压力模式下跑绿 = 审计的机器验证。
 
 use crate::heap::HeapObject;
 use crate::interpreter::Vm;
@@ -50,14 +56,18 @@ impl GcRoots {
 /// minor 存活次数达到该值晋升老年代（ADR 原型 A 参数）。
 pub(crate) const PROMOTE_AGE: u8 = 2;
 
-/// 触发 major 回收的分配次数阈值。
-const MAJOR_TRIGGER: u32 = 20_000_000;
+/// 每张卡覆盖的堆槽位数（卡表粒度：8 字节卡 × 64 槽 ≈ 堆的 1/64 标记密度）。
+pub(crate) const CARD_SIZE: u32 = 64;
 
-/// 触发 minor 回收的分配次数阈值（年轻代高频回收）。
-const MINOR_TRIGGER: u32 = 20_000_000;
+/// 自适应阈值的下界（次回收至少间隔的分配数；过小 = 回收开销占比失控）。
+pub(crate) const MINOR_TRIGGER_FLOOR: u32 = 4_096;
+/// 自适应阈值的上界（防灾难性膨胀；约为 V8 新生代的对象数同量级）。
+pub(crate) const MINOR_TRIGGER_CEIL: u32 = 1 << 20;
+/// major 阈值相对 minor 阈值的倍率（全堆回收成本高，显著低频）。
+pub(crate) const MAJOR_TRIGGER_RATIO: u32 = 8;
 
 /// GC 侧表与统计。
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct GcState {
     /// 与 `Vm.heap` 平行的对象年龄（分配序号对齐；Free 槽位无意义）
     pub(crate) ages: Vec<u8>,
@@ -67,8 +77,13 @@ pub(crate) struct GcState {
     pub(crate) young_free: Vec<u32>,
     /// 老年代空闲槽位
     pub(crate) old_free: Vec<u32>,
-    /// 记忆集：写入过年轻引用的老年代对象（写屏障登记，minor 次级根）
-    pub(crate) remembered: Vec<u32>,
+    /// **卡表**：每 [`CARD_SIZE`] 个堆槽位一字节；写屏障置 1（脏卡 =
+    /// 卡内可能存在「老写新」引用的容器），minor 回收消费后清零。
+    pub(crate) cards: Vec<u8>,
+    /// minor 触发阈值（自适应：按上一轮存活率调整）
+    pub(crate) minor_trigger: u32,
+    /// major 触发阈值（自适应：minor_trigger × [`MAJOR_TRIGGER_RATIO`]）
+    pub(crate) major_trigger: u32,
     /// 自上次 minor 回收以来的分配次数（minor 触发用）
     pub(crate) allocs_since_minor: u32,
     /// 自上次 major 回收以来的分配次数（major 触发用）
@@ -83,17 +98,116 @@ pub(crate) struct GcState {
     pub(crate) minor_collections: u64,
 }
 
+impl Vm {
+    /// 挂起回收（builtin 装配等「对象登记滞后于分配」的窗口；与 JIT 帧
+    /// 内跳过回收同一不变量）。
+    pub(crate) fn gc_suspend(&mut self) {
+        self.gc_suspended += 1;
+    }
+
+    /// 恢复回收。
+    pub(crate) fn gc_resume(&mut self) {
+        self.gc_suspended = self.gc_suspended.saturating_sub(1);
+    }
+}
+
+impl Default for GcState {
+    fn default() -> Self {
+        GcState {
+            ages: Vec::new(),
+            is_free: Vec::new(),
+            young_free: Vec::new(),
+            old_free: Vec::new(),
+            cards: Vec::new(),
+            minor_trigger: MINOR_TRIGGER_FLOOR,
+            major_trigger: MINOR_TRIGGER_FLOOR * MAJOR_TRIGGER_RATIO,
+            allocs_since_minor: 0,
+            allocs_since_major: 0,
+            allocated: 0,
+            reclaimed: 0,
+            major_collections: 0,
+            minor_collections: 0,
+        }
+    }
+}
+
 impl GcState {
     /// 分配记账；返回 (达到 minor 阈值, 达到 major 阈值)。
+    /// 阈值为自适应值（见 [`Self::adapt_after_minor`]）。
     pub(crate) fn on_alloc(&mut self) -> (bool, bool) {
         self.allocated += 1;
         self.allocs_since_minor += 1;
         self.allocs_since_major += 1;
-        (
-            self.allocs_since_minor >= MINOR_TRIGGER,
-            self.allocs_since_major >= MAJOR_TRIGGER,
-        )
+        let minor = self.allocs_since_minor >= self.minor_trigger;
+        let major = self.allocs_since_major >= self.major_trigger;
+        (minor, major)
     }
+
+    /// 卡表登记（写屏障调用；槽位所在卡置脏）。O(1)，无去重开销。
+    pub(crate) fn mark_card(&mut self, slot: u32) {
+        let card = (slot / CARD_SIZE) as usize;
+        if card >= self.cards.len() {
+            self.cards.resize(card + 1, 0);
+        }
+        self.cards[card] = 1;
+    }
+
+    /// minor 回收后的自适应调整（Hertz 启发式的存活率形态）：
+    /// 上一轮年轻代存活高（多数对象长寿）→ 抬阈值摊薄 minor 成本；
+    /// 存活低（朝生暮死）→ 压阈值及时释放。major 阈值随动保持倍率。
+    pub(crate) fn adapt_after_minor(&mut self, survivors: u32, reclaimed_minor: u32) {
+        let total = survivors + reclaimed_minor;
+        if total == 0 {
+            return;
+        }
+        // 存活率 → 目标间隔：全存活（1.0）= 16×地板；全死亡（0.0）= 地板
+        let survival = survivors as f64 / total as f64;
+        let target = MINOR_TRIGGER_FLOOR as f64 * (1.0 + 15.0 * survival);
+        self.minor_trigger = (target as u32).clamp(MINOR_TRIGGER_FLOOR, MINOR_TRIGGER_CEIL);
+        self.major_trigger = self
+            .minor_trigger
+            .saturating_mul(MAJOR_TRIGGER_RATIO)
+            .clamp(MINOR_TRIGGER_FLOOR, MINOR_TRIGGER_CEIL << 4);
+    }
+}
+
+/// 压力验证模式间隔（`ALUKA_GC_STRESS=<N>`；0/未设 = 关闭）。
+///
+/// 每 N 次分配强制一次 major + minor 回收：把「漏登记根 / 漏写屏障」从
+/// 随机潜伏变成确定性错误。全量测试套件 + conformance 在该模式下跑绿，
+/// 即变异点审计的机器验证（M6.1 审计口径）。
+pub(crate) fn gc_stress_interval() -> u32 {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<u32> = OnceLock::new();
+    *CELL.get_or_init(|| {
+        std::env::var("ALUKA_GC_STRESS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(0)
+    })
+}
+
+/// 给定累计分配数，当前是否到了强制回收点。
+pub(crate) fn gc_stress_due(allocated: u64) -> bool {
+    let n = gc_stress_interval();
+    n > 0 && allocated % (n as u64) == 0
+}
+
+/// 压力模式收集器选择（诊断用）：`major` 只跑 major，`minor` 只跑 minor。
+pub(crate) fn gc_stress_mode() -> &'static str {
+    use std::sync::OnceLock;
+    static CELL: OnceLock<&'static str> = OnceLock::new();
+    CELL.get_or_init(|| {
+        std::env::var("ALUKA_GC_MODE")
+            .ok()
+            .filter(|v| v == "major" || v == "minor")
+            .map(|v| match v.as_str() {
+                "major" => "major",
+                _ => "minor",
+            })
+            .unwrap_or("both")
+    })
 }
 
 /// 嵌套执行期间被换出的外层帧状态（GC 根集合成员）。
@@ -119,8 +233,6 @@ pub(crate) struct SavedFrameState {
 
 impl Vm {
     /// 对象当前年龄。
-    /// minor 机制当前仅测试路径使用（生产 major-only，见模块文档偏差记录）。
-    #[allow(dead_code)]
     pub(crate) fn gc_age(&self, r: ObjectRef) -> Option<u8> {
         let idx = r.0 as usize;
         if idx < self.gc.ages.len() && !self.gc.is_free[idx] {
@@ -131,8 +243,6 @@ impl Vm {
     }
 
     /// 是否为老年代对象（年龄达到晋升阈值）。
-    /// minor 机制当前仅测试路径使用（生产 major-only，见模块文档偏差记录）。
-    #[allow(dead_code)]
     pub(crate) fn gc_is_old(&self, r: ObjectRef) -> bool {
         self.gc_age(r).is_some_and(|a| a >= PROMOTE_AGE)
     }
@@ -308,6 +418,27 @@ impl Vm {
         for c in self.ctor_cache.values() {
             out.push(Value::Object(*c));
         }
+        // M6.1 根审计补漏：单例字段（fs 对象 / require 入口 / env 对象 /
+        // objproto hasOwnProperty 分派项 / 入口异步完成 Promise /
+        // 模块 require 实例键）
+        if let Some(r) = self.fs_object {
+            out.push(Value::Object(r));
+        }
+        if let Some(r) = self.require_fn {
+            out.push(Value::Object(r));
+        }
+        if let Some(r) = self.env_object {
+            out.push(Value::Object(r));
+        }
+        if let Some(r) = self.objproto_has_own {
+            out.push(Value::Object(r));
+        }
+        if let Some(v) = self.last_entry_async_promise {
+            out.push(v);
+        }
+        for r in self.require_bases.keys() {
+            out.push(Value::Object(*r));
+        }
         // CJS 模块作用域表：注入名值（module/exports/require 等）是活跃根
         for scope in &self.module_scopes {
             for v in scope.vars.values() {
@@ -391,15 +522,12 @@ impl Vm {
         self.gc.reclaimed += reclaimed;
         self.gc.allocs_since_major = 0;
         self.gc.allocs_since_minor = 0;
+        // major 全堆回收后卡表整体失效（全部引用已重新标记过）
+        self.gc.cards.clear();
         reclaimed
     }
 
-    /// 执行一次 minor 回收（只清年轻代，写屏障记忆集保护老→新引用）。
-    ///
-    /// **默认不启用**（`minor_enabled`）：变异点写屏障审计完成前启用有悬垂
-    /// 风险。测试经 [`Vm::gc_set_minor_enabled`] 显式开启验证机制本身。
-    /// minor 机制当前仅测试路径使用（生产 major-only，见模块文档偏差记录）。
-    #[allow(dead_code)]
+    /// 执行一次 minor 回收（只清年轻代；脏卡容器内的老→新引用作次级根）。
     pub(crate) fn collect_minor_gc(&mut self) -> u64 {
         let roots = self.build_gc_roots();
         let mut marked = vec![false; self.heap.len()];
@@ -408,33 +536,40 @@ impl Vm {
                 self.mark_young(r.0, &mut marked);
             }
         }
-        // 记忆集：老年代对象的年轻引用是次级根；仍指向年轻的重新登记
-        let remembered = std::mem::take(&mut self.gc.remembered);
-        for old_idx in remembered {
-            if self
-                .gc
-                .is_free
-                .get(old_idx as usize)
-                .copied()
-                .unwrap_or(true)
-            {
+        // 脏卡 = 写屏障登记过「可能含老写新」的槽位区间：逐卡扫描其中的
+        // 非空闲老年代对象，其年轻引用按次级根标记（语义与记忆集等价，
+        // 粒度放宽到卡——卡内无年轻引用的对象只是多扫描一次 trace_refs）。
+        let cards = std::mem::take(&mut self.gc.cards);
+        let mut still_dirty: Vec<u32> = Vec::new();
+        for (card, dirty) in cards.iter().enumerate() {
+            if *dirty == 0 {
                 continue;
             }
-            let mut young_targets: Vec<u32> = Vec::new();
-            if let Some(obj) = self.heap.get(old_idx as usize) {
-                obj.trace_refs(|t| {
-                    if !self.gc.is_free.get(t as usize).copied().unwrap_or(true)
-                        && self.gc.ages.get(t as usize).copied().unwrap_or(PROMOTE_AGE)
-                            < PROMOTE_AGE
-                    {
-                        young_targets.push(t);
-                    }
-                });
-            }
-            for t in young_targets {
-                self.mark_young(t, &mut marked);
-            }
-            if let Some(obj) = self.heap.get(old_idx as usize) {
+            let start = card as u32 * CARD_SIZE;
+            let end = (start + CARD_SIZE).min(self.heap.len() as u32);
+            for old_idx in start..end {
+                if self
+                    .gc
+                    .is_free
+                    .get(old_idx as usize)
+                    .copied()
+                    .unwrap_or(true)
+                {
+                    continue;
+                }
+                if self
+                    .gc
+                    .ages
+                    .get(old_idx as usize)
+                    .copied()
+                    .unwrap_or(PROMOTE_AGE)
+                    < PROMOTE_AGE
+                {
+                    continue; // 年轻容器自身不构成次级根
+                }
+                let Some(obj) = self.heap.get(old_idx as usize) else {
+                    continue;
+                };
                 let mut still = false;
                 obj.trace_refs(|t| {
                     if !self.gc.is_free.get(t as usize).copied().unwrap_or(true)
@@ -444,45 +579,71 @@ impl Vm {
                         still = true;
                     }
                 });
-                if still {
-                    self.gc.remembered.push(old_idx);
+                if !still {
+                    continue;
+                }
+                still_dirty.push(old_idx);
+                if let Some(obj) = self.heap.get(old_idx as usize) {
+                    obj.trace_refs(|t| {
+                        if !self.gc.is_free.get(t as usize).copied().unwrap_or(true)
+                            && self.gc.ages.get(t as usize).copied().unwrap_or(PROMOTE_AGE)
+                                < PROMOTE_AGE
+                        {
+                            self.mark_young(t, &mut marked);
+                        }
+                    });
                 }
             }
         }
-        let mut reclaimed = 0u64;
+        let mut reclaimed = 0u32;
+        let mut survivors = 0u32;
         for (idx, slot) in self.heap.iter_mut().enumerate() {
-            if marked[idx] || self.gc.is_free[idx] {
-                continue;
-            }
             if self.gc.ages.get(idx).copied().unwrap_or(PROMOTE_AGE) >= PROMOTE_AGE {
                 continue; // 老年代不参与 minor
+            }
+            if self.gc.is_free[idx] {
+                continue;
+            }
+            if marked[idx] {
+                survivors += 1;
+                let promoted = {
+                    let age = self.gc.ages.get_mut(idx).expect("ages 与 heap 平行");
+                    *age += 1;
+                    *age >= PROMOTE_AGE
+                };
+                if promoted {
+                    // 晋升守卫：升代对象可能持有年轻引用，而其卡从未因写入
+                    // 置脏（引用建立时它自己还是年轻代）——不置卡则下一个
+                    // minor 会把这些年轻引用误判为垃圾（perf_hooks 实测暴露）
+                    self.gc.mark_card(idx as u32);
+                }
+                continue;
             }
             self.gc.young_free.push(idx as u32);
             *slot = HeapObject::Free;
             self.gc.is_free[idx] = true;
             reclaimed += 1;
         }
-        // 存活年轻对象年龄 +1（达到阈值自然晋升）
-        for (idx, age) in self.gc.ages.iter_mut().enumerate() {
-            if !self.gc.is_free[idx]
-                && *age < PROMOTE_AGE
-                && marked.get(idx).copied().unwrap_or(false)
-            {
-                *age += 1;
-            }
+        // 仍持年轻引用的脏卡容器：重新登记（写屏障只在写入时置卡，
+        // 存活期跨回收的引用必须显式重卡）
+        for old_idx in still_dirty {
+            self.gc.mark_card(old_idx);
         }
         self.gc.minor_collections += 1;
-        self.gc.reclaimed += reclaimed;
+        self.gc.reclaimed += reclaimed as u64;
         self.gc.allocs_since_minor = 0;
-        reclaimed
+        self.gc.adapt_after_minor(survivors, reclaimed);
+        reclaimed as u64
     }
 
     /// minor 回收开关（测试用；生产路径保持 major-only）。
     /// minor 机制当前仅测试路径使用（生产 major-only，见模块文档偏差记录）。
     #[allow(dead_code)]
-    /// 写屏障：老年代容器写入年轻代引用时记入记忆集（minor 回收的次级根）。
-    /// **全部「老写新」变异点必须调用**（set_property / Map.set / 事件监听 /
-    /// Readable 缓冲 / Promise 处理器 adoption），漏调用 = minor 悬垂。
+    /// 写屏障：老年代容器写入年轻代引用时置脏卡（minor 回收的次级根来源）。
+    /// **全部「老写新」变异点必须调用**（set_property / 数组元素 / Map.set /
+    /// 事件监听 / Readable 缓冲 / Promise 处理器 / upvalue 写入），漏调用 =
+    /// minor 悬垂。卡表 O(1) 登记无去重开销；压力模式（ALUKA_GC_STRESS）
+    /// 下漏调用会确定性暴露为悬垂复用错误。
     pub(crate) fn gc_write_barrier(&mut self, container: ObjectRef, val: Value) {
         if !self.gc_is_old(container) {
             return;
@@ -500,8 +661,8 @@ impl Vm {
             }
             _ => false,
         };
-        if young_target && !self.gc.remembered.contains(&container.0) {
-            self.gc.remembered.push(container.0);
+        if young_target {
+            self.gc.mark_card(container.0);
         }
     }
 
@@ -537,8 +698,6 @@ impl Vm {
     }
 
     /// 从 `root` 出发标记年轻代可达对象（minor：越过老年代）。
-    /// minor 机制当前仅测试路径使用（生产 major-only，见模块文档偏差记录）。
-    #[allow(dead_code)]
     fn mark_young(&self, idx: u32, marked: &mut [bool]) {
         let mut stack = vec![idx];
         while let Some(i) = stack.pop() {
@@ -568,6 +727,26 @@ fn static_roots(out: &mut GcRoots) {
     // M4：Node/Web 流静态状态表（缓冲 chunk、监听器、互通桥）
     crate::builtins::stream::store_roots(out);
     crate::builtins::stream_web::store_roots(out);
+    // M6.1 根审计补全：其余持有堆值的线程局部静态表（漏一项 = 悬垂）
+    crate::builtins::dispatch_tls_roots(out);
+    crate::builtins::child_process::proc_common::store_roots(out);
+    crate::builtins::events::store_roots(out);
+    crate::builtins::net::store_roots(out);
+    crate::builtins::dgram::store_roots(out);
+    crate::builtins::worker_threads::store_roots(out);
+    crate::builtins::http::state::store_roots(out);
+    crate::builtins::http2::store_roots(out);
+    crate::builtins::zlib::store_roots(out);
+    crate::builtins::async_hooks::store_roots(out);
+    crate::builtins::domain::store_roots(out);
+    crate::builtins::diagnostics_channel::store_roots(out);
+    crate::builtins::readline::store_roots(out);
+    crate::builtins::sqlite::store_roots(out);
+    crate::builtins::test::registry::store_roots(out);
+    crate::builtins::test::state::store_roots(out);
+    crate::builtins::test::store_roots(out);
+    crate::builtins::vm::store_roots(out);
+    crate::builtins::module::store_roots(out);
 }
 
 #[cfg(test)]
@@ -708,8 +887,8 @@ mod tests {
         );
     }
 
-    /// 写屏障：老年代对象写入年轻引用后，minor 不回收该年轻对象（记忆集
-    /// 次级根），且老对象重新登记。
+    /// 写屏障（卡表）：老年代对象写入年轻引用后，minor 不回收该年轻对象
+    /// （脏卡次级根），且老对象所在卡重新置脏。
     #[test]
     fn write_barrier_protects_old_to_young() {
         let mut vm = Vm::new(0);
@@ -722,9 +901,49 @@ mod tests {
         let tag = vm.alloc_string("v".to_owned());
         let _ = vm.set_property(Value::Object(old), "t", Value::Object(tag));
         let _ = vm.set_property(Value::Object(old), "y", Value::Object(young));
-        assert!(vm.gc.remembered.contains(&old.0), "写屏障应登记老容器");
+        let card = (old.0 as usize) / CARD_SIZE as usize;
+        assert!(
+            vm.gc.cards.get(card).copied().unwrap_or(0) == 1,
+            "写屏障应置脏卡"
+        );
         vm.collect_minor_gc();
-        assert!(!vm.gc.is_free[young.0 as usize], "记忆集必须保住老→新引用");
-        assert!(vm.gc.remembered.contains(&old.0), "仍指向年轻应重新登记");
+        assert!(
+            !vm.gc.is_free[young.0 as usize],
+            "脏卡次级根必须保住老→新引用"
+        );
+        let card = (old.0 as usize) / CARD_SIZE as usize;
+        assert!(
+            vm.gc.cards.get(card).copied().unwrap_or(0) == 1,
+            "仍指向年轻应重新置脏"
+        );
+    }
+
+    /// 自适应堆伸缩：存活率高 → 抬高 minor 阈值；存活率低 → 压回地板。
+    #[test]
+    fn adaptive_trigger_tracks_survival_rate() {
+        let mut gc = GcState {
+            minor_trigger: MINOR_TRIGGER_FLOOR,
+            major_trigger: MINOR_TRIGGER_FLOOR * MAJOR_TRIGGER_RATIO,
+            ..GcState::default()
+        };
+        // 全存活：阈值抬升（高于地板）
+        gc.adapt_after_minor(10_000, 0);
+        assert!(gc.minor_trigger > MINOR_TRIGGER_FLOOR, "全存活应抬高阈值");
+        // 全死亡：阈值压回地板
+        gc.adapt_after_minor(0, 10_000);
+        assert_eq!(gc.minor_trigger, MINOR_TRIGGER_FLOOR, "全死亡应压回地板");
+        // major 阈值保持倍率
+        assert_eq!(gc.major_trigger, MINOR_TRIGGER_FLOOR * MAJOR_TRIGGER_RATIO);
+    }
+
+    /// 卡表粒度：不同卡的槽位互不影响，同卡共享一个字节。
+    #[test]
+    fn card_table_granularity() {
+        let mut gc = GcState::default();
+        gc.mark_card(0);
+        gc.mark_card(CARD_SIZE * 3);
+        assert_eq!(gc.cards[0], 1);
+        assert_eq!(gc.cards[2], 0);
+        assert_eq!(gc.cards[3], 1);
     }
 }

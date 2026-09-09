@@ -88,6 +88,14 @@ thread_local! {
 /// 决定是否继续泵询。
 pub type EventSourcePump = fn(&mut Vm) -> Result<bool, VmError>;
 
+/// GC 根快照：原生分派线程局部（current receiver / pending callee）——
+/// handler 执行期间跨分配存活，漏登记 = 高频回收下 receiver 悬垂
+/// （M6.1 压力模式定位：stress ≤1024 才显形，生产阈值下为潜伏缺陷）。
+pub(crate) fn dispatch_tls_roots(out: &mut crate::gc::GcRoots) {
+    CURRENT_RECEIVER.with(|r| out.push(*r.borrow()));
+    PENDING_CALLEE.with(|c| out.push(*c.borrow()));
+}
+
 impl Vm {
     /// 注册并激活内置库事件源（随 `Vm` 实例生命周期，不跨运行泄漏）；
     /// 同名重复注册幂等（更新泵函数并保持活跃）。
@@ -283,6 +291,10 @@ macro_rules! builtin_modules {
 pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
     let defs: &[ModuleDef] = builtin_modules!();
     let mut registry = BuiltinRegistry::default();
+    // M6.1 根审计：build 途中的分配可能触发回收，而模块对象/原生函数在
+    // build 返回登记前不在任何根集合里——加载窗口内挂起回收（计数继续
+    // 累积，装配完成后的首次分配即补上），与 JIT 帧内跳过回收同一不变量。
+    vm.gc_suspend();
     for def in defs {
         let module_ref = (def.build)(vm, &mut registry)?;
         registry.modules.insert(def.name, module_ref);
@@ -309,6 +321,8 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
         stream_write_stderr,
     );
     vm.builtin_registry = registry;
+    // 装配完成：恢复回收（累积的分配计数在后续分配点触发补收）
+    vm.gc_resume();
     Ok(())
 }
 

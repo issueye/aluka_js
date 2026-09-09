@@ -643,3 +643,18 @@ pub(crate) fn spawn_pipe_reader<R: Read + Send + 'static>(
         );
     });
 }
+
+/// GC 根快照：`_builtinNs` 实例事件器的监听器回调（漏登记 = major 回收悬垂）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    NS_EMITTERS.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for state in map.values() {
+                for listeners in state.listeners.values() {
+                    for l in listeners {
+                        out.push(l.callback);
+                    }
+                }
+            }
+        }
+    });
+}

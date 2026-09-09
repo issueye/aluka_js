@@ -503,6 +503,15 @@ fn error_instance(vm: &mut Vm, message: &str) -> VmError {
 }
 
 /// 编译期锚定：确保处理器签名与注册表一致。
+/// GC 根快照：`node:module` 原型单例。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    MODULE_PROTO.with(|g| {
+        if let Some(r) = g.borrow().as_ref() {
+            out.push(Value::Object(*r));
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

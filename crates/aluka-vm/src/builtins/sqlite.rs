@@ -1096,6 +1096,17 @@ fn is_callable_value(vm: &Vm, v: Value) -> bool {
 }
 
 /// 编译期锚定：处理器签名与注册表一致。
+/// GC 根快照：事务包装函数捕获的回调。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    TXNS.with(|g| {
+        if let Some(map) = g.borrow().as_ref() {
+            for t in map.values() {
+                out.push(t.callback);
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

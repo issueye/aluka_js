@@ -1510,3 +1510,38 @@ pub(crate) fn bind_shared_listener(
     socket.listen(511)?;
     Ok(socket.into())
 }
+
+/// GC 根快照：net 侧表实例对象、监听器与连接/pipe 目标。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    NET_SHARED.with(|g| {
+        let binding = g.borrow();
+        let Some(shared) = binding.as_ref() else {
+            return;
+        };
+        for (_, s) in &shared.servers {
+            out.push(s.obj);
+            if let Some(v) = s.conn_listener {
+                out.push(v);
+            }
+            for items in s.listeners.values() {
+                for l in items {
+                    out.push(l.cb);
+                }
+            }
+        }
+        for (_, s) in &shared.sockets {
+            out.push(s.obj);
+            if let Some(v) = s.connect_listener {
+                out.push(v);
+            }
+            if let Some(v) = s.pipe_dest {
+                out.push(v);
+            }
+            for items in s.listeners.values() {
+                for l in items {
+                    out.push(l.cb);
+                }
+            }
+        }
+    });
+}
