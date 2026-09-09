@@ -1042,7 +1042,6 @@ fn pump_real_workers(vm: &mut Vm) -> Result<bool, VmError> {
     let mut exits: Vec<(u32, u32)> = Vec::new();
     for (wid, ev) in events {
         progressed = true;
-        let is_exit = matches!(ev, crate::worker::WorkerEvent::Exit(_));
         let target = Value::Object(ObjectRef(wid));
         match ev {
             crate::worker::WorkerEvent::Message(json) => {
@@ -1055,20 +1054,24 @@ fn pump_real_workers(vm: &mut Vm) -> Result<bool, VmError> {
                 ns_emit(vm, target, "error", &[Value::Object(msg)])?;
             }
             crate::worker::WorkerEvent::Exit(code) => {
+                // M5.1 修复（双发竞态）：Exit 事件必须复查存活——同批
+                // [Message, Exit] 序列中，Message 回调里 terminate() 已同步
+                // emit 'exit'(1) 并 remove 桥；滞留的 Exit(0) 若照常派发会
+                // 双发 'exit'。已 terminate（不在 REAL_WORKERS）→ 丢弃。
+                let alive = REAL_WORKERS.with(|m| m.borrow().contains_key(&wid));
+                if !alive {
+                    continue;
+                }
                 exits.push((wid, code));
             }
         }
-        // 同批事件处理中 worker 可能已被 terminate（exit 已即时派发）：
-        // 丢弃其滞留的 Exit(0)，避免覆盖 terminate 的 exit(1)
-        if is_exit {
-            continue;
-        }
-        let alive = REAL_WORKERS.with(|m| m.borrow().contains_key(&wid));
-        if !alive {
-            exits.retain(|(id, _)| *id != wid);
-        }
     }
     for (wid, code) in exits {
+        // 二次防护：收集期间回调可能已 terminate 该 worker（exit(1) 已
+        // 派发、桥已 remove）——滞留 Exit 丢弃，避免双发。
+        if !REAL_WORKERS.with(|m| m.borrow().contains_key(&wid)) {
+            continue;
+        }
         REAL_WORKERS.with(|m| {
             m.borrow_mut().remove(&wid);
         });

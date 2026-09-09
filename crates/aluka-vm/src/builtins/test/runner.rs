@@ -408,9 +408,33 @@ fn invoke_with_state(vm: &mut Vm, fn_val: Value) -> Result<InvokeOutcome, VmErro
     let t = context::new_test_context(vm);
     let result = vm.invoke_callable(fn_val, Value::Undefined, &[t])?;
     if is_promise(vm, result) {
-        // 父测试 async：drain 微任务驱动 await（子测试经微任务执行）；
-        // 兑现非 undefined 值按拒绝近似处理（引擎 promise 拒绝同形）。
-        vm.drain_microtasks()?;
+        // 父测试 async：微任务 + 宏任务（定时器等）交替排空驱动 await
+        // 直到 promise 落定（M5.4 修复：旧实现只排微任务——`await
+        // setTimeout(...)` 之类的宏任务挂起 promise 永不落定，被
+        // promise_rejected=false 误判为 Done 假通过）；兑现非 undefined
+        // 值按拒绝近似处理（引擎 promise 拒绝同形）。
+        let started = std::time::Instant::now();
+        loop {
+            vm.drain_microtasks()?;
+            if !promise_pending(vm, result) {
+                break;
+            }
+            if !vm.macro_tasks.is_empty() || vm.has_active_event_sources() {
+                vm.drain_macro_tasks()?;
+            } else if vm.microtask_queue.is_empty() {
+                // 无驱动工作却未落定：防自旋（宿主 promise 永不兑现场景）
+                if started.elapsed() > std::time::Duration::from_secs(120) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        if promise_pending(vm, result) {
+            // 120s 仍未落定：判失败，不得静默通过
+            return Err(VmError::Thrown(Value::Object(vm.alloc_string(
+                "test timed out after 120000ms awaiting promise".to_owned(),
+            ))));
+        }
         if promise_rejected(vm, result) {
             let msg = rejection_message(vm, result);
             return Err(VmError::Thrown(Value::Object(vm.alloc_string(msg))));
@@ -643,9 +667,16 @@ fn run_concurrent_batch(
 
         // 调用函数体（t 参数）；async 体不在此排空——promise 挂起交由
         // settle 阶段交错驱动（并发语义核心）。
+        // M5.4 修复：start 必须在 scoped_current 内进行——
+        // ① t 的 _stateId 绑定需要 CURRENT 指向本用例状态；
+        // ② 同步段的 plan/assert 也经 CURRENT 归位。
+        // await 之后（settle 段）CURRENT 会被同批其它用例占据，届时经
+        // t/_stateId（receiver 绑定）找回——两条路径缺一不可。
         let state_id = context::new_run_state(&tc.name, &full, tc.fn_val);
-        let t = context::new_test_context(vm);
-        let call_result = vm.invoke_callable(tc.fn_val, Value::Undefined, &[t]);
+        let call_result = context::scoped_current(state_id, || {
+            let t = context::new_test_context(vm);
+            vm.invoke_callable(tc.fn_val, Value::Undefined, &[t])
+        });
         let (promise, sync_err) = match call_result {
             Ok(v) if is_promise(vm, v) => (Some(v), None),
             Ok(_) => (None, None),
@@ -663,6 +694,7 @@ fn run_concurrent_batch(
     // ---- settle 阶段：微任务/宏任务交替排空，直至全部 promise 落定 ----
     //（调用方 run_suite 返回 Option；错误在此转标记，防 `?` 型不匹配）
     let mut settle_err: Option<VmError> = None;
+    let mut settle_timeout = false;
     let started = std::time::Instant::now();
     loop {
         let all_settled = pending
@@ -687,8 +719,10 @@ fn run_concurrent_batch(
                 break;
             }
         } else if vm.microtask_queue.is_empty() {
-            // 无驱动工作却未落定（宿主 promise 永不兑现）：防自旋超时
+            // 无驱动工作却未落定（宿主 promise 永不兑现）：超时判失败——
+            // 挂起 promise 的用例不得静默通过（M5.4 修复：假通过缺陷）。
             if started.elapsed() > std::time::Duration::from_secs(120) {
+                settle_timeout = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -698,6 +732,13 @@ fn run_concurrent_batch(
         for p in &mut pending {
             p.res.passed = false;
             p.res.error = Some(error_message(vm, &e));
+        }
+    } else if settle_timeout {
+        for p in &mut pending {
+            if p.promise.is_some_and(|pv| promise_pending(vm, pv)) {
+                p.res.passed = false;
+                p.res.error = Some("test timed out after 120000ms awaiting promise".to_owned());
+            }
         }
     }
 

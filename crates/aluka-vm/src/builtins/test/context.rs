@@ -1,4 +1,4 @@
-﻿//! node:test TestContext（Phase 8）：`t.*` 方法面构造与处理器。
+//! node:test TestContext（Phase 8）：`t.*` 方法面构造与处理器。
 //!
 //! 移植 Node.js 22 LTS 标准（`nodetest/test_context.go`）：
 //! - `t.assert` 系列（消息格式逐字对齐 Go，含 `aluka: assertion error: `
@@ -35,9 +35,36 @@ fn fail_expected_but_got(vm: &mut Vm, a: Value, b: Value) -> VmError {
     )
 }
 
+/// receiver 上的 `_stateId` 绑定状态（M5.4 修复）：并发批 async 体在
+/// await 后 resume 时，CURRENT 已被同批其它用例占据——从 receiver 找回
+/// 归属状态。找不到时回退 CURRENT（顺序模式/微任务子测试路径不变）。
+fn receiver_state_id(vm: &mut Vm) -> Option<u64> {
+    let receiver = crate::builtins::current_receiver();
+    if let Value::Object(r) = receiver {
+        if let Ok(Value::Number(n)) = vm.get_property(Value::Object(r), "_stateId") {
+            let id = n as u64;
+            if id > 0 {
+                return Some(id);
+            }
+        }
+    }
+    current_id()
+}
+
+/// receiver 绑定的状态执行（M5.4 修复）：优先从 receiver `_stateId` 找回归属
+/// 状态（并发批 async resume 后 CURRENT 不可靠），回退 CURRENT。
+fn with_receiver_state_mut<R>(vm: &mut Vm, f: impl FnOnce(&mut StateMut<'_>) -> R) -> Option<R> {
+    receiver_state_id(vm).and_then(|id| with_state_mut(id, f))
+}
+
+/// receiver 绑定的 state_id 直接取值（ctx_test 子测试挂接用）。
+fn receiver_bound_state(vm: &mut Vm) -> Option<u64> {
+    receiver_state_id(vm)
+}
+
 /// `t.assert.ok(value)`。
 pub fn ctx_assert_ok(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let val = args.first().copied().unwrap_or(Value::Undefined);
     if vm.truthy(val) {
         return Ok(Value::Undefined);
@@ -47,7 +74,7 @@ pub fn ctx_assert_ok(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `t.assert.strictEqual(actual, expected)`。
 pub fn ctx_assert_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -60,7 +87,7 @@ pub fn ctx_assert_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmE
 
 /// `t.assert.equal(actual, expected)`。
 pub fn ctx_assert_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -73,7 +100,7 @@ pub fn ctx_assert_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `t.assert.deepStrictEqual(actual, expected)`。
 pub fn ctx_assert_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -86,7 +113,7 @@ pub fn ctx_assert_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value
 
 /// `t.assert.deepEqual(actual, expected)`。
 pub fn ctx_assert_deep_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -99,7 +126,7 @@ pub fn ctx_assert_deep_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErr
 
 /// `t.assert.notStrictEqual(actual, expected)`。
 pub fn ctx_assert_not_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -112,7 +139,7 @@ pub fn ctx_assert_not_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value,
 
 /// `t.assert.notEqual(actual, expected)`。
 pub fn ctx_assert_not_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -125,7 +152,7 @@ pub fn ctx_assert_not_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
 
 /// `t.assert.notDeepEqual(actual, expected)`。
 pub fn ctx_assert_not_deep_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -138,7 +165,7 @@ pub fn ctx_assert_not_deep_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, V
 
 /// `t.assert.notDeepStrictEqual(actual, expected)`。
 pub fn ctx_assert_not_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let (a, b) = (
         args.first().copied().unwrap_or(Value::Undefined),
         args.get(1).copied().unwrap_or(Value::Undefined),
@@ -151,7 +178,7 @@ pub fn ctx_assert_not_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<V
 
 /// `t.assert.ifError(value)`。
 pub fn ctx_assert_if_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if let Some(v) = args.first() {
         if !matches!(v, Value::Undefined | Value::Null) {
             return Err(assert_fail(vm, "ifError got unwanted exception"));
@@ -162,7 +189,7 @@ pub fn ctx_assert_if_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
 
 /// `t.assert.fail([msg])`。
 pub fn ctx_assert_fail(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     let msg = match args.first() {
         Some(v) => vm.format_value(*v),
         None => "assertion failed".to_owned(),
@@ -172,7 +199,7 @@ pub fn ctx_assert_fail(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `t.assert.match(string, regexp)`。
 pub fn ctx_assert_match(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if args.len() < 2 {
         return Err(type_fail(vm, "match: string and regexp required"));
     }
@@ -188,7 +215,7 @@ pub fn ctx_assert_match(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `t.assert.doesNotMatch(string, regexp)`。
 pub fn ctx_assert_does_not_match(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if args.len() < 2 {
         return Err(type_fail(vm, "doesNotMatch: string and regexp required"));
     }
@@ -204,7 +231,7 @@ pub fn ctx_assert_does_not_match(vm: &mut Vm, args: &[Value]) -> Result<Value, V
 
 /// `t.assert.throws(fn)`。
 pub fn ctx_assert_throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if args.is_empty() {
         return Err(assert_fail(vm, "throws: function required"));
     }
@@ -234,7 +261,7 @@ fn promise_rejected(vm: &mut Vm, pv: Value) -> Result<bool, VmError> {
 
 /// `t.assert.rejects(fn|promise)`。
 pub fn ctx_assert_rejects(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if args.is_empty() {
         return Err(type_fail(vm, "rejects: async function/promise required"));
     }
@@ -262,7 +289,7 @@ pub fn ctx_assert_rejects(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
 
 /// `t.assert.doesNotReject(fn|promise)`。
 pub fn ctx_assert_does_not_reject(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if args.is_empty() {
         return Ok(Value::Undefined);
     }
@@ -284,7 +311,7 @@ pub fn ctx_assert_does_not_reject(vm: &mut Vm, args: &[Value]) -> Result<Value, 
 
 /// `t.assert.snapshot(value)`（Node 22 experimental；无持久化——仅计数）。
 pub fn ctx_assert_snapshot(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let _ = with_current_mut(|st| st.add_assert());
+    let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if args.is_empty() {
         return Err(type_fail(vm, "snapshot: value required"));
     }
@@ -302,13 +329,13 @@ pub fn ctx_diagnostic(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `t.skip()`：标记跳过并以内部错误中断用例（Node 语义）。
 pub fn ctx_skip(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    with_current_mut(|st| st.mark_skip());
+    with_receiver_state_mut(vm, |st| st.mark_skip());
     Err(thrown_msg(vm, "test skipped via t.skip()"))
 }
 
 /// `t.todo()`：标记待办（执行但失败不计）。
-pub fn ctx_todo(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    with_current_mut(|st| st.mark_todo());
+pub fn ctx_todo(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    with_receiver_state_mut(vm, |st| st.mark_todo());
     Ok(Value::Undefined)
 }
 
@@ -323,7 +350,7 @@ pub fn ctx_plan(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             return Err(type_fail(vm, "plan: count must be a non-negative integer"));
         }
     };
-    with_current_mut(|st| st.set_plan(n));
+    with_receiver_state_mut(vm, |st| st.set_plan(n));
     Ok(Value::Undefined)
 }
 
@@ -338,14 +365,23 @@ pub fn ctx_test(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if !super::is_function_value(vm, fn_val) {
         return Err(type_fail(vm, "t.test() requires a function"));
     }
-    let parent_full = RUN_STATES
-        .with(|m| current_id().and_then(|id| m.borrow().get(&id).map(|st| st.full.clone())))
-        .or_else(|| {
-            SUBTEST_STATES
-                .with(|m| current_id().and_then(|id| m.borrow().get(&id).map(|st| st.full.clone())))
+    // 父归属：receiver 绑定优先（并发批 async resume 后 CURRENT 不可靠），
+    // 回退 CURRENT（顺序模式路径不变）。
+    let parent_state = receiver_bound_state(vm);
+    let parent_full = parent_state
+        .and_then(|id| {
+            RUN_STATES
+                .with(|m| m.borrow().get(&id).map(|st| st.full.clone()))
+                .or_else(|| SUBTEST_STATES.with(|m| m.borrow().get(&id).map(|st| st.full.clone())))
         })
         .unwrap_or_default();
-    let (sub_id, promise) = attach_subtest(vm, &name, &join_name(&parent_full, &name), fn_val);
+    let (sub_id, promise) = attach_subtest_to(
+        vm,
+        parent_state,
+        &name,
+        &join_name(&parent_full, &name),
+        fn_val,
+    );
     // 子测试调度到微任务队列：父 await 时（drain 微任务）执行；同步父
     // 结束时该微任务仍挂起 → 子测试取消（对齐 Go `EnqueueMicrotask`）。
     let cb = vm.alloc_native_fn("test:subRun.task");

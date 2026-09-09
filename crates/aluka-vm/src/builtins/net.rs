@@ -1386,13 +1386,21 @@ fn emit_net_event(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> Re
     Ok(())
 }
 
-/// cluster 端口共享绑定（M5.2）：置 SO_REUSEADDR（Windows 允许同端口多重
-/// 绑定）/ Unix 追加 SO_REUSEPORT，使多进程 cluster worker 可同时监听同
-/// 一端口（OS 层分发连接）。
+/// cluster 端口共享绑定（M5.2）：cluster worker 进程（`ALUKA_WORKER_ID`
+/// 环境标记）置 SO_REUSEADDR（Windows 允许同端口多重绑定）/ Unix 追加
+/// SO_REUSEPORT，使多 worker 可同时监听同一端口（OS 层分发连接）。
+///
+/// **非 cluster 场景保留独占绑定语义**（M5 评审修复）：SO_REUSEADDR 在
+/// Windows 会静默抢占已监听端口——Node 22 在端口冲突时必须报 EADDRINUSE，
+/// 普通进程照旧走 `TcpListener::bind` 独占路径。
 pub(crate) fn bind_shared_listener(
     host: &str,
     port: u16,
 ) -> std::io::Result<std::net::TcpListener> {
+    let is_cluster_worker = std::env::var_os("ALUKA_WORKER_ID").is_some();
+    if !is_cluster_worker {
+        return std::net::TcpListener::bind((host, port));
+    }
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::ToSocketAddrs as _;
 

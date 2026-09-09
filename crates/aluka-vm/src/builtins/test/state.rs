@@ -239,6 +239,12 @@ impl StateMut<'_> {
 /// 对当前状态执行 `f`（父或子状态表皆可；不存在时静默跳过）。
 pub fn with_current_mut<R>(f: impl FnOnce(&mut StateMut<'_>) -> R) -> Option<R> {
     let id = current_id()?;
+    with_state_mut(id, f)
+}
+
+/// 对指定状态执行 `f`（receiver 绑定路径——并发批 async resume 后经
+/// `_stateId` 找回归属状态；不存在时静默跳过）。
+pub fn with_state_mut<R>(id: u64, f: impl FnOnce(&mut StateMut<'_>) -> R) -> Option<R> {
     let in_run = RUN_STATES.with(|m| m.borrow().contains_key(&id));
     if in_run {
         RUN_STATES.with(|m| {
@@ -327,6 +333,19 @@ pub fn cancel_subtests(ids: &[u64]) {
 /// 注册子测试到当前状态（返回 `(子状态 id, promise)`）。
 pub fn attach_subtest(vm: &mut Vm, name: &str, full: &str, fn_val: Value) -> (u64, Value) {
     let parent = current_id().unwrap_or(0);
+    attach_subtest_to(vm, Some(parent), name, full, fn_val)
+}
+
+/// 注册子测试到指定父状态（receiver 绑定路径——并发批 async resume 后
+/// CURRENT 不可靠；parent None 时挂 0 号根状态）。
+pub fn attach_subtest_to(
+    vm: &mut Vm,
+    parent: Option<u64>,
+    name: &str,
+    full: &str,
+    fn_val: Value,
+) -> (u64, Value) {
+    let parent = parent.unwrap_or(0);
     let sub_id = new_subtest_state(parent, name, full, fn_val);
     RUN_STATES.with(|m| {
         if let Some(st) = m.borrow_mut().get_mut(&parent) {
@@ -429,6 +448,14 @@ pub fn new_test_context(vm: &mut Vm) -> Value {
     let t = vm.alloc_ordinary();
     let t_ns = Value::Object(vm.alloc_string("test:ctx".to_owned()));
     let _ = vm.set_property(Value::Object(t), "_builtinNs", t_ns);
+    // 状态绑定（M5.4 修复）：把当前 state_id 挂到 t / t.assert 上——
+    // 并发批的 async 体在 await 后 resume 时，CURRENT 已指向其它用例，
+    // plan/assert/子测试经 receiver 的 _stateId 找回归属状态。
+    let _ = vm.set_property(
+        Value::Object(t),
+        "_stateId",
+        Value::Number(current_id().map(|i| i as f64).unwrap_or(0.0)),
+    );
     let name_val = Value::Object(vm.alloc_string(name));
     let _ = vm.set_property(Value::Object(t), "name", name_val);
     let full_val = Value::Object(vm.alloc_string(full));
@@ -441,9 +468,15 @@ pub fn new_test_context(vm: &mut Vm) -> Value {
     let _ = vm.set_property(Value::Object(t), "signal", Value::Object(signal));
 
     // t.assert：断言对象（全部断言递增计数——t.plan 只计 t.assert）。
+    // 同步挂 _stateId（与 t 一致——assert 调用的 receiver 是 assert 对象）。
     let assert_obj = vm.alloc_ordinary();
     let assert_ns = Value::Object(vm.alloc_string("test:ctx.assert".to_owned()));
     let _ = vm.set_property(Value::Object(assert_obj), "_builtinNs", assert_ns);
+    let _ = vm.set_property(
+        Value::Object(assert_obj),
+        "_stateId",
+        Value::Number(current_id().map(|i| i as f64).unwrap_or(0.0)),
+    );
     for (prop, name) in [
         ("ok", "test:ctx.assert.ok"),
         ("strictEqual", "test:ctx.assert.strictEqual"),
