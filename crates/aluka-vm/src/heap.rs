@@ -140,10 +140,15 @@ pub enum HeapObject {
         /// 描述文本（`Symbol()` 为空串）
         description: String,
     },
-    /// Map 对象（键字符串化；`get/set/has/groupBy` 运行时）
+    /// Map/Set 对象（键字符串化；`get/set/has/groupBy` 运行时）
+    ///
+    /// **有序存储**（`Vec` 保持插入序——`Map.prototype.entries/keys/values`、
+    /// `Set.prototype.values` 迭代与 Node 一致按插入序遍历；键经
+    /// `to_property_key` 字符串化）。Set 复用之：`value` 保留原元素、
+    /// `key` 仅作去重/查找键。
     Map {
-        /// 项集（键经 `to_property_key` 字符串化）
-        entries: HashMap<String, Value>,
+        /// 有序项集（键经 `to_property_key` 字符串化；Set 的 value = 元素原值）
+        entries: Vec<(String, Value)>,
     },
     /// 正则表达式对象（模式与标志原文；匹配经 `aluka-regex` 引擎求值）
     RegExp {
@@ -487,11 +492,11 @@ impl Vm {
         })
     }
 
-    /// 在堆上分配 Map 对象，返回句柄。
+    /// 在堆上分配 Map/Set 对象，返回句柄。
+    ///
+    /// `entries` 按**插入序**保留（迭代协议依赖；`set` 更新既有键时保持原位置）。
     pub fn alloc_map(&mut self, entries: Vec<(String, Value)>) -> ObjectRef {
-        self.push_object(HeapObject::Map {
-            entries: entries.into_iter().collect(),
-        })
+        self.push_object(HeapObject::Map { entries })
     }
 
     /// 在堆上分配 Error 实例（`message` / `name` 为自有属性），返回句柄。
@@ -620,7 +625,7 @@ impl HeapObject {
                 }
             }
             HeapObject::Map { entries } => {
-                for v in entries.values() {
+                for (_, v) in entries {
                     if let Value::Object(r) = v {
                         f(r.0);
                     }

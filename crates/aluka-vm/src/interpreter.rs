@@ -2100,6 +2100,27 @@ impl Vm {
                         };
                         let result = self.array_iterator_next(iter_ref)?;
                         self.stack.push(result);
+                    } else if method_name == "next" && self.is_string_iterator(receiver) {
+                        let iter_ref = match receiver {
+                            Value::Object(r) => r,
+                            _ => unreachable!("is_string_iterator 已确认 receiver 是对象"),
+                        };
+                        let result = self.string_iterator_next(iter_ref)?;
+                        self.stack.push(result);
+                    } else if method_name == "next" && self.is_map_iterator(receiver) {
+                        let iter_ref = match receiver {
+                            Value::Object(r) => r,
+                            _ => unreachable!("is_map_iterator 已确认 receiver 是对象"),
+                        };
+                        let result = self.map_iterator_next(iter_ref)?;
+                        self.stack.push(result);
+                    } else if method_name == "next" && self.is_set_iterator(receiver) {
+                        let iter_ref = match receiver {
+                            Value::Object(r) => r,
+                            _ => unreachable!("is_set_iterator 已确认 receiver 是对象"),
+                        };
+                        let result = self.set_iterator_next(iter_ref)?;
+                        self.stack.push(result);
                     } else if self.is_symbol(receiver)
                         && matches!(method_name.as_ref(), "toString" | "valueOf")
                     {
@@ -2719,7 +2740,16 @@ impl Vm {
                         self.stack.push(Value::Object(map));
                     } else if matches!(
                         method_name.as_ref(),
-                        "get" | "set" | "has" | "delete" | "clear" | "add"
+                        "get"
+                            | "set"
+                            | "has"
+                            | "delete"
+                            | "clear"
+                            | "add"
+                            | "keys"
+                            | "values"
+                            | "entries"
+                            | "forEach"
                     ) && matches!(
                         receiver,
                         Value::Object(rr)
@@ -2728,44 +2758,124 @@ impl Vm {
                                 Some(HeapObject::Map { .. })
                             )
                     ) {
-                        // Map/Set 实例方法（entries 键经 to_property_key）
-                        let is_map_set = method_name.as_ref() == "set";
-                        let is_set_add = method_name.as_ref() == "add";
-                        let key = if is_set_add {
-                            args.first()
-                                .map(|v| self.to_property_key(*v))
-                                .unwrap_or_default()
-                        } else {
-                            args.first()
-                                .map(|v| self.to_property_key(*v))
-                                .unwrap_or_default()
-                        };
-                        let value = if is_map_set {
-                            args.get(1).copied().unwrap_or(Value::Undefined)
-                        } else if is_set_add {
-                            args.first().copied().unwrap_or(Value::Undefined)
-                        } else {
-                            Value::Undefined
-                        };
+                        // Map/Set 实例方法（entries 键经 to_property_key；Set 复用
+                        // Map 变体：key=去重键、value=元素原值）
+                        let method = method_name.as_ref();
+                        let key = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
                         let mut result = Value::Undefined;
-                        if let Value::Object(rr) = receiver {
+                        // 迭代类方法（keys/values/entries/forEach）先取有序快照
+                        // 再分配迭代器（避免与可变借用冲突）
+                        let snapshot: Option<Vec<(String, Value)>> = match method {
+                            "keys" | "values" | "entries" | "forEach" => match receiver {
+                                Value::Object(rr) => match self.heap.get(rr.0 as usize) {
+                                    Some(HeapObject::Map { entries }) => Some(entries.clone()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            },
+                            _ => None,
+                        };
+                        if let Some(entries) = snapshot {
+                            let is_set = self.is_set_instance(receiver);
+                            if let Value::Object(rr) = receiver {
+                                match method {
+                                    "keys" => {
+                                        if is_set {
+                                            // Set.keys === Set.values（别名）
+                                            let it = self.alloc_set_iterator(rr, "keys");
+                                            result = it;
+                                        } else {
+                                            let it = self.alloc_map_iterator(rr, "keys");
+                                            result = it;
+                                        }
+                                    }
+                                    "values" => {
+                                        if is_set {
+                                            let it = self.alloc_set_iterator(rr, "values");
+                                            result = it;
+                                        } else {
+                                            let it = self.alloc_map_iterator(rr, "values");
+                                            result = it;
+                                        }
+                                    }
+                                    "entries" => {
+                                        if is_set {
+                                            let it = self.alloc_set_iterator(rr, "entries");
+                                            result = it;
+                                        } else {
+                                            let it = self.alloc_map_iterator(rr, "entries");
+                                            result = it;
+                                        }
+                                    }
+                                    "forEach" => {
+                                        // Map: cb(value, key, map)；Set: cb(value, value, set)
+                                        let cb = args.first().copied().unwrap_or(Value::Undefined);
+                                        let this_arg =
+                                            args.get(1).copied().unwrap_or(Value::Undefined);
+                                        if is_set {
+                                            for (_, v) in entries {
+                                                self.invoke_callable(
+                                                    cb,
+                                                    this_arg,
+                                                    &[v, v, receiver],
+                                                )?;
+                                            }
+                                        } else {
+                                            for (k, v) in entries {
+                                                let ks = self.alloc_string(k);
+                                                self.invoke_callable(
+                                                    cb,
+                                                    this_arg,
+                                                    &[v, Value::Object(ks), receiver],
+                                                )?;
+                                            }
+                                        }
+                                        result = Value::Undefined;
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        } else if let Value::Object(rr) = receiver {
                             if let Some(HeapObject::Map { entries }) =
                                 self.heap.get_mut(rr.0 as usize)
                             {
-                                match method_name.as_ref() {
+                                match method {
                                     "set" | "add" => {
-                                        entries.insert(key, value);
+                                        let value = match method {
+                                            "set" => {
+                                                args.get(1).copied().unwrap_or(Value::Undefined)
+                                            }
+                                            _ => args.first().copied().unwrap_or(Value::Undefined),
+                                        };
+                                        // 有序语义：既有键原位更新（保插入位置），
+                                        // 否则追加末尾（Node Map/Set 插入序）
+                                        if let Some(slot) =
+                                            entries.iter_mut().find(|(k, _)| *k == key)
+                                        {
+                                            slot.1 = value;
+                                        } else {
+                                            entries.push((key, value));
+                                        }
                                         result = receiver;
                                     }
                                     "get" => {
-                                        result =
-                                            entries.get(&key).copied().unwrap_or(Value::Undefined);
+                                        result = entries
+                                            .iter()
+                                            .find(|(k, _)| *k == key)
+                                            .map(|(_, v)| *v)
+                                            .unwrap_or(Value::Undefined);
                                     }
                                     "has" => {
-                                        result = Value::Boolean(entries.contains_key(&key));
+                                        result =
+                                            Value::Boolean(entries.iter().any(|(k, _)| *k == key));
                                     }
                                     "delete" => {
-                                        result = Value::Boolean(entries.remove(&key).is_some());
+                                        let before = entries.len();
+                                        entries.retain(|(k, _)| *k != key);
+                                        result = Value::Boolean(entries.len() != before);
                                     }
                                     "clear" => {
                                         entries.clear();
@@ -4054,17 +4164,8 @@ impl Vm {
                 Op::ArraySpread => {
                     let spread_val = self.pop()?;
                     let target_arr = self.peek()?;
-                    let to_append: Vec<Value> = if let Value::Object(s_ref) = spread_val {
-                        if let Some(HeapObject::Array { elements, .. }) =
-                            self.heap.get(s_ref.0 as usize)
-                        {
-                            elements.clone()
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
+                    // 展开语义：数组/字符串/Map/Set/类型化数组全部按迭代协议物化
+                    let to_append = self.collect_iter_values(spread_val)?;
                     if let Value::Object(t_ref) = target_arr {
                         // 写屏障：老数组展开追加年轻元素（borrow 前先屏障）
                         for a in &to_append {
@@ -4517,9 +4618,14 @@ impl Vm {
                     let val = self.pop()?;
                     if self.is_generator_obj(val)
                         || self.is_readable_obj(val)
+                        || self.is_array_iterator(val)
+                        || self.is_string_iterator(val)
+                        || self.is_map_iterator(val)
+                        || self.is_set_iterator(val)
                         || matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isReadable"))
                     {
-                        // 生成器对象自身即（async）迭代器（含 _isReadable 流实例）
+                        // 生成器/流/四类内建迭代器对象自身即迭代器
+                        // （JS 协议：iterator[Symbol.iterator]() === this）
                         self.stack.push(val);
                     } else if self.is_array_value(val) {
                         // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
@@ -4535,6 +4641,30 @@ impl Vm {
                             let elems = self.ta_to_values(ta)?;
                             let snapshot = self.alloc_array(elems);
                             let it = self.alloc_array_iterator(snapshot);
+                            self.stack.push(it);
+                        } else {
+                            self.stack.push(val);
+                        }
+                    } else if self.is_string_value(val) {
+                        // 字符串：直接创建逐字符迭代器（避免 Symbol.iterator 查找开销）
+                        if let Value::Object(r) = val {
+                            let it = self.alloc_string_iterator(r);
+                            self.stack.push(it);
+                        } else {
+                            self.stack.push(val);
+                        }
+                    } else if self.is_map_instance(val) {
+                        // Map：entries 迭代器（产出 [key, value] 对）
+                        if let Value::Object(r) = val {
+                            let it = self.alloc_map_iterator(r, "entries");
+                            self.stack.push(it);
+                        } else {
+                            self.stack.push(val);
+                        }
+                    } else if self.is_set_instance(val) {
+                        // Set：values 迭代器（产出元素）
+                        if let Value::Object(r) = val {
+                            let it = self.alloc_set_iterator(r, "values");
                             self.stack.push(it);
                         } else {
                             self.stack.push(val);

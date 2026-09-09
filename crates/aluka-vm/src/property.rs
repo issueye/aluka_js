@@ -343,6 +343,13 @@ impl Vm {
                     }
                     return Ok(Value::Undefined);
                 }
+                // 知名符号键（如 Symbol.iterator）→ 转发字符串原型面同键属性
+                if crate::symbol::is_symbol_key(key) {
+                    let str_proto = crate::builtins::surface::str_proto(self);
+                    if let Some(v) = self.own_value(str_proto.0 as usize, key) {
+                        return Ok(v);
+                    }
+                }
             }
         }
         // process.env 单例：Windows 下键查找大小写不敏感（Node 22 实测对齐——
@@ -518,11 +525,21 @@ impl Vm {
                 }
             }
         }
-        // Map/Set 实例的 size 属性（entries 数）
+        // Map/Set 实例的合成属性面：size（entries 数）+ 知名符号属性
+        // （如 Symbol.iterator——方法挂 container_proto 面，Map 变体无原型
+        // 链字段，属性读取在此按需转发；普通方法 keys/values 等由
+        // CALL_METHOD 特判处理，不依赖属性存在）
         if let Value::Object(r) = obj {
             if let Some(HeapObject::Map { entries }) = self.heap.get(r.0 as usize) {
                 if key == "size" {
                     return Ok(Value::Number(entries.len() as f64));
+                }
+                // 知名符号键 → 读容器原型面的同键属性
+                if crate::symbol::is_symbol_key(key) {
+                    let cont_proto = crate::builtins::surface::container_proto(self);
+                    if let Some(v) = self.own_value(cont_proto.0 as usize, key) {
+                        return Ok(v);
+                    }
                 }
             }
         }

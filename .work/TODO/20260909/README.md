@@ -61,3 +61,26 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
 
 - `require('express')` 加载 `response.js` 时仍崩溃（`undefined is not a function`），定位中；
 - 修复后 `app.js` 6 场景 POST body 仍为空，需进一步排查 body-parser 的 `read` 回调。
+
+## 7. 代码重构
+
+- **`global_fns.rs` 拆分**：将 3255 行的巨型文件按单一职责拆分为 `builtins/global/` 子目录下 13 个独立模块（`core_fn`/`uri`/`number`/`string_fns`/`date`/`object`/`error`/`fetch`/`headers`/`abort`/`event`/`form_data`/`web` + 编排 `mod.rs`），编译零警告通过。
+
+## 8. 迭代器协议实现（对照 Node.js 22 LTS）
+
+- **新增四类内建迭代器**（`iter.rs`）：Array（既有，重构 kind 读取）/ String（逐 Unicode 码点，代理对单一产出）/ Map / Set；
+- **Map/Set 存储升级有序化**（`heap.rs` `HeapObject::Map`）：`HashMap` → `Vec<(String, Value)>` 保持插入序；`set/add` 既有键原位更新保位置；`new Map([[k,v],…])` 支持 iterable 构造（`call.rs`）；Set 实例经句柄登记与 Map 区分；
+- **原型 `[Symbol.iterator]` 面**（`surface.rs`）：String/Array/Map/Set（Map/Set 共用 container_proto + receiver 分流）；NativeFn 名与分派键对齐（`X.prototype.Symbol.iterator`）；
+- **解释器协议接入**（`interpreter.rs`）：`GetIterator` 字符串/Map/Set 特判 + 迭代器对象自身即迭代器；`CALL_METHOD next` 四类迭代器步进；Map/Set `keys/values/entries/forEach` 方法；`Op::ArraySpread` 走 `collect_iter_values` 统一展开（数组/字符串/Map/Set/TypedArray）；
+- **合成属性面**（`property.rs`）：Map/Set 变体知名符号键转发 container_proto 面；字符串变体符号键转发 str_proto 面（`'hi'[Symbol.iterator]()` 可取）；
+- **差分测试**：`aluka-cli/tests/builtins_iter_protocol_test.rs` 5 用例与 Node.js 22 LTS 实际对拍（`assert_e2e_matches_node`）全绿；
+- **回归**：`cargo test -p aluka-vm` 146+33 通过；aluka-cli `core_semantics_test` 21 通过、`four_quadrants_oracle_test`/`sync_builtins_test`/`frontend_features_test` 通过；clippy 零警告。
+
+```bash
+# 证据：探针输出（target/debug/aluka.exe）
+# str-forof: a,b,c, ｜ str-codepoint: a|😀|b| ｜ spread-str: ["x","y"]
+# map-forof: ["a=1","b=2"] ｜ map-keys: ["a","b"] ｜ map-values: [1,2]
+# map-update-order: ["x=9","y=2"]（原位更新保插入序）
+# set-size: 3 ｜ set-forof: [1,2,3] ｜ set-entries: ["[1,1]","[2,2]","[3,3]"]
+# spread-map: [["k","v"]] ｜ spread-set: ["a","b"] ｜ Array 迭代器复用 sum: 6
+```

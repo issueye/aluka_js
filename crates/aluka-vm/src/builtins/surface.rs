@@ -320,6 +320,50 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         let f = vm.alloc_native_fn(&format!("proto.{m}"));
         let _ = vm.define_proto_method(Value::Object(cont_p), m, Value::Object(f));
     }
+
+    // === Symbol.iterator 注册 ===
+    // 为 String / Array / Map / Set 原型挂 `[Symbol.iterator]` 方法，
+    // 使 `for...of` 的 GetIterator fallback 路径（Symbol.iterator 属性查找 +
+    // 函数调用）取得迭代器。Array 还保留 GetIterator 直接快速路径作为优化。
+    let iter_sym = vm.well_known_symbol("iterator");
+    let iter_mkey = match iter_sym {
+        Value::Object(r) => crate::symbol::mangled_key(r),
+        _ => unreachable!("well_known_symbol returns symbol object"),
+    };
+
+    // String.prototype[Symbol.iterator]
+    let str_p = str_proto(vm);
+    let f = vm.alloc_native_fn("String.prototype.Symbol.iterator");
+    let _ = vm.set_property(Value::Object(str_p), &iter_mkey, Value::Object(f));
+    register_handler(
+        registry,
+        "String.prototype",
+        "Symbol.iterator",
+        str_iter_handler,
+    );
+
+    // Array.prototype[Symbol.iterator] → 委托给 values()
+    let arr_p = array_proto(vm);
+    let f = vm.alloc_native_fn("Array.prototype.Symbol.iterator");
+    let _ = vm.set_property(Value::Object(arr_p), &iter_mkey, Value::Object(f));
+    register_handler(
+        registry,
+        "Array.prototype",
+        "Symbol.iterator",
+        arr_iter_handler,
+    );
+
+    // Map/Set 共用 container_proto：[Symbol.iterator] 按 receiver 分流
+    // （NativeFn 名与分派键对齐为 "MapSet.prototype.Symbol.iterator"）
+    let cont_p = container_proto(vm);
+    let f_ms = vm.alloc_native_fn("MapSet.prototype.Symbol.iterator");
+    let _ = vm.set_property(Value::Object(cont_p), &iter_mkey, Value::Object(f_ms));
+    register_handler(
+        registry,
+        "MapSet.prototype",
+        "Symbol.iterator",
+        map_set_iter_handler,
+    );
 }
 
 macro_rules! proto_getter {
@@ -890,4 +934,48 @@ fn fn_proto_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
         }
     };
     Ok(Value::Object(vm.alloc_string(text)))
+}
+
+// ===== Symbol.iterator handler 函数 =====
+
+/// `String.prototype[Symbol.iterator]()`：返回字符串迭代器。
+fn str_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = super::current_receiver();
+    match this {
+        Value::Object(r) => Ok(vm.alloc_string_iterator(r)),
+        _ => {
+            let s =
+                vm.alloc_string("String.prototype[Symbol.iterator] requires a string".to_owned());
+            Err(VmError::Thrown(Value::Object(s)))
+        }
+    }
+}
+
+/// `Array.prototype[Symbol.iterator]()` → `values()`：返回数组元素值迭代器。
+fn arr_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = super::current_receiver();
+    match this {
+        Value::Object(r) => Ok(vm.alloc_array_iterator_kind(r, "values")),
+        _ => Ok(Value::Undefined),
+    }
+}
+
+/// `Map.prototype[Symbol.iterator]()` 与 `Set.prototype[Symbol.iterator]()`
+/// 共用分派：经 Set 实例登记区分（Map/Set 共用 `HeapObject::Map` 变体，
+/// 见 iter.rs）。Map 返回 entries 迭代器（产出 `[key, value]`），Set 返回
+/// values 迭代器（产出 value）。
+fn map_set_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = super::current_receiver();
+    match this {
+        Value::Object(r) => {
+            if vm.is_set_instance(this) {
+                Ok(vm.alloc_set_iterator(r, "values"))
+            } else if vm.is_map_instance(this) {
+                Ok(vm.alloc_map_iterator(r, "entries"))
+            } else {
+                Ok(Value::Undefined)
+            }
+        }
+        _ => Ok(Value::Undefined),
+    }
 }

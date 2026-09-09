@@ -364,7 +364,25 @@ impl Vm {
                     }
                     "Object" => return Ok(Value::Object(self.alloc_ordinary())),
                     "RegExp" => return self.construct_regexp(args),
-                    "Map" => return Ok(Value::Object(self.alloc_map(Vec::new()))),
+                    "Map" => {
+                        // new Map(iterable?)：接受 `[[key, value], ...]` 数组
+                        // （有序插入；Node 语义）；无参为空 Map
+                        let mut entries: Vec<(String, Value)> = Vec::new();
+                        if let Some(Value::Object(r)) = args.first().copied() {
+                            if let Some(HeapObject::Array { elements, .. }) =
+                                self.heap.get(r.0 as usize)
+                            {
+                                for elem in elements.clone() {
+                                    let pair = self.to_array_values(elem);
+                                    if pair.len() >= 2 {
+                                        let key = self.to_property_key(pair[0]);
+                                        entries.push((key, pair[1]));
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(Value::Object(self.alloc_map(entries)));
+                    }
                     "Set" => {
                         // new Set(iterable?)：元素按 to_property_key 去重，
                         // 值保留原元素（size/has 语义）
@@ -381,7 +399,11 @@ impl Vm {
                                 }
                             }
                         }
-                        return Ok(Value::Object(self.alloc_map(entries)));
+                        let set_ref = self.alloc_map(entries);
+                        // 登记 Set 实例句柄（与 Map 共用 HeapObject::Map 变体，
+                        // 迭代/分派靠登记区分——见 iter.rs）
+                        self.register_set_instance(set_ref);
+                        return Ok(Value::Object(set_ref));
                     }
                     "URL" => return Ok(self.url_constructor(args)),
                     "Proxy" => return self.construct_proxy(args),
