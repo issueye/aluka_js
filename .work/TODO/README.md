@@ -66,33 +66,42 @@
 ## 3. 里程碑细分待办清单
 
 ### M1 · ECMAScript 核心规范收口 (ES2024 / test262)
-- [ ] **M1.1 Proxy & Reflect 反射代理子系统**
+
+> **2026-09-09 复评确认达成**（证据与结论见 `20260907/README.md` 与
+> `20260909/README.md` §11；结项提交 `30e11ff`、`127bf71`）：test262 语料
+> **154/154 实跑通过**（M1.1 proxy 45 例 / M1.2 regexp 12 例 / M1.3 es2024
+> 10 例 / M1.4 typedarray 15 例 / M1.6 eval 52 例 + array/negative），
+> `cargo test -p aluka-regex` 15 passed、`aluka-vm --lib` 146 passed。
+> 已知降级（Proxy invariant 平凡满足 / direct-eval var 语义 / SAB 进程内
+> 共享 / 原型方法属性面按需合成）已在结项轮登记在案。
+
+- [x] **M1.1 Proxy & Reflect 反射代理子系统**
   - 实现 `Proxy` 构造器与 13 种核心 Traps 拦截器（`get`, `set`, `has`, `deleteProperty`, `apply`, `construct`, `getPrototypeOf`, `setPrototypeOf`, `isExtensible`, `preventExtensions`, `getOwnPropertyDescriptor`, `defineProperty`, `ownKeys`）；
   - 实现全局 `Reflect` 对象的 13 个静态规范方法；
-  - 验收：通过 Proxy/Reflect 专属测试套件（≥40 用例）。
-- [ ] **M1.2 RegExp 引擎进阶语法**
+  - 验收：通过 Proxy/Reflect 专属测试套件（≥40 用例）。✅ 45 例全过（m1-proxy-001..045，覆盖 13 traps + revocable + Reflect 13 方法）
+- [x] **M1.2 RegExp 引擎进阶语法**
   - 正向后行断言 `(?<=...)` 与负向后行断言 `(?<!...)`；
   - 命名捕获组反向引用 `\k<name>` 与替换语法 `$<name>`；
-  - 验收：RegExp 语法矩阵 100% 与 Node.js 22 LTS 差分对齐。
-- [ ] **M1.3 ES2022~ES2024 新增标准方法**
+  - 验收：RegExp 语法矩阵 100% 与 Node.js 22 LTS 差分对齐。✅ aluka-regex 15 passed（含 lookbehind/backref/词边界）+ test262 regexp 12 例
+- [x] **M1.3 ES2022~ES2024 新增标准方法**
   - `Promise.withResolvers` 规范实现；
   - 数组不可变变更方法：`toSorted()`, `toReversed()`, `toSpliced()`, `with()`；
   - 分组方法：`Object.groupBy()`, `Map.groupBy()`；
   - 字符串 Well-Formed 校验与转换：`isWellFormed()`, `toWellFormed()`；
-  - 验收：单测与 Node.js 22 对拍一致。
-- [ ] **M1.4 类型化数组 (TypedArray) 规范体系**
+  - 验收：单测与 Node.js 22 对拍一致。✅ test262 m1-es2024-001..010 全过
+- [x] **M1.4 类型化数组 (TypedArray) 规范体系**
   - 完备的 `ArrayBuffer`、`SharedArrayBuffer`、`DataView` 内存操作；
   - 11 种 TypedArray 构造函数与完整原型链继承关系；
-  - 验收：TypedArray 二进制存取与字节序测试全绿。
-- [ ] **M1.5 test262 官方测试集扩容**
+  - 验收：TypedArray 二进制存取与字节序测试全绿。✅ test262 m1-typedarray-001..015 全过（11 构造器/DataView LE·BE/Uint8Clamped/subarray）
+- [x] **M1.5 test262 官方测试集扩容**
   - 接入官方 test262 标准测试 runner，测试集规模从 8 例扩容至 ≥100 例；
-  - 验收：`cargo test -p aluka-cli --test test262_subset_test` 100% 通过。
-- [ ] **M1.6 动态代码求值子系统 (`eval` & `new Function`)**
+  - 验收：`cargo test -p aluka-cli --test test262_subset_test` 100% 通过。✅ 154/154 passed（20260909 复测）
+- [x] **M1.6 动态代码求值子系统 (`eval` & `new Function`)**
   - **直接调用 `eval(code)` (Direct Eval)**：实现调用栈帧与局部词法作用域穿透，支持在当前局部环境内即时求值；
   - **间接调用 `eval(code)` (Indirect Eval)**：严格限制在全局作用域下求值，隔离局部调用帧；
   - **动态函数构造器 `new Function(...args, body)` / `Function(...)`**：实现形参与函数体字符串拼接解析、全局作用域函数模板动态生成；
   - **动态字节码 Verifier 安全门禁**：动态编译产出的字节码必须 100% 经由 `aluka-bytecode::verifier` 静态安全校验，杜绝非法跳转与栈溢出；
-  - 验收：通过 eval 与 Function 专项测试套件（≥50 用例），与 Node.js 22 LTS 差分对拍 100% 一致。
+  - 验收：通过 eval 与 Function 专项测试套件（≥50 用例），与 Node.js 22 LTS 差分对拍 100% 一致。✅ test262 m1-eval-001..052 共 52 例全过
 
 ---
 

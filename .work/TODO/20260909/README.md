@@ -127,3 +127,19 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
   - 细分：M3.1 `[x]`、M3.2 `[ ]`+M3.2b 工作项、M3.3 `[x]`、M3.4 `[ ]`+M3.4b 工作项；
   - 新工作项 M3.2b（tls/https JS 面接入 rustls 会话，事件泵握手调度，自签证书
     自回环 JS 探针与 Node 22 对拍）；M3.4b（resolve 家族真实递归查询）。
+
+## 11. M1 复评确认（评审轮：M2/M3/M1 独立复审）
+
+- **结论**：M1 **已达成**（与 M3 不同——无验收落差；仅总 README 细分项未勾的
+  文档疏漏，本轮已补 `[x]`）。
+- **复测证据**（Node v22.3.0 在场）：
+  - `cargo test -p aluka-cli --features runtime --test test262_subset_test`
+    → **154/154 cases passed**（m1-proxy 45 / m1-regexp 12 / m1-es2024 10 /
+    m1-typedarray 15 / m1-eval 52 / m1-array 10 / m1-negative 2）；
+  - `cargo test -p aluka-regex` → 15 passed（lookbehind/backref/词边界）；
+  - `cargo test -p aluka-vm --lib` → 146 passed；
+  - 以上在近三轮大改（global 拆分/迭代器/JSON 属性系统）后实跑全绿。
+- **结项来源**：`30e11ff`（M1 收口）+ `127bf71`（eval 扩容 52 例）；
+  结项轮证据见 `20260907/README.md`（逐子项命令/产物证据 + 530 passed 门禁 +
+  已知降级登记：Proxy invariant 平凡满足 / direct-eval var 语义 / SAB 进程内
+  共享 / 原型方法属性面按需合成）。
