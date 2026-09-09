@@ -22,6 +22,8 @@ ruzstd = "0.8"
 # SQLite C amalgamation 静态编进二进制，保持单文件零运行时依赖。
 rusqlite = { version = "0.37", features = ["bundled"] }
 base64 = "0.22"
+# cluster 端口共享（M5.2）：SO_REUSEADDR/REUSEPORT 纯 Rust 绑定
+socket2 = "0.5"
 # TLS spike（T10 评估）：rustls + rustls-rustcrypto 纯 Rust 加密后端
 # （无 ring/C/asm；评估能否满足 AGENTS 纯 Rust 约束下的真实 TLS 握手）
 rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "custom-provider"] }

@@ -1,4 +1,4 @@
-﻿//! `node:net` 内置模块（Phase 5）：TCP 服务器与客户端。
+//! `node:net` 内置模块（Phase 5）：TCP 服务器与客户端。
 //!
 //! 与 Node.js 22 LTS 标准（`nodenet/net.go`）逐字对齐的语义：
 //! - `net.createServer([connectionListener])` → Server（`listen` / `close` /
@@ -962,7 +962,7 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     } else {
         host
     };
-    match TcpListener::bind((bind_host.as_str(), port)) {
+    match bind_shared_listener(&bind_host, port) {
         Ok(listener) => {
             let _ = listener.set_nonblocking(true);
             let bound = listener.local_addr().ok();
@@ -1384,4 +1384,27 @@ fn emit_net_event(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> Re
         }
     }
     Ok(())
+}
+
+/// cluster 端口共享绑定（M5.2）：置 SO_REUSEADDR（Windows 允许同端口多重
+/// 绑定）/ Unix 追加 SO_REUSEPORT，使多进程 cluster worker 可同时监听同
+/// 一端口（OS 层分发连接）。
+pub(crate) fn bind_shared_listener(
+    host: &str,
+    port: u16,
+) -> std::io::Result<std::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::ToSocketAddrs as _;
+
+    let addr = (host, port)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid addr"))?;
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.bind(&addr.into())?;
+    socket.listen(511)?;
+    Ok(socket.into())
 }

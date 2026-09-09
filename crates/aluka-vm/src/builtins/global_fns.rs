@@ -884,7 +884,18 @@ fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
 
     // 同步 HTTP 请求
-    let (status, body_text) = do_sync_http_request(vm, &url, &method, &headers, body.as_ref())?;
+    let (status, body_text) = match do_sync_http_request(vm, &url, &method, &headers, body.as_ref())
+    {
+        Ok(pair) => pair,
+        Err(message) => {
+            // 规范语义：网络错误经 rejected promise 兑现，绝不同步抛出
+            let err = vm.alloc_error_instance(&message);
+            let name = vm.alloc_string("TypeError".to_owned());
+            let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+            let promise = vm.alloc_rejected_promise(Value::Object(err));
+            return Ok(Value::Object(promise));
+        }
+    };
 
     // AbortSignal 后置检查：signal 在请求发起后（前序宏任务中）被 abort →
     // 兑现为携带 reason（缺省 AbortError）的 rejected promise，不返回 Response
@@ -938,16 +949,13 @@ fn do_sync_http_request(
     method: &str,
     headers: &[(String, String)],
     body: Option<&Value>,
-) -> Result<(u16, String), VmError> {
-    let (host, port, path) = parse_http_url(vm, url)?;
+) -> Result<(u16, String), String> {
+    let (host, port, path) = parse_http_url(url);
 
     use std::io::{Read as _, Write as _};
     use std::net::TcpStream;
     let addr = format!("{host}:{port}");
-    let mut stream = TcpStream::connect(&addr).map_err(|e| {
-        let msg = vm.alloc_string(format!("fetch: connect: {e}"));
-        VmError::Thrown(Value::Object(msg))
-    })?;
+    let mut stream = TcpStream::connect(&addr).map_err(|e| format!("fetch: connect: {e}"))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .ok();
@@ -955,33 +963,23 @@ fn do_sync_http_request(
         .set_write_timeout(Some(std::time::Duration::from_secs(10)))
         .ok();
 
-    let mut request = format!(
-        "{method} {path} HTTP/1.1
-Host: {host}
-Connection: close
-"
-    );
+    // HTTP/1.1 报文行必须 CRLF 结尾（RFC 9112；LF-only 会被 Node/严格
+    // 解析器以 400 拒绝，自研 http server 同样按 CRLF 分帧）
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     for (k, v) in headers {
-        request.push_str(&format!(
-            "{k}: {v}
-"
-        ));
+        request.push_str(&format!("{k}: {v}\r\n"));
     }
     if let Some(b) = body {
         let bs = vm.format_value(*b);
-        request.push_str(&format!(
-            "Content-Length: {}
-",
-            bs.len()
-        ));
+        request.push_str(&format!("Content-Length: {}\r\n", bs.len()));
     }
     request.push_str("\r\n");
     if let Some(b) = body {
         request.push_str(&vm.format_value(*b));
     }
-    stream.write_all(request.as_bytes()).map_err(|e| {
-        VmError::Thrown(Value::Object(vm.alloc_string(format!("fetch write: {e}"))))
-    })?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("fetch: write: {e}"))?;
 
     let mut response_bytes = Vec::new();
     let mut buf = [0u8; 8192];
@@ -995,32 +993,26 @@ Connection: close
     }
 
     let text = String::from_utf8_lossy(&response_bytes).to_string();
-    let body_start = text
-        .find(
-            "
-
-",
-        )
-        .map(|i| i + 4)
-        .unwrap_or(text.len());
-    let status_line = &text[..text
-        .find(
-            "
-",
-        )
-        .unwrap_or(text.len())];
+    // 头/体分隔与状态行均按 CRLF 分帧（RFC 9112）；兼容 LF-only 响应
+    let (header_block, body_text) = match text.find("\r\n\r\n") {
+        Some(i) => (&text[..i], text[i + 4..].to_owned()),
+        None => match text.find("\n\n") {
+            Some(i) => (&text[..i], text[i + 2..].to_owned()),
+            None => (text.as_str(), String::new()),
+        },
+    };
+    let status_line = header_block.split("\r\n").next().unwrap_or(header_block);
     let status: u16 = status_line
         .split_whitespace()
         .nth(1)
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let body_text = text.get(body_start..).unwrap_or("").to_owned();
 
     Ok((status, body_text))
 }
 
 /// 解析 HTTP(S) URL → (host, port, path)
-fn parse_http_url(_vm: &mut Vm, url: &str) -> Result<(String, u16, String), VmError> {
+fn parse_http_url(url: &str) -> (String, u16, String) {
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -1033,7 +1025,7 @@ fn parse_http_url(_vm: &mut Vm, url: &str) -> Result<(String, u16, String), VmEr
         Some((h, p)) => (h.to_owned(), p.parse().unwrap_or(80)),
         None => (host_port, 80),
     };
-    Ok((host, port, path))
+    (host, port, path)
 }
 
 /// `AbortController` 构造器：创建 { signal: { aborted, reason, _abortId }, abort() }

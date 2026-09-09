@@ -1,4 +1,4 @@
-﻿//! HTTP 服务器与 `ServerResponse`：handler 注册、事件派发与响应写出。
+//! HTTP 服务器与 `ServerResponse`：handler 注册、事件派发与响应写出。
 //!
 //! 对齐 Node.js 22 LTS 标准（`nodehttp/http.go` 的服务器半边）：
 //! - `listen` 成功后激活 `"http"` 事件源，泵内非阻塞 accept + 读 socket；
@@ -19,7 +19,6 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
-use std::net::TcpListener;
 
 /// 创建 Server 实例对象（EventEmitter 表面 + Node 属性），并登记
 /// 构造 handler 为 `'request'` 监听器。`http.createServer`/`https.createServer`
@@ -202,7 +201,14 @@ fn server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     } else {
         format!("{host}:{port}")
     };
-    match TcpListener::bind(&bind_str) {
+    let (bind_host, bind_port) = match bind_str.rsplit_once(':') {
+        Some((h, p)) => (
+            h.trim_start_matches('[').trim_end_matches(']').to_owned(),
+            p.parse::<u16>().unwrap_or(0),
+        ),
+        None => (bind_str.clone(), 0),
+    };
+    match crate::builtins::net::bind_shared_listener(&bind_host, bind_port) {
         Ok(ln) => {
             let _ = ln.set_nonblocking(true);
             let (actual_host, actual_port) = match ln.local_addr() {

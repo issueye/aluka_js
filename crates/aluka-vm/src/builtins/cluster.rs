@@ -126,8 +126,20 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // worker id = 现有 workers 键数 + 1（Go len(workersObj.Keys())+1）。
     let worker_id = workers_count(vm, self_val) as u64 + 1;
 
-    // 当前脚本路径（Go 取 os.Args[1]）。
-    let script = std::env::args().nth(1).unwrap_or_default();
+    // 当前脚本路径：优先 VM 登记的入口文件（字节码模式下为 .bc 路径，
+    // 如 `aluvm run app.bc`——argv[1] 会是子命令 "run"）；回退 argv[1]
+    // （源码模式 `aluka app.js`）。
+    let script = {
+        let entry = vm.entry_file.clone();
+        if entry.is_empty() {
+            std::env::args()
+                .nth(1)
+                .filter(|a| !matches!(a.as_str(), "run" | "test" | "-v" | "--version"))
+                .unwrap_or_default()
+        } else {
+            entry
+        }
+    };
 
     // env：继承当前环境 + ALUKA_WORKER_ID 标记，用户传入 env 覆盖。
     let mut env_pairs: Vec<(String, String)> = std::env::vars_os()
@@ -326,12 +338,23 @@ fn worker_send(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// worker `kill()`：简化恒 true（Go 同款）。
-fn worker_kill(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+fn worker_kill(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    worker_destroy(vm, _args)?;
     Ok(Value::Boolean(true))
 }
 
 /// worker `destroy()`。
-fn worker_destroy(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+fn worker_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    // M5.2：destroy 终止底层子进程（Node 语义：disconnect 关闭全部 worker）；
+    // 委托 child 对象的 kill 方法（退出事件经既有转接派发）
+    let receiver = current_receiver();
+    if let Ok(child) = vm.get_property(receiver, "process") {
+        if let Ok(kill) = vm.get_property(child, "kill") {
+            if matches!(kill, Value::Object(_)) {
+                let _ = vm.invoke_callable(kill, child, &[]);
+            }
+        }
+    }
     Ok(Value::Undefined)
 }
 
