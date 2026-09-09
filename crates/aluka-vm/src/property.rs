@@ -635,6 +635,9 @@ impl Vm {
                 _ => None,
             };
             if let Some((buffer, byte_offset, byte_length)) = dv_info {
+                // Node：detached 后 DataView 的合成属性读取抛 TypeError
+                // （与 TypedArray 元素访问同路径；transfer detach 场景）。
+                self.check_detached(buffer)?;
                 let synthesized = match key {
                     "byteLength" => Some(Value::Number(byte_length as f64)),
                     "byteOffset" => Some(Value::Number(byte_offset as f64)),

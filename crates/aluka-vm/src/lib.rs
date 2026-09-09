@@ -28,6 +28,7 @@ mod tls_spike;
 pub mod typed_array;
 pub mod value;
 pub mod worker;
+mod worker_clone;
 
 pub use eval::empty_eval_module;
 pub use heap::HeapObject;

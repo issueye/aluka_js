@@ -248,16 +248,21 @@
 > （Node 22.23.1 实测对齐——错误文本/绑定规则/columns 五键/close 语义全面
 > Node 化，44 行探针逐字一致真对拍固化）；M5.4 仅 concurrency 与 Mock 达成
 > （Timer Mock / 报告接线 / LCOV / CLI 运行器未闭环）。总览按项登记。
-- [~] **M5.1 `worker_threads` 跨物理线程支持**（主体达成——结构化克隆缺口，20260909 评审）
+- [~] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环——余项跟踪，20260909 round7）
   - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；✅ 真
     `std::thread` + 独立 Vm（runtime 装配钩子），通道为 std mpsc（crossbeam
     仅 dns_resolver 在用；登记口径以「真线程 + 通道桥」为准）；
-  - 实现 `MessageChannel`、`MessagePort` 与结构化克隆传值；⚠️ 表面齐，
-    传值为 JSON 往返克隆（原始值/数组/普通对象；ArrayBuffer/TypedArray/
-    函数 → null；transfer list 未实现）；
+  - 实现 `MessageChannel`、`MessagePort` 与结构化克隆传值；✅ **结构化克隆
+    闭环**（round7：worker_clone 自描述格式——基本类型/Date/RegExp/Map/Set/
+    ArrayBuffer/TypedArray/DataView/**循环与共享引用**/transfer list 移交 +
+    源 detach/markAsUntransferable/DataCloneError；纯消息 worker 保活修复；
+    `25-m5-structured-clone.cjs` Node 22.23.1 逐字对拍 22 行一致）；
+    简化口径登记：视图共享克隆独立复制、MessagePort transfer 未实现、
+    workerData 复验列下轮；
   - 验收：多 Worker 并发计算与消息通信用例对拍全绿。✅ `20-m5` Node 逐字节
-    对拍 PASS + phase6 3 用例。缺口：结构化克隆/transfer、`eval:true`、
-    `postMessageToThread` 真线程分支（未登记风险）、文件头注释过时。
+    对拍 PASS + phase6 3 用例 + case 25 结构化克隆对拍。缺口跟踪：eval
+    worker、`postMessageToThread` 真线程分支、port ref/unref/start、
+    文件头注释过时项（threadId 恒 0 等）。
 - [~] **M5.2 `cluster` 进程池模型**（端口共享达成——IPC 面降级 + P0 遗留，20260909 评审）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT

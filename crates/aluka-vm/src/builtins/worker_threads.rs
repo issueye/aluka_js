@@ -1,23 +1,24 @@
 //! `worker_threads` 内置模块（Phase 6）。
 //!
 //! 照实移植 Node.js 22 LTS 规范的模型并
-//! 按宿主现实落地：Go 侧 worker 是「独立 goroutine + 完整 VM」，Rust 侧 VM
-//! 基于 `Rc` 不可跨线程，因此采用**同进程伪 worker（宏任务/事件泵派发）**——
-//! 可观测语义与 Go 一致：
+//! 按宿主现实落地：Rust 侧 VM 基于 `Rc` 不可跨线程，worker 物理线程经
+//! `Vm.worker_entry` 装配层钩子（`aluka-runtime`）spawn，各线程独享 Vm；\n
 //! - `new Worker(path[, opts])`：构造主线程侧 Worker 实例（事件器：
-//!   `on/emit/postMessage/terminate/threadId`），worker 模块体经 `proc` 事件
-//!   泵加载执行（require 缓存旁路，模块可重复运行）；
+//!   `on/emit/postMessage/terminate/threadId`）；真实线程路径下 worker
+//!   文件在独立线程的 Vm 上解释执行；无装配钩子时回退到 `proc` 事件泵
+//!   派发的同进程伪 worker（require 缓存旁路，模块可重复运行）；\n
 //! - worker 内注入 `isMainThread=false`、`parentPort`（消息端口）与
-//!   `workerData`（JSON 往返、对象键递归排序——对齐 Go `json.Marshal`），
-//!   执行完毕恢复主线程表面并派发 worker `'exit'`（先 `'message'` 后
-//!   `'exit'`，Node/Go 语义）；
-//! - 消息序列化语义：`postMessage` 值经 JSON 往返克隆（原始值不变、对象键
-//!   排序、undefined → null）；
-//! - `MessageChannel`/`MessagePort`/`BroadcastChannel`：同进程链接端口 +
-//!   消息缓冲（有监听器时异步派发，无监听器时可 `receiveMessageOnPort` 同步取）；
-//! - 已知偏离：`{eval: true}` 在字节码 VM 上不可执行（走 worker `'error'` +
-//!   `'exit'(1)`）；模块级 `threadId` 恒为 0（Go 同款怪癖）；`SHARE_ENV` 为
-//!   普通对象（VM 暂无 Symbol 堆对象）。
+//!   `workerData`（**结构化克隆**：worker_clone 自描述格式，类型面/循环引用
+//!   保真，见 `crate::worker_clone`），执行完毕恢复主线程表面并派发\n
+//!   worker `'exit'`（先 `'message'` 后 `'exit'`，Node 语义）；\n
+//! - 消息序列化语义：`postMessage` 值经**结构化克隆**（基本类型/Date/RegExp/\n
+//!   Map/Set/ArrayBuffer/TypedArray/DataView/循环引用；函数/Symbol 抛\n
+//!   DataCloneError；transfer list 移交 ArrayBuffer 并 detach 源）；\n
+//! - `MessageChannel`/`MessagePort`/`BroadcastChannel`：同进程链接端口 +\n
+//!   消息缓冲（有监听器时异步派发，无监听器时可 `receiveMessageOnPort` 同步取）；\n
+//! - 已知偏离：`{eval: true}` 在字节码 VM 上不可执行（走 worker `'error'` +\n
+//!   `'exit'(1)`）；模块级 `threadId` 恒为 0（Go 同款怪癖）；`SHARE_ENV` 为\n
+//!   普通对象（VM 暂无 Symbol 堆对象）。\n
 
 use crate::builtins::child_process::proc_common::{
     EMITTER_METHODS, ProcEvent, ns_attach, ns_emit, ns_listener_count, push_event,
@@ -319,7 +320,7 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         if let Value::Object(o) = opts {
             if let Ok(v) = vm.get_property(opts, "workerData") {
                 if !matches!(v, Value::Undefined) {
-                    worker_data = Some(json_roundtrip(vm, v));
+                    worker_data = Some(json_roundtrip(vm, v)?);
                 }
             }
             if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(o), "eval") {
@@ -626,11 +627,15 @@ fn wt_channel_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Object(ch))
 }
 
-/// `new MessagePort()`：无连接端口（`_peer` 为 null，消息直接丢弃）。
+/// `new MessagePort()`：Node 抛 ERR_ILLEGAL_CONSTRUCTOR（端口只能经
+/// `MessageChannel`/`worker` 获得；原实现降级为无连接端口已修正）。
 fn wt_port_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let p = make_port(vm, "worker_threads:port");
-    let _ = vm.set_property(Value::Object(p), "_peer", Value::Null);
-    Ok(Value::Object(p))
+    let err = vm.alloc_error_instance("Illegal constructor");
+    let n = vm.alloc_string("TypeError".to_owned());
+    let _ = vm.set_property(Value::Object(err), "name", Value::Object(n));
+    let c = vm.alloc_string("ERR_ILLEGAL_CONSTRUCTOR".to_owned());
+    let _ = vm.set_property(Value::Object(err), "code", Value::Object(c));
+    Err(VmError::Thrown(Value::Object(err)))
 }
 
 /// `new BroadcastChannel(name)`：端口 + 频道注册表（postMessage 广播、close 退订）。
@@ -667,7 +672,7 @@ fn wt_pp_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // M5.1 真实线程路径：worker 侧 parentPort → 主线程通道
     if crate::worker::is_worker_thread() && REAL_PP_ID.with(|c| *c.borrow()) == Some(r.0) {
         if let Some(io) = crate::worker::worker_thread_io() {
-            let msg = json_roundtrip(vm, args.first().copied().unwrap_or(Value::Undefined));
+            let msg = json_roundtrip(vm, args.first().copied().unwrap_or(Value::Undefined))?;
             let json = value_to_json_string(vm, msg)?;
             let _ = io.to_main.send(crate::worker::WorkerEvent::Message(json));
         }
@@ -675,7 +680,7 @@ fn wt_pp_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
     let worker = with_pp_to_worker(|m| m.get(&r.0).copied());
     if let Some(worker) = worker {
-        let msg = json_roundtrip(vm, args.first().copied().unwrap_or(Value::Undefined));
+        let msg = json_roundtrip(vm, args.first().copied().unwrap_or(Value::Undefined))?;
         push_event(ProcEvent::WorkerToMain { worker, msg });
         vm.activate_event_source(
             "proc",
@@ -696,7 +701,7 @@ fn wt_port_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // BroadcastChannel：投递给同频道其他端口。
     let bc_name = BROADCAST_NAMES.with(|g| g.borrow().as_ref().and_then(|m| m.get(&r.0)).cloned());
     if let Some(name) = bc_name {
-        let msg = json_roundtrip(vm, msg);
+        let msg = json_roundtrip(vm, msg)?;
         let peers: Vec<u32> = BROADCAST_CHANNELS.with(|g| {
             g.borrow()
                 .as_ref()
@@ -728,7 +733,7 @@ pub(crate) fn port_post(vm: &mut Vm, port: Value, msg: Value) -> Result<(), VmEr
     let Value::Object(r) = port else {
         return Ok(());
     };
-    let msg = json_roundtrip(vm, msg);
+    let msg = json_roundtrip(vm, msg)?;
     let deliver_now = with_port_state(r.0, |st| {
         if st.closed {
             return false;
@@ -813,20 +818,23 @@ fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }) {
         return Ok(Value::Undefined);
     }
-    // M5.1 真实线程路径：经通道送 JSON 到物理线程
+    // M5.1 真实线程路径：结构化克隆 + transfer（经 base64 通道到物理线程）
     if REAL_WORKERS.with(|m| m.borrow().contains_key(&r.0)) {
         if let Some(bridge) =
             REAL_WORKERS.with(|m| m.borrow().get(&r.0).map(|b| b.to_worker.clone()))
         {
             let msg = args.first().copied().unwrap_or(Value::Undefined);
-            let rounded = json_roundtrip(vm, msg);
-            let json = value_to_json_string(vm, rounded)?;
+            // transfer list（第二参数数组元素；解析失败按不可转移报错）
+            let transfer = collect_transfer_list(vm, args.get(1).copied())?;
+            let bytes = crate::worker_clone::serialize(vm, msg, &transfer)?;
+            let json = b64_encode(&bytes);
             let _ = bridge.send(json);
         }
         return Ok(Value::Undefined);
     }
     if let Some(pp) = pp {
         let msg = args.first().copied().unwrap_or(Value::Undefined);
+        let msg = json_roundtrip(vm, msg)?;
         push_event(ProcEvent::MainToWorker { pp, msg });
         vm.activate_event_source(
             "proc",
@@ -861,8 +869,14 @@ fn wt_worker_terminate(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 // 模块级函数
 // ---------------------------------------------------------------------------
 
-/// `markAsUncloneable` / `markAsUntransferable`：no-op（Go 同款）。
-fn wt_mark_noop(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+/// `markAsUncloneable`：no-op（Go 同款）；`markAsUntransferable(buf)`：
+/// 登记缓冲句柄——此后出现在 transfer list 时抛 DataCloneError（Node 实测
+/// `Cannot transfer object of unsupported type.`，与二次 transfer 同文本）。
+fn wt_mark_noop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if let Some(Value::Object(r)) = args.first() {
+        crate::worker_clone::mark_untransferable(*r);
+    }
+    let _ = vm;
     Ok(Value::Undefined)
 }
 
@@ -960,68 +974,60 @@ fn wt_move_port(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 // ---------------------------------------------------------------------------
-// JSON 往返（Go ValueToJSON + json.Marshal + JSONToEngine 的可观测等价）
+// 结构化克隆（M5.1）：跨线程传值 / 端口消息 / workerData 统一走
+// `worker_clone` 自描述字节格式（原 JSON 往返：键排序、undefined→null、
+// 函数与 ArrayBuffer null 化——已废弃；保留函数名减少通路改动面）
 // ---------------------------------------------------------------------------
 
-/// 值的 JSON 往返克隆：原始值透传（undefined → null，对齐 `JSON.stringify`
-/// 的 null 化），数组保序，对象按键名递归排序（对齐 Go `json.Marshal`）。
-pub(crate) fn json_roundtrip(vm: &mut Vm, v: Value) -> Value {
-    let Value::Object(r) = v else {
-        // undefined → null（JSON 序列化语义）；Number/Boolean/Null 透传。
-        return match v {
-            Value::Undefined => Value::Null,
-            other => other,
-        };
-    };
-    // 先快照堆形态再递归（避免借用冲突）。
-    let shape = match vm.heap.get(r.0 as usize) {
-        Some(HeapObject::Array { elements, .. }) => JsonShape::Arr(elements.clone()),
-        Some(HeapObject::Ordinary { .. }) => {
-            let mut pairs: Vec<(String, Value)> = vm.own_entries(r.0 as usize);
-            pairs.sort_by(|a, b| a.0.cmp(&b.0));
-            JsonShape::Obj(pairs)
-        }
-        // 字符串 / BigInt 透传；其余品类（函数等）按 null 化近似。
-        Some(HeapObject::String(_)) | Some(HeapObject::BigInt(_)) => JsonShape::Opaque(v),
-        _ => JsonShape::Opaque(Value::Null),
-    };
-    match shape {
-        JsonShape::Opaque(x) => x,
-        JsonShape::Arr(elements) => {
-            let cloned: Vec<Value> = elements.iter().map(|e| json_roundtrip(vm, *e)).collect();
-            Value::Object(vm.alloc_array(cloned))
-        }
-        JsonShape::Obj(pairs) => {
-            let obj = vm.alloc_ordinary();
-            for (k, val) in pairs {
-                let cloned = json_roundtrip(vm, val);
-                let _ = vm.set_property(Value::Object(obj), &k, cloned);
-            }
-            Value::Object(obj)
-        }
-    }
+/// 值的结构化克隆往返（同线程深克隆：端口队列与进程内派发用；
+/// 不可克隆值抛 DataCloneError——对齐 Node `postMessage`）。
+pub(crate) fn json_roundtrip(vm: &mut Vm, v: Value) -> Result<Value, VmError> {
+    let bytes = crate::worker_clone::serialize(vm, v, &[])?;
+    crate::worker_clone::deserialize(vm, &bytes)
+        .map_err(|_| crate::worker_clone::data_clone_error(vm, "Object could not be cloned."))
 }
 
 // ---------------------------------------------------------------------------
 // M5.1 真实跨物理线程：主线程泵 + worker 线程事件循环
 // ---------------------------------------------------------------------------
 
-/// 值 → JSON 字符串（跨线程传输格式；`json_roundtrip` 已归一 undefined → null）。
+/// 值 → 传输字符串（跨线程通道载荷 = 结构化克隆字节的 base64）。
 fn value_to_json_string(vm: &mut Vm, v: Value) -> Result<String, VmError> {
-    let boxed = vm.json_stringify(v)?;
-    let Value::Object(s) = boxed else {
-        return Ok(String::new());
-    };
-    match vm.heap.get(s.0 as usize) {
-        Some(HeapObject::String(text)) => Ok(text.clone()),
-        _ => Ok(String::new()),
-    }
+    let bytes = crate::worker_clone::serialize(vm, v, &[])?;
+    Ok(b64_encode(&bytes))
 }
 
-/// JSON 字符串 → 值（接收线程堆上重建）。
-fn json_string_to_value(vm: &mut Vm, json: &str) -> Result<Value, VmError> {
-    let arg = Value::Object(vm.alloc_string(json.to_owned()));
-    vm.json_parse(&[arg])
+/// 传输字符串 → 值（接收线程堆上重建；坏载荷按丢弃语义返回 Err）。
+fn json_string_to_value(vm: &mut Vm, payload: &str) -> Result<Value, VmError> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .map_err(|_| crate::worker_clone::data_clone_error(vm, "could not be cloned."))?;
+    crate::worker_clone::deserialize(vm, &bytes)
+        .map_err(|_| crate::worker_clone::data_clone_error(vm, "could not be cloned."))
+}
+
+fn b64_encode(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// transfer list 收集（`postMessage(value, transferList)` 第二参数）：
+/// undefined/null/缺省 → 空；数组 → 元素列表（元素合法性由序列化端校验）。
+fn collect_transfer_list(vm: &mut Vm, v: Option<Value>) -> Result<Vec<Value>, VmError> {
+    let Some(v) = v else {
+        return Ok(Vec::new());
+    };
+    if matches!(v, Value::Undefined | Value::Null) {
+        return Ok(Vec::new());
+    }
+    match v {
+        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+            Some(HeapObject::Array { elements, .. }) => Ok(elements.clone()),
+            _ => Ok(Vec::new()),
+        },
+        _ => Ok(Vec::new()),
+    }
 }
 
 /// 主线程侧真实 worker 泵：非阻塞收取各 worker 线程事件并派发
@@ -1132,7 +1138,6 @@ pub fn setup_worker_globals(vm: &mut Vm) {
 /// worker 线程事件循环（模块体执行完后调用；直至无待办工作 / terminate）。
 /// 返回退出码：0 正常；1 terminate。
 pub fn run_worker_event_loop(vm: &mut Vm) -> u32 {
-    use std::sync::mpsc::RecvTimeoutError;
     let Some(io) = crate::worker::worker_thread_io() else {
         return 0;
     };
@@ -1149,16 +1154,25 @@ pub fn run_worker_event_loop(vm: &mut Vm) -> u32 {
         if io.terminate.load(std::sync::atomic::Ordering::SeqCst) {
             return 1;
         }
-        // 有本地待办（定时器 / 事件源如子进程完成）：排空一轮后重查
-        // terminate 旗标与消息，随后再判空
-        if !vm.macro_tasks.is_empty() || vm.has_active_event_sources() {
+        // 有本地待办（定时器 / 事件源如子进程完成 / **parentPort 挂
+        // 'message' 监听器**）：排空一轮后重查 terminate 旗标与消息，随后
+        // 再判空。Node 语义：消息端口挂监听器即保活 worker——此前仅按
+        // 宏任务/事件源判定，纯消息应答型 worker（无定时器）会误退出。
+        let pp_waiting = REAL_PP_ID.with(|c| {
+            c.borrow()
+                .is_some_and(|pp| ns_listener_count(pp, "message") > 0)
+        });
+        if !vm.macro_tasks.is_empty() || vm.has_active_event_sources() || pp_waiting {
             let _ = vm.drain_macro_tasks();
             flush_worker_stdout(vm);
+            if !pp_waiting {
+                // 纯监听等待（无宏任务/事件源）：1ms 空转防忙轮询
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
             continue;
         }
         // 无待办：worker 事件循环已排空——正常退出（对齐 Node：模块体结束
         // 且无挂起句柄时 worker 退出；此后的主线程消息按失活端口丢弃）
-        let _ = RecvTimeoutError::Timeout;
         return 0;
     }
 }
@@ -1185,14 +1199,4 @@ fn flush_worker_stdout(vm: &mut Vm) {
         let _ = writeln!(out, "{line}");
     }
     let _ = out.flush();
-}
-
-/// JSON 往返的堆形态快照。
-enum JsonShape {
-    /// 数组元素快照
-    Arr(Vec<Value>),
-    /// 对象属性快照（键已排序）
-    Obj(Vec<(String, Value)>),
-    /// 透传值
-    Opaque(Value),
 }
