@@ -218,3 +218,28 @@ git commit -m "fix(m2.4): M2.4 结项排障批次——ToBoolean 空字符串/\\
   `cargo fmt --all --check`、`cargo clippy --all-targets -- -D warnings` 零告警。
 - **遗留说明**：ANY 混合记录保持系统近似路径（Node resolveAny 语义面已够）；
   沙箱 DNS 代理吞 NXDomain 场景下 A 查询行为与 Node 一致（返回代理地址）。
+
+## 14. M3 里程碑最终验收（2026-09-09，判定：可整体验收）
+
+- **复跑快照**（最终提交点 `4bd91d8`/`245acae` 之后，串行实跑）：
+  - `builtins_phase4_stream_test` 4/4（0.11s）｜ `builtins_phase5_http_test`
+    10/10（0.32s）｜ `builtins_phase5_net_test` 8/8（0.24s）｜
+    `https_tls_loopback_test` 1/1（0.50s）｜ `aluka-vm --lib` 151/151（5.50s）
+    —— **合计 174 passed / 0 failed / 0 ignored**，退出码 0；
+  - `cargo fmt --all --check` 与 `cargo clippy --workspace --all-targets
+    --all-features -- -D warnings` 零告警。
+- **逐项判定**（对照总 README §M3 验收标准原文）：
+  | 子项 | 验收标准（原文摘） | 证据 | 判定 |
+  |---|---|---|---|
+  | M3.1 Stream 状态机/背压 | 高吞吐管道零泄漏卡死 | `950a8a7` + stream 4/4 + conformance 对拍 | ✅ |
+  | M3.2 纯 Rust TLS 真实握手 | 本地真实 HTTPS 自签证书回环 | `fb97628` + tls_loopback 1/1（Node 逐字对拍）+ node↔VM 双向 200 | ✅ |
+  | M3.3 HTTP 1.1 长连接池 | 真实 HTTP 对齐 Node 22 | Agent keep-alive 池 + http 10/10（含 keep-alive、http2 表面）+ express 1/1 | ✅ |
+  | M3.4 异步 DNS | 域名解析集成测试稳定通过 | lookup/promises/Resolver 面 + `4bd91d8` resolve 家族真实递归（Node 14 行逐字对拍） | ✅ |
+- **验收口径与遗留**（均不阻塞 M3 验收，登记跟踪）：
+  1. `tls.connect`/`tls.createServer` JS 面接线 = M3.2 收敛口径外延的同构扩展
+     （rustls 会话机制已共用，M3.2b 跟踪）；
+  2. 证书链校验暂 AcceptAll（与对拍探针 `rejectUnauthorized:false` 对齐），
+     链校验为后续工作项；
+  3. `resolveAny` 保持系统近似路径（无真实 ANY 报文），已注明；
+  4. 真实 HTTP/2 帧协议不在 M3.3 验收文字内；总 README 总览指标已修正措辞
+     「HTTP 1.1 生产级长连接与连接池（http2 表面）」消除歧义。

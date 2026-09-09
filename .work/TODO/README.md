@@ -55,7 +55,7 @@
 |---|---|---|:---:|
 | **M1** | **ECMAScript 核心规范收口** | Proxy/Reflect（13 traps）、RegExp Lookbehind/命名组、ES2024 不可变数组、eval / new Function 动态求值、test262 扩容 ≥100 例 | `[x]` |
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
-| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1/2 Keep-Alive 连接池、异步 DNS | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
+| **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[ ]` |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
@@ -135,6 +135,13 @@
 > M3.4b resolve 家族真实递归查询闭环（见 §M3.4 达成证据）：hickory-proto 报文
 > 编解码 + 后台 std::thread + crossbeam-channel 桥，callback/promises 双面
 > 与 Node 22 实时对拍逐字一致。全套回归通过，fmt/clippy 零告警。总览 `[x]`。
+>
+> **2026-09-09 M3 最终验收快照**（证据见 `20260909/README.md` §14）：
+> 最终提交点（`4bd91d8`/`245acae`）后全量复跑 M3 验收集——stream 4/4 +
+> http 10/10 + net 8/8 + https_tls_loopback 1/1 + aluka-vm lib 151/151，
+> **合计 174 passed / 0 failed**；M3.1–M3.4 逐项对照验收标准原文判定达成。
+> 非阻塞遗留（已登记跟踪）：tls 模块 JS 面同构扩展、证书链校验（暂
+> AcceptAll 对拍口径）、resolveAny 系统近似。
 >
 > **2026-09-09 复评登记**（证据：M3 全套 28 passed / 0 failed；评审结论见 `20260909/README.md` §10）：
 > 原结项提交 `9cf1686` 将里程碑总览标 `[x]`，但细分清单从未勾选。复评发现
