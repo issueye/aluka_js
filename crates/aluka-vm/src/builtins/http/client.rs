@@ -1,4 +1,4 @@
-﻿//! HTTP 客户端：`ClientRequest` 实例方法与连接泵。
+//! HTTP 客户端：`ClientRequest` 实例方法与连接泵。
 //!
 //! 对齐 Node.js 22 LTS 标准（`nodehttp/http.go` 的客户端半边 + `http_agent.go`）：
 //! - options 解析逐字复刻（含对象 options 路径被重复拼接的既有行为）；
@@ -175,6 +175,8 @@ pub(crate) fn create_request_object(
             aborted: false,
             error_dispatched: false,
             stage: Stage::Connecting,
+            tls: proto == "https",
+            tls_conn: None,
             stream: None,
             read_buf: Vec::new(),
             write_buf: Vec::new(),
@@ -250,6 +252,9 @@ fn client_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     });
+    // 客户端请求已 end：确保事件泵活跃（独立 https.request 无本进程
+    // server 时也须推进拨号/握手/响应——M3.2 接线）
+    super::sync_event_source(vm);
     Ok(receiver)
 }
 
@@ -498,10 +503,12 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                         c.host.clone()
                     };
                     let addr = format!("{}:{}", dial_host, c.port);
-                    // Agent keepAlive：优先复用池内存活连接，未命中才新建
+                    // Agent keepAlive：优先复用池内存活连接，未命中才新建。
+                    // TLS 请求不走连接池（会话不可复用；Node https 默认
+                    // keepAlive=false 同语义——每请求新连接，但必须新建）。
                     let attempt = match super::state::pool_take(&addr) {
-                        Some(stream) => Some(stream),
-                        None => addr
+                        Some(stream) if !c.tls => Some(stream),
+                        _ => addr
                             .to_socket_addrs()
                             .ok()
                             .and_then(|mut it| it.next())
@@ -523,8 +530,34 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                                 &c.headers,
                                 &c.body,
                             );
-                            c.stream = Some(stream);
-                            c.stage = Stage::Sending;
+                            if c.tls {
+                                // https：建立 rustls 客户端会话，握手由泵推进
+                                let conn =
+                                    crate::builtins::tls::make_client_config().and_then(|cfg| {
+                                        crate::builtins::tls::server_name(&c.host).and_then(|sn| {
+                                            rustls::ClientConnection::new(
+                                                std::sync::Arc::new(cfg),
+                                                sn,
+                                            )
+                                            .map_err(|e| e.to_string())
+                                        })
+                                    });
+                                match conn {
+                                    Ok(conn) => {
+                                        c.stream = Some(stream);
+                                        c.tls_conn = Some(conn);
+                                        c.stage = Stage::Handshaking;
+                                    }
+                                    Err(_) => {
+                                        c.error_dispatched = true;
+                                        c.stage = Stage::Done;
+                                        deliveries.push(Delivery::Aborted(c.obj));
+                                    }
+                                }
+                            } else {
+                                c.stream = Some(stream);
+                                c.stage = Stage::Sending;
+                            }
                         }
                         None => {
                             let callback = c.callback;
@@ -541,9 +574,92 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                         }
                     }
                 }
+                Stage::Handshaking => {
+                    // TLS 握手推进：发 flight → 读对端 flight → process，
+                    // 直至握手完成（rustls 内部缓冲跨轮保留）
+                    let mut failed = false;
+                    let (tls, stream) = (
+                        c.tls_conn.as_mut().expect("Handshaking 必含会话"),
+                        c.stream.as_mut().expect("Handshaking 必含 socket"),
+                    );
+                    loop {
+                        match tls.write_tls(stream) {
+                            Ok(0) => break,
+                            Ok(_) => {}
+                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                            Err(_) => {
+                                failed = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !failed {
+                        loop {
+                            match tls.read_tls(stream) {
+                                Ok(0) => {
+                                    failed = true;
+                                    break;
+                                }
+                                Ok(_) => {
+                                    if tls.process_new_packets().is_err() {
+                                        failed = true;
+                                        break;
+                                    }
+                                }
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                                Err(_) => {
+                                    failed = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if failed {
+                        c.error_dispatched = true;
+                        c.stage = Stage::Done;
+                        deliveries.push(Delivery::Aborted(c.obj));
+                    } else if !tls.is_handshaking() {
+                        c.stage = Stage::Sending;
+                    }
+                }
                 Stage::Sending => {
                     let mut done = false;
-                    if let Some(stream) = &mut c.stream {
+                    // TLS：明文请求体经会话 writer 编码，再 write_tls 直发
+                    // （tls_conn 与 stream 同建于 Connecting 阶段）
+                    if let Some(tls) = c.tls_conn.as_mut() {
+                        use std::io::Write;
+                        if let Some(stream) = c.stream.as_mut() {
+                            while !c.write_buf.is_empty() {
+                                match tls.writer().write(&c.write_buf) {
+                                    Ok(n) => {
+                                        c.write_buf.drain(..n);
+                                    }
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        c.eof = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            let _ = tls.writer().flush();
+                            loop {
+                                match tls.write_tls(stream) {
+                                    Ok(0) => break,
+                                    Ok(_) => {}
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        c.eof = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        done = c.write_buf.is_empty();
+                    } else if let Some(stream) = &mut c.stream {
                         match stream.write(&c.write_buf) {
                             Ok(n) => {
                                 c.write_buf.drain(..n);
@@ -555,12 +671,71 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                             }
                         }
                     }
-                    if done {
+                    if done && !c.eof {
                         c.stage = Stage::AwaitingResponse;
                     }
                 }
                 Stage::AwaitingResponse => {
-                    if let Some(stream) = &mut c.stream {
+                    if let Some(tls) = c.tls_conn.as_mut() {
+                        // TLS：先 flush 残余密文，再 read_tls → process →
+                        // reader 读明文进 read_buf
+                        let _ = tls.writer().flush();
+                        if let Some(stream) = &mut c.stream {
+                            loop {
+                                match tls.write_tls(stream) {
+                                    Ok(0) => break,
+                                    Ok(_) => {}
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        break;
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        }
+                        let mut tcp_eof = false;
+                        if let Some(stream) = &mut c.stream {
+                            loop {
+                                match tls.read_tls(stream) {
+                                    Ok(0) => {
+                                        tcp_eof = true;
+                                        break;
+                                    }
+                                    Ok(_) => {
+                                        if tls.process_new_packets().is_err() {
+                                            tcp_eof = true;
+                                            break;
+                                        }
+                                    }
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        tcp_eof = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        // 解密明文（TLS EOF 亦须读尽已解出数据）
+                        loop {
+                            let mut tmp = [0u8; 8192];
+                            match tls.reader().read(&mut tmp) {
+                                Ok(0) => {
+                                    c.eof = true;
+                                    break;
+                                }
+                                Ok(n) => c.read_buf.extend_from_slice(&tmp[..n]),
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                                Err(_) => {
+                                    // 会话异常/未收 close_notify 即断开：无更多明文
+                                    if tcp_eof {
+                                        c.eof = true;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    } else if let Some(stream) = &mut c.stream {
                         loop {
                             let mut tmp = [0u8; 8192];
                             match stream.read(&mut tmp) {
@@ -583,9 +758,11 @@ pub(crate) fn pump_clients(vm: &mut Vm) -> Result<bool, VmError> {
                         let callback = c.callback;
                         c.stage = Stage::Done;
                         // keepAlive：完整响应归还连接池（非 keep-alive 响应会被
-                        // 对端关闭，pool_take 探活自动淘汰）
-                        if let Some(stream) = c.stream.take() {
-                            super::state::pool_put(&format!("{}:{}", c.host, c.port), stream);
+                        // 对端关闭，pool_take 探活自动淘汰）；TLS 请求直接关闭
+                        if !c.tls {
+                            if let Some(stream) = c.stream.take() {
+                                super::state::pool_put(&format!("{}:{}", c.host, c.port), stream);
+                            }
                         }
                         deliveries.push(Delivery::Response(callback, head, body));
                     } else if c.eof && c.read_buf.is_empty() {

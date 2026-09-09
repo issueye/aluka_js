@@ -251,8 +251,7 @@ const STANDARD_CIPHER_SUITES: &[&str] = &[
     "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
 ];
 
-// ---- M3.2 rustls 真实 TLS 层（供 https/net 模块调用的底层构建函数）----
-// （rustls 辅助函数暂未被 JS 表面调用——供 https TLS 接线后使用）
+// ---- M3.2 rustls 真实 TLS 层（https 服务端/客户端接线；net 侧后续复用）----
 
 use std::sync::Arc;
 
@@ -298,12 +297,80 @@ pub(crate) fn make_server_config(
     let key_der = pem_to_der(key_pem)?;
     let key = rustls::pki_types::PrivateKeyDer::try_from(key_der)
         .map_err(|e| format!("private key: {e}"))?;
-    rustls::ServerConfig::builder_with_provider(crypto_provider())
+    let mut cfg = rustls::ServerConfig::builder_with_provider(crypto_provider())
         .with_safe_default_protocol_versions()
         .map_err(|e| format!("protocol versions: {e}"))?
         .with_no_client_auth()
         .with_single_cert(certs, key)
-        .map_err(|e| format!("server cert: {e}"))
+        .map_err(|e| format!("server cert: {e}"))?;
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(cfg)
+}
+
+/// 接收任意服务端证书的客户端校验器（对齐 tls_spike 评估；证书链校验为
+/// 后续工作项——Node 对拍探针以 `rejectUnauthorized: false` 运行）。
+#[derive(Debug)]
+struct AcceptAllVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAllVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ED25519,
+            rustls::SignatureScheme::RSA_PSS_SHA256,
+        ]
+    }
+}
+
+/// 构建 HTTPS 客户端 rustls 配置（ALPN http/1.1；证书校验接收任意）。
+pub(crate) fn make_client_config() -> Result<rustls::ClientConfig, String> {
+    let mut cfg = rustls::ClientConfig::builder_with_provider(crypto_provider())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("protocol versions: {e}"))?
+        .dangerous()
+        .with_custom_certificate_verifier(std::sync::Arc::new(AcceptAllVerifier))
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(cfg)
+}
+
+/// 由主机名/地址构造 rustls ServerName。
+pub(crate) fn server_name(host: &str) -> Result<rustls::pki_types::ServerName<'static>, String> {
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        Ok(rustls::pki_types::ServerName::IpAddress(ip.into()))
+    } else {
+        rustls::pki_types::ServerName::try_from(host.to_owned())
+            .map_err(|e| format!("server name: {e}"))
+    }
 }
 
 #[cfg(test)]

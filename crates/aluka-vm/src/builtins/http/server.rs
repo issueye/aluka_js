@@ -22,13 +22,23 @@ use aluka_core::ObjectRef;
 
 /// 创建 Server 实例对象（EventEmitter 表面 + Node 属性），并登记
 /// 构造 handler 为 `'request'` 监听器。`http.createServer`/`https.createServer`
-/// （TLS 限制降级为明文）/`http2.createServer` 共用（Go `newHTTPServerWithTLS`）。
+/// /`http2.createServer` 共用（Go `newHTTPServerWithTLS`）。
 pub(crate) fn create_server_object(vm: &mut Vm, handler: Option<Value>) -> ObjectRef {
+    create_server_object_tls(vm, handler, None)
+}
+
+/// 创建 Server 实例并携带 TLS 服务端配置（`https.createServer` 真实 TLS 接线）。
+pub(crate) fn create_server_object_tls(
+    vm: &mut Vm,
+    handler: Option<Value>,
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+) -> ObjectRef {
     let obj = vm.alloc_ordinary();
     with_servers(|servers| {
         servers.push(Server {
             obj: obj.0,
             listener: None,
+            tls,
             host: String::new(),
             port: 0,
             listening: false,
@@ -472,6 +482,9 @@ fn finalize_response(vm: &mut Vm, res_id: u32, prop_status: Option<u16>) -> Resu
 }
 
 /// 把响应字节写入连接（`WouldBlock` 残留进 `out`，泵轮补写）。
+///
+/// TLS 连接：明文经会话 writer 编码后 `write_tls` 直发（残留密文由
+/// rustls 内部保留，io_round 的 flush 段每轮续发）。
 fn write_conn_bytes(server_obj: u32, conn_id: u64, bytes: &[u8]) {
     use std::io::Write;
     with_servers(|servers| {
@@ -481,6 +494,14 @@ fn write_conn_bytes(server_obj: u32, conn_id: u64, bytes: &[u8]) {
         let Some(conn) = s.conns.iter_mut().find(|c| c.id == conn_id) else {
             return;
         };
+        if let Some(tls) = conn.tls.as_mut() {
+            if tls.writer().write_all(bytes).is_ok() {
+                let _ = tls.writer().flush();
+                // 尽力直发（非阻塞；失败/部分由泵 flush 段续写）
+                let _ = tls.write_tls(&mut conn.stream);
+            }
+            return;
+        }
         let mut payload: Vec<u8> = Vec::with_capacity(conn.out.len() + bytes.len());
         payload.extend_from_slice(&conn.out);
         payload.extend_from_slice(bytes);
@@ -659,16 +680,33 @@ pub(crate) fn pump_servers(vm: &mut Vm) -> Result<bool, VmError> {
 
 /// 一轮 I/O：返回（新连接事件目标，待派发请求）。
 fn io_round() -> (Vec<Value>, Vec<ReqDispatch>) {
-    use std::io::Read;
+    use std::io::{Read, Write};
     let mut conn_events: Vec<Value> = Vec::new();
     let mut dispatches: Vec<ReqDispatch> = Vec::new();
     with_servers(|servers| {
         for s in servers.iter_mut() {
-            // flush 残留写出
+            // flush 残留写出（明文路径写 conn.out；TLS 路径把 rustls 内部
+            // 待发密文 write_tls 到 socket）
             {
-                use std::io::Write;
                 for conn in s.conns.iter_mut() {
-                    if !conn.out.is_empty() {
+                    let plain_pending = !conn.out.is_empty();
+                    if let Some(tls) = conn.tls.as_mut() {
+                        if plain_pending {
+                            // 明文残留先喂给 TLS writer（write_all 到内部缓冲）
+                            let _ = tls.writer().write_all(&conn.out);
+                            conn.out.clear();
+                        }
+                        // 编码明文 + 发送全部待发 TLS 记录（WouldBlock 留内部，下轮续）
+                        let _ = tls.writer().flush();
+                        loop {
+                            match tls.write_tls(&mut conn.stream) {
+                                Ok(0) => break,
+                                Ok(_) => {}
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                                Err(_) => break,
+                            }
+                        }
+                    } else if plain_pending {
                         if let Ok(n) = conn.stream.write(&conn.out) {
                             conn.out.drain(..n);
                         }
@@ -680,9 +718,15 @@ fn io_round() -> (Vec<Value>, Vec<ReqDispatch>) {
             if let Some(ln) = &s.listener {
                 while let Ok((stream, _)) = ln.accept() {
                     let _ = stream.set_nonblocking(true);
+                    // TLS 服务器：立即建服务端会话（握手由读段 read_tls 驱动）
+                    let tls = match &s.tls {
+                        Some(cfg) => rustls::ServerConnection::new(cfg.clone()).ok(),
+                        None => None,
+                    };
                     s.conns.push(Conn {
                         id: next_conn_id(),
                         stream,
+                        tls,
                         buf: Vec::new(),
                         out: Vec::new(),
                         eof: false,
@@ -698,18 +742,73 @@ fn io_round() -> (Vec<Value>, Vec<ReqDispatch>) {
             let mut closed_idx: Vec<usize> = Vec::new();
             for ci in 0..s.conns.len() {
                 if !s.conns[ci].res_active {
-                    loop {
-                        let mut tmp = [0u8; 8192];
-                        match s.conns[ci].stream.read(&mut tmp) {
-                            Ok(0) => {
-                                s.conns[ci].eof = true;
-                                break;
+                    if s.conns[ci].tls.is_some() {
+                        // TLS：read_tls → process_new_packets（握手/记录解密）→
+                        // 明文读入 buf（握手未完成不解析）
+                        let mut tls_done = false;
+                        {
+                            let conn = &mut s.conns[ci];
+                            let tls = conn.tls.as_mut().expect("tls.is_some 已判定");
+                            loop {
+                                match tls.read_tls(&mut conn.stream) {
+                                    Ok(0) => {
+                                        conn.eof = true;
+                                        break;
+                                    }
+                                    Ok(_) => {
+                                        if tls.process_new_packets().is_err() {
+                                            conn.eof = true;
+                                            break;
+                                        }
+                                    }
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        conn.eof = true;
+                                        break;
+                                    }
+                                }
                             }
-                            Ok(n) => s.conns[ci].buf.extend_from_slice(&tmp[..n]),
-                            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                            Err(_) => {
-                                s.conns[ci].eof = true;
-                                break;
+                            if !tls.is_handshaking() {
+                                tls_done = true;
+                            }
+                        }
+                        if tls_done && !s.conns[ci].eof {
+                            loop {
+                                let mut tmp = [0u8; 8192];
+                                let conn = &mut s.conns[ci];
+                                let tls = conn.tls.as_mut().expect("tls_done 已判定");
+                                match tls.reader().read(&mut tmp) {
+                                    Ok(0) => {
+                                        conn.eof = true;
+                                        break;
+                                    }
+                                    Ok(n) => conn.buf.extend_from_slice(&tmp[..n]),
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        break;
+                                    }
+                                    Err(_) => {
+                                        conn.eof = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        loop {
+                            let mut tmp = [0u8; 8192];
+                            match s.conns[ci].stream.read(&mut tmp) {
+                                Ok(0) => {
+                                    s.conns[ci].eof = true;
+                                    break;
+                                }
+                                Ok(n) => s.conns[ci].buf.extend_from_slice(&tmp[..n]),
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                                Err(_) => {
+                                    s.conns[ci].eof = true;
+                                    break;
+                                }
                             }
                         }
                     }

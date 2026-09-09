@@ -16,6 +16,8 @@ pub(crate) struct Conn {
     pub id: u64,
     /// 非阻塞 socket
     pub stream: TcpStream,
+    /// TLS 会话（`https` 服务器连接；明文路径为 None）
+    pub tls: Option<rustls::ServerConnection>,
     /// 读缓冲（未解析完的请求字节）
     pub buf: Vec<u8>,
     /// 未写出的响应字节（`WouldBlock` 时残留，下轮泵补写）
@@ -32,6 +34,8 @@ pub(crate) struct Server {
     pub obj: u32,
     /// 非阻塞监听器（`close` 后置 None）
     pub listener: Option<TcpListener>,
+    /// TLS 服务端配置（`https.createServer` 传入；明文 http 为 None）
+    pub tls: Option<std::sync::Arc<rustls::ServerConfig>>,
     /// 监听地址（`address()` 展示用）
     pub host: String,
     /// 实际绑定端口（port=0 时为系统分配值）
@@ -47,6 +51,8 @@ pub(crate) struct Server {
 pub(crate) enum Stage {
     /// 待连接（泵内发起 `connect`）
     Connecting,
+    /// TLS 握手推进中（仅 https）
+    Handshaking,
     /// 请求字节写出中
     Sending,
     /// 等待并解析响应
@@ -69,6 +75,10 @@ pub(crate) struct ClientReq {
     pub host_header: String,
     /// 请求路径（RequestURI）
     pub path: String,
+    /// 是否 https（TLS 会话）
+    pub tls: bool,
+    /// TLS 客户端会话（https 且连接建立后存在）
+    pub tls_conn: Option<rustls::ClientConnection>,
     /// 用户设置的请求头（保序）
     pub headers: Vec<(String, String)>,
     /// 累积的请求体

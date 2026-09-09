@@ -49,8 +49,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     Ok(obj)
 }
 
-/// `https.createServer([options][, handler])`：校验 {key, cert} 后创建
-/// Server（Rust 侧为明文 HTTP，见模块文档限制）。
+/// `https.createServer([options][, handler])`：校验并构建 rustls 服务端
+/// 配置后创建真实 TLS Server（M3.2 接线：accept 连接进入 rustls 会话）。
 fn https_create_server(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut handler: Option<Value> = None;
     let mut options: Option<Value> = None;
@@ -84,7 +84,17 @@ fn https_create_server(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             &format!("https: invalid key/cert: {msg}"),
         ));
     }
-    let obj = http::create_server_object(vm, handler);
+    // M3.2：真实 rustls 服务端配置（含 http/1.1 ALPN）
+    let tls_config = match crate::builtins::tls::make_server_config(&key_pem, &cert_pem) {
+        Ok(cfg) => std::sync::Arc::new(cfg),
+        Err(msg) => {
+            return Err(http::thrown_error(
+                vm,
+                &format!("https: invalid key/cert: {msg}"),
+            ));
+        }
+    };
+    let obj = http::create_server_object_tls(vm, handler, Some(tls_config));
     Ok(Value::Object(obj))
 }
 

@@ -22,6 +22,15 @@ pub(crate) fn create_server_object(vm: &mut Vm, handler: Option<Value>) -> Objec
     server::create_server_object(vm, handler)
 }
 
+/// 创建带 TLS 配置的 Server 实例（`https.createServer` 真实握手）。
+pub(crate) fn create_server_object_tls(
+    vm: &mut Vm,
+    handler: Option<Value>,
+    tls: Option<std::sync::Arc<rustls::ServerConfig>>,
+) -> ObjectRef {
+    server::create_server_object_tls(vm, handler, tls)
+}
+
 /// PEM 块结构校验（https / http2 的证书选项错误消息共用）。
 pub(crate) fn has_pem_block(text: &str) -> bool {
     let Some(begin) = text.find("-----BEGIN ") else {
@@ -60,20 +69,27 @@ pub const MODULE: ModuleDef = ModuleDef {
 };
 
 /// 顶层事件源泵：先服务器半边（accept/派发请求/finish 事件），
-/// 后客户端半边（连接/写请求/读响应/交付回调）。
+/// 后客户端半边（连接/写请求/读响应/交付回调）；轮末同步泵生命周期。
 pub(crate) fn pump(vm: &mut Vm) -> Result<bool, VmError> {
     let mut progressed = server::pump_servers(vm)?;
     if client::pump_clients(vm)? {
         progressed = true;
     }
+    // 请求全部完成且无 listening server 时自动停泵（纯客户端请求场景）
+    sync_event_source(vm);
     Ok(progressed)
 }
 
-/// 事件源生命周期对齐：仅当存在监听中的服务器时保持 `"http"` 源活跃
-/// （Go 侧只有 `listen` 计入 RunLoop 活跃度，客户端请求不延长生命周期）。
+/// 泵活跃条件：任一 listening server 或存在已 end 未完成的客户端请求
+/// （独立 https.request 也须推进拨号/握手/响应——M3.2 TLS 接线）。
 pub(crate) fn sync_event_source(vm: &mut Vm) {
     let any_listening = state::read_servers(|servers| servers.iter().any(|s| s.listening));
-    if any_listening {
+    let any_client = state::with_clients(|clients| {
+        clients
+            .iter()
+            .any(|c| c.ended && c.stage != state::Stage::Done)
+    });
+    if any_listening || any_client {
         vm.activate_event_source("http", pump);
     } else {
         vm.deactivate_event_source("http");
