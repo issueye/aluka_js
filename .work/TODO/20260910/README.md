@@ -738,3 +738,102 @@ conformance 全量                              →  Result: 867/867 passed, 3 i
 **本轮未做**：§待办 11 §6 的第 3 项（迭代器内部标记属性泄漏：`Object.keys(it)` 暴露
 `_isArrayIterator` 等、`JSON.stringify(iter)` 暴露内部结构）——属表示层重构，改动半径
 最大且与 `constructor`/`instanceof` 同根，仍待专项。
+
+---
+
+## 待办 14 · 内建原型读面收口（原型属性读 / `instanceof` / `constructor` / 迭代器标记）
+
+> 承接 §待办 11 §6 第 3 项与 round7 登记的「原型方法属性读面」系统性缺口——此前
+> 被判定为「改动半径最大、与 `constructor`/`instanceof` 同根」。本轮实测发现其**实际
+> 缺口远小于登记印象**（20 项探针中仅 4 类差异），故在此收口。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线；与 Node v22.3.0 对拍）**：
+
+| 类别 | 改前实测 | Node |
+|---|---|---|
+| 原始类型原型方法属性读 | `typeof "abc".toUpperCase` → `undefined`；`(1).toFixed` 同 | `function` |
+| `instanceof` | 仅 Array/Object/Error/RegExp 为 true；**Function/Map/Set/Date/Uint8Array/ArrayBuffer/Promise/Number 全为 false** | 全 true |
+| `constructor` | `[].constructor.name` → `undefined`；`({}).constructor.name` → `undefined`；`(1).constructor`/`"a".constructor`/`(function f(){}).constructor`/`true.constructor` → **MISSING** | `Array`/`Object`/`Number`/`String`/`Function`/`Boolean` |
+| 构造器 `name` | `Array.name` → `[function Function]` | `Array` |
+| 迭代器标记泄漏 | `Object.keys([1,2].values())` → `["_isArrayIterator","_iterArray","next"]` | `[]` |
+
+**根因（四类，均由 explorer 穷尽勘察确认）**：
+1. `get_property` 的原型链遍历只覆盖 `Ordinary`/`Closure`/`NativeCtor`/`NativeFn`/`Array`
+   五臂；`Value::Number`/`Boolean` 根本不是堆对象，`HeapObject::String`/`Symbol` 等
+   变体无 `[[Prototype]]` 字段 → 链走不动，落到底部 `Ok(Value::Undefined)`。
+   **注意**：surface **早已**把原型方法用 `define_proto_method` 挂成 `str_proto`/`num_proto`/
+   `bool_proto`/`symbol_proto`/`fn_proto` 上的真实属性——缺的只是「读路径去查它们」。
+2. `check_instanceof` 走原型链比 `r.prototype`，而 Map/Set/Promise/Date/TypedArray/
+   ArrayBuffer/DataView/函数等实例用**无原型字段**的堆变体表示（仅 RegExp 有特判）。
+3. 各原型上的 `constructor` 是 `surface` 挂的 **NativeFn 占位**（命名
+   `"Array.prototype.constructor"`），非真构造器；且 `NativeFn`/`NativeCtor` 的 `name`
+   字段未参与属性读。
+4. 迭代器标记属性用 `set_property` 挂（**可枚举**）。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | 原始值/无链接收者查对应原型面 | `typeof "abc".toUpperCase === "function"`、`(1).toFixed` 同；原始类型全部原型方法可读 |
+| 2 | `instanceof` 内建兜底 | Function/Map/Set/Date/TypedArray 全族/ArrayBuffer/SharedArrayBuffer/DataView/Promise 均正确；**用户自定义 class 不误命中** |
+| 3 | `constructor` 指向真构造器 + `name` 合成 | `[].constructor.name === "Array"`、`({}).constructor.name === "Object"`、`(1).constructor === Number`、`new Map().constructor === Map`、`Array.name === "Array"` |
+| 4 | 迭代器标记改不可枚举 | `Object.keys([1,2].values())` → `[]`；`for...in` 不泄漏；`next`/`Symbol.iterator` 仍可读可用 |
+| 5 | 门禁三连 + 零回归 | fmt/clippy/全量 + conformance 全绿 |
+
+### 交付摘要
+
+**5/5 达成。改动集中在 `property.rs`（读面 + instanceof）、`surface.rs`（constructor 挂接）、
+`iter.rs`（标记转不可枚举）。**
+
+- **`property.rs` 新增 `builtin_proto_of`**：按接收者类别给出对应原型单例
+  （Number→num_proto、Boolean→bool_proto、String→str_proto、Symbol→symbol_proto、
+  函数类→fn_proto），在 `get_property` 收尾前查一次自有属性——复用 surface 已挂的
+  真实属性，**未新挂任何方法**。
+- **`property.rs` 新增 `builtin_instance_of`**：按「构造器名 ↔ 堆变体」判定，
+  仅在 `r` 为 `NativeCtor`（VM 自建构造器）时生效 → 用户 `class`（Closure）不会误命中；
+  Map/Set 经 `is_set_instance` 区分（二者共用变体）、TypedArray 按
+  `TypedKind::ctor_name()` 匹配。
+- **`constructor` 真值**：`array_proto`/`object_prototype`/`fn_proto` 上的占位覆盖为真
+  构造器（构造器单例在 `register_all` 之前已建好，时序安全）；Map/Set 在各自合成分支
+  按实例登记取 `map_ctor`/`set_ctor`；原始值经 `resolve_global` 取 Number/String/Boolean/Symbol。
+- **`name` 合成**：`NativeFn`/`NativeCtor` 的 `name` 字段参与属性读（先于 fn_proto 兜底）。
+- **`Symbol.prototype.description`**：从堆字段合成真实取值（`Symbol("d").description === "d"`、
+  `Symbol().description === undefined`）——此前落到 symbol_proto 占位 NativeFn。
+- **迭代器标记**：`iter.rs` 11 处 `set_property` → `define_proto_method`（不可枚举 +
+  登记 `non_enum`）；迭代结果对象的 `value`/`done` **保持可枚举**（Node 语义）。
+
+**验收实测**（Node v22.3.0 逐行对拍）：
+
+```
+proto_probe.js（20 项原型读/constructor/instanceof/toStringTag） →  改前 8 行差异 → IDENTICAL
+proto2_probe.js（32 项 String/Number 方法读 + 6 constructor + 12 instanceof）
+                                                              →  改前 46 行差异 → 仅剩 1 项（见下）
+name_probe.js（9 项构造器 name / 迭代器 keys）                  →  IDENTICAL
+itershape_probe.js（迭代器内部标记泄漏）                        →  IDENTICAL
+sym_probe.js（Symbol description）                            →  IDENTICAL
+accept_probe / mapset / arrmethods / pop / samezero / insp / worker_map_probe
+                                                              →  IDENTICAL（无回归）
+sc2_probe（structuredClone）                                   →  仅剩已登记的 DataCloneError 文案差异
+cargo fmt --all --check                                       →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                                              →  exit 0，warnings=0 errors=0
+cargo test --workspace --all-features                          →  exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                                               →  Result: 867/867 passed, 3 invalid
+```
+
+**隔离区偏差再判定**：`cases/gen/deviations/` 170 例中，**22 例现已与 Node 一致**
+（改前约 13 例）。（按既有流程应由 `partition.py` 重新分区，本轮未手工搬移文件。）
+
+**唯一未达成的验收项**：`new Number(1) instanceof Number` 仍为 false——explorer 已定位
+为**明确死角**：Number 包装对象的堆表示未找到（无 `_isNumberObj`/`_boxed` 等标记，
+`"Number"` 仅出现在 typeof 与 proto_ctor 分支）。属独立小专项，本轮登记。
+
+**顺带修正一处过时 golden**：`core_semantics_test.rs::symbol_well_known_match_go`
+期望 `desc: n/a`（录自 **Go 基线**，其 `Symbol.prototype.description` 未实现）。
+Node 22 实测为 `has`——按项目「以 Node 22 LTS 为唯一权威 oracle」原则更新期望值，
+并在用例文档注释中说明变更依据。
+
+**本轮登记未做**（抽查确认均为**独立的其他缺口**，非回归）：
+`"a".codePointAt` 等未实现的字符串方法、自定义 `Symbol.iterator` 生成器的展开、
+`class B extends A` 的实例判定、`util.types.isPromise`、`Date.prototype.getTime`
+（round7 已登记）、`new Number(1)` 包装对象。

@@ -354,7 +354,13 @@ fn symbol_property_keys_match_go() {
     );
 }
 
-/// 知名符号：typeof、相互唯一、for 注册表一致；description 未实现（对齐 Go）。
+/// 知名符号：typeof、相互唯一、for 注册表一致；description 取值对齐 **Node 22**。
+///
+/// 注：本用例原名 `match_go`，期望值录自 Go 基线（其 `Symbol.prototype.description`
+/// 未实现 → 期望 `n/a`）。Node 22 实测 `typeof Symbol("d").description === "string"`
+/// → 应为 `has`；按项目「以 Node 22 LTS 为唯一权威 oracle」的原则，期望值随实现
+/// 对齐 Node 后更新（并已在属性读面补齐 `description` 的真实取值合成：
+/// `Symbol("d").description === "d"`、`Symbol().description === undefined`）。
 #[test]
 fn symbol_well_known_match_go() {
     let out = run_probe(
@@ -381,7 +387,7 @@ fn symbol_well_known_match_go() {
 ",
             "wk-same: true
 ",
-            "desc: n/a
+            "desc: has
 ",
             "sym-empty: symbol",
         )

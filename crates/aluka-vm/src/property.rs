@@ -578,6 +578,15 @@ impl Vm {
                 if key == "size" {
                     return Ok(Value::Number(entries.len() as f64));
                 }
+                // `constructor`：Map/Set 共用 container_proto，无法在原型上区分，
+                // 故按实例登记在此合成（Node：`new Map().constructor === Map`）
+                if key == "constructor" {
+                    let is_set = self.is_set_instance(obj);
+                    let ctor = if is_set { self.set_ctor } else { self.map_ctor };
+                    if let Some(c) = ctor {
+                        return Ok(Value::Object(c));
+                    }
+                }
                 // 知名符号键 → 读容器原型面的同键属性
                 if crate::symbol::is_symbol_key(key) {
                     let cont_proto = crate::builtins::surface::container_proto(self);
@@ -671,11 +680,77 @@ impl Vm {
                 }
             }
         }
+        // 函数对象的 `name`：从堆变体字段合成。
+        //
+        // `HeapObject::NativeFn`/`NativeCtor` 自带 `name` 字段，但属性读路径此前
+        // 只查自有属性表 → `Array.name` 落回 fn_proto 的占位 → 得 `[function Function]`
+        // （Node 为 "Array"）。此处优先合成，先于下方 fn_proto 兜底。
+        if key == "name" {
+            if let Value::Object(r) = obj {
+                let name = match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::NativeFn { name, .. }) => Some(name.clone()),
+                    Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(n) = name {
+                    return Ok(Value::Object(self.alloc_string(n)));
+                }
+            }
+        }
         // Object.prototype.hasOwnProperty：不落于原型对象（保持零自有
         // 属性，for-in 口径对齐 Node.js 22 LTS 标准），属性链查不到时在此合成
         if key == "hasOwnProperty" {
             if let Some(h) = self.objproto_has_own {
                 return Ok(Value::Object(h));
+            }
+        }
+        // Symbol 接收者的 `description`：从堆字段合成（Node：`Symbol("d").description`
+        // 为 "d"、`Symbol().description` 为 undefined）。此前落到 symbol_proto 的
+        // 占位 NativeFn，typeof 非 undefined 但取值错。
+        if key == "description" {
+            if let Value::Object(r) = obj {
+                if let Some(HeapObject::Symbol { description, .. }) = self.heap.get(r.0 as usize) {
+                    if description.is_empty() {
+                        return Ok(Value::Undefined);
+                    }
+                    let s = description.clone();
+                    return Ok(Value::Object(self.alloc_string(s)));
+                }
+            }
+        }
+        // 原始值接收者的 `constructor`：Node 语义 `(1).constructor === Number`、
+        // `"a".constructor === String`（包装构造器从全局解析）。原型方法表里没有
+        // `constructor` 条目，故在此合成。
+        if key == "constructor" {
+            let ctor_name = match obj {
+                Value::Number(_) => Some("Number"),
+                Value::Boolean(_) => Some("Boolean"),
+                Value::Object(r) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::String(_)) => Some("String"),
+                    Some(HeapObject::Symbol { .. }) => Some("Symbol"),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(name) = ctor_name {
+                let c = self.resolve_global(name);
+                if !matches!(c, Value::Undefined) {
+                    return Ok(c);
+                }
+            }
+        }
+        // 原始值 / 无链内建实例的原型面兜底。
+        //
+        // 这些接收者无法参与上方通用原型链遍历：`Value::Number`/`Boolean` 不是
+        // 堆对象；`HeapObject::String`/`Symbol`/`Closure`/`NativeFn`/`NativeCtor`
+        // 没有 `[[Prototype]]` 字段（`get_prototype` 恒 None）。而 surface 已把
+        // 原型方法以 `define_proto_method` 挂成 str_proto/num_proto/bool_proto/
+        // symbol_proto/fn_proto 上的**真实属性**，故此处按接收者类别查一次——
+        // 修复 `typeof "abc".toUpperCase` 为 undefined（按名调用一直可用，属性读
+        // 拿不到函数值）与 `(1).toFixed` 同类缺口。
+        if let Some(proto) = self.builtin_proto_of(obj) {
+            if let Some(v) = self.own_value(proto.0 as usize, key) {
+                return Ok(v);
             }
         }
         // null/undefined 上读属性：JS 语义抛 TypeError（Node 22 消息形态）
@@ -1265,6 +1340,69 @@ impl Vm {
         self.set_property(obj, key, value)
     }
 
+    /// 内建构造器名 ↔ 实例堆变体判定（`instanceof` 兜底）。
+    ///
+    /// 返回 `None` 表示「该构造器名不参与兜底」，交回通用原型链遍历。
+    /// 只处理**无 `[[Prototype]]` 字段**的内建实例（有链的 Array/Object/Error
+    /// 等仍走链遍历，语义不变）。
+    fn builtin_instance_of(&self, lr: aluka_core::ObjectRef, ctor_name: &str) -> Option<bool> {
+        let obj = self.heap.get(lr.0 as usize)?;
+        let verdict = match ctor_name {
+            // Map/Set 共用 `HeapObject::Map` 变体，靠 Set 实例登记区分
+            "Map" => {
+                matches!(obj, HeapObject::Map { .. }) && !self.is_set_instance(Value::Object(lr))
+            }
+            "Set" => {
+                matches!(obj, HeapObject::Map { .. }) && self.is_set_instance(Value::Object(lr))
+            }
+            "WeakMap" | "WeakSet" | "WeakRef" => false,
+            "Promise" => matches!(obj, HeapObject::Promise { .. }),
+            "Function" => matches!(
+                obj,
+                HeapObject::Closure { .. }
+                    | HeapObject::NativeFn { .. }
+                    | HeapObject::NativeCtor { .. }
+            ),
+            "Date" => self.has_own_slot(lr.0 as usize, "_isDate"),
+            "ArrayBuffer" => matches!(obj, HeapObject::ArrayBuffer { shared: false, .. }),
+            "SharedArrayBuffer" => matches!(obj, HeapObject::ArrayBuffer { shared: true, .. }),
+            "DataView" => matches!(obj, HeapObject::DataView { .. }),
+            // 11 种 TypedArray 构造器：按 TypedArray 变体的 kind 名匹配
+            name if crate::typed_array::TypedKind::all()
+                .iter()
+                .any(|k| k.ctor_name() == name) =>
+            {
+                matches!(obj, HeapObject::TypedArray { kind, .. } if kind.ctor_name() == name)
+            }
+            _ => return None,
+        };
+        Some(verdict)
+    }
+
+    /// 原始值与**无 `[[Prototype]]` 字段**的内建实例所对应的原型对象。
+    ///
+    /// 仅用于属性读兜底（见 [`Vm::get_property`] 收尾）：这些接收者不参与通用
+    /// 原型链遍历（`get_prototype` 对它们恒返回 `None`），但 surface 已把原型方法
+    /// 挂成真实属性，故按类别直接给出对应的原型单例。
+    fn builtin_proto_of(&mut self, obj: Value) -> Option<aluka_core::ObjectRef> {
+        use crate::builtins::surface as s;
+        match obj {
+            Value::Number(_) => Some(s::num_proto(self)),
+            Value::Boolean(_) => Some(s::bool_proto(self)),
+            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(_)) => Some(s::str_proto(self)),
+                Some(HeapObject::Symbol { .. }) => Some(s::symbol_proto(self)),
+                Some(
+                    HeapObject::Closure { .. }
+                    | HeapObject::NativeFn { .. }
+                    | HeapObject::NativeCtor { .. },
+                ) => Some(s::fn_proto(self)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
     /// 检查 l instanceof r（沿着 l 的原型链查找 r.prototype）。
     pub fn check_instanceof(&mut self, l: Value, r: Value) -> bool {
         // RegExp 实例（无原型链字段的堆形态）对 RegExp 构造器特判
@@ -1276,6 +1414,21 @@ impl Vm {
                 )
             {
                 return true;
+            }
+        }
+        // 内建实例兜底：Map/Set/Promise/Date/TypedArray/ArrayBuffer/DataView/函数
+        // 等实例用**无 `[[Prototype]]` 字段**的堆变体表示（`get_prototype` 恒 None），
+        // 无法参与下方通用链遍历，故按「构造器 ↔ 堆变体」判定。
+        // 仅在 `r` 是 VM 自建构造器（NativeCtor，且名字为内建名）时生效——
+        // 用户自定义 class 是 Closure，不会误命中。
+        if let (Value::Object(lr), Value::Object(rr)) = (l, r) {
+            if let Some(ctor_name) = match self.heap.get(rr.0 as usize) {
+                Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
+                _ => None,
+            } {
+                if let Some(v) = self.builtin_instance_of(lr, &ctor_name) {
+                    return v;
+                }
             }
         }
         let target_proto = match self.get_property(r, "prototype") {

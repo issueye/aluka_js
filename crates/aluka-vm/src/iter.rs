@@ -30,11 +30,11 @@ impl Vm {
     /// 为内建迭代器对象挂 `next` / `Symbol.iterator` 真实属性（偏离见上方登记）。
     fn attach_iterator_surface(&mut self, obj: ObjectRef) {
         let next = self.alloc_native_fn("Iterator.prototype.next");
-        let _ = self.set_property(Value::Object(obj), "next", Value::Object(next));
+        let _ = self.define_proto_method(Value::Object(obj), "next", Value::Object(next));
         if let Value::Object(sym_ref) = self.well_known_symbol("iterator") {
             let key = crate::symbol::mangled_key(sym_ref);
             let f = self.alloc_native_fn("Iterator.prototype.Symbol.iterator");
-            let _ = self.set_property(Value::Object(obj), &key, Value::Object(f));
+            let _ = self.define_proto_method(Value::Object(obj), &key, Value::Object(f));
         }
     }
 }
@@ -50,11 +50,12 @@ impl Vm {
 
     pub(crate) fn alloc_array_iterator_kind(&mut self, arr: ObjectRef, kind: &str) -> Value {
         let obj = self.alloc_ordinary();
-        let _ = self.set_property(Value::Object(obj), "_isArrayIterator", Value::Boolean(true));
-        let _ = self.set_property(Value::Object(obj), "_iterArray", Value::Object(arr));
+        let _ =
+            self.define_proto_method(Value::Object(obj), "_isArrayIterator", Value::Boolean(true));
+        let _ = self.define_proto_method(Value::Object(obj), "_iterArray", Value::Object(arr));
         if kind != "values" {
             let flag = self.alloc_string(kind.to_owned());
-            let _ = self.set_property(Value::Object(obj), "_iterKind", Value::Object(flag));
+            let _ = self.define_proto_method(Value::Object(obj), "_iterKind", Value::Object(flag));
         }
         ARRAY_ITER_POS.with(|c| c.borrow_mut().insert(obj.0, 0));
         self.attach_iterator_surface(obj);
@@ -106,8 +107,9 @@ impl Vm {
 
     pub(crate) fn alloc_string_iterator(&mut self, str_ref: ObjectRef) -> Value {
         let obj = self.alloc_ordinary();
-        let _ = self.set_property(Value::Object(obj), "_isStrIterator", Value::Boolean(true));
-        let _ = self.set_property(Value::Object(obj), "_iterStr", Value::Object(str_ref));
+        let _ =
+            self.define_proto_method(Value::Object(obj), "_isStrIterator", Value::Boolean(true));
+        let _ = self.define_proto_method(Value::Object(obj), "_iterStr", Value::Object(str_ref));
         STRING_ITER_POS.with(|c| c.borrow_mut().insert(obj.0, 0));
         self.attach_iterator_surface(obj);
         Value::Object(obj)
@@ -183,11 +185,12 @@ impl Vm {
 
     pub(crate) fn alloc_map_iterator(&mut self, map_ref: ObjectRef, kind: &str) -> Value {
         let obj = self.alloc_ordinary();
-        let _ = self.set_property(Value::Object(obj), "_isMapIterator", Value::Boolean(true));
-        let _ = self.set_property(Value::Object(obj), "_iterMap", Value::Object(map_ref));
+        let _ =
+            self.define_proto_method(Value::Object(obj), "_isMapIterator", Value::Boolean(true));
+        let _ = self.define_proto_method(Value::Object(obj), "_iterMap", Value::Object(map_ref));
         if kind != "entries" {
             let flag = self.alloc_string(kind.to_owned());
-            let _ = self.set_property(Value::Object(obj), "_iterKind", Value::Object(flag));
+            let _ = self.define_proto_method(Value::Object(obj), "_iterKind", Value::Object(flag));
         }
         MAP_ITER_POS.with(|c| c.borrow_mut().insert(obj.0, 0));
         self.attach_iterator_surface(obj);
@@ -243,11 +246,12 @@ impl Vm {
 
     pub(crate) fn alloc_set_iterator(&mut self, set_ref: ObjectRef, kind: &str) -> Value {
         let obj = self.alloc_ordinary();
-        let _ = self.set_property(Value::Object(obj), "_isSetIterator", Value::Boolean(true));
-        let _ = self.set_property(Value::Object(obj), "_iterSet", Value::Object(set_ref));
+        let _ =
+            self.define_proto_method(Value::Object(obj), "_isSetIterator", Value::Boolean(true));
+        let _ = self.define_proto_method(Value::Object(obj), "_iterSet", Value::Object(set_ref));
         if kind != "values" {
             let flag = self.alloc_string(kind.to_owned());
-            let _ = self.set_property(Value::Object(obj), "_iterKind", Value::Object(flag));
+            let _ = self.define_proto_method(Value::Object(obj), "_iterKind", Value::Object(flag));
         }
         SET_ITER_POS.with(|c| c.borrow_mut().insert(obj.0, 0));
         self.attach_iterator_surface(obj);

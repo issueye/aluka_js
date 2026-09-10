@@ -213,6 +213,10 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         "toString",
         fn_proto_to_string,
     );
+    // `constructor` → 真 Function 构造器（同上：占位会令 `f.constructor.name` 错）
+    if let Value::Object(fc) = vm.resolve_global("Function") {
+        let _ = vm.set_property(Value::Object(fn_p), "constructor", Value::Object(fc));
+    }
     register_handler(registry, "Function.prototype", "call", fn_proto_call_apply);
     register_handler(registry, "Function.prototype", "apply", fn_proto_call_apply);
     register_handler(registry, "Function.prototype", "bind", fn_proto_bind);
@@ -298,6 +302,16 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         // 真 handler：真实包（express application）`Array.prototype.slice.call`
         // 形态——占位会抛 not-a-function
         register_handler(registry, "Array.prototype", m, array_method_dispatch);
+    }
+    // `constructor` 指向**真构造器**：上方占位使 `[].constructor.name` 得
+    // "Array.prototype.constructor"（Node 为 "Array"），且 `x.constructor === Array`
+    // 是生态里常见的鸭子判定（object-inspect 等）。构造器单例在 register_all
+    // 之前已由 Vm::new 建好，此处可安全覆盖。
+    if let Some(c) = vm.array_ctor {
+        let _ = vm.set_property(Value::Object(arr_p), "constructor", Value::Object(c));
+    }
+    if let Some(c) = vm.object_ctor {
+        let _ = vm.set_property(Value::Object(obj_proto), "constructor", Value::Object(c));
     }
 
     // Array 静态方法（from / of）——生成语料实测缺失（`Array.from is not a function`）
