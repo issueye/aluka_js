@@ -1218,3 +1218,101 @@ conformance 全量                                          → Result: 870/870 
    绑定错误 —— 本轮由它产生过误导，建议优先复核；
 4. **类名 `A.name` 返回 `A_constructor`**（Node 为 `A`）—— `compile_class` 里
    `format!("{name}_constructor")` 的默认构造器命名泄漏到 `name` 字段。
+
+
+---
+
+## 待办 19 · 核心运算符语义修复（关系比较 / 加法强制转换 / 位运算）
+
+> 来源：本轮**以数据选题**——先用脚本把 `cases/gen/deviations/` 剩余 132 例按首个
+> `require` 模块或首个全局名归因，发现最大簇并非此前假设的「裸块内 class」，而是
+> 藏在 `other` 簇里的**核心运算符静默错值**。故改做本项（价值远高于原计划）。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线；Node v22.3.0 对拍）**：
+
+| 组 | 表达式 | Node | Aluka 改前 |
+|---|---|---|---|
+| A 关系比较 | `"a" < "b"` | `true` | **false** |
+| A | `"A" < "a"` | `true` | **false** |
+| A | `"2" > "10"` | `true` | **false** |
+| A | `1 < "2"` | `true` | **false** |
+| B 加法 | `true + 1` | `2` | **NaN** |
+| B | `true + true` | `2` | **NaN** |
+| B | `null + 1` | `1` | **NaN** |
+| C 位运算 | `"5" \| 0` | `5` | **0** |
+| C | `"3" & 1` | `1` | **0** |
+| C | `~"5"` | `-6` | **-1** |
+
+均为**静默错值**（不报错），且 `x | 0`、字符串比较、布尔参与算术都是日常写法。
+
+**根因（三处独立）**：
+1. `interpreter.rs` 的 `Op::Lt/Le/Gt/Ge` 直接 `to_number(a) < to_number(b)`——纯数值比较，
+   **既不处理堆字符串也不做字符串字典序比较**；
+2. `ops.rs::add_values` 的分支链（Number+Number / 字符串或 Buffer 拼接 / 对象拼接）
+   之后**直接落到 `NaN`**，缺规范的最后一步「双方皆原始值且非字符串 → ToNumber 后相加」；
+3. `Op::BitNot/BitAnd/BitOr/BitXor` 使用**字符串不感知**的自由函数 `to_number`
+   （同文件 `Op::Shl/Shr/UShr` 早已用 `to_number_value`——通路分裂）。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | 关系比较按规范「抽象关系比较」 | 两侧皆字符串 → UTF-16 码元序；否则 ToPrimitive 后数值比较；任一 NaN → 四种比较皆 false；`<=`/`>=` 按 `!(r<l)` 语义 |
+| 2 | `add_values` 补数值相加兜底 | `true + 1` → 2、`true + true` → 2、`null + 1` → 1、`undefined + 1` 仍 NaN；字符串拼接优先级不变 |
+| 3 | 位运算改为字符串感知转换 | `"5" \| 0` → 5、`"3" & 1` → 1、`~"5"` → -6；`>>`/`>>>` 不回归 |
+| 4 | 门禁语料 + 三连 | 新增 `34-operators-coercion.cjs`；零回归 |
+
+### 交付摘要
+
+**4/4 达成。**
+
+**改法（`ops.rs` + `interpreter.rs`）**：
+- 新增 `Vm::js_less_than(l, r) -> Option<bool>`（规范抽象关系比较核心）与
+  `Vm::to_cmp_primitive(v) -> CmpPrimitive`（ToPrimitive(hint number)：字符串/数组 toString、
+  Date 走 `_timeValue`、其余对象 `"[object Object]"`），以及自由函数
+  `utf16_cmp`（**UTF-16 码元序**比较；Rust 的 `str` Ord 是码点序，两者在非 BMP 字符上有别）；
+  四个比较指令改为按 `Some(true)/Some(false)/None` 分派；
+- `add_values` 的 `NaN` 兜底改为 `to_number_value(left) + to_number_value(right)`；
+- `BitNot/BitAnd/BitOr/BitXor` 的 `to_number` → `self.to_number_value`（与 Shl/Shr 统一）。
+
+**验收实测**：
+
+```
+【专项探针】ops_probe.js（26 项，本会话自建）
+   改前 18 项差异 → 改后 7 项（全部为下述已登记缺口：字符串长度 + 数字格式化）
+   A 组 5 项、B 组 5 项、C 组 5 项 全部转为与 Node 一致
+
+【新增门禁语料】tests/conformance/node22/cases/34-operators-coercion.cjs（59 行）
+   → Node 侧 5/5 同哈希；与 Aluka 逐字节一致；PASS
+   （含 `['a'] < ['b']` 这类 ToPrimitive 后按字符串比较的用例——首版实现漏了
+     ToPrimitive 步骤，由此用例发现并补齐）
+
+【既有探针】proto_probe / date_utc_probe / arrmethods / samezero → IDENTICAL；
+   accept / proto2 / tojson2 仅剩**此前已登记**的 3 处偏离（hasOwnProperty('next')、
+   new Number(1) instanceof、循环引用降级），无新回归
+
+cargo fmt --all --check                                  → exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                                         → exit 0，warnings=0 errors=0
+cargo test --workspace --all-features（默认并行）          → exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                                          → Result: 871/871 passed, 3 invalid
+                                                            （870 + 新增 1；invalid 未增加）
+```
+
+**隔离区偏差再判定**：`cases/gen/deviations/` 170 例中 **49 例现已与 Node 一致**
+（本轮 38 → 49；累计 13 → 22 → 30 → 34 → 38 → 49）。
+
+**本轮登记、未做**（同批数据暴露，按剩余规模排序）：
+1. **字符串方法缺失（约 14 例偏差）**：`padStart`/`padEnd`（10 例）、`at`、`codePointAt`、
+   `normalize` —— 属 String 原型面补齐，规模最大且实现直接；
+2. **数字格式化（约 9 例）**：`toFixed`（半进位方向：`(0.5).toFixed(0)` 应 1、`(1.25).toFixed(1)`
+   应 1.3）、`toPrecision`（有效位数与形态）、`toExponential`（指数补 `+`）、
+   `toString(radix)`（小数部分缺失）——需按规范做十进制展开与舍入，工作量中等；
+3. **字符串长度与索引按码点而非 UTF-16 码元**：`"😀".length` 应 2（本实现 1）。
+   单独改 `.length` 会与 `charAt`/`indexOf` 的码点语义**内部不一致**（且 Rust String 无法
+   表示孤立代理），属系统性改造，故本轮不动仅登记；
+4. **URL 类不完整（4 例）**：`searchParams` / 相对解析 `href` / `username`；
+5. 零散：`const { floor } = Math` 解构（1）、`[...g()]` 生成器展开（1）、
+   `JSON.stringify({get x(){return 1}})` 应调 getter（1）、`Intl` 缺失（1）、
+   `delete undefined` 应 false（1）、sloppy `this` 应 globalThis（1）、`console.error/warn`
+   应走 stderr（3，部分属 harness 口径）。

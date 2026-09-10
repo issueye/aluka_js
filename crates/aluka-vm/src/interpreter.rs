@@ -1774,25 +1774,30 @@ impl Vm {
                 }
                 Op::BitNot => {
                     let top = self.pop()?;
-                    let n = to_number(top) as i32;
+                    // 位运算走**字符串感知**的 ToNumber（`~"5"` → -6）：
+                    // 此前用自由函数 `to_number`（字符串一律 NaN → 0）
+                    let n = self.to_number_value(top) as i32;
                     self.stack.push(Value::Number(f64::from(!n)));
                 }
                 Op::BitAnd => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res = (to_number(left) as i32) & (to_number(right) as i32);
+                    let res =
+                        (self.to_number_value(left) as i32) & (self.to_number_value(right) as i32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::BitOr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res = (to_number(left) as i32) | (to_number(right) as i32);
+                    let res =
+                        (self.to_number_value(left) as i32) | (self.to_number_value(right) as i32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::BitXor => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res = (to_number(left) as i32) ^ (to_number(right) as i32);
+                    let res =
+                        (self.to_number_value(left) as i32) ^ (self.to_number_value(right) as i32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::Shl => {
@@ -1845,29 +1850,42 @@ impl Vm {
                     let res = !strict_eq(left, right, &self.heap, &self.current_constants);
                     self.stack.push(Value::Boolean(res));
                 }
+                // 关系比较：规范「抽象关系比较」——两侧皆为字符串时按 UTF-16 码元序
+                // 比较，否则 ToNumber 后数值比较；任一为 NaN → 四种比较均为 false。
+                // 此前一律 `to_number(a) < to_number(b)`（纯数值、且不处理字符串），
+                // 导致 `"a" < "b"`、`1 < "2"` 等恒为 false。
                 Op::Lt => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Boolean(to_number(left) < to_number(right)));
+                    let res = self.js_less_than(left, right) == Some(true);
+                    self.stack.push(Value::Boolean(res));
                 }
                 Op::Le => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Boolean(to_number(left) <= to_number(right)));
+                    // `l <= r` ≡ `!(r < l)`，任一为 NaN 时为 false
+                    let res = match self.js_less_than(right, left) {
+                        Some(true) => false,
+                        Some(false) => true,
+                        None => false,
+                    };
+                    self.stack.push(Value::Boolean(res));
                 }
                 Op::Gt => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Boolean(to_number(left) > to_number(right)));
+                    let res = self.js_less_than(right, left) == Some(true);
+                    self.stack.push(Value::Boolean(res));
                 }
                 Op::Ge => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Boolean(to_number(left) >= to_number(right)));
+                    let res = match self.js_less_than(left, right) {
+                        Some(true) => false,
+                        Some(false) => true,
+                        None => false,
+                    };
+                    self.stack.push(Value::Boolean(res));
                 }
 
                 // 6. 局部变量与全局变量
