@@ -281,8 +281,7 @@ impl Vm {
             let Some((idx, due)) = best else { break };
             let (id, _, delay_ms, cb, repeating) = tasks.remove(idx);
             if due > now {
-                std::thread::sleep(std::time::Duration::from_millis(due - now));
-                now = due;
+                self.wait_until_due(due, &mut now)?;
             }
             if self.active_timers.contains(&id) {
                 continue;
@@ -297,6 +296,34 @@ impl Vm {
         // 继续交替排空（事件回调可能追加微任务 / 宏任务）。
         let pumped = self.pump_event_sources()?;
         Ok(ran_timer || pumped)
+    }
+
+    /// 把虚拟时钟推进到 `due`，期间**不得饿死事件源**。
+    ///
+    /// 有活跃事件源时必须分片等待、片间泵事件源：Node 中定时器与 I/O 同属
+    /// 一个轮询循环，而在定时器等待中整段 `sleep` 会让「待触发定时器」把
+    /// worker 消息、网络回包等事件**全部推迟到定时器触发之后**——实测缺陷：
+    /// `setTimeout(fn, 2000)` 期间 worker 回包在 2000ms 后才被投递；若定时器
+    /// 回调里 `terminate()`，消息则永久丢失（Node 两种情形都立即投递）。
+    ///
+    /// 无活跃事件源时保持原语义一次睡满，避免长定时器空转吃 CPU。
+    fn wait_until_due(&mut self, due: u64, now: &mut u64) -> Result<(), VmError> {
+        /// 分片粒度（ms）：越小消息投递越及时，越大空转越少。
+        const WAIT_SLICE_MS: u64 = 1;
+        if !self.has_active_event_sources() {
+            std::thread::sleep(std::time::Duration::from_millis(due - *now));
+            *now = due;
+            return Ok(());
+        }
+        while *now < due {
+            let slice = (due - *now).min(WAIT_SLICE_MS);
+            std::thread::sleep(std::time::Duration::from_millis(slice));
+            *now += slice;
+            // 泵出的回调可能追加微任务/宏任务；新增宏任务落在 self.macro_tasks，
+            // 由顶层循环下一轮接手（本轮 tasks 已在本地，不重入）。
+            self.pump_event_sources()?;
+        }
+        Ok(())
     }
 
     /// Promise 兑现：设定值与处理器，把全部处理器调度进微任务队列。

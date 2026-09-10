@@ -1165,8 +1165,10 @@ pub fn run_worker_event_loop(vm: &mut Vm) -> u32 {
         if !vm.macro_tasks.is_empty() || vm.has_active_event_sources() || pp_waiting {
             let _ = vm.drain_macro_tasks();
             flush_worker_stdout(vm);
-            if !pp_waiting {
-                // 纯监听等待（无宏任务/事件源）：1ms 空转防忙轮询
+            if pp_waiting && vm.macro_tasks.is_empty() && !vm.has_active_event_sources() {
+                // 纯监听等待（仅 parentPort 挂 'message' 保活，无宏任务/事件源）：
+                // 1ms 让出 CPU 防忙轮询。此条件原先写反——挂监听时反而不睡，
+                // 长驻应答型 worker 会单核 100% 空转。
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
             continue;

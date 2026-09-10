@@ -127,7 +127,8 @@ pub(crate) fn try_take_request(buf: &mut Vec<u8>) -> Option<(RequestHead, Vec<u8
 }
 
 /// 解析 chunked 体：返回（消费结束位置，拼接后的体字节）。未完整返回 None。
-fn take_chunked_with_body(buf: &[u8], mut pos: usize) -> Option<(usize, Vec<u8>)> {
+/// 帧游走同时被 `builtins::global::fetch` 的响应定界判定复用（见 `fetch.rs`）。
+pub(crate) fn take_chunked_with_body(buf: &[u8], mut pos: usize) -> Option<(usize, Vec<u8>)> {
     let mut body = Vec::new();
     loop {
         let line_end = find_crlf(buf, pos)?;
@@ -143,7 +144,8 @@ fn take_chunked_with_body(buf: &[u8], mut pos: usize) -> Option<(usize, Vec<u8>)
             }
             return Some((pos, body));
         }
-        if buf.len() < pos + size + 2 {
+        // saturating_add：对端可能声明超大 chunk-size，避免无符号溢出
+        if pos.saturating_add(size).saturating_add(2) > buf.len() {
             return None;
         }
         body.extend_from_slice(&buf[pos..pos + size]);

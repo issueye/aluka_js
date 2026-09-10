@@ -208,6 +208,9 @@ fn sqlite_open_and_sql_errors_e2e_matches_go() {
 /// （bool/undefined/数组 named 展开/未知命名键/缺位 NULL 补/超位越界）/
 /// 错误对象 attrs（code/errcode/errstr）/close 语义/path 与 sql validator，
 /// 输出与 Node 22 LTS 逐字一致（开发期 diff 见 round5 登记）。
+///
+/// 对拍门禁：本机 node 必须具备 `node:sqlite` 能力；缺失时打印 `[SKIP node-e2e]`
+/// 标记**可见跳过**对拍侧（`cargo test -- --nocapture` 可见原文），绝不静默假装已对拍。
 #[test]
 fn sqlite_node22_diff_e2e_matches_node() {
     let work = work_dir("sqlite_node22_diff");
@@ -216,8 +219,8 @@ fn sqlite_node22_diff_e2e_matches_node() {
         include_str!("probes/node22_sqlite_probe.js"),
     )
     .unwrap();
-    // 与 Node 22 输出逐字对拍（Node 不可用环境自动跳过对拍侧，仍跑本地侧）
-    let out = common::assert_e2e_matches_node(&work, "probe.js");
+    // node 缺失 / 能力缺失 → 可见跳过对拍；能力具备 → 退出码非 0 或输出不符一律真失败。
+    let out = common::assert_e2e_matches_node_with_module(&work, "probe.js", Some("node:sqlite"));
     // 锚点抽样：核心语义行必须出现（防对拍被静默跳过时失去验证）
     assert!(out.contains("cols: [{\"column\":\"id\",\"database\":\"main\",\"name\":\"id\",\"table\":\"users\",\"type\":\"INTEGER\"}"));
     assert!(out.contains("iter-end: true null"));

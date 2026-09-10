@@ -140,28 +140,115 @@ pub fn aluvm_run(bc: &Path) -> String {
         .to_string()
 }
 
-/// 运行 Node.js 22 LTS 并返回输出（trim 后；带超时防护）。
-pub fn node_run(js: &Path) -> Option<String> {
-    let node_bin = std::env::var("NODE").unwrap_or_else(|_| "node".to_string());
-    let out = finish_with_timeout(
-        Command::new(node_bin)
-            .arg(js)
-            .current_dir(js.parent().unwrap_or(js))
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .ok()?,
-    );
-    if out.status.success() {
-        Some(
-            String::from_utf8_lossy(&out.stdout)
-                .trim()
-                .replace("\r\n", "\n")
-                .to_string(),
-        )
-    } else {
-        None
+/// node 可执行文件名（可用 `NODE` 环境变量覆盖）。
+fn node_bin() -> String {
+    std::env::var("NODE").unwrap_or_else(|_| "node".to_string())
+}
+
+/// `node` 可执行文件是否存在且可启动（探测 `node --version` 退出码为 0）。
+///
+/// 与 `node_supports_module` 组合即可区分对拍三态：
+/// 1. `!node_available()` → node 缺失（调用方应可见跳过）；
+/// 2. `node_available() && !node_supports_module(m)` → node 在但缺能力（可见跳过）；
+/// 3. `node_available() && node_supports_module(m)` → 对拍成立，此后任何失败必须 panic。
+pub fn node_available() -> bool {
+    Command::new(node_bin())
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 当前 `node` 的版本字符串（如 `v22.3.0`）；不可用或输出为空时返回 `None`。
+///
+/// 仅用于 SKIP 诊断信息，不参与对拍判定。
+pub fn node_version() -> Option<String> {
+    let out = Command::new(node_bin()).arg("--version").output().ok()?;
+    if !out.status.success() {
+        return None;
     }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// 探测当前 `node` 能否 require 指定模块（如 `node:sqlite`）。
+///
+/// 以 `node -e "require.resolve('MODULE')"` 的退出码为准：0 = 模块存在且可 require；
+/// 非 0（未知内置模块 / 文件缺失 / node 本身不存在）= 不支持。
+pub fn node_supports_module(module: &str) -> bool {
+    Command::new(node_bin())
+        .arg("-e")
+        .arg(format!("require.resolve({module:?})"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 已知模块的最低 Node 版本（只登记本仓库对拍用到的能力；未知模块返回 `None`）。
+fn module_min_node_version(module: &str) -> Option<&'static str> {
+    match module {
+        // node:sqlite 自 v22.5.0 引入（早期版本还需 --experimental-sqlite 标志）。
+        "node:sqlite" => Some("22.5.0"),
+        _ => None,
+    }
+}
+
+/// 一次 Node 子进程运行的完整结果（保留退出状态与 stderr 原文，支撑三态判定）。
+pub struct NodeOutcome {
+    /// 进程是否成功 spawn（`false` = node 可执行文件不存在 / 无法启动）。
+    pub spawned: bool,
+    /// 退出码是否为 0。
+    pub ok: bool,
+    /// stdout（trim 后，`\r\n` 归一为 `\n`）。
+    pub stdout: String,
+    /// stderr 原文（不裁剪，供失败信息透出）。
+    pub stderr: String,
+}
+
+/// 运行 Node.js 并返回完整结果（含退出码与 stderr 原文；带超时防护）。
+///
+/// 与兼容包装 `node_run` 不同：这里不会把"退出码非 0"折叠成 `None` 而丢失证据。
+pub fn node_run_outcome(js: &Path) -> NodeOutcome {
+    let child = Command::new(node_bin())
+        .arg(js)
+        .current_dir(js.parent().unwrap_or(js))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn();
+    let child = match child {
+        Ok(c) => c,
+        Err(e) => {
+            return NodeOutcome {
+                spawned: false,
+                ok: false,
+                stdout: String::new(),
+                stderr: format!("node 进程无法启动: {e}"),
+            };
+        }
+    };
+    let out = finish_with_timeout(child);
+    NodeOutcome {
+        spawned: true,
+        ok: out.status.success(),
+        stdout: String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .replace("\r\n", "\n")
+            .to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+/// 兼容旧签名：node 无法启动或退出码非 0 时返回 `None`（语义与改动前一致）。
+///
+/// **仅存量调用点保留**；新增对拍请用 `assert_e2e_matches_node_with_module`，
+/// 否则又会退化成"node 侧失败 → 静默跳过"。
+pub fn node_run(js: &Path) -> Option<String> {
+    let outcome = node_run_outcome(js);
+    (outcome.spawned && outcome.ok).then_some(outcome.stdout)
 }
 
 /// 统一整图编译兼容函数（调用 alukac 编译）。
@@ -180,15 +267,67 @@ pub fn compile_graph(_placeholder: &Path, work: &Path, entry: &str) {
 }
 
 /// 标准 e2e 一步：使用 alukac 编译 → aluvm 执行 → 并在 Node.js 22 可用时进行对拍。
+///
+/// 等价于 `assert_e2e_matches_node_with_module(work, entry, None)`（不额外要求能力）。
 pub fn assert_e2e_matches_node(work: &Path, entry: &str) -> String {
+    assert_e2e_matches_node_with_module(work, entry, None)
+}
+
+/// 三态严格对拍：先跑 aluka 原生全链路，再按 node 侧状态决定"可见跳过"还是"必须一致"。
+///
+/// - node 缺失/无法启动 → 打印 `[SKIP node-e2e]` 标记（含原因）并返回本地输出；
+/// - `required_module` 已指定但本机 node 缺该能力 → 打印 `[SKIP node-e2e]` 标记
+///   （点名缺失模块与最低版本要求）并返回本地输出；
+/// - node 可用且能力具备 → 严格对拍：退出码非 0 直接 panic（附 stderr 原文），
+///   退出码 0 但输出与 aluka 不一致同样 panic。
+///
+/// 跳过路径一律走 `eprintln!`（`cargo test -- --nocapture` 可见），绝不静默。
+pub fn assert_e2e_matches_node_with_module(
+    work: &Path,
+    entry: &str,
+    required_module: Option<&str>,
+) -> String {
     let rust_out = rust_pipeline_run(work, entry);
-    if let Some(node_out) = node_run(&work.join(entry)) {
-        assert_eq!(
-            rust_out.trim(),
-            node_out.trim(),
-            "e2e 输出与 Node.js 22 不一致（{entry}）"
+
+    if !node_available() {
+        eprintln!(
+            "[SKIP node-e2e] {entry}: 未执行 Node 对拍（此处无对拍证据）——本机无可用 node 可执行文件（NODE={}）；本用例仅验证 aluka 自身输出",
+            node_bin()
         );
+        return rust_out;
     }
+
+    let missing_module = required_module.filter(|m| !node_supports_module(m));
+    if let Some(module) = missing_module {
+        let version = node_version().unwrap_or_else(|| "版本未知".to_string());
+        let min = match module_min_node_version(module) {
+            Some(v) => format!("需 Node ≥ {v}"),
+            None => "需包含该模块的较新 Node 版本".to_string(),
+        };
+        eprintln!(
+            "[SKIP node-e2e] {entry}: 未执行 Node 对拍（此处无对拍证据）——本机 node {version} 缺少用例所需模块 `{module}`（{min}）；本用例仅验证 aluka 自身输出"
+        );
+        return rust_out;
+    }
+
+    let outcome = node_run_outcome(&work.join(entry));
+    if !outcome.spawned {
+        eprintln!(
+            "[SKIP node-e2e] {entry}: 未执行 Node 对拍（此处无对拍证据）——node 进程无法启动：{}；本用例仅验证 aluka 自身输出",
+            outcome.stderr.trim()
+        );
+        return rust_out;
+    }
+    assert!(
+        outcome.ok,
+        "e2e Node 侧执行失败（{entry}）：node 退出码非 0，对拍未成立——这是真失败而非跳过。node stderr 原文:\n{}",
+        outcome.stderr
+    );
+    assert_eq!(
+        rust_out.trim(),
+        outcome.stdout.trim(),
+        "e2e 输出与 Node.js 22 不一致（{entry}）"
+    );
     rust_out
 }
 

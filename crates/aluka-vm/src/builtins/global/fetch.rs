@@ -1,6 +1,7 @@
 //! Fetch API 全局：fetch / Response / Request + HTTP 实现。
 
 use crate::builtins::current_receiver;
+use crate::builtins::http::wire;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
@@ -712,106 +713,213 @@ fn do_sync_http_request(
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("fetch: write: {e}"))?;
+    // RFC 9112 §6.3 定界规则 1：HEAD 请求的响应没有 body
+    let head_only = method.eq_ignore_ascii_case("HEAD");
     let mut response_bytes = Vec::new();
     let mut buf = [0u8; 8192];
+    let mut complete = false;
+    let mut closed = false;
+    let mut timed_out = false;
     loop {
         match stream.read(&mut buf) {
-            Ok(0) => break,
+            // 对端干净关闭：不直接当成“读到成功”，先看响应本身是否已按定界
+            // 规则完整（无长度声明、以连接关闭定界的响应由下方例外分支放行）。
+            Ok(0) => {
+                closed = true;
+                complete = matches!(response_complete(&response_bytes, head_only), Ok(true));
+                break;
+            }
             Ok(n) => {
                 response_bytes.extend_from_slice(&buf[..n]);
-                // undici 语义：响应完整（头完成且 Content-Length 收满 /
-                // chunked 终止块已到）即返回，**不等连接关闭**——否则对
-                // keep-alive 服务器（响应后连接保持）空等到读超时。
+                // undici 语义：响应完整（头完成且 body 按定界规则收满）即返回，
+                // **不等连接关闭**——否则对 keep-alive 服务器空等到读超时。
                 // （P0 修复：fetch → aluka http server 每次请求 10s 的根因）
-                if response_complete(&response_bytes) {
-                    break;
+                match response_complete(&response_bytes, head_only) {
+                    Ok(true) => {
+                        complete = true;
+                        break;
+                    }
+                    Ok(false) => {}
+                    // 畸形响应（状态行非法）：立即失败，不空等到读超时
+                    Err(message) => return Err(message),
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-            Err(_) => break,
+            // 读超时：连接仍在，但响应没有完整到达——不得当成成功
+            Err(e) if is_read_timeout(&e) => {
+                timed_out = true;
+                break;
+            }
+            Err(e) => return Err(format!("fetch: 读取响应失败（IO 错误）: {e}")),
         }
     }
-    let text = String::from_utf8_lossy(&response_bytes).to_string();
-    let (header_block, raw_body) = match text.find("\r\n\r\n") {
-        Some(i) => (text[..i].to_owned(), text[i + 4..].to_owned()),
-        None => match text.find("\n\n") {
-            Some(i) => (text[..i].to_owned(), text[i + 2..].to_owned()),
-            None => (text.clone(), String::new()),
-        },
+    let head = match parse_response_head(&response_bytes, head_only) {
+        Ok(Some(head)) => head,
+        Ok(None) => {
+            return Err(if timed_out {
+                "fetch: 读取响应超时：响应头未在 10s 内完整到达".to_owned()
+            } else {
+                "fetch: 连接已关闭，但未收到任何完整响应头".to_owned()
+            });
+        }
+        Err(message) => return Err(message),
     };
-    let status_line = header_block.split("\r\n").next().unwrap_or(&header_block);
-    let status: u16 = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    let body_text = if header_block
-        .to_ascii_lowercase()
-        .contains("transfer-encoding: chunked")
-    {
-        decode_chunked_body(&raw_body)
-    } else {
-        raw_body
+    if !complete {
+        // 例外（RFC 9112 §6.3 定界规则 4）：既非 bodyless、又无 TE/CL 的响应
+        // 本来就以连接关闭定界——读到 EOF 即视为完整（HTTP/1.0 风格）。
+        // 其余情况（Content-Length 未收满 / chunked 未到终止块）未收全即失败。
+        let eof_delimited = closed && matches!(head.delim, BodyDelim::UntilClose);
+        if !eof_delimited {
+            return Err(if timed_out {
+                "fetch: 读取响应超时：响应 body 未在 10s 内完整到达".to_owned()
+            } else if closed {
+                "fetch: 连接在响应完整到达前被对端关闭".to_owned()
+            } else {
+                "fetch: 响应不完整".to_owned()
+            });
+        }
+    }
+    let header_block = String::from_utf8_lossy(&response_bytes[..head.head_text_end]).to_string();
+    let body_text = match head.delim {
+        // bodyless（HEAD / 1xx / 204 / 304）：头块结束即无 body，多送字节也不计入
+        BodyDelim::Inherent => String::new(),
+        // chunked：复用 `builtins::http::wire` 的帧游走结果（同一份解码逻辑）
+        BodyDelim::Chunked => wire::take_chunked_with_body(&response_bytes, head.body_start)
+            .map(|(_, decoded)| String::from_utf8_lossy(&decoded).to_string())
+            .unwrap_or_default(),
+        _ => String::from_utf8_lossy(&response_bytes[head.body_start..]).to_string(),
     };
-    Ok((status, header_block, body_text))
+    Ok((head.status, header_block, body_text))
 }
 
-/// 响应完整判定（undici 语义，不依赖连接关闭）：
-/// 头部结束标记存在且 (a) `Content-Length` 已收满，或
-/// (b) `Transfer-Encoding: chunked` 的终止块已出现。
-/// 无长度信息（HTTP/1.0 close 定界）时返回 false——由读循环等 EOF/超时。
-fn response_complete(bytes: &[u8]) -> bool {
-    let Some(he) = bytes
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .map(|i| i + 4)
-    else {
+/// 响应体定界模式（RFC 9112 §6.3 的四条定界规则，按优先级判定）。
+enum BodyDelim {
+    /// 无 body：HEAD 请求，或 1xx / 204 / 304 状态码——头部块结束即响应完整。
+    Inherent,
+    /// `Transfer-Encoding: chunked`——chunk 帧游走到终止块（含可选 trailer）才算完整。
+    Chunked,
+    /// `Content-Length: n`——收满 n 字节 body 才算完整。
+    Length(usize),
+    /// 既无 bodyless 状态也无 TE/CL——以连接关闭（EOF）定界。
+    UntilClose,
+}
+
+/// 解析出的响应头信息（`headers_text` 与 body 切片所需的偏移 + 定界模式）。
+struct ResponseHeadInfo {
+    /// 状态码
+    status: u16,
+    /// 头部块结束偏移（不含结束空行），即 `headers_text` 的切片终点
+    head_text_end: usize,
+    /// body 起始偏移
+    body_start: usize,
+    /// body 定界模式
+    delim: BodyDelim,
+}
+
+/// 读超时判定（Windows 为 `WouldBlock`，Unix 为 `TimedOut`）。
+fn is_read_timeout(err: &std::io::Error) -> bool {
+    matches!(
+        err.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    )
+}
+
+/// 在缓冲中定位头部块结束：优先 `CRLFCRLF`，容忍裸 `LFLF`。
+/// 返回 `(头部块结束偏移, body 起始偏移)`。
+fn find_head_end(bytes: &[u8]) -> Option<(usize, usize)> {
+    if let Some(i) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+        return Some((i, i + 4));
+    }
+    bytes
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .map(|i| (i, i + 2))
+}
+
+/// 按名取头部块中的首个值（名大小写不敏感）。
+fn header_first_value(head_text: &str, name: &str) -> Option<String> {
+    head_text.split('\n').skip(1).find_map(|line| {
+        let (key, value) = line.trim_end_matches('\r').split_once(':')?;
+        if key.trim().eq_ignore_ascii_case(name) {
+            Some(value.trim().to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+/// 解析状态行并判定 body 定界模式：
+/// - `Ok(None)`：头部块尚未收全（继续读）；
+/// - `Ok(Some(_))`：头部块已收全；
+/// - `Err(_)`：头部块已收全但状态行非法（畸形响应，立即失败，禁止按 status=0 兜底）。
+fn parse_response_head(bytes: &[u8], head_only: bool) -> Result<Option<ResponseHeadInfo>, String> {
+    let Some((head_text_end, body_start)) = find_head_end(bytes) else {
+        return Ok(None);
+    };
+    let head_text = String::from_utf8_lossy(&bytes[..head_text_end]);
+    let status_line = head_text
+        .split('\n')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('\r');
+    let mut parts = status_line.split_whitespace();
+    let version = parts.next().unwrap_or("");
+    let status = parts.next().and_then(|token| token.parse::<u16>().ok());
+    if !version.starts_with("HTTP/") {
+        return Err(format!("fetch: 畸形响应：非法状态行 {status_line:?}"));
+    }
+    let Some(status) = status else {
+        return Err(format!("fetch: 畸形响应：非法状态行 {status_line:?}"));
+    };
+    // 规则 1：HEAD 或 bodyless 状态码 → 无 body；规则 2：Transfer-Encoding；
+    // 规则 3：Content-Length；规则 4：连接关闭定界。
+    let delim = if head_only || wire::status_is_bodyless(status) {
+        BodyDelim::Inherent
+    } else if header_first_value(&head_text, "transfer-encoding")
+        .map(|v| v.to_ascii_lowercase().contains("chunked"))
+        .unwrap_or(false)
+    {
+        BodyDelim::Chunked
+    } else if let Some(cl) = header_first_value(&head_text, "content-length")
+        .and_then(|v| v.trim().parse::<usize>().ok())
+    {
+        BodyDelim::Length(cl)
+    } else {
+        BodyDelim::UntilClose
+    };
+    Ok(Some(ResponseHeadInfo {
+        status,
+        head_text_end,
+        body_start,
+        delim,
+    }))
+}
+
+/// 响应是否已按定界规则收全（undici 语义，不依赖连接关闭）。
+/// `Err(_)` 表示头部块已收全但响应畸形。
+fn response_complete(bytes: &[u8], head_only: bool) -> Result<bool, String> {
+    let Some(head) = parse_response_head(bytes, head_only)? else {
+        return Ok(false);
+    };
+    Ok(match head.delim {
+        BodyDelim::Inherent => true,
+        BodyDelim::Length(cl) => bytes.len() >= head.body_start.saturating_add(cl),
+        BodyDelim::Chunked => chunked_complete(bytes, head.body_start),
+        // 连接关闭定界：EOF 之前一律视为未完成（由调用方按“读到 EOF 即完整”放行）
+        BodyDelim::UntilClose => false,
+    })
+}
+
+/// chunked 体是否收全：游走 `chunk-size[;ext]CRLF` + 数据 + `CRLF`，直到 `size==0`，
+/// 再吃掉可选 trailer 行与收尾 `CRLF`。
+///
+/// 帧游走复用 `builtins::http::wire::take_chunked_with_body`（同一 crate，无分层违规）；
+/// 再补一次严格检查：该实现容忍终止块收尾空行尚未到齐（`0[;ext]CRLF` 即返回），
+/// 而完整终止块的尾部必然是 `CRLF CRLF`——据此排除“半截终止块”。
+fn chunked_complete(bytes: &[u8], body_start: usize) -> bool {
+    let Some((end, _)) = wire::take_chunked_with_body(bytes, body_start) else {
         return false;
     };
-    let head = String::from_utf8_lossy(&bytes[..he]);
-    let lower = head.to_ascii_lowercase();
-    if lower.contains("transfer-encoding: chunked") {
-        // 终止块 "0\r\n\r\n"（允许 trailer 行存在，容忍实现简化）
-        return bytes[he..].windows(5).any(|w| w == b"0\r\n\r\n");
-    }
-    if let Some(cl) = head.lines().find_map(|l| {
-        let mut it = l.splitn(2, ':');
-        match (it.next(), it.next()) {
-            (Some(k), Some(v)) if k.trim().eq_ignore_ascii_case("content-length") => {
-                v.trim().parse::<usize>().ok()
-            }
-            _ => None,
-        }
-    }) {
-        return bytes.len() >= he + cl;
-    }
-    false
-}
-
-fn decode_chunked_body(raw: &str) -> String {
-    let mut out = String::new();
-    let mut rest = raw;
-    while let Some(line_end) = rest.find("\r\n") {
-        let size_line = &rest[..line_end];
-        let size_token = size_line.split(';').next().unwrap_or("").trim();
-        let Ok(size) = usize::from_str_radix(size_token, 16) else {
-            break;
-        };
-        if size == 0 {
-            break;
-        }
-        let data_start = line_end + 2;
-        let data_end = (data_start + size).min(rest.len());
-        let chunk = &rest[data_start..data_end];
-        let truncated = chunk.len() < size;
-        out.push_str(chunk);
-        let next = (data_end + 2).min(rest.len());
-        rest = &rest[next..];
-        if truncated {
-            break;
-        }
-    }
-    out
+    end >= 4 && &bytes[end - 4..end] == b"\r\n\r\n"
 }
 
 fn parse_http_url(url: &str) -> (String, u16, String) {
@@ -828,4 +936,96 @@ fn parse_http_url(url: &str) -> (String, u16, String) {
         None => (host_port, 80),
     };
     (host, port, path)
+}
+
+/// 响应定界规则的单元测试（纯函数，不依赖 VM / 网络）。
+#[cfg(test)]
+mod delim_tests {
+    use super::*;
+
+    fn complete(bytes: &[u8]) -> bool {
+        response_complete(bytes, false).expect("不应被判为畸形响应")
+    }
+
+    /// bodyless 状态码（1xx / 204 / 304）：头块结束即完整，不得落回读超时兜底。
+    #[test]
+    fn bodyless_status_completes_at_header_end() {
+        assert!(complete(b"HTTP/1.1 204 No Content\r\n\r\n"));
+        assert!(complete(
+            b"HTTP/1.1 304 Not Modified\r\nContent-Length: 1234\r\n\r\n"
+        ));
+        assert!(complete(b"HTTP/1.1 100 Continue\r\n\r\n"));
+    }
+
+    /// HEAD 请求的响应没有 body（即使带 Content-Length）。
+    #[test]
+    fn head_response_has_no_body() {
+        let bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n";
+        assert!(!complete(bytes));
+        assert!(response_complete(bytes, true).expect("HEAD 响应不应被判为畸形"));
+    }
+
+    /// Content-Length 定界：收满才算完整。
+    #[test]
+    fn content_length_delimits() {
+        assert!(!complete(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhell"
+        ));
+        assert!(complete(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello"
+        ));
+    }
+
+    /// 既非 bodyless 又无 TE/CL：以连接关闭定界，EOF 之前一律未完整。
+    #[test]
+    fn close_delimited_waits_for_eof() {
+        assert!(!complete(b"HTTP/1.1 200 OK\r\n\r\nsome-body"));
+    }
+
+    /// 头部块未收全时不得提前判定。
+    #[test]
+    fn incomplete_head_is_not_complete() {
+        assert!(!complete(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n"));
+        assert!(response_complete(b"HTTP/1.1 200 OK\r\nContent-Len", false).is_ok());
+    }
+
+    /// 数据区含字面 `0\r\n\r\n` 时不得提前截断（按帧游走而非裸扫描）。
+    #[test]
+    fn chunked_data_containing_terminator_bytes_is_not_truncated() {
+        // 12 字节单分块，数据 = `AB0\r\n\r\nCDEFG`，只到了前 7 字节
+        assert!(!complete(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nc\r\nAB0\r\n\r\n"
+        ));
+        assert!(complete(
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nc\r\nAB0\r\n\r\nCDEFG\r\n0\r\n\r\n"
+        ));
+    }
+
+    /// 终止块带 chunk 扩展 / trailer 行都要识别；半截终止块不算完整。
+    #[test]
+    fn chunked_terminator_variants() {
+        let head: &[u8] = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+        let mut with_ext = head.to_vec();
+        with_ext.extend_from_slice(b"5\r\nhello\r\n0;x=1\r\n\r\n");
+        assert!(complete(&with_ext));
+
+        let mut with_trailer = head.to_vec();
+        with_trailer.extend_from_slice(b"5\r\nhello\r\n0\r\nx-trailer: v\r\n\r\n");
+        assert!(complete(&with_trailer));
+
+        let mut half_terminator = head.to_vec();
+        half_terminator.extend_from_slice(b"5\r\nhello\r\n0\r\n");
+        assert!(!complete(&half_terminator));
+
+        let mut multi = head.to_vec();
+        multi.extend_from_slice(b"3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n");
+        assert!(complete(&multi));
+    }
+
+    /// 畸形状态行必须报错（禁止 status=0 伪成功）。
+    #[test]
+    fn malformed_status_line_is_error() {
+        assert!(response_complete(b"NONSENSE\r\n\r\n", false).is_err());
+        assert!(response_complete(b"HTTP/1.1 ??? OK\r\n\r\n", false).is_err());
+    }
 }
