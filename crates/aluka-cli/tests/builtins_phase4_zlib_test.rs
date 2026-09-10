@@ -202,8 +202,9 @@ fn zlib_zstd_roundtrip_e2e_matches_go() {
             "const zlib = require(\"node:zlib\");\n",
             "var s = \"zstd roundtrip 帧格式\";\n",
             "console.log(zlib.zstdDecompressSync(zlib.zstdCompressSync(s)).toString());\n",
-            "var big = \"\";\n",
-            "for (var i = 0; i < 20000; i++) { big += \"0123456789\"; }\n",
+            "var big = \"0123456789\";\n",
+            "while (big.length < 200000) { big = big + big; }\n",
+            "big = big.slice(0, 200000);\n",
             "console.log(zlib.zstdDecompressSync(zlib.zstdCompressSync(big)).length);\n",
         ),
     )
@@ -320,8 +321,9 @@ fn zlib_large_input_roundtrip_lengths_e2e_matches_go() {
         work.join("probe.js"),
         concat!(
             "const zlib = require(\"node:zlib\");\n",
-            "var big = \"\";\n",
-            "for (var i = 0; i < 20000; i++) { big += \"0123456789\"; }\n",
+            "var big = \"0123456789\";\n",
+            "while (big.length < 200000) { big = big + big; }\n",
+            "big = big.slice(0, 200000);\n",
             "console.log(zlib.gunzipSync(zlib.gzipSync(big)).length);\n",
             "console.log(zlib.inflateSync(zlib.deflateSync(big)).length);\n",
             "console.log(zlib.inflateRawSync(zlib.deflateRawSync(big)).length);\n",

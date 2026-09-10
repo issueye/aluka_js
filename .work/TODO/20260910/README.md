@@ -1057,3 +1057,98 @@ conformance 全量                                               →  Result: 86
 - 故本轮全量门禁以**单线程**取证（586/0/1 与基线一致）。
   建议后续把这两个用例的输入规模收敛（或标记为串行），以免在内存受限的
   CI/开发机上产生假失败——已登记为独立跟进项。
+
+---
+
+## 待办 17 · zlib 重型用例内存收敛（恢复默认并行下的干净门禁）
+
+> 承接 §待办 16 的排查发现。**测试基建问题，非引擎缺陷** —— 但它会给全量门禁
+> `cargo test --workspace --all-features`（默认并行）制造**假失败**，必须修掉。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测）**：`builtins_phase4_zlib_test.rs` 的两个用例探针用
+`for (var i = 0; i < 20000; i++) { big += "0123456789"; }` 构造 200000 字节输入。
+JS 字符串不可变 → 每轮都产生新串，累计分配
+`10 × (1+2+…+20000) ≈ 2.0 GB` 瞬时垃圾（且紧循环内 GC 未介入）：
+
+| 度量 | 实测 |
+|---|---|
+| 单进程峰值工作集（原追加版） | **2052.2 MB** |
+| 并行跑多个该类进程 | 内存耗尽 → `memory allocation of N bytes failed` |
+| 单线程/单独运行 | 通过（故此前从未暴露） |
+
+**目标**：**保持 200000 字节 payload 与全部断言不变**，仅消除二次方垃圾。
+改用**倍增构造**（`while (len < 200000) big = big + big; big = big.slice(0, 200000)`）：
+分配量降为 `10+20+…+327680 ≈ 655 KB` 级别。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | 两处探针改倍增构造 | 与追加版**内容完全相同**（Node 侧 `a === b` 为 true，均 200000 字节）；峰值内存显著下降 |
+| 2 | 两个用例断言**不变** | 仍断言 `zstd roundtrip 帧格式\n200000` 与 `200000×6`；用例语义（同长度输入的各格式往返）不减弱 |
+| 3 | 恢复默认并行门禁 | 不带 `--test-threads=1` 的 `cargo test --workspace --all-features` 全绿 |
+
+### 交付摘要
+
+**3/3 达成。**
+
+**改法（`crates/aluka-cli/tests/builtins_phase4_zlib_test.rs` 两处探针）**：
+把二次方的逐次追加改为**倍增构造**——
+
+```js
+// 改前（累计分配 ≈ 2.0 GB）
+var big = "";
+for (var i = 0; i < 20000; i++) { big += "0123456789"; }
+// 改后（累计分配 ≈ 655 KB）
+var big = "0123456789";
+while (big.length < 200000) { big = big + big; }
+big = big.slice(0, 200000);
+```
+
+**双双验证（内容未变、内存骤降）**：
+
+| 度量 | 改前 | 改后 |
+|---|---|---|
+| 与追加版内容是否一致（Node 侧 `a === b`） | — | **true**（均 200000 字节） |
+| 单进程峰值工作集 | **2052.2 MB** | **103.0 MB** |
+| 用例断言 | `zstd roundtrip 帧格式\n200000`、`200000×6` | **完全不变**（语义未减弱） |
+| `builtins_phase4_zlib_test`（默认并行） | 2 failed | **18/18 passed** |
+
+**关键验收（恢复默认并行口径）**：
+
+```
+cargo test --workspace --all-features            →  exit 0
+                                                   586 passed / 0 failed / 1 ignored
+cargo test -p aluka-cli --all-features --test builtins_phase4_zlib_test
+                                                 →  18 passed / 0 failed（4.77s）
+```
+
+即 §待办 16 里被迫以 `--test-threads=1` 取证的口径**已恢复**：现在默认并行下全量门禁
+干净通过，不再有 `memory allocation ... failed` 假失败。
+
+**性质说明**：这是**测试基建**修复，未改动引擎任何行为；两个用例仍以 200000 字节
+输入验证各压缩格式往返，覆盖度不变。
+
+---
+
+## 待办 18 · 用户类继承的 `instanceof`（`class B extends A`）
+
+> 承接 §待办 14 遗留清单第 2 项：`cases/gen/deviations/gen-class-proto-0001..0010` 有 8 例
+> 偏差。§待办 14 建立的 `builtin_instance_of` 只处理**内建构造器**（NativeCtor），
+> 对用户 `class`（Closure）**有意不生效**以防误命中，故继承判定仍缺。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（待实测确认基线）**：`class A {} class B extends A {} new B() instanceof A`
+在 Node 为 `true`，预期 Aluka 为 `false`（`get_prototype` 对 Closure 返回 `proto`，
+但 `class extends` 是否写入该字段、以及 `A.prototype` 是否挂对，需实测）。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | 实测 8 个 `gen-class-proto` 用例基线 | 逐条记录 node vs aluka |
+| 2 | 修用户类继承链的 `instanceof` | `new B() instanceof A` → `true`；`new A() instanceof B` → `false`；单层类 `new A() instanceof A` → `true`；**内建判定不回归** |
+| 3 | 门禁语料 + 三连 | 新增/扩展用例 Node 侧确定且一致；fmt/clippy/全量/conformance 全绿 |
+
+### 交付摘要
+
+（待回填）
