@@ -305,6 +305,7 @@ impl Vm {
             self.array_proto_surface,
             self.container_proto,
             self.symbol_proto,
+            self.date_proto,
             self.function_ctor,
             self.error_ctor,
             self.error_prototype,

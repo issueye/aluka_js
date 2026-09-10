@@ -217,6 +217,8 @@ pub struct Vm {
     pub container_proto: Option<ObjectRef>,
     /// `Symbol.prototype` 原型面单例
     pub symbol_proto: Option<ObjectRef>,
+    /// `Date.prototype` 原型面单例（实例方法面挂载点；实例 `[[Prototype]]` 指向它）
+    pub date_proto: Option<ObjectRef>,
     /// 原型面构造器单例缓存（String/Boolean/Number/Set/Map/... 名 → NativeCtor）
     pub ctor_cache: std::collections::HashMap<String, ObjectRef>,
     /// `process` 全局对象单例（nextTick 拦截）
@@ -362,6 +364,7 @@ impl Vm {
             array_proto_surface: None,
             container_proto: None,
             symbol_proto: None,
+            date_proto: None,
             ctor_cache: std::collections::HashMap::new(),
             process_object: None,
             env_object: None,

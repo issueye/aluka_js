@@ -131,24 +131,87 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         .insert("String".to_owned(), Value::Object(string));
 
     // ---- Date ----
+    // 实例方法面挂在 **Date.prototype**（`date_proto`）上：实例 `[[Prototype]]`
+    // 指向它（见 `date::construct_date`），故 `d.getTime` 沿原型链可读、
+    // `d.constructor === Date`、`d instanceof Date` 成立。
+    // 分派表**双键**登记：`"Date.{m}"`（实例 CALL_METHOD 按 `_builtinNs` 拼键）
+    // + `"Date.prototype.{m}"`（`Date.prototype.getTime.call(d)` 形态）。
     let date_proto = vm.alloc_ordinary_with_proto(vm.object_prototype);
+    vm.date_proto = Some(date_proto);
     let date = vm.alloc_native_ctor("Date", Some(date_proto));
-    let now = vm.alloc_native_fn("Date.now");
-    let _ = vm.set_property(Value::Object(date), "now", Value::Object(now));
-    register_handler(registry, "Date", "now", date::date_now);
-    let parse = vm.alloc_native_fn("Date.parse");
-    let _ = vm.set_property(Value::Object(date), "parse", Value::Object(parse));
-    register_handler(registry, "Date", "parse", date::date_parse);
+    let _ = vm.define_proto_method(
+        Value::Object(date_proto),
+        "constructor",
+        Value::Object(date),
+    );
+    // 静态方法（Date.now / Date.parse / Date.UTC）：挂构造器本体
+    for (method, handler) in [
+        ("now", date::date_now as BuiltinHandler),
+        ("parse", date::date_parse),
+        ("UTC", date::date_utc),
+    ] {
+        let f = vm.alloc_native_fn(&format!("Date.{method}"));
+        let _ = vm.set_property(Value::Object(date), method, Value::Object(f));
+        register_handler(registry, "Date", method, handler);
+    }
+    // 实例方法面（`get*` / `set*` / `to*` 全量；`Symbol.toStringTag` 不挂自有属性
+    // ——Node 22 实测 `Date.prototype[Symbol.toStringTag]` 为 undefined，
+    // `[object Date]` 由 `Object.prototype.toString` 的 `_isDate` 分支给出）
     for method in [
         "getTime",
         "valueOf",
         "toISOString",
+        "toJSON",
         "toString",
+        "toDateString",
+        "toTimeString",
+        "toUTCString",
+        "toLocaleString",
+        "toLocaleDateString",
+        "toLocaleTimeString",
+        "getFullYear",
+        "getMonth",
+        "getDate",
+        "getDay",
+        "getHours",
+        "getMinutes",
+        "getSeconds",
+        "getMilliseconds",
+        "getUTCFullYear",
+        "getUTCMonth",
+        "getUTCDate",
+        "getUTCDay",
+        "getUTCHours",
+        "getUTCMinutes",
+        "getUTCSeconds",
+        "getUTCMilliseconds",
         "getTimezoneOffset",
+        "getYear",
+        "setTime",
+        "setFullYear",
+        "setMonth",
+        "setDate",
+        "setHours",
+        "setMinutes",
+        "setSeconds",
+        "setMilliseconds",
+        "setUTCFullYear",
+        "setUTCMonth",
+        "setUTCDate",
+        "setUTCHours",
+        "setUTCMinutes",
+        "setUTCSeconds",
+        "setUTCMilliseconds",
     ] {
-        let date_fn = vm.alloc_native_fn(&format!("Date.{method}"));
-        let _ = vm.set_property(Value::Object(date), method, Value::Object(date_fn));
+        let date_fn = vm.alloc_native_fn(&format!("Date.prototype.{method}"));
+        let _ = vm.define_proto_method(Value::Object(date_proto), method, Value::Object(date_fn));
         register_handler(registry, "Date", method, date::date_instance_method);
+        register_handler(
+            registry,
+            "Date.prototype",
+            method,
+            date::date_instance_method,
+        );
     }
     vm.globals.insert("Date".to_owned(), Value::Object(date));
 

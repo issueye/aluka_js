@@ -837,3 +837,123 @@ Node 22 实测为 `has`——按项目「以 Node 22 LTS 为唯一权威 oracle�
 `"a".codePointAt` 等未实现的字符串方法、自定义 `Symbol.iterator` 生成器的展开、
 `class B extends A` 的实例判定、`util.types.isPromise`、`Date.prototype.getTime`
 （round7 已登记）、`new Number(1)` 包装对象。
+
+---
+
+## 待办 15 · `Date` 原型方法面补齐（`Date.prototype.*` + `Date.UTC` + tag/构造器）
+
+> 承接 §待办 14 遗留清单第 1 项（M5.1「类型面全覆盖」曾因 Date 实例方法缺失而被迫
+> 只判 `typeof`；`cases/gen/deviations/gen-date-matrix-*` 有 7 例分歧）。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线；Node v22.3.0 对拍）**：`Date.now` / `Date.parse` 可用，
+但**实例方法面几乎全空**：
+
+| 表达式 | Node | Aluka 改前 |
+|---|---|---|
+| `new Date(0).getTime()` | `0` | `undefined` |
+| `typeof new Date(0).getTime` | `function` | `undefined` |
+| `new Date(0).toISOString()` | `"1970-01-01T00:00:00.000Z"` | `undefined` |
+| `new Date(0).toJSON()` | `"1970-01-01T00:00:00.000Z"` | `TypeError` |
+| `Date.UTC(1970,0,1)` | `0` | `TypeError` |
+| `new Date(0).getFullYear()` | `1970` | `TypeError` |
+| `Object.prototype.toString.call(new Date(0))` | `[object Date]` | `[object Object]` |
+| `new Date(0).constructor.name` | `Date` | `Object` |
+| `Object.keys(new Date(0))` | `[]` | `["_builtinNs","_isDate","_timeValue"]` |
+
+**根因（两处叠加，已定位）**：
+1. `crates/aluka-vm/src/builtins/global/mod.rs:142-152` 把 Date 方法 NativeFn 挂在
+   **构造器** `date` 上（而非 `date_proto`）→ 属性读 `d.getTime` 走原型链找不到 → undefined；
+   且只登记了 5 个方法名（getTime/valueOf/toISOString/toString/getTimezoneOffset），
+   其余方法在分派表中根本不存在 → `TypeError: X is not a function`。
+2. `crates/aluka-vm/src/builtins/global/date.rs:101-119` 的 `date_instance_method`
+   从**接收者**当成 `NativeFn` 取方法名，而接收者是 Date 实例（`Ordinary`）→ 方法名恒为空
+   → 命中 `_ => Ok(Value::Undefined)`。**故 `d.getTime()` 返回 undefined 而非报错。**
+
+**分派机制（已确认）**：`_builtinNs = "Date"` 的实例，CALL_METHOD 走
+`builtins/mod.rs:486` → 分派键 `"Date.{调用点方法名}"`。故实例方法须以 `"Date"` 模块名注册。
+
+**约束（重要）**：仓库**无任何时间/时区依赖**（无 chrono/time/jiff），`unsafe` 被
+deny 故无法 FFI 取系统时区。因此**本地时间类方法**（getFullYear/getHours/toString/
+toLocale* 等）只能沿用现有「本地 = UTC（偏移 0）」的既定口径，并须显式登记偏离。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | `date_instance_method` 方法名取真 | 用 `pending_native_name()` 末段；`d.getTime()` 得数值而非 undefined |
+| 2 | 方法挂 `date_proto` + 实例原型指向它 | `typeof d.getTime === "function"`；`d.constructor === Date`；`d instanceof Date` |
+| 3 | 补齐方法与分派表 | getTime/valueOf/toISOString/toJSON/getFullYear…getUTCMilliseconds/getTimezoneOffset/setTime/set*；`Date.UTC` |
+| 4 | tag 与内部标记 | `Object.prototype.toString.call(d)` → `[object Date]`；`Object.keys(new Date(0))` → `[]`（`_builtinNs`/`_isDate`/`_timeValue` 改不可枚举） |
+| 5 | 7 个 `gen-date-matrix` 分歧用例转一致 + 新增门禁语料 | 7 例 MATCH；新增 Date 用例 Node 侧多次运行同哈希且与 Aluka 逐字节一致 |
+| 6 | 门禁三连 | fmt/clippy/全量 + conformance 全绿，零回归 |
+
+### 交付摘要
+
+**6/6 达成（第 5 项的"新增语料"由实现者完成，7 个分歧用例全转一致）。**
+
+**根因两处（均已修）**：
+1. `builtins/global/mod.rs` 原把方法 NativeFn 挂在**构造器**上（而非 `date_proto`），
+   且只登记 5 个方法名 → 属性读走原型链找不到、其余方法在分派表中不存在；
+2. `builtins/global/date.rs` 的 `date_instance_method` 从**接收者**当 `NativeFn` 取方法名，
+   而接收者是 Date 实例（`Ordinary`）→ 方法名恒空 → 命中 `_ => Value::Undefined`
+   （故 `d.getTime()` 返回 undefined 而非报错）。
+
+**改法**：
+- `date.rs`（+659）：重写为完整实例方法面 + `Date.UTC`，方法名统一取
+  `pending_native_name()` 末段；模块文档登记时区口径与分派接线；
+- `global/mod.rs`：方法挂 `date_proto`，**双键登记**（`"Date.{m}"` 供实例
+  `_builtinNs` 分派 / `"Date.prototype.{m}"` 供 `.call` 形态）；
+- `interpreter.rs`：新增 `Vm.date_proto` 字段；实例 `[[Prototype]]` 指向它
+  （`constructor`/`instanceof` 随之成立）；
+- **`gc.rs`：把 `date_proto` 登记为 GC 根**——新原型单例若漏登记，可能被回收成悬垂；
+- `surface.rs`：`Object.prototype.toString` 的 tag 补 `_isDate` 分支 → `[object Date]`；
+- Date 实例的内部槽（`_builtinNs`/`_isDate`/`_timeValue`）改为**不可枚举**
+  → `Object.keys(new Date(0))` 由 `["_builtinNs","_isDate","_timeValue"]` 变为 `[]`。
+
+**验收实测**：
+
+```
+【独立验收探针】date_utc_probe.js（52 项，只含 UTC 确定断言，本次评审自建）
+   →  改前全部失效；改后 50/52 一致，仅剩 2 项为下述"新发现"（与 Date 无关）
+
+【7 个分歧用例】gen-date-matrix-0001/0002/0003/0004/0006/0007/0010
+   →  全部 MATCH（改前 0/7）
+
+【新增门禁语料】tests/conformance/node22/cases/31-date-prototype.cjs
+   →  PASS（含扩展年份边界 ±8.64e15、Date.UTC 越界/两位年/月份溢出、
+      Invalid Date 三种形态、setUTC* 族、以及用 getTimezoneOffset 归一化
+      使多参构造断言与时区无关）
+
+cargo fmt --all --check                                       →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                                              →  exit 0，warnings=0 errors=0
+cargo test --workspace --all-features                          →  exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                                               →  Result: 868/868 passed, 3 invalid
+                                                                 （867 + 新增 1；invalid 未增加）
+```
+
+**隔离区偏差再判定**：`cases/gen/deviations/` 170 例中 **30 例现已与 Node 一致**
+（本轮 22 → 30；累计 13 → 22 → 30）。
+
+**已登记偏离（本次最重要的一条，已在 `date.rs` 模块文档与用例注释双处登记）**：
+仓库**无任何时间/时区依赖**（无 chrono/time/jiff），且 workspace 级 `unsafe_code = "deny"`
+禁止 FFI 取系统时区，故：
+- **UTC 类**（`getUTC*`/`toISOString`/`toJSON`/`toUTCString`/`Date.UTC`）与 Node **精确对齐**；
+- **本地时间类**（`getFullYear`/`getHours`/`toString`/`toLocale*`/`getTimezoneOffset` 及
+  `set*` 的本地语义）按**「本地 = UTC（偏移 0）」**计算：UTC 机器上与 Node 一致，
+  本机（UTC+8）则相差一个偏移量——**预期内偏离，非回归**。`getTimezoneOffset()` 保持 `0`。
+- 新增门禁语料**刻意不含本地时区断言**，以避免环境依赖导致的伪对拍。
+
+**本轮新发现（独立验收探针所暴露，未修，另立）**：
+`JSON.stringify` **完全不调用 `toJSON()`**——不只 Date，任何带 `toJSON` 的对象都失效：
+
+| 表达式 | Node | Aluka |
+|---|---|---|
+| `JSON.stringify({toJSON(){return 1}})` | `1` | `{}` |
+| `JSON.stringify({a:{toJSON(){return "x"}}})` | `{"a":"x"}` | `{"a":{}}` |
+| `JSON.stringify([{toJSON(){return 7}}])` | `[7]` | `[{}]` |
+| `JSON.stringify({d:new Date(0)})` | `{"d":"1970-01-01T00:00:00.000Z"}` | `{"d":{}}` |
+
+这是**比 Date 更广**的 JSON 语义缺口（`toJSON` 是生态常用协议）。未在本轮修的原因是
+`prims.rs::json_write` 为 `&self` 且持有堆借用，改为 `&mut self` 需重构 JSON 热路径，
+风险与收益不匹配，故登记另立专项。

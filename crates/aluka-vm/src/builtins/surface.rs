@@ -532,6 +532,9 @@ fn obj_to_string_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
             Some(HeapObject::Map { .. }) => "Map",
             Some(HeapObject::Promise { .. }) => "Promise",
             Some(HeapObject::Generator) => "Generator",
+            // Date 实例（`_isDate` 标记；Node 的 tag 来自 [[DateValue]] 内部槽，
+            // 而非 `Date.prototype[Symbol.toStringTag]`——后者在 Node 22 为 undefined）
+            Some(HeapObject::Ordinary { .. }) if vm.has_own_slot(r.0 as usize, "_isDate") => "Date",
             _ => "Object",
         },
     };
