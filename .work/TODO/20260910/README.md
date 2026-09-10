@@ -957,3 +957,103 @@ conformance 全量                                               →  Result: 86
 这是**比 Date 更广**的 JSON 语义缺口（`toJSON` 是生态常用协议）。未在本轮修的原因是
 `prims.rs::json_write` 为 `&self` 且持有堆借用，改为 `&mut self` 需重构 JSON 热路径，
 风险与收益不匹配，故登记另立专项。
+
+---
+
+## 待办 16 · `JSON.stringify` 支持 `toJSON()`（JSON 序列化协议补齐）
+
+> 来源：§待办 15 的独立验收探针暴露（非 Date 特有）。`toJSON` 是 ES 规范
+> `SerializeJSONProperty` 的正式协议，也是生态常用扩展点（Date/Moment/各类 ORM 都靠它）。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线）**：
+
+| 表达式 | Node | Aluka 改前 |
+|---|---|---|
+| `JSON.stringify({toJSON(){return 1}})` | `1` | `{}` |
+| `JSON.stringify({a:{toJSON(){return "x"}}})` | `{"a":"x"}` | `{"a":{}}` |
+| `JSON.stringify([{toJSON(){return 7}}])` | `[7]` | `[{}]` |
+| `JSON.stringify({d:new Date(0)})` | `{"d":"1970-01-01T00:00:00.000Z"}` | `{"d":{}}` |
+| `JSON.stringify({toJSON(){return undefined}})` | `undefined` | `{}` |
+
+**根因**：`prims.rs::json_write` 直接按堆变体写值，**从不查询 `toJSON` 属性**。
+
+**根因的改造难点（决定改法）**：`json_write` 现为 `&self`，其函数体在
+`self.heap.get(...)` 的**共享借用**内递归。而要调用 `toJSON` 需
+`get_property`/`invoke_callable`（`&mut self`）→ 借用冲突。故须重构为 `&mut self`
+并把「先快照、后递归」落实到各分支（数组按**下标逐次读取**而非持有 `elements` 借用、
+对象沿用既有 `own_entries` 快照、字符串按需 clone）。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | `json_write` 改 `&mut self` + 传 `key` 参数 | 编译通过、无借用冲突；递归不再持有堆借用跨 `&mut self` 调用 |
+| 2 | 按规范实现 `SerializeJSONProperty` 的 `toJSON` 步骤 | 值（或其包装）若有**可调用**的 `toJSON` 属性，则以**属性键**为实参调用，并用返回值继续序列化；键规则：根为 `""`、对象属性为属性名、数组元素为下标字符串 |
+| 3 | 边界 | `toJSON` 非函数 → 忽略；`toJSON` 返回 `undefined` → 该处输出 `null`（对象属性则**整条省略**）；`toJSON` 抛错 → 错误向外传播；根值 `toJSON` 返回 `undefined` → 整体返回 `undefined` |
+| 4 | 与既有行为不回归 | `JSON.stringify(Promise.resolve(1))` 仍 `{}`；`undefined`/函数/符号顶层仍返回 `undefined`；数组内 `undefined`/函数仍写 `null`；循环引用仍 `null`（`seen` 守卫）；`Map`/`Set` 仍 `{}` |
+| 5 | 新增门禁语料 | `32-json-tojson.cjs`：Node 侧多次运行同哈希、与 Aluka 逐字节一致；`invalid` 不增加 |
+| 6 | 门禁三连 + Date 用例 | fmt/clippy/全量 + conformance 全绿；`date_utc_probe.js` 的 2 项 stringify 差异转为一致 |
+
+### 交付摘要
+
+**6/6 达成。**
+
+**改法（`prims.rs` 单文件）**：
+
+- **`json_write` 重构为 `&mut self` + `Result`**：新增局部 `Kind` 枚举，把堆变体
+  先快照成 **owned 数据**（`Text(String)` / `Arr(len)` / `Obj(Vec<(String,Value)>)`），
+  借用即结束，故递归时可安全取 `&mut self`（`toJSON` 可能是用户函数）。
+  数组分支改为**按下标逐次读取**（不持有 `elements` 借用）；对象分支沿用既有
+  `own_entries` 快照并把「剔除不可序列化值」的过滤下移到 for 循环内。
+- **新增 `Vm::apply_to_json(value, key)`**：按规范 `SerializeJSONProperty` 第 2 步——
+  值为对象且 `toJSON` **可调用**（经 `get_property` 走原型链，与 `GetV` 一致）时，
+  **以属性键为唯一实参**调用并用返回值继续序列化；Proxy 亦视为可调用（走 apply trap）。
+- **键在「取用处」逐次应用一次**（而非在 `json_write` 内部重复应用）：根为 `""`、
+  对象属性为属性名、数组元素为下标串——规范如此，且避免 `toJSON` 被调用两次的
+  可见副作用（用例 `call-count-root`/`call-count-prop` 断言为 1）。
+  > 与原计划的差异：**未**给 `json_write` 增传 `key` 参数——键在调用点已消费，
+  > 函数内无需再知键，故签名改动更小（`&mut self` + `Result`）。
+- 顶层：`json_stringify` 先对根值应用 `toJSON`，再做「不可序列化」判定，
+  故 `{toJSON(){return undefined}}` 正确得到整体 `undefined`。
+
+**验收实测**：
+
+```
+【专项探针】tojson2_probe.js（38 项，本会话自建）
+   →  37/38 与 Node 一致；唯一差异为「循环引用」——
+      Node 抛 TypeError、本实现按既有登记降级为 null
+      （已用 git stash 对照验证：该守卫在改动前即存在，非本次引入）
+
+【既有探针回归】date_utc_probe.js（52 项，含先前 2 项 stringify 差异）→ IDENTICAL
+              tojson_probe.js（4 项）                              → IDENTICAL
+
+【新增门禁语料】tests/conformance/node22/cases/32-json-tojson.cjs（37 行）
+   →  Node 侧 5/5 运行同哈希；与 Aluka 逐字节一致；PASS
+
+cargo fmt --all --check                                       →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                                              →  exit 0，warnings=0 errors=0
+cargo test --workspace --all-features -- --test-threads=1      →  exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                                               →  Result: 869/869 passed, 3 invalid
+                                                                 （868 + 新增 1；invalid 未增加）
+```
+
+**隔离区偏差再判定**：`cases/gen/deviations/` 170 例中 **34 例现已与 Node 一致**
+（累计 13 → 22 → 30 → 34）。其中 `gen-object-json-0010.cjs`
+（`JSON.stringify({toJSON:()=>"j"})`）由本次修复直接转 MATCH。
+
+**本轮排查的一个重要发现（环境/CI 层面，非代码缺陷）**：
+
+`cargo test --workspace --all-features` **默认并行**时，
+`builtins_phase4_zlib_test` 的 2 个重型用例（`zlib_large_input_roundtrip_lengths`、
+`zlib_zstd_roundtrip`）会失败：探针用 `for (i<20000) big += "0123456789"` 累加到
+200KB，**字符串不可变 → 累计产生约 2GB 瞬时垃圾**，多个此类进程并发即耗尽内存，
+报 `memory allocation of N bytes failed`。
+
+- **判定依据（决定性）**：`git stash` 掉本次改动、在未改动的 HEAD 上重建后，
+  同样两个用例以同样错误失败 → **与本次改动无关**；
+- 独立跑 `aluka.exe` / `alukac+aluvm` 该探针均**成功**；`--test-threads=1` 下
+  18/18 全过 → 确认是**并行内存压力**而非语义问题；
+- 故本轮全量门禁以**单线程**取证（586/0/1 与基线一致）。
+  建议后续把这两个用例的输入规模收敛（或标记为串行），以免在内存受限的
+  CI/开发机上产生假失败——已登记为独立跟进项。

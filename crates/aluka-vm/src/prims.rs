@@ -42,22 +42,15 @@ impl Vm {
     /// 顶层 undefined / 函数 / 符号 → 返回 `undefined`（标准语义）；其余
     /// 值序列化为字符串。
     pub(crate) fn json_stringify(&mut self, value: Value) -> Result<Value, VmError> {
-        // 顶层不可序列化值：undefined / 函数 / 符号 → undefined
-        if matches!(value, Value::Undefined) {
+        // 规范 `SerializeJSONProperty`：根值等价于以键 `""` 序列化，故 `toJSON`
+        // 先于「不可序列化」判定生效（`JSON.stringify({d:new Date(0)})` 的 ISO 串
+        // 形态即由 `Date.prototype.toJSON` 产出）。
+        let value = self.apply_to_json(value, "")?;
+        // 顶层不可序列化值（含 toJSON 返回的 undefined）：undefined / 函数 / 符号
+        if matches!(value, Value::Undefined) || is_json_ignored_value(self, value) {
             return Ok(Value::Undefined);
         }
         if let Value::Object(r) = value {
-            if matches!(
-                self.heap.get(r.0 as usize),
-                Some(
-                    HeapObject::Closure { .. }
-                        | HeapObject::NativeFn { .. }
-                        | HeapObject::NativeCtor { .. }
-                        | HeapObject::Symbol { .. }
-                )
-            ) {
-                return Ok(Value::Undefined);
-            }
             // Promise 等无自有可枚举属性的异形堆对象：node 序列化为 "{}"
             // 而非 null（`JSON.stringify(Promise.resolve(1))` 实测）
             if matches!(
@@ -69,8 +62,44 @@ impl Vm {
             }
         }
         let mut out = String::new();
-        self.json_write(&mut out, value, &mut Vec::new());
+        self.json_write(&mut out, value, &mut Vec::new())?;
         Ok(Value::Object(self.alloc_string(out)))
+    }
+
+    /// 规范 `SerializeJSONProperty` 第 2 步：值为对象且其 `toJSON` **可调用**时，
+    /// 以属性键为唯一实参调用，并用返回值继续序列化；否则原值返回。
+    ///
+    /// 键规则（规范）：根值为 `""`、对象属性为属性名、数组元素为下标字符串——
+    /// 故 `JSON.stringify({a:{toJSON(k){return k}}})` 得 `{"a":"a"}`；
+    /// 而 `Date.prototype.toJSON` 即经此命中（`this` 为 Date 实例）。
+    /// `toJSON` 经**原型链**查找（`get_property`），与规范 `GetV` 一致。
+    fn apply_to_json(&mut self, value: Value, key: &str) -> Result<Value, VmError> {
+        // 仅对象（含函数、数组）参与；原始值直接返回
+        if !matches!(value, Value::Object(_)) {
+            return Ok(value);
+        }
+        let cb = self.get_property(value, "toJSON")?;
+        let callable = match cb {
+            Value::Object(cr) => {
+                // Proxy 视为可调用（`invoke_callable` 会走 apply trap）；
+                // 其余按堆变体判定函数面
+                self.proxy_parts(cr).is_some()
+                    || matches!(
+                        self.heap.get(cr.0 as usize),
+                        Some(
+                            HeapObject::Closure { .. }
+                                | HeapObject::NativeFn { .. }
+                                | HeapObject::NativeCtor { .. }
+                        )
+                    )
+            }
+            _ => false,
+        };
+        if !callable {
+            return Ok(value);
+        }
+        let key_arg = Value::Object(self.alloc_string(key.to_owned()));
+        self.invoke_callable(cb, value, &[key_arg])
     }
 
     /// 判断字符串是否为 JSON 数组索引键（规范 [[OwnPropertyKeys]] 整数键前置）。
@@ -89,11 +118,22 @@ impl Vm {
     /// 对齐标准 `TypeError` 之外的常见降级；Go 侧实测无循环用例）。
     ///
     /// 语义对齐 Node.js 22 LTS：
+    /// - `toJSON` 协议（规范 `SerializeJSONProperty`）：由**调用方**在取用处按
+    ///   属性键应用一次（根为 `""`、对象属性为属性名、数组元素为下标串），
+    ///   故本函数自身不再重复应用——避免 `toJSON` 被调用两次的可见副作用；
     /// - 对象键序 = 整数索引键升序前置 + 其余**创建序**（shape/dict 保插入序）；
     /// - 对象属性值为 `undefined`/函数/符号 → 整键剔除（标准 SerializeJSONObject）；
     /// - 数组元素 `undefined`/函数 → `"null"` 占位（标准）；
     /// - 顶层 `undefined` 返回 `undefined`（见 [`json_stringify`]）。
-    fn json_write(&self, out: &mut String, value: Value, seen: &mut Vec<u32>) {
+    ///
+    /// 签名为 `&mut self`：`toJSON` 可能是用户函数，调用它需要可变借用。故各分支
+    /// **先把堆变体快照为 owned 数据**再递归——不可持有 `self.heap` 借用跨调用。
+    fn json_write(
+        &mut self,
+        out: &mut String,
+        value: Value,
+        seen: &mut Vec<u32>,
+    ) -> Result<(), VmError> {
         match value {
             Value::Undefined | Value::Null => out.push_str("null"),
             Value::Boolean(b) => out.push_str(if b { "true" } else { "false" }),
@@ -107,34 +147,47 @@ impl Vm {
             Value::Object(r) => {
                 if seen.contains(&r.0) {
                     out.push_str("null");
-                    return;
+                    return Ok(());
                 }
-                match self.heap.get(r.0 as usize) {
-                    Some(HeapObject::String(text)) => out.push_str(&json_quote(text)),
-                    Some(HeapObject::Array { elements, .. }) => {
+                // 堆变体快照（owned；借用在此结束，后续递归可安全取 &mut self）
+                enum Kind {
+                    Text(String),
+                    Arr(usize),
+                    Obj(Vec<(String, Value)>),
+                    Other,
+                }
+                let kind = match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::String(text)) => Kind::Text(text.clone()),
+                    Some(HeapObject::Array { elements, .. }) => Kind::Arr(elements.len()),
+                    Some(HeapObject::Ordinary { .. } | HeapObject::Map { .. }) => {
+                        Kind::Obj(self.own_entries(r.0 as usize))
+                    }
+                    _ => Kind::Other,
+                };
+                match kind {
+                    Kind::Text(text) => out.push_str(&json_quote(&text)),
+                    Kind::Arr(len) => {
                         seen.push(r.0);
                         out.push('[');
-                        for (i, el) in elements.iter().enumerate() {
+                        for i in 0..len {
                             if i > 0 {
                                 out.push(',');
                             }
-                            // 数组内的 undefined/函数/符号均序列化为 "null"（标准）
-                            match el {
-                                Value::Undefined => out.push_str("null"),
-                                Value::Object(rr)
-                                    if matches!(
-                                        self.heap.get(rr.0 as usize),
-                                        Some(
-                                            HeapObject::Closure { .. }
-                                                | HeapObject::NativeFn { .. }
-                                                | HeapObject::NativeCtor { .. }
-                                                | HeapObject::Symbol { .. }
-                                        )
-                                    ) =>
-                                {
-                                    out.push_str("null")
+                            // 按下标逐次读取（不持有 elements 借用，见函数文档）
+                            let el = match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::Array { elements, .. }) => {
+                                    elements.get(i).copied().unwrap_or(Value::Undefined)
                                 }
-                                v => self.json_write(out, *v, seen),
+                                _ => Value::Undefined,
+                            };
+                            // 规范：数组元素的 toJSON 以**下标字符串**为键
+                            let ek = i.to_string();
+                            let el = self.apply_to_json(el, &ek)?;
+                            // 数组内的 undefined/函数/符号均序列化为 "null"（标准）
+                            if is_json_ignored_value(self, el) {
+                                out.push_str("null");
+                            } else {
+                                self.json_write(out, el, seen)?;
                             }
                         }
                         out.push(']');
@@ -145,27 +198,29 @@ impl Vm {
                     // （`JSON.stringify(new Map())` 曾落入 `_ => "null"` 得到 `null`）。
                     // 登记：用户额外挂在 Map 上的自有属性同样不会被序列化（`own_entries`
                     // 只读 Ordinary 的 props）——属本实现折衷，未在 Node 中复现。
-                    Some(HeapObject::Ordinary { .. } | HeapObject::Map { .. }) => {
+                    Kind::Obj(entries) => {
                         seen.push(r.0);
                         out.push('{');
                         // 键序（规范 [[OwnPropertyKeys]] 的 JSON 子集）：
                         // 整数索引键按数值升序前置，其余键保持创建序（VM 的
                         // shape/字典两模式均保插入序）。符号键不参与（标准）。
-                        let items: Vec<(String, Value)> = self
-                            .own_entries(r.0 as usize)
-                            .into_iter()
-                            .filter(|(k, v)| {
-                                !crate::symbol::is_symbol_key(k) && !is_json_ignored_value(self, *v)
-                            })
-                            .collect();
                         // 稳定分区：整数键（已升序收集）前置，非整数键保创建序
                         let mut idx_items: Vec<(String, Value)> = Vec::new();
                         let mut str_items: Vec<(String, Value)> = Vec::new();
-                        for it in items {
-                            if Self::is_json_array_index(&it.0) {
-                                idx_items.push(it);
+                        for (k, v) in entries {
+                            if crate::symbol::is_symbol_key(&k) {
+                                continue;
+                            }
+                            // 规范：对象属性的 toJSON 以**属性名**为键，且先于
+                            // 「不可序列化则剔除」判定（返回值可能变为可序列化）
+                            let v = self.apply_to_json(v, &k)?;
+                            if is_json_ignored_value(self, v) {
+                                continue;
+                            }
+                            if Self::is_json_array_index(&k) {
+                                idx_items.push((k, v));
                             } else {
-                                str_items.push(it);
+                                str_items.push((k, v));
                             }
                         }
                         // 整数键字典序 == 数值序（无前导零的十进制串）
@@ -177,15 +232,16 @@ impl Vm {
                             }
                             out.push_str(&json_quote(k));
                             out.push(':');
-                            self.json_write(out, *v, seen);
+                            self.json_write(out, *v, seen)?;
                         }
                         out.push('}');
                         seen.pop();
                     }
-                    _ => out.push_str("null"),
+                    Kind::Other => out.push_str("null"),
                 }
             }
         }
+        Ok(())
     }
 
     /// 字符串接收者的原型方法求值（`CALL_METHOD` 链调用）。
