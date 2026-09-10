@@ -1992,3 +1992,67 @@ cluster 场景:      node EXIT=0   aluka EXIT=0   （修前 EXIT=1）
   `ProcessStartInfo` + `WaitForExit(30s)` + 超时 `Kill(entireProcessTree)` 的硬超时执行器。
 - 另注：本机 `node` 现为 **v22.23.1**（AGENTS.md 指定的权威版本），已非旧评审记录的
   nvmd shim `v22.3.0`。
+
+---
+
+## 待办 26 · M5.2 收尾三项（listen 错误载体 / settings.exec,args / Connection: close）
+
+> 触发指令：「继续」。承接 [待办 25](#待办-25--m5-收口轮timer-mock--ipc-面--余项) 末尾
+> 给出的下一步建议：三项均为**小改动、Node 语义明确、可当场对拍**。
+
+### 开工前登记（目标 + 验收标准）
+
+| # | 项 | 现状（已核对） | Node 22 期望 | 验收 |
+|---|---|---|---|---|
+| 1 | **`listen` 失败的错误载体** | `http/server.rs:246-252` 用 `alloc_string` 承载 + **同步** emit `'error'` | 真 `Error` 实例（`code`/`errno`/`syscall`/`address`/`port`）+ **异步**派发；`server.listening` 为 false | 探针对拍一致 + e2e |
+| 2 | **`cluster.settings.exec/args` 生效** | `cluster.rs:289-303` 存而不用；fork 走 `vm.entry_file` + 空参数（`:132-142`、`:168`） | `setupPrimary({exec,args})` 后 worker 执行 `exec` 并带 `args`；未设置时回退现状 | 探针对拍 + e2e；`11-cluster`/`21-m5` 不回归 |
+| 3 | **服务端 `Connection: close`** | `http/server.rs:475-481` 写响应后 `mark_conn_idle`（`:517-526`），**从不关闭**；全目录无 `Connection:` 头生成 | 请求带 `close` / 响应设 `close` / HTTP/1.0 无 keep-alive → 响应带 `Connection: close` 并关闭 socket；其余保持 keep-alive | 四情形探针对拍 + e2e |
+
+**红线**：Node 22 唯一权威；做不到的如实登记，不放宽断言凑绿；`listen(0)` 随机端口、夹具放
+临时目录、确定性；既有 http/net/cluster/TLS 用例必须全绿。
+
+### 交付摘要（M5.2 收尾轮 · 部分完成，实测证据）
+
+**门禁三连全绿**：`cargo fmt --all --check` = 0；`cargo clippy --workspace --all-targets
+--all-features -- -D warnings` = 0；`cargo test --workspace --all-features` →
+**rc=0，611 passed / 0 failed，墙钟 117.3s**（较上轮 606 例 +5：新增 2 个对拍用例 +
+fixer 在 `net.rs`/`http::state` 内附的单元测试）。
+
+#### 已完成并验证
+
+**项 1 · `listen` 失败的错误载体（P0）** ✅
+`net.rs` 新增 `listen_error_code`（Node `code` ↔ Unix errno ↔ **libuv Windows 负值**映射）、
+`listen_error_text`（libuv 文案）、`alloc_listen_error`（构造真 `Error` 实例）；
+`http/state.rs` 新增 `push_pending_event_with` / `drain_pending_events` 使 `'error'`
+**异步**派发。Node 对拍**逐字一致**（仅随机端口号不同）：
+```
+node : before listen | listen() returned | after listen (async marker) |
+       isError=true name=Error code=EADDRINUSE errno=-4091 syscall=listen address=127.0.0.1 port=51879 | listening=false
+aluka: before listen | listen() returned | after listen (async marker) |
+       isError=true name=Error code=EADDRINUSE errno=-4091 syscall=listen address=127.0.0.1 port=51880 | listening=false
+```
+顺序三行即「异步派发」的证据（错误不在 `listen()` 调用栈内触发）。
+
+**顺带 · M5.1 端口方法面** ✅（本轮由我在 fixer 之外并行完成）
+`worker_threads.rs`：`ref`/`unref`/`start`/`hasRef` 由「恒返回 undefined 的占位」改为真实现
+（新增 `PORT_HAS_REF` 状态表；`ref`/`unref` 返回 undefined、`hasRef` 默认 true、`unref` 后 false），
+并把该四方法**同时挂到 `parentPort`**（此前只有普通端口有，`parentPort.ref()` 不可用）。
+Node 对拍**逐字一致**（7 行全同）。
+
+**新增 e2e 对拍用例**（`crates/aluka-cli/tests/m5_semantics_test.rs`，总计 8 例）：
+`message_port_ref_surface_matches_node`、`listen_failure_error_payload_matches_node`
+（后者把随机端口归一化为 `portIsNumber`，`errno` 的平台差异交由逐字节对拍保证）。
+
+#### 未完成（本轮显式登记，下轮继续）
+
+| # | 项 | 状态 |
+|---|---|---|
+| 2 | `cluster.settings.exec/args` 生效 | ❌ **未做**——`cluster.rs` 本轮无改动；仍存而不用（`:289-303` 写入、`:132-142`/`:168` fork 时不读） |
+| 3 | 服务端 `Connection: close` | ❌ **未做**——`http/server.rs` 本轮只改了 error 事件相关注释（见 diff），仍无 `Connection:` 响应头生成、响应后不关闭连接 |
+
+#### 过程说明
+
+本轮 fixer 在**完成项 1 之后**、做项 2/3 之前撞 80 轮上限中断（第 6 个 fixer 撞上限）。
+中断点处它已在修自身新 helper 的借用错误且**已修好**（树可编译），故未回退。
+我在其运行期间并行完成了 M5.1 端口方法面与其对拍用例，并在其停手后统一验证 + 修格式
+（`cargo fmt -p aluka-vm` 修掉 `net.rs` 一处 `format!` 折行）。

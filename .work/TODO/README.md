@@ -248,7 +248,7 @@
 > （Node 22.23.1 实测对齐——错误文本/绑定规则/columns 五键/close 语义全面
 > Node 化，44 行探针逐字一致真对拍固化）；M5.4 仅 concurrency 与 Mock 达成
 > （Timer Mock / 报告接线 / LCOV / CLI 运行器未闭环）。总览按项登记。
-- [~] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环 + **5 处语义偏离全部关闭**——余 port `ref/unref` 方法面、`postMessageToThread` 真线程分支、eval worker，20260910）
+- [~] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环 + **5 处语义偏离全部关闭** + **端口 `ref/unref/start/hasRef` 与 `parentPort` 方法面**——余 `postMessageToThread` 真线程分支、eval worker，20260910）
   - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；✅ 真
     `std::thread` + 独立 Vm（runtime 装配钩子），通道为 std mpsc（crossbeam
     仅 dns_resolver 在用；登记口径以「真线程 + 通道桥」为准）；
@@ -261,9 +261,10 @@
     workerData 复验列下轮；
   - 验收：多 Worker 并发计算与消息通信用例对拍全绿。✅ `20-m5` Node 逐字节
     对拍 PASS + phase6 3 用例 + case 25 结构化克隆对拍。缺口跟踪：eval
-    worker、`postMessageToThread` 真线程分支、port ref/unref/start、
-    文件头注释过时项（threadId 恒 0 等）。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集**达成——余 RR 调度 / `Connection: close` / listen 错误载体，20260910）
+    worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
+    与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
+    已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** 达成——余 RR 调度 / `Connection: close` / `settings.exec,args` 生效，20260910）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
     OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——

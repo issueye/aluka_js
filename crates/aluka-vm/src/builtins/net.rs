@@ -1059,13 +1059,15 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
         Err(e) => {
-            // 对齐 Go：监听失败异步派发 'error'（OS 错误文案）。
-            let err_val = Value::Object(vm.alloc_string(e.to_string()));
+            // 对齐 Node 22：监听失败异步派发 `'error'`，载荷为真 `Error` 实例
+            // （带 code/errno/syscall/address/port），'error' 无监听器时按
+            // EventEmitter 语义上抛未捕获异常。
+            let err_obj = alloc_listen_error(vm, &e, &bind_host, port);
             with_net(|n| {
                 n.pending.push_back(NetAction::Emit {
                     target: Value::Object(r),
                     event: "error".to_owned(),
-                    args: vec![err_val],
+                    args: vec![Value::Object(err_obj)],
                 });
             });
             vm.activate_event_source("net", net_pump);
@@ -1509,6 +1511,69 @@ pub(crate) fn bind_shared_listener(
     socket.bind(&addr.into())?;
     socket.listen(511)?;
     Ok(socket.into())
+}
+
+/// 由 `std::io::Error` 推导 Node 的 `code` / `errno`。
+///
+/// Node 的 `errno` 即 libuv 错误码：Unix 直接是系统 errno，Windows 是
+/// `UV_E*` 负值（如 `UV_EADDRINUSE = -4091`）。
+fn listen_error_code(err: &std::io::Error) -> (&'static str, i64) {
+    let raw = err.raw_os_error();
+    // (code, Unix errno 兜底, libuv Windows 负值)
+    let (code, unix, win) = match err.kind() {
+        ErrorKind::AddrInUse => ("EADDRINUSE", 98, -4091),
+        ErrorKind::PermissionDenied => ("EACCES", 13, -4092),
+        ErrorKind::AddrNotAvailable => ("EADDRNOTAVAIL", 99, -4094),
+        ErrorKind::InvalidInput => ("EINVAL", 22, -4071),
+        _ => ("EPERM", 1, -4048),
+    };
+    let errno = if cfg!(windows) {
+        win
+    } else {
+        raw.map_or(unix, i64::from)
+    };
+    (code, errno)
+}
+
+/// libuv `uv_strerror` 文案（Node `message` 中 `code:` 之后的片段）。
+fn listen_error_text(code: &str) -> &'static str {
+    match code {
+        "EADDRINUSE" => "address already in use",
+        "EACCES" => "permission denied",
+        "EADDRNOTAVAIL" => "address not available",
+        "EINVAL" => "invalid argument",
+        _ => "operation not permitted",
+    }
+}
+
+/// 构造 `listen` 失败的 `Error` 实例（Node 22 语义）。
+///
+/// 自有属性：`name="Error"`、`code`（`'EADDRINUSE'` 等）、`errno`（libuv 数值）、
+/// `syscall="listen"`、`address`、`port`；`message` 形如
+/// `listen EADDRINUSE: address already in use 127.0.0.1:8080`。
+///
+/// 注：`host` 为空时 aluka 实际绑定 IPv4 `0.0.0.0`，故如实报告 `0.0.0.0`
+/// （Node 默认族为 IPv6 时报告 `::`）。
+pub(crate) fn alloc_listen_error(
+    vm: &mut Vm,
+    err: &std::io::Error,
+    host: &str,
+    port: u16,
+) -> ObjectRef {
+    let (code, errno) = listen_error_code(err);
+    let message = format!("listen {code}: {} {host}:{port}", listen_error_text(code));
+    let obj = vm.alloc_error_instance(&message);
+    let recv = Value::Object(obj);
+    // 先分配字符串再 set_property（避免 `*vm` 双重可变借用）。
+    let code_ref = vm.alloc_string(code.to_owned());
+    let syscall_ref = vm.alloc_string("listen".to_owned());
+    let address_ref = vm.alloc_string(host.to_owned());
+    let _ = vm.set_property(recv, "code", Value::Object(code_ref));
+    let _ = vm.set_property(recv, "errno", Value::Number(errno as f64));
+    let _ = vm.set_property(recv, "syscall", Value::Object(syscall_ref));
+    let _ = vm.set_property(recv, "address", Value::Object(address_ref));
+    let _ = vm.set_property(recv, "port", Value::Number(f64::from(port)));
+    obj
 }
 
 /// GC 根快照：net 侧表实例对象、监听器与连接/pipe 目标。

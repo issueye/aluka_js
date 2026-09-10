@@ -155,9 +155,10 @@ thread_local! {
     static RESPONSES: RefCell<Option<HashMap<u32, RespBinding>>> = const { RefCell::new(None) };
     static LISTENERS: RefCell<Option<ListenerMap>> = const { RefCell::new(None) };
     static CONN_COUNTER: RefCell<u64> = const { RefCell::new(0) };
-    // 待发射事件队列（目标对象, 事件名）：`end` 的 finish/close、`listen` 的
-    // listening 等，由泵在安全时机统一发射（对齐 Go `PostTask` 顺序）。
-    static PENDING_EVENTS: RefCell<Vec<(Value, &'static str)>> =
+    // 待发射事件队列（目标对象, 事件名, 实参）：`end` 的 finish/close、
+    // `listen` 的 listening、`listen` 失败的 error（携带 Error 载荷）等，
+    // 由泵在安全时机统一发射（对齐 Go `PostTask` 顺序）。
+    static PENDING_EVENTS: RefCell<Vec<(Value, &'static str, Vec<Value>)>> =
         const { RefCell::new(Vec::new()) };
     // 待发射 `'timeout'` 的请求对象队列（宏任务标记函数消费）。
     static TIMEOUT_TARGETS: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
@@ -199,13 +200,18 @@ pub(crate) fn pool_put(origin: &str, stream: std::net::TcpStream) {
     });
 }
 
-/// 入队一条待发射事件。
+/// 入队一条待发射事件（无实参）。
 pub(crate) fn push_pending_event(target: Value, event: &'static str) {
-    PENDING_EVENTS.with(|q| q.borrow_mut().push((target, event)));
+    push_pending_event_with(target, event, Vec::new());
+}
+
+/// 入队一条带实参的待发射事件。
+pub(crate) fn push_pending_event_with(target: Value, event: &'static str, args: Vec<Value>) {
+    PENDING_EVENTS.with(|q| q.borrow_mut().push((target, event, args)));
 }
 
 /// 取走全部待发射事件。
-pub(crate) fn drain_pending_events() -> Vec<(Value, &'static str)> {
+pub(crate) fn drain_pending_events() -> Vec<(Value, &'static str, Vec<Value>)> {
     PENDING_EVENTS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
@@ -399,8 +405,13 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
         }
     });
     PENDING_EVENTS.with(|g| {
-        for (v, _) in g.borrow().iter() {
+        for (v, _, args) in g.borrow().iter() {
             out.push(*v);
+            for a in args {
+                if matches!(a, Value::Object(_)) {
+                    out.push(*a);
+                }
+            }
         }
     });
 }

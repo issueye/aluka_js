@@ -167,3 +167,80 @@ console.log('no-transfer byteLength=' + structuredClone(kept).byteLength + ', sr
     assert_eq!(lines[0], "byteLength=0");
     assert_eq!(lines[1], "no-transfer byteLength=8, src=8");
 }
+
+/// M5.1 端口方法面：`ref`/`unref`/`start`/`hasRef` 的返回值与 `hasRef` 状态。
+///
+/// Node 22.23.1 实测口径：`ref()`/`unref()` **返回 undefined**（不是 port 自身），
+/// `hasRef()` 默认 `true`、`unref()` 之后为 `false`；`start()` 返回 undefined。
+#[test]
+fn message_port_ref_surface_matches_node() {
+    let out = run_probe(
+        "port_surface",
+        r#"
+const { MessageChannel } = require('worker_threads');
+const { port1, port2 } = new MessageChannel();
+console.log('fn-types=' + [typeof port1.ref, typeof port1.unref, typeof port1.start, typeof port1.hasRef].join(','));
+console.log('ref-returns-self=' + (port1.ref() === port1));
+console.log('hasRef-default=' + port1.hasRef());
+console.log('unref-returns-self=' + (port1.unref() === port1));
+console.log('hasRef-after-unref=' + port1.hasRef());
+console.log('ref-again-self=' + (port1.ref() === port1));
+console.log('start-returns=' + port1.start());
+port1.close();
+port2.close();
+"#,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "fn-types=function,function,function,function");
+    assert_eq!(lines[1], "ref-returns-self=false");
+    assert_eq!(lines[2], "hasRef-default=true");
+    assert_eq!(lines[3], "unref-returns-self=false");
+    assert_eq!(lines[4], "hasRef-after-unref=false");
+    assert_eq!(lines[5], "ref-again-self=false");
+    assert_eq!(lines[6], "start-returns=undefined");
+}
+
+/// M5.2 `listen` 失败：**异步**派发真 `Error`（带 `code`/`errno`/`syscall`/
+/// `address`/`port`），`server.listening` 为 false。
+///
+/// 端口号随机，故打印度量里把 `port` 归一化为 `portIsNumber`；`errno` 的平台差异
+/// （Windows libuv 负值 / Unix errno）由 `assert_e2e_matches_node` 的逐字节对拍
+/// 保证与**本机 node** 一致，此处只断言平台无关部分。
+#[test]
+fn listen_failure_error_payload_matches_node() {
+    let out = run_probe(
+        "listen_fail",
+        r#"
+const net = require('net');
+const blocker = net.createServer().listen(0, '127.0.0.1', function () {
+  const port = blocker.address().port;
+  const srv = net.createServer();
+  console.log('before listen');
+  srv.on('error', function (e) {
+    console.log('after listen');
+    console.log('isError=' + (e instanceof Error) + ' name=' + e.name + ' code=' + e.code + ' errno=' + e.errno + ' syscall=' + e.syscall + ' address=' + e.address + ' portIsNumber=' + (typeof e.port === 'number'));
+    console.log('listening=' + srv.listening);
+    blocker.close();
+  });
+  srv.listen(port, '127.0.0.1');
+  console.log('listen() returned');
+});
+"#,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    // 顺序即证据：错误不在 `listen()` 调用栈内同步触发（Node 语义为异步派发）
+    assert_eq!(lines[0], "before listen");
+    assert_eq!(lines[1], "listen() returned");
+    assert_eq!(lines[2], "after listen");
+    assert!(
+        lines[3].starts_with("isError=true name=Error code=EADDRINUSE "),
+        "{:?}",
+        lines[3]
+    );
+    assert!(
+        lines[3].ends_with(" syscall=listen address=127.0.0.1 portIsNumber=true"),
+        "{:?}",
+        lines[3]
+    );
+    assert_eq!(lines[4], "listening=false");
+}

@@ -249,8 +249,13 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "close",
         wt_port_close,
     );
-    for m in ["ref", "unref", "start", "hasRef"] {
-        register_handler(registry, "worker_threads:port", m, wt_port_noop);
+    // ref/unref/start/hasRef：端口与 parentPort（MessagePort 子类）同一方法面。
+    // Node 22 实测：ref()/unref() 返回 undefined，hasRef() 默认 true、unref() 后 false。
+    for ns in ["worker_threads:port", "worker_threads:parent_port"] {
+        register_handler(registry, ns, "ref", wt_port_ref);
+        register_handler(registry, ns, "unref", wt_port_unref);
+        register_handler(registry, ns, "start", wt_port_start);
+        register_handler(registry, ns, "hasRef", wt_port_has_ref);
     }
     register_ns_emitter_handlers(registry, "worker_threads:worker");
     register_handler(
@@ -603,7 +608,8 @@ fn make_port(vm: &mut Vm, ns: &'static str) -> ObjectRef {
     let port = vm.alloc_ordinary();
     let mut methods: Vec<&str> = EMITTER_METHODS.to_vec();
     methods.extend_from_slice(&["postMessage", "close"]);
-    if ns == "worker_threads:port" {
+    // ref/unref/start/hasRef 同为 MessagePort 子类（parentPort）的方法面
+    if matches!(ns, "worker_threads:port" | "worker_threads:parent_port") {
         methods.extend_from_slice(&["ref", "unref", "start", "hasRef"]);
     }
     ns_attach(vm, port, ns, &methods);
@@ -795,9 +801,49 @@ fn wt_port_close(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
-/// `port.ref/unref/start/hasRef`：无事件循环语义，占位（Go 同款简化）。
-fn wt_port_noop(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+thread_local! {
+    /// 端口引用状态（`MessagePort.ref()` / `unref()` / `hasRef()` 的可见面）。
+    ///
+    /// Node 22.23.1 实测口径：`ref()`/`unref()` **返回 undefined**（不是 this），
+    /// `hasRef()` 默认 `true`、`unref()` 之后为 `false`。本运行时没有真正的事件
+    /// 循环引用计数（端口存活由 proc 事件源泵决定），故只维护 `hasRef()` 的可见值；
+    /// 缺省（表内无记录）= ref'd，与 Node 一致。
+    static PORT_HAS_REF: RefCell<HashMap<u32, bool>> = RefCell::new(HashMap::new());
+}
+
+/// 写入当前接收者（端口对象）的 ref 状态。
+fn port_set_has_ref(has: bool) {
+    if let Value::Object(r) = crate::builtins::current_receiver() {
+        PORT_HAS_REF.with(|m| {
+            m.borrow_mut().insert(r.0, has);
+        });
+    }
+}
+
+/// `port.ref()`：标记为 ref'd（返回 undefined——Node 22 实测口径）。
+fn wt_port_ref(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    port_set_has_ref(true);
     Ok(Value::Undefined)
+}
+
+/// `port.unref()`：标记为 unref'd（返回 undefined——Node 22 实测口径）。
+fn wt_port_unref(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    port_set_has_ref(false);
+    Ok(Value::Undefined)
+}
+
+/// `port.start()`：开始接收消息（本运行时端口随 `on('message')` 即生效）；返回 undefined。
+fn wt_port_start(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    Ok(Value::Undefined)
+}
+
+/// `port.hasRef()`：是否处于 ref 状态（默认 true，`unref()` 后 false）。
+fn wt_port_has_ref(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let has = match crate::builtins::current_receiver() {
+        Value::Object(r) => PORT_HAS_REF.with(|m| m.borrow().get(&r.0).copied().unwrap_or(true)),
+        _ => true,
+    };
+    Ok(Value::Boolean(has))
 }
 
 // ---------------------------------------------------------------------------

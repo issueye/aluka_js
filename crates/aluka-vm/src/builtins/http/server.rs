@@ -244,10 +244,13 @@ fn server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             Ok(receiver)
         }
         Err(e) => {
-            // Go：goroutine 内失败经 PostTask 发射 'error'（此处同步发射）。
-            let msg = format!("listen tcp {bind_str}: bind: {e}");
-            let err = vm.alloc_string(msg);
-            state::emit(vm, receiver, "error", &[Value::Object(err)])?;
+            // Node 22：`listen` 失败**异步**派发 `'error'`，载荷为真 `Error`
+            // 实例（`code`/`errno`/`syscall`/`address`/`port`）；无监听器时
+            // 由 `state::emit` 按 EventEmitter 语义上抛未捕获异常。
+            // `listening` 保持 false。
+            let err_obj = crate::builtins::net::alloc_listen_error(vm, &e, &bind_host, bind_port);
+            state::push_pending_event_with(receiver, "error", vec![Value::Object(err_obj)]);
+            vm.activate_event_source("http", super::pump);
             Ok(receiver)
         }
     }
@@ -654,9 +657,9 @@ fn response_noop_self(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 读 socket 解析请求并派发。返回本轮是否有进展。
 pub(crate) fn pump_servers(vm: &mut Vm) -> Result<bool, VmError> {
     let mut progressed = false;
-    // 1. 已排队事件（finish/close/listening 等，对齐 Go PostTask 时序）
-    for (target, event) in state::drain_pending_events() {
-        state::emit(vm, target, event, &[])?;
+    // 1. 已排队事件（finish/close/listening/error 等，对齐 Go PostTask 时序）
+    for (target, event, args) in state::drain_pending_events() {
+        state::emit(vm, target, event, &args)?;
         progressed = true;
     }
     // 2. I/O：flush / accept / read / parse（锁内，不触碰 vm）
@@ -671,8 +674,8 @@ pub(crate) fn pump_servers(vm: &mut Vm) -> Result<bool, VmError> {
         progressed = true;
         // handler 期间可能 end()，其 finish/close 事件在此立即发射
         // （Go：PostTask 顺序保证 finish/close 先于 data/end 之后的任务）。
-        for (target, event) in state::drain_pending_events() {
-            state::emit(vm, target, event, &[])?;
+        for (target, event, args) in state::drain_pending_events() {
+            state::emit(vm, target, event, &args)?;
         }
     }
     Ok(progressed)
