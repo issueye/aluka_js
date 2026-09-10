@@ -13,8 +13,11 @@ fn aluka_bin() -> &'static str {
 
 fn registry_reachable() -> bool {
     // 3s 内能拿到 registry 响应（含 4xx/5xx 也算可达——网络通）
+    // 载荷刻意不使用箭头函数：`=>` 里的 `>` 在部分环境（Windows 下经 shell/shim
+    // 启动 node）会被当成重定向，导致载荷被截断（node 报 SyntaxError → 本函数恒
+    // false、e2e 长期假绿）并在 CWD 生成垃圾文件 `process.exit(1))`。
     Command::new("node")
-        .args(["-e", "fetch('https://registry.npmjs.org/-/ping').then(()=>process.exit(0)).catch(()=>process.exit(1))"])
+        .args(["-e", "fetch('https://registry.npmjs.org/-/ping').then(function(){process.exit(0)}).catch(function(){process.exit(1)})"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

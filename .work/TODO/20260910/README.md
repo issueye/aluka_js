@@ -391,3 +391,84 @@ conformance 全量（--nocapture）                                   → Result
 - fetch 侧代码推定未实测项：同进程自请求互锁、流式响应无限阻塞
   （`fetch` 仍是同步阻塞实现，本轮的定界修复不改变这一点）；
 - `find_project` 越界（§6-A）与探针加固（§6-B）需按序另立专项。
+
+---
+
+## 待办 10 · `find_project` 越界修复 + npm e2e 探针加固（待办 9 的闸门项）
+
+> 承接 §待办 9 §6 的两个顺带发现。按"先修 A 再加固 B"的顺序，因为 B 的加固会让
+> e2e 真正执行 `aluka npm install`——**若 A 未修，install 会把项目根解析到用户主
+> 目录并写入真实工程**。
+
+### 开工前登记（目标 + 验收标准）
+
+**Oracle 实测（真实 npm 10.8.1，沙箱 `parent/package.json` + `parent/child/`）**：
+
+| 命令 | 真实 npm 行为 | Aluka 现状 |
+|---|---|---|
+| `npm prefix` @ `parent/child` | `parent`（**上溯**） | `find_project` 上溯 ✅ 一致 |
+| `npm init -y` @ `parent/child`（父目录有 package.json，cwd 无） | **写入 `parent/child/package.json`**（作用于 cwd，不上溯） | ❌ 解析到 `parent` → 误报「package.json 已存在」 |
+| `npm init -y` @ cwd 已有 package.json | 覆盖重写（EXIT=0） | Aluka 报「已存在」（**有意保留**的安全折衷） |
+
+| # | 任务 | 预期目标 | 验收标准 |
+|---|---|---|---|
+| 1 | **`cmd_init` 改用 cwd** | `init` 不再复用 `find_project`（npm 语义：作用于当前目录）；`install/uninstall/run/ls` 保持上溯（npm prefix 语义不变） | ①在 `C:\Users\User\` 之下的**空目录**执行 `aluka npm init -y` 成功生成 package.json（修复前报「已存在」、EXIT=1）；②祖先有 package.json 时 `init` 仍写入 cwd；③`install/ls` 的上溯行为不回归（`npm prefix` 语义保持） |
+| 2 | **npm e2e 探针加固** | `registry_reachable()` 的 `node -e` 载荷去掉 `>`（箭头函数 → `function(){}`），使本机 shell/shim 不再把它当重定向 | ①探针真实返回可达（不再恒 false）；②`npm_install_and_vm_run_matches_node` 真实执行且通过；③全量测试后工作树**不再**出现 `crates/aluka-cli/process.exit(1))` |
+| 3 | 门禁三连 + 证据回填 | — | 三连 exit 0，证据回填本节；含"加固探针前后 e2e 行为对照" |
+
+### 交付摘要
+
+**2/2 项完成，门禁三连全绿。**
+
+#### 1. `cmd_init` 改用 cwd（npm 语义）
+
+- `crates/aluka-npm/src/commands.rs:224`：删除 `cmd_init` 里的 `find_project(cwd)?`，
+  改为 `installer::init(cwd)?`，并把 npm oracle 依据写进函数文档注释。
+  **`find_project` 本身零改动**（`git diff` 仅两行：删调用、加文档），
+  install/uninstall/run/ls 的上溯语义（`npm prefix`）保持不变。
+- 验收实测：
+
+  | 验收 | 命令 | 结果 |
+  |---|---|---|
+  | ① 空目录（位于 `C:\Users\User\` 之下，祖先有 package.json） | `aluka npm init -y` | **EXIT=0，`已生成 package.json`**；落盘位置仅 `child\package.json`（`"name": "child"`）。修复前：`package.json 已存在`、EXIT=1 |
+  | ② cwd 自身已有 package.json | `aluka npm init -y` | `package.json 已存在`、EXIT=1（**有意保留**的与 npm 覆盖语义的偏离，见登记表） |
+  | ③ 上溯语义不回归 | `aluka npm ls` @ `parent/child` | 解析到 `parent`（读到父级 `1.0.0`），与真 `npm prefix` 输出 `…\parent` 一致 |
+
+#### 2. npm e2e 探针加固（`=>` 去除）
+
+- `crates/aluka-cli/tests/npm_install_e2e_test.rs:15-22`：`-e` 载荷由箭头函数改为
+  `function(){…}`，载荷不再含 `>`；并加注释说明成因，防止后人改回。
+- **前后对照**（同一用例）：
+
+  | | 修复前 | 修复后 |
+  |---|---|---|
+  | `registry_reachable()` | 恒 false（node 收截断载荷 → SyntaxError） | 真实返回可达 |
+  | 用例行为 | 走 SKIP 分支，"ok"（0.12s，**假绿**） | **真实执行**：init → install → 校验 → VM 跑通，**ok（4.34s）**，无 SKIP 标记 |
+  | 工作树污染 | 每次全量测试生成 `crates/aluka-cli/process.exit(1))` | **不再生成**（全量测试后 `git status` 无该文件） |
+
+- 安全验证（本轮最关键）：探针真实化后 e2e 会真的 `aluka npm install`，故确认
+  **未写入用户主目录工程**——`C:\Users\User\package.json`（mtime 2026-08-19 9:39:39）
+  与 `package-lock.json`（2026-09-02 13:04:38）**mtime 未变**；
+  `C:\Users\User\node_modules` 为 2022-03-21 创建的既有目录（553 条目，其中
+  `is-odd` 日期 2026-08-19），与本次运行无关。测试临时目录由用例自清理，
+  失败运行遗留的两个空目录已手动删除。
+
+#### 3. 门禁三连（回填真实输出）
+
+```
+cargo fmt --all --check                                          → exit 0（无 diff）
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                                                 → exit 0，warnings=0 errors=0
+cargo test --workspace --all-features                            → exit 0
+                                                                 → 586 passed / 0 failed / 1 ignored
+conformance 全量（--nocapture）                                   → Result: 864/864 passed, 3 invalid
+```
+
+- 与 §待办 9 的基线一致（586/0/1、864/864/3）；本轮改动落在 `aluka-npm` 与测试基建，
+  不影响 conformance 语料与差分通道。
+
+#### 顺带观察（未处理，非本轮范围）
+
+- `aluka npm ls` 在祖先解析正确的前提下，项目名打印为 `<unnamed>`（版本正确读出），
+  而父级 `package.json` 明确有 `"name": "parent"` → `ls` 的名称显示面疑有独立缺陷，
+  未深究，建议另立小专项复核。

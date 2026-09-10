@@ -221,15 +221,20 @@ fn cmd_ls(cwd: &Path) -> Result<i32, CommandError> {
 }
 
 /// `init -y`：默认 package.json。
+///
+/// npm 语义：`init` 作用于**当前目录**，不上溯祖先查找项目根——实测 npm 10.8.1：
+/// `parent/package.json` 存在时在 `parent/child/` 执行 `npm init -y` 仍写入
+/// `parent/child/package.json`。上溯（`npm prefix` 语义）只适用于
+/// install/uninstall/run/ls，故此处**不得**复用 `find_project`：否则 cwd 位于任何
+/// 含 package.json 的目录之下时，项目根会被解析到祖先并误报「package.json 已存在」。
 fn cmd_init(args: &[String], cwd: &Path) -> Result<i32, CommandError> {
-    let project = find_project(cwd)?;
     if !has_flag(args, "-y") && !has_flag(args, "--yes") {
         return Err(CommandError {
             message: "当前仅支持 `aluka-npm init -y`（默认值初始化）".to_owned(),
             code: 1,
         });
     }
-    installer::init(&project)?;
+    installer::init(cwd)?;
     println!("已生成 package.json");
     Ok(0)
 }
