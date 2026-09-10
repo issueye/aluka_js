@@ -117,6 +117,26 @@ fn node22_conformance_matches_node_stdout() {
     std::fs::create_dir_all(&work_dir).expect("创建语料副本目录");
     for entry in std::fs::read_dir(&case_dir).expect("读语料目录") {
         let path = entry.expect("读目录项").path();
+        if path.is_dir() {
+            // 子目录（如 gen/ 生成语料）：建同级目录并递归复制
+            let sub = work_dir.join(path.file_name().expect("有文件名"));
+            std::fs::create_dir_all(&sub).expect("创建语料子目录");
+            for sub_entry in std::fs::read_dir(&path).expect("读语料子目录") {
+                let sp = sub_entry.expect("读子目录项").path();
+                if !sp.is_file() {
+                    continue;
+                }
+                if matches!(
+                    sp.extension().and_then(|e| e.to_str()),
+                    Some("log") | Some("bc")
+                ) {
+                    continue;
+                }
+                let dest = sub.join(sp.file_name().expect("有文件名"));
+                std::fs::copy(&sp, &dest).expect("复制语料子文件");
+            }
+            continue;
+        }
         if !path.is_file() {
             continue;
         }
@@ -154,40 +174,63 @@ fn node22_conformance_matches_node_stdout() {
             .output();
     }
 
-    // 主用例：*.cjs + *.mjs，字典序保证输出稳定
-    let mut cases: Vec<PathBuf> = std::fs::read_dir(&case_dir)
+    // 主用例：*.cjs + *.mjs，字典序保证输出稳定（含 gen/ 生成语料子目录）；
+    // 元组第二项 = 相对语料目录的运行路径（子目录文件带目录前缀）
+    let mut cases: Vec<(PathBuf, String)> = std::fs::read_dir(&case_dir)
         .expect("读语料目录")
         .map(|e| e.expect("读目录项").path())
-        .filter(|p| {
+        .flat_map(|p| {
+            if p.is_dir() {
+                // 子目录（如 gen/）：递归一层收集用例文件
+                let dir_name = p
+                    .file_name()
+                    .expect("有目录名")
+                    .to_string_lossy()
+                    .into_owned();
+                std::fs::read_dir(&p)
+                    .expect("读语料子目录")
+                    .map(|e| e.expect("读子目录项").path())
+                    .map(|f| {
+                        let rel = format!(
+                            "{dir_name}/{}",
+                            f.file_name().expect("有文件名").to_string_lossy()
+                        );
+                        (f, rel)
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                let rel = p
+                    .file_name()
+                    .expect("有文件名")
+                    .to_string_lossy()
+                    .into_owned();
+                vec![(p, rel)]
+            }
+        })
+        .filter(|(p, _)| {
             matches!(
                 p.extension().and_then(|e| e.to_str()),
                 Some("cjs") | Some("mjs")
             )
         })
         .collect();
-    cases.sort();
-    let cases: Vec<PathBuf> = cases
+    cases.sort_by(|a, b| a.1.cmp(&b.1));
+    let cases: Vec<(PathBuf, String)> = cases
         .into_iter()
-        .filter(|p| {
-            filter
-                .as_ref()
-                .is_none_or(|f| p.to_string_lossy().contains(f.as_str()))
+        .filter(|(p, rel)| {
+            filter.as_ref().is_none_or(|f| {
+                p.to_string_lossy().contains(f.as_str()) || rel.contains(f.as_str())
+            })
         })
         .collect();
 
     let mut pass = 0usize;
     let mut invalid = 0usize;
     let mut failures: Vec<String> = Vec::new();
-    for case in &cases {
-        let name = case
-            .file_name()
-            .expect("有文件名")
-            .to_string_lossy()
-            .into_owned();
-
+    for (case, name) in &cases {
         // 1. node 期望输出（stdout+stderr；cwd = 语料副本目录）
         let mut node_cmd = Command::new(&node);
-        node_cmd.arg(&name).current_dir(&work_dir);
+        node_cmd.arg(name).current_dir(&work_dir);
         let node_out = run_with_timeout(&mut node_cmd, CASE_WAIT);
 
         // 2. node 侧自身失败（rc ∉ {0,124}）→ 无效对比，不进入编译/执行
@@ -202,7 +245,7 @@ fn node22_conformance_matches_node_stdout() {
         }
 
         // 3. alukac 编译主用例（编译失败 = 回归，记失败而非跳过）
-        let bc = tmp.join(format!("{name}.bc"));
+        let bc = tmp.join(format!("{}.bc", name.replace('/', "_")));
         let compiled = Command::new(alukac)
             .args(["compile", &case.to_string_lossy(), "-o"])
             .arg(&bc)

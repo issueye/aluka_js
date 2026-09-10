@@ -3,7 +3,7 @@
 use crate::exception::{Completion, FinallyOutcome, PHASE_TRY, TryExitOutcome, TryHandler};
 use crate::generator::GeneratorState;
 use crate::heap::HeapObject;
-use crate::ops::{eq, strict_eq, to_boolean, to_number};
+use crate::ops::{eq, js_number_to_string, parse_js_number, strict_eq, to_boolean, to_number};
 use crate::value::{Upvalue, Value};
 use aluka_bytecode::{ClassTemplate, Constant, FuncTemplate, Instr, Op, TryEntry};
 use aluka_core::{ObjectRef, ShapeTable};
@@ -596,21 +596,7 @@ impl Vm {
             Value::Undefined => "undefined".to_owned(),
             Value::Null => "null".to_owned(),
             Value::Boolean(b) => format!("{b}"),
-            Value::Number(n) => {
-                if n.is_nan() {
-                    "NaN".to_owned()
-                } else if n.is_infinite() {
-                    if n > 0.0 {
-                        "Infinity".to_owned()
-                    } else {
-                        "-Infinity".to_owned()
-                    }
-                } else if n.fract() == 0.0 {
-                    format!("{}", n as i64)
-                } else {
-                    format!("{n}")
-                }
-            }
+            Value::Number(n) => js_number_to_string(n),
             Value::Object(r) => {
                 let idx = r.0 as usize;
                 // Proxy：格式化透传 target（对齐 String(proxy) 经 get/toString trap 的语义）
@@ -815,6 +801,9 @@ impl Vm {
         }
         match name {
             "undefined" => Value::Undefined,
+            // 全局数值常量（`typeof NaN` 实测暴露缺失——一律 "undefined"）
+            "NaN" => Value::Number(f64::NAN),
+            "Infinity" => Value::Number(f64::INFINITY),
             // Node 全局 Buffer 类（未显式 require('node:buffer') 时也可用）
             "Buffer" => self
                 .builtin_registry
@@ -1036,10 +1025,17 @@ impl Vm {
         if let Value::Object(r) = val {
             match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => {
-                    return s.trim().parse::<f64>().unwrap_or(f64::NAN);
+                    return parse_js_number(s);
                 }
                 Some(HeapObject::BigInt(b)) => {
                     return b.trim().parse::<f64>().unwrap_or(f64::NAN);
+                }
+                // 数组 ToNumber：先 ToString（join），再按数字串解析
+                // （Number([]) === 0、Number([7]) === 7 —— 生成语料实测）
+                Some(HeapObject::Array { elements, .. }) => {
+                    let items: Vec<String> =
+                        elements.iter().map(|e| self.format_value(*e)).collect();
+                    return parse_js_number(&items.join(","));
                 }
                 _ => {}
             }
@@ -1098,7 +1094,7 @@ impl Vm {
     }
 
     /// 调用数组原型方法的回调：this=thisArg，实参按 JS 规范 `(elem, idx, arr)`。
-    fn invoke_array_cb(
+    pub(crate) fn invoke_array_cb(
         &mut self,
         cb: Value,
         this_arg: Value,
@@ -1695,8 +1691,9 @@ impl Vm {
                 Op::Sub => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Number(to_number(left) - to_number(right)));
+                    self.stack.push(Value::Number(
+                        self.to_number_value(left) - self.to_number_value(right),
+                    ));
                 }
                 Op::Mul => {
                     let right = self.pop()?;
@@ -1708,20 +1705,23 @@ impl Vm {
                 Op::Div => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Number(to_number(left) / to_number(right)));
+                    self.stack.push(Value::Number(
+                        self.to_number_value(left) / self.to_number_value(right),
+                    ));
                 }
                 Op::Mod => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Number(to_number(left) % to_number(right)));
+                    self.stack.push(Value::Number(
+                        self.to_number_value(left) % self.to_number_value(right),
+                    ));
                 }
                 Op::Pow => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack
-                        .push(Value::Number(to_number(left).powf(to_number(right))));
+                    self.stack.push(Value::Number(
+                        self.to_number_value(left).powf(self.to_number_value(right)),
+                    ));
                 }
                 Op::Neg => {
                     let top = self.pop()?;
@@ -1740,11 +1740,11 @@ impl Vm {
                             continue;
                         }
                     }
-                    self.stack.push(Value::Number(-to_number(top)));
+                    self.stack.push(Value::Number(-self.to_number_value(top)));
                 }
                 Op::UnaryPlus => {
                     let top = self.pop()?;
-                    self.stack.push(Value::Number(to_number(top)));
+                    self.stack.push(Value::Number(self.to_number_value(top)));
                 }
                 Op::Inc => {
                     let top = self.pop()?;
@@ -1789,22 +1789,25 @@ impl Vm {
                 Op::Shl => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (to_number(right) as u32) & 0x1f;
-                    let res = (to_number(left) as i32).wrapping_shl(shift);
+                    let shift = (self.to_number_value(right) as i32) & 0x1f;
+                    let res = (self.to_number_value(left) as i32).wrapping_shl(shift as u32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::Shr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (to_number(right) as u32) & 0x1f;
-                    let res = (to_number(left) as i32).wrapping_shr(shift);
+                    let shift = (self.to_number_value(right) as i32) & 0x1f;
+                    let res = (self.to_number_value(left) as i32).wrapping_shr(shift as u32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::UShr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (to_number(right) as u32) & 0x1f;
-                    let res = ((to_number(left) as u32).wrapping_shr(shift)) as f64;
+                    let shift = (self.to_number_value(right) as i32) & 0x1f;
+                    // 负数先按 i32 位型再解释为 u32（直接 `as u32` 会被
+                    // Rust 的饱和转换把负数压成 0——`-16 >>> 28` 实测暴露）
+                    let left = (self.to_number_value(left) as i32) as u32;
+                    let res = (left.wrapping_shr(shift as u32)) as f64;
                     self.stack.push(Value::Number(res));
                 }
 
@@ -3188,9 +3191,30 @@ impl Vm {
                         };
                         match method_name.as_ref() {
                             "toSorted" => {
-                                elems.sort_by(|a, b| {
-                                    self.format_value(*a).cmp(&self.format_value(*b))
-                                });
+                                let cmp = args.first().copied().unwrap_or(Value::Undefined);
+                                let this_val = receiver;
+                                if !matches!(cmp, Value::Undefined) {
+                                    // 带比较器：数值比较器按数值序（`b-a` 负值序）
+                                    elems.sort_by(|a, b| {
+                                        let ord = self.invoke_array_cb(
+                                            cmp,
+                                            Value::Undefined,
+                                            &[*a, *b, this_val],
+                                        );
+                                        match ord {
+                                            Ok(v) => match self.to_number_value(v) {
+                                                x if x < 0.0 => std::cmp::Ordering::Less,
+                                                x if x > 0.0 => std::cmp::Ordering::Greater,
+                                                _ => std::cmp::Ordering::Equal,
+                                            },
+                                            Err(_) => std::cmp::Ordering::Equal,
+                                        }
+                                    });
+                                } else {
+                                    elems.sort_by(|a, b| {
+                                        self.format_value(*a).cmp(&self.format_value(*b))
+                                    });
+                                }
                             }
                             "toReversed" => elems.reverse(),
                             "toSpliced" => {
@@ -3464,7 +3488,6 @@ impl Vm {
                                 }
                                 "reduceRight" => {
                                     let cb = args.first().copied().unwrap_or(Value::Undefined);
-                                    let mut acc = args.get(1).copied().unwrap_or(Value::Undefined);
                                     let elems =
                                         if let Some(HeapObject::Array { elements, .. }) =
                                             self.heap.get(idx)
@@ -3474,11 +3497,29 @@ impl Vm {
                                             Vec::new()
                                         };
                                     let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    for (elem_idx, elem) in elems.iter().enumerate().rev() {
+                                    // 无初始值：累加器取末元素，从倒数第二个起迭代
+                                    let (mut acc, start) = match args.get(1) {
+                                        Some(init) if !matches!(init, Value::Undefined) => {
+                                            (*init, elems.len())
+                                        }
+                                        _ => match elems.last() {
+                                            Some(last) => (*last, elems.len() - 1),
+                                            None if elems.is_empty() => {
+                                                let msg = self.alloc_string(
+                                                    "Reduce of empty array with no initial value"
+                                                        .to_owned(),
+                                                );
+                                                return Err(VmError::Thrown(Value::Object(msg)));
+                                            }
+                                            None => (Value::Undefined, elems.len()),
+                                        },
+                                    };
+                                    for elem_idx in (0..start).rev() {
+                                        let elem = elems[elem_idx];
                                         acc = self.invoke_array_cb(
                                             cb,
                                             Value::Undefined,
-                                            &[acc, *elem, Value::Number(elem_idx as f64), arr_obj],
+                                            &[acc, elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
                                     }
                                     self.stack.push(acc);

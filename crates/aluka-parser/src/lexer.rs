@@ -524,6 +524,20 @@ impl<'src> Lexer<'src> {
             {
                 self.pos += 1;
             }
+            // 科学计数法指数段（`1e21` / `1.5e-7`；实测缺失导致 `1e` 被拆成
+            // 标识符，`String(1e21)` 直接解析失败）
+            if self.pos < bytes.len() && matches!(bytes[self.pos], b'e' | b'E') {
+                let mut ahead = self.pos + 1;
+                if ahead < bytes.len() && matches!(bytes[ahead], b'+' | b'-') {
+                    ahead += 1;
+                }
+                if ahead < bytes.len() && bytes[ahead].is_ascii_digit() {
+                    self.pos = ahead;
+                    while self.pos < bytes.len() && bytes[self.pos].is_ascii_digit() {
+                        self.pos += 1;
+                    }
+                }
+            }
             if self.pos < bytes.len() && bytes[self.pos] == b'n' {
                 let raw_digits: String = self.src[start..self.pos]
                     .chars()

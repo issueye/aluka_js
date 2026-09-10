@@ -58,6 +58,15 @@ impl Vm {
             ) {
                 return Ok(Value::Undefined);
             }
+            // Promise 等无自有可枚举属性的异形堆对象：node 序列化为 "{}"
+            // 而非 null（`JSON.stringify(Promise.resolve(1))` 实测）
+            if matches!(
+                self.heap.get(r.0 as usize),
+                Some(HeapObject::Promise { .. })
+            ) {
+                let s = self.alloc_string("{}".to_owned());
+                return Ok(Value::Object(s));
+            }
         }
         let mut out = String::new();
         self.json_write(&mut out, value, &mut Vec::new());
@@ -92,7 +101,7 @@ impl Vm {
                 if n.is_nan() || n.is_infinite() {
                     out.push_str("null");
                 } else {
-                    out.push_str(&format!("{n}"));
+                    out.push_str(&crate::ops::js_number_to_string(n));
                 }
             }
             Value::Object(r) => {

@@ -1,0 +1,2 @@
+// conformance 生成用例（gen.mjs 产出，勿手改）：promise-async
+try { console.log(JSON.stringify(Promise.race([Promise.resolve("first"), new Promise(()=>{})]))) } catch (e) { console.log("ERR", e.name) }

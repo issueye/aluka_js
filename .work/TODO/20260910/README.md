@@ -53,7 +53,7 @@
 | 5 | aluka-npm：install/run/ls/init/view 子命令 + e2e（express 对拍） | `[x]` | npm 复刻 |
 | 6 | M7.1：`aluka run` 自动构建 + `aluka build` + `aluka npm` 分发 | `[x]` | M7.1 |
 | 7 | M6.1：卡表写屏障 + 根审计补漏 + 动态堆伸缩 + minor 生产启用 | `[x]`（基础闭环；极端压力残留项登记） | M6.1 |
-| 8 | M7.2：conformance 扩容（滚动） | `[ ]` | M7.2 |
+| 8 | M7.2：conformance 扩容——生成器 + 验证分区 + 差分缺陷修复 | `[~]`（836 例进语料库 / 175 例偏差登记 / 1008 生成） | M7.2 |
 | 9 | 门禁验证（fmt / clippy -D warnings / cargo test 全绿） | `[ ]` | 门禁 |
 | 10 | 真实证据回填与 diff 复审 | `[ ]` | 证据闭环 |
 
@@ -190,6 +190,47 @@ $ cargo test -p aluka-vm --lib gc        # 15 passed（含卡表粒度/晋升置
 **结论**：达成——**1.35x PASS**（aluka 183.3 MB vs node 136.2 MB 峰值
 工作集，2000 万对象波浪负载；`cargo run -p aluka-cli --features runtime
 --example gcpressure`，debug 构建、比值含 V8 逃逸优化偏保守因素）。
+
+### 待办 8 · M7.2 conformance 语料扩容（生成器 + 验证分区）
+
+**结论**：部分达成——**1008 例生成语料 × 41 域**，其中 **836 例差分验证通过
+进入 conformance 语料库**（门禁每次全跑；手写 25 例 + 生成 836 例 = 861 例
+实跑），**175 例分歧**自动化登记于 `cases/gen/DEVIATIONS.md`（含 node/vm
+双侧输出，作为下轮修复工作面）。距 ≥1000 全绿目标尚差：偏差修复依赖下述
+系统性缺口收敛。
+
+**交付物**：
+- `cases/gen/gen.mjs`：语料生成器（21 域表达式矩阵 + 5 批方法×参数组合
+  矩阵，输出经 JSON 规范化、错误名对拍；确定性纪律：禁时间/随机/环境面）；
+- `cases/gen/partition.py`：验证分区器（借 Rust runner 差分 + Python
+  三进程明细采集；一致进 gen/、分歧进 deviations/ 并重写偏差清单）；
+- conformance runner 支持 `cases/` 子目录递归与相对路径运行。
+
+**本轮差分暴露并修复的引擎缺陷（10 类，全部真实语义面）**：
+1. **算术强制转换通路分裂**：Sub/Div/Mod/Pow/Neg/UnaryPlus/位移走残缺的
+   自由函数 `to_number`（字符串一律 NaN）而 Mul 走 `to_number_value`——
+   统一为字符串感知路径（`"5" - "2"` 现为 3）；
+2. **字符串数字解析**：空串应为 0（原 NaN）、`0x/0o/0b` 进制前缀；
+3. **`>>>` 负数**：`as u32` 饱和转换把负数压成 0（`-16 >>> 28` 应为 15）；
+4. **NaN/Infinity 全局缺失**（`typeof NaN` 原为 "undefined"）；
+5. **`Object.is` 缺失**（规范 SameValue：NaN 同值真、+0/-0 异值）；
+6. **数字→字符串规范格式**：新增 `js_number_to_string`（最短有效数字 +
+   指数切换规则：`Number.EPSILON` → `2.22...e-16`、`String(-0)` → "0"、
+   `1e21` → "1e+21"），替换 Rust `{}` 格式化（无指数形态）；
+7. **词法科学计数法**（`1e21` 原被拆成 `1`+`e21` 直接解析失败）；
+8. **`Array.from`/`Array.of` 缺失** + `reduceRight` 无初值语义（应从末元素起）
+   + `toSorted` 忽略比较器；
+9. **Promise JSON 序列化**（`JSON.stringify(Promise.resolve(1))` 应为 `{}`）；
+10. **数组 ToNumber / 对象 ToPrimitive 拼接**（`Number([])`=0、`Number([7])`=7、
+    `[] + []`="", `[] + {}`="[object Object]"）。
+
+**未收敛的系统性缺口（175 例偏差的根因，下轮工作面）**：**原型方法属性
+读面**——`typeof "abc".toUpperCase` 为 undefined（调用被按名拦截可用，
+属性读不物化）；连带 Promise 静态方法属性（`typeof Promise.resolve`）、
+`constructor.name`、`class` 表达式解析（`typeof class {}`）、
+`Math.cbrt/log1p` 等末位 ULP 与 V8 对齐、`toString(radix)` 小数部分、
+`toFixed(0)`、`padStart` 空串接收者、util.inspect/console.log 对象格式
+等。DEVIATIONS.md 已逐条登记双侧输出，收敛路径清晰。
 
 - **偏差记录**：① registry 历史脏数据（`"engines": ">=0.10.40"` 字符串形态）
   需宽容反序列化——npm 生态元数据非规范形态客观存在；② `aluka run` 自动

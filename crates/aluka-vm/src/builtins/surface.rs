@@ -300,6 +300,15 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         register_handler(registry, "Array.prototype", m, array_method_dispatch);
     }
 
+    // Array 静态方法（from / of）——生成语料实测缺失（`Array.from is not a function`）
+    if let Some(ctor) = vm.array_ctor {
+        for st in ["from", "of"] {
+            let f = vm.alloc_native_fn(&format!("Array.{st}"));
+            let _ = vm.set_property(Value::Object(ctor), st, Value::Object(f));
+            register_handler(registry, "Array", st, array_static_dispatch);
+        }
+    }
+
     // Set/Map/WeakSet/WeakMap/WeakRef 容器原型方法面（属性存在性）
     let cont_p = container_proto(vm);
     for m in [
@@ -697,20 +706,7 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
 /// 十进制数字字符串化（JS `String(n)` 形态：NaN/±Infinity 字面、
 /// 整数不带尾零、否则最短十进制表示）。
 fn format_number_decimal(n: f64) -> String {
-    if n.is_nan() {
-        return "NaN".to_owned();
-    }
-    if n.is_infinite() {
-        return if n > 0.0 {
-            "Infinity".to_owned()
-        } else {
-            "-Infinity".to_owned()
-        };
-    }
-    if n == n.trunc() && n.abs() < 1e21 {
-        return format!("{}", n as i64);
-    }
-    format!("{n}")
+    crate::ops::js_number_to_string(n)
 }
 
 /// 以给定进制格式化数字（2~36；整数位截断，负号保留）。
@@ -768,6 +764,81 @@ fn regexp_to_string_dispatch(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmEr
     let re = super::current_receiver();
     let s = vm.format_value(re);
     Ok(Value::Object(vm.alloc_string(s)))
+}
+
+enum Either {
+    Str(Vec<String>),
+    Arr(Vec<Value>),
+    None_,
+}
+
+/// `Array.from(source[, mapFn[, thisArg]])` / `Array.of(...items)`。
+fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let full = super::pending_native_name();
+    let name = full.rsplit("Array.").next().unwrap_or(&full).to_owned();
+    match name.as_str() {
+        "from" => {
+            let source = args.first().copied().unwrap_or(Value::Undefined);
+            let mut items: Vec<Value> = match &source {
+                Value::Undefined | Value::Null => {
+                    let msg = vm.alloc_string(
+                        "Array.from requires an array-like object - not null or undefined"
+                            .to_owned(),
+                    );
+                    return Err(VmError::Thrown(Value::Object(msg)));
+                }
+                Value::Number(_) | Value::Boolean(_) => Vec::new(),
+                Value::Object(r) => {
+                    // 先克隆源数据结束 heap 借用，再做需要 &mut Vm 的装箱
+                    let cloned = match vm.heap.get(r.0 as usize) {
+                        Some(HeapObject::String(s)) => {
+                            Either::Str(s.chars().map(|c| c.to_string()).collect::<Vec<_>>())
+                        }
+                        Some(HeapObject::Array { elements, .. }) => Either::Arr(elements.clone()),
+                        _ => Either::None_,
+                    };
+                    match cloned {
+                        Either::Str(chars) => chars
+                            .into_iter()
+                            .map(|c| Value::Object(vm.alloc_string(c)))
+                            .collect(),
+                        Either::Arr(elements) => elements,
+                        Either::None_ => {
+                            // 类数组：length + 数字下标自属性
+                            let len = vm
+                                .get_property(source, "length")
+                                .ok()
+                                .and_then(|v| match v {
+                                    Value::Number(n) => Some(n as usize),
+                                    _ => None,
+                                })
+                                .unwrap_or(0);
+                            (0..len)
+                                .map(|i| {
+                                    vm.get_property(source, &i.to_string())
+                                        .unwrap_or(Value::Undefined)
+                                })
+                                .collect()
+                        }
+                    }
+                }
+            };
+            // mapFn 变换（第 2 参数；第 3 参数 thisArg）
+            if let Some(map_fn @ Value::Object(_)) = args.get(1).copied() {
+                let this_arg = args.get(2).copied().unwrap_or(Value::Undefined);
+                let mut mapped = Vec::with_capacity(items.len());
+                for (i, item) in items.iter().enumerate() {
+                    let v =
+                        vm.invoke_array_cb(map_fn, this_arg, &[*item, Value::Number(i as f64)])?;
+                    mapped.push(v);
+                }
+                items = mapped;
+            }
+            Ok(Value::Object(vm.alloc_array(items)))
+        }
+        "of" => Ok(Value::Object(vm.alloc_array(args.to_vec()))),
+        _ => Ok(Value::Undefined),
+    }
 }
 
 /// `Array.prototype.X.call(arr, ...)` 形态分派（express 的

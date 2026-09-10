@@ -449,6 +449,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "seal",
             "isFrozen",
             "isSealed",
+            "is",
             "values",
             "entries",
             "fromEntries",

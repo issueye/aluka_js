@@ -16,6 +16,100 @@ pub fn to_number(val: Value) -> f64 {
     }
 }
 
+/// ECMAScript `ToString(Number)`：最短有效数字 + 指数切换规则
+/// （k ≤ n ≤ 21 补零；0 < n ≤ 21 插小数点；-6 < n ≤ 0 前导 0.；
+/// 其余科学计数法 `d.ddde±x`）。Rust `{}` 不产指数形态、`{:e}` 恒为
+/// 指数形态——借 `{:e}` 取最短有效数字后按规范重排。
+#[must_use]
+pub fn js_number_to_string(n: f64) -> String {
+    if n.is_nan() {
+        return "NaN".to_owned();
+    }
+    if n.is_infinite() {
+        return if n > 0.0 {
+            "Infinity".to_owned()
+        } else {
+            "-Infinity".to_owned()
+        };
+    }
+    let a = n.abs();
+    if a == 0.0 {
+        // 规范：String(-0) === "0"（-0 的负号在字符串化时丢弃）
+        return "0".to_owned();
+    }
+    let neg = n.is_sign_negative();
+    let e_form = format!("{a:e}");
+    let (mant, exp) = e_form.split_once('e').unwrap_or((e_form.as_str(), "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    let digits: String = mant.chars().filter(|c| *c != '.').collect();
+    let digits = digits.trim_end_matches('0');
+    let digits = if digits.is_empty() { "0" } else { digits };
+    let k = digits.len() as i32;
+    let n = exp + 1; // 规范记号：value = 0.digits × 10^n
+    let mut out = String::new();
+    if neg {
+        out.push('-');
+    }
+    if k <= n && n <= 21 {
+        out.push_str(digits);
+        for _ in 0..(n - k) {
+            out.push('0');
+        }
+    } else if 0 < n && n <= 21 {
+        out.push_str(&digits[..n as usize]);
+        out.push('.');
+        out.push_str(&digits[n as usize..]);
+    } else if -6 < n && n <= 0 {
+        out.push_str("0.");
+        for _ in 0..(-n) {
+            out.push('0');
+        }
+        out.push_str(digits);
+    } else {
+        out.push_str(&digits[..1]);
+        if k > 1 {
+            out.push('.');
+            out.push_str(&digits[1..]);
+        }
+        out.push('e');
+        let e = n - 1;
+        if e >= 0 {
+            out.push('+');
+            out.push_str(&e.to_string());
+        } else {
+            out.push_str(&e.to_string());
+        }
+    }
+    out
+}
+
+/// JS 数字字符串 → f64（ECMAScript `StringToNumber`）：
+/// 空白裁剪后空串为 0；`0x/0o/0b` 进制前缀按对应进制；其余走 Rust
+/// f64 解析（`Infinity`/`inf`/`NaN` 等 Rust 已按大小写不敏感支持）。
+#[must_use]
+pub fn parse_js_number(s: &str) -> f64 {
+    let t = s.trim();
+    if t.is_empty() {
+        return 0.0;
+    }
+    if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+        return i64::from_str_radix(hex, 16)
+            .map(|v| v as f64)
+            .unwrap_or(f64::NAN);
+    }
+    if let Some(oct) = t.strip_prefix("0o").or_else(|| t.strip_prefix("0O")) {
+        return i64::from_str_radix(oct, 8)
+            .map(|v| v as f64)
+            .unwrap_or(f64::NAN);
+    }
+    if let Some(bin) = t.strip_prefix("0b").or_else(|| t.strip_prefix("0B")) {
+        return i64::from_str_radix(bin, 2)
+            .map(|v| v as f64)
+            .unwrap_or(f64::NAN);
+    }
+    t.parse::<f64>().unwrap_or(f64::NAN)
+}
+
 /// 将任意值强制转换为布尔值（ECMAScript ToBoolean）。
 ///
 /// 字符串是堆对象，空字符串必须为 falsy——需要堆访问：
@@ -162,6 +256,16 @@ impl Vm {
             let s2 = self.value_as_concat_text(right);
             let combined = format!("{s1}{s2}");
             let s_ref = self.alloc_string(combined);
+            return Value::Object(s_ref);
+        }
+        // 双方都不是数值：任一为对象 → ToPrimitive 后字符串拼接
+        // （`[] + []` === ""、`[] + {}` === "[object Object]"；生成语料实测）
+        let left_obj = matches!(left, Value::Object(_));
+        let right_obj = matches!(right, Value::Object(_));
+        if left_obj || right_obj {
+            let s1 = self.value_as_concat_text(left);
+            let s2 = self.value_as_concat_text(right);
+            let s_ref = self.alloc_string(format!("{s1}{s2}"));
             return Value::Object(s_ref);
         }
 

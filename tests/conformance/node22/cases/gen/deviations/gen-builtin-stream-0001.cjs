@@ -1,0 +1,2 @@
+// conformance 生成用例（gen.mjs 产出，勿手改）：builtin-stream
+try { (async () => console.log(JSON.stringify(await ((() => { const { Readable } = require("stream"); const r = Readable.from(["a", "b"]); const chunks = []; r.on("data", c => chunks.push(c.toString())); return new Promise(res => r.on("end", () => res(chunks.join("")))) })()))))().catch(e => console.log("ERR", e.name)) } catch (e) { console.log("ERR", e.name) }

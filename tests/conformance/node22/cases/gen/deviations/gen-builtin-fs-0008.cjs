@@ -1,0 +1,2 @@
+// conformance 生成用例（gen.mjs 产出，勿手改）：builtin-fs
+try { (async () => console.log(JSON.stringify(await ((() => { const fs = require("fs"); fs.writeFileSync("gc_fs_t5.txt", "5"); const fd = fs.openSync("gc_fs_t5.txt", "r"); const buf = Buffer.alloc(1); fs.readSync(fd, buf, 0, 1, 0); fs.closeSync(fd); return buf.toString() })()))))().catch(e => console.log("ERR", e.name)) } catch (e) { console.log("ERR", e.name) }

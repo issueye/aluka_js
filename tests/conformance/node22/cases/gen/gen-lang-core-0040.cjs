@@ -1,0 +1,2 @@
+// conformance 生成用例（gen.mjs 产出，勿手改）：lang-core
+try { console.log(JSON.stringify(String(0.000001))) } catch (e) { console.log("ERR", e.name) }

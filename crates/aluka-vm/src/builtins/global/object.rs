@@ -72,6 +72,22 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             }
             Ok(out)
         }
+        "is" => {
+            // 规范 SameValue：NaN 等值同真、+0/-0 异值（`Object.is` 实测缺失）
+            let a = args.first().copied().unwrap_or(Value::Undefined);
+            let b = args.get(1).copied().unwrap_or(Value::Undefined);
+            let same = match (&a, &b) {
+                (Value::Number(x), Value::Number(y)) => {
+                    if x.is_nan() && y.is_nan() {
+                        true
+                    } else {
+                        x == y && (x.to_bits() == y.to_bits() || !(*x == 0.0 && *y == 0.0))
+                    }
+                }
+                _ => a == b || (matches!(a, Value::Undefined) && matches!(b, Value::Undefined)),
+            };
+            Ok(Value::Boolean(same))
+        }
         "freeze" | "seal" => Ok(target),
         "isFrozen" | "isSealed" => Ok(Value::Boolean(false)),
         "values" | "entries" => {

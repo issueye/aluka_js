@@ -1,0 +1,2 @@
+// conformance 生成用例（gen.mjs 产出，勿手改）：builtin-timers
+try { (async () => console.log(JSON.stringify(await ((() => { const order = []; setImmediate(() => order.push("i")); Promise.resolve().then(() => order.push("p")); setTimeout(() => r2(order), 20); function r2(o) { r(o.join(",")) } var r; return new Promise(res => { r = res; }) })()))))().catch(e => console.log("ERR", e.name)) } catch (e) { console.log("ERR", e.name) }
