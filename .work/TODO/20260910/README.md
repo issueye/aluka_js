@@ -1374,3 +1374,190 @@ conformance 全量                            →  Result: 872/872 passed, 3 inv
 `"😀".length` 应 2（本实现 1）、`"😀".codePointAt(1)` Node 返回低位代理 0xDE00、
 `"😀".at(1)`、padStart 的 targetLength 对代理对的计数。Rust `String` 为合法 UTF-8、
 无法表示孤立代理，故属系统性改造，已在实现处与用例注释双处登记。
+
+---
+
+## 待办 21 · 数字格式化精确实现（`toFixed` / `toPrecision` / `toExponential` / `toString(radix)`）
+
+> 来源：§待办 19/20 之后的数据驱动归因显示，`cases/gen/deviations/` 中数字格式化
+> 是剩余最大簇。
+
+### 开工前登记（目标 + 验收标准）
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | `toFixed` / `toPrecision` / `toExponential` 以 double **精确十进制展开**为基准做字符串舍入 | 与 Node 逐字节一致；`(0.5).toFixed(0)` = `"1"`（规范「并列取较大」，Rust `{:.0}` 是五取偶得 `"0"`） |
+| 2 | `toString(radix)` **逐句移植 V8 `DoubleToRadixCString`** | 大数值低位补零行为与 Node 一致（非精确展开） |
+| 3 | `Number→String` 的「并列取**偶**」 | `String(1501199875790165.25)` = `"...652"` |
+| 4 | 门禁语料 + 三连 | 新增 `36-number-format.cjs`；零回归 |
+
+### 交付摘要
+
+**4/4 达成。** 新增 `crates/aluka-vm/src/bigdec.rs`（约 700 行，零新依赖）：
+
+- `BigNat`（基 2^32 手写大整数，仅 `mul_small` / `shl` / `divmod_small`）+ `exact_decimal`；
+- `to_fixed` / `to_exponential` / `to_precision`：精确展开 + 字符串舍入（并列取**大**）；
+- `shortest_spec_digits`：规范 6.1.6.1.20 要求的「并列取**偶**」（`toExponential()` 无参与
+  `Number→String` 共用）；
+- `to_radix_string`：**逐句移植 `DoubleToRadixCString`**。关键认知：V8 整数位走 f64
+  反复除法，超出有效精度的高位**故意补 `'0'`**——`(1e21).toString(36)` 是
+  `"5v1j4f4ds7c000"`（末 3 位补零）、`(1e21).toString(3)` 末 11 位为 `'0'`。此前
+  「用精确展开算 radix」的做法在大数值上必然与 Node 不同。
+
+**算法正确性证明（外部对拍，非自证）**：把 V8 源码逐句转写成 JS 参考实现后，
+对 19 种进制 × 1260 个数值（含 1200 个随机 double，覆盖 2^-1080 ~ 2^1020 全量级）
+共 **23959 次检查，0 差异**，再落地为 Rust。
+
+**连带修复（同属数字语义，故并入本轮）**：
+
+| 缺陷 | 改前 | 改后 / Node |
+|---|---|---|
+| `-0` 字面量常量折叠 | `1 / -0` → `Infinity` | `-Infinity`（`codegen.rs` 负零改走常量池） |
+| `Math.round(0.49999999999999994)` | `1`（`(n+0.5).floor()` 溢出） | `0`（改规范分档实现） |
+| `Math.round(4503599627370497)` | `...498` | `...497` |
+| `Math.round(-0.5)` | `0` | `-0` |
+
+**验收实测**：
+
+```
+【外部对拍】v8port2.js（V8 源码 JS 转写）  23,959 次检查 → 0 差异
+【专项探针】numsweep.js（760 项）          改前 24 行差异 → 改后 IDENTICAL
+【专项探针】numfmt_probe.js（31 项）       IDENTICAL
+【专项探针】numfmt_ext.js（39 项，含 RangeError 文本） IDENTICAL
+【专项探针】radixbig.js（14,875 行，2~36 全进制 × 872 值）改前 140 行 → 改后 0
+【专项探针】numstr.js（6,416 行，base-10 并列取偶）    0
+【新增门禁语料】36-number-format.cjs（123 行）  Node 侧 IDENTICAL；PASS
+cargo fmt --all --check                    →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                           →  exit 0，warnings=0
+cargo test --workspace --all-features      →  exit 0，0 failed / 1 ignored
+conformance 全量                            →  Result: 873/873 passed, 3 invalid
+```
+
+**隔离区偏差再判定**：**76 例现已与 Node 一致**（本轮 65 → 76）。
+口径说明：改前 65 与改后 76 均由**同一脚本**（`census.ps1`，对 170 例逐个
+node/aluka 对拍）在 `git stash` 前后的同一工作树上测得，非跨轮估算。
+累计轨迹 13→22→30→34→38→49→65→**76**。
+
+**已登记偏离（如实记录，非静默跳过）**：`console.log(-0)` 打印形态（Node 打印
+`-0`，本实现打印 `0`；`String(-0)` 两侧都是 `"0"`）。用例中一律用 `1 / -0` 探测
+符号，避开该打印差异。`Intl.NumberFormat` 表面不在本轮范围。
+
+---
+
+## 待办 22 · conformance 门禁耗时评审（现象记录 + 归因，进行中）
+
+> 触发问题：「评审测试是否真的需要这么长时间？是真实需要还是存在 BUG？」
+
+### 1. 现象（改前基线，实测）
+
+`cargo test --workspace --all-features` 中耗时 > 10 s 的三项：
+
+| 测试 | 耗时 | 规模 |
+|---|---|---|
+| `conformance_node22_test` | **170.22 s**（872 例）/ 184.58 s（873 例） | 每个用例跑 node + alukac + aluvm 共 3 个子进程 |
+| `jitdiff_3200_generated_cases_zero_mismatch` | 64.02 s | 3200 例 JIT/解释器差分（进程内，均值 20 ms/例） |
+| Go 对拍套件（21 tests） | 33.52 s | 含 `gc_stress_heavy_allocation`、`deep_recursion_fib` 等重型项 |
+
+### 2. 归因（872 例逐例三阶段计时，.NET `Process` 直接测量）
+
+```
+用例数=872  实测墙钟=180.9s
+node    合计 120,381 ms  均值 138.1  中位 134.8      (66%)
+compile 合计  24,122 ms  均值  27.7  中位  27.0      (13%)
+aluvm   合计  34,543 ms  均值  39.6  中位  38.5      (19%)
+分项之和占墙钟比例: 99.0%      ← 无空转、无挂死
+最慢用例: 335 ms；总耗时 >1s 的用例数: 0
+```
+
+### 3. 结论：**不是 BUG，但有两处真实的非必要开销**
+
+- **不是 BUG**：分项之和占墙钟 99.0%，说明时间 100% 花在子进程内；最慢用例仅 335 ms、
+  **0 例超过 1 s**、无任何超时——不存在事件循环挂死、死等或假失败重试。
+- **真实成本**：2619 次子进程启动（873 × 3），其中 node 占 66%。这部分**不可省**
+  （node 是 oracle，alukac/aluvm 是待测对象）。
+- **可优化（非必要开销）**：
+  1. **顺序执行**：用例之间完全独立，12 核机器只用了 1 核；
+  2. **`node` 解析到 nvmd shim**：`Get-Command node` → `C:\Users\User\.nvmd\bin\node.exe`
+     （**1.89 MB 启动器**，真 node v22.3.0 为 76 MB），每次多一层进程跳转。
+
+### 4. 量化实测
+
+**（a）进程启动开销（20 次均值，同版本 v22.3.0）**
+
+```
+C:\Users\User\.nvmd\bin\node.exe                均值 134.1 ms   ← PATH 上的 shim
+C:\Users\User\.nvmd\versions\22.3.0\node.exe    均值  91.4 ms   ← 真二进制
+                                                 差   42.7 ms × 873 例 ≈ 37 s
+```
+
+**（b）harness 轮询粒度**
+
+```
+Thread.Sleep(1)  × 100 → 1,496 ms  单次均值 14.96 ms   ← .NET 受 15.6 ms 定时器粒度限制
+Thread.Sleep(25) ×  40 → 1,219 ms  单次均值 30.48 ms
+```
+
+**（c）harness 改动实测**
+
+| 版本 | 873 例耗时 |
+|---|---|
+| 改前（`try_wait` + 固定 25 ms 轮询） | 184.58 s |
+| 轮询细化到 1 ms | 166.01 s（−18.6 s） |
+| 改为**管道 EOF 阻塞等待**（`recv_timeout`，不轮询） | **163.66 s**（再 −2.4 s） |
+
+> **一处结论更正（留档）**：我最初依据 `Thread.Sleep(1)` ≈ 15 ms 判定「细粒度轮询无效」，
+> 该判断被实测推翻——25 ms→1 ms 省下 18.6 s。**可推断** Rust `std::thread::sleep` 的
+> 精度远高于 .NET（Rust 侧 sleep 精度**未直接测量**，此结论仅由 18.6 s 的耗时下降反推），
+> 15.6 ms 粒度是 **.NET 测量工具自身**的限制，不能外推到 Rust。最终实现改为管道 EOF
+> 等待，彻底不依赖定时器粒度。
+
+### 5. 已落地的 harness 改动（`crates/aluka-cli/tests/conformance_node22_test.rs`）
+
+1. `run_with_timeout` 改为**管道 EOF 阻塞等待**：读取线程阻塞在 stdout/stderr EOF
+   （子进程退出即关闭），主线程 `recv_timeout` 精确等待，超时才 `kill`。语义不变
+   （输出仍按 stdout→stderr 拼接），去掉了对轮询间隔的依赖。
+2. 单例逻辑抽为 `run_case(&RunCtx, ...) -> CaseOutcome`（纯函数，不打印不计数），
+   并新增 `run_cases` 驱动，支持 `ALUKA_CONF_JOBS=N` 并行（无锁取号 + 按序回填，
+   输出顺序与顺序执行**逐字节相同**）。**默认仍为顺序执行**：部分语料绑定固定端口
+   或向 cwd 写固定文件名（http/net/dgram/cluster/fs），并发可能相互干扰，为保证门禁
+   结果稳定，并行只作显式选入。
+
+**当前验证状态**：改动已通过 `cargo fmt --all --check`（exit 0）、
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`（exit 0），
+并在**顺序模式**下全量通过：
+
+```
+conformance 全量（顺序，默认 jobs=1）→  Result: 873/873 passed, 3 invalid
+                                          finished in 163.66s
+```
+
+### 6. 待决策项（**均未实测取证**，需用户确认后再动）
+
+> 用户已指示暂停跑测试，以下两项只有**推断**，不含真实证据，不得作为结论引用。
+
+1. **并行默认值**：`ALUKA_CONF_JOBS` 当前默认 1。并行通路已实现（无锁取号 + 按序
+   回填，输出顺序与顺序执行逐字节相同）且能编译，但**未在开启状态下跑过任何一次
+   全量**——加速比与稳定性均未知。落地前需至少连续 3 次全绿。
+2. **oracle 版本**：本机另存在 `C:\Users\User\AppData\Local\pi-node\current\node.exe`
+   = **v22.23.1**，恰好是 AGENTS.md 指定的「Node.js 22 LTS **v22.23.1+**」权威版本；
+   而 `nvmd` 侧最高只有 22.3.0（当前 oracle）。改用 22.23.1 **可能**消掉现有 3 个
+   `invalid`（`03-require-esm` / `15-test-runner` / `16-m7-test-core` 均因 22.3.0 缺
+   `node:sqlite`、test runner 而无效），也**可能**引入新偏差。**需用户决策**。
+
+### 6b. 已实测但未落地的结论（仅记录，未改动配置）
+
+`node` 在 PATH 上解析到 nvmd **shim**（1.89 MB）而非真二进制（v22.3.0，76 MB），
+两者**版本相同**（均 `v22.3.0`），故换用真二进制不改变 oracle 语义，只是省掉一层
+进程跳转。本套件已支持 `NODE=<路径>` 指定解释器，可用
+`NODE=C:\Users\User\.nvmd\versions\22.3.0\node.exe` 规避。**该加速未在本套件中实测**，
+仅测得单次解释器启动耗时 134.1 ms → 91.4 ms（差 42.7 ms）。
+
+### 7. 顺带澄清：`CredentialHelperSelector` 弹窗与本仓库无关
+
+排查结论：该弹窗属于独立进程 `git-credential-helper-selector`（PID 14280）。
+本仓库**未**触发它——`.git/hooks` 无自定义钩子，全仓源码/语料**无任何** `git`
+调用（已 grep 验证）。触发源是机器上其他 git 客户端（用户已确认属其他项目）：
+全局 `credential.helper` 指向
+`C:/Users/User/.workbuddy/binaries/PortableGit/versions/1.2.0/mingw64/bin/git-credential-manager.exe`
+（GCM 2.9.0），首次使用时会要求选择凭据存储。

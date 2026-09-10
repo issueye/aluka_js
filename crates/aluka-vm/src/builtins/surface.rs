@@ -674,55 +674,84 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
     };
     match name.as_str() {
         "toString" => {
-            // toString([radix])：缺省 10；radix ∈ [2,36]；0/NaN 按 10
-            let radix = args
+            // toString([radix])：实参缺省/`undefined` → 10；否则
+            // `ToIntegerOrInfinity` 后必须落在 [2,36]，越界（含 NaN/±∞/null → 0）
+            // 抛 Node 同文案 RangeError。
+            let Some(arg) = args
                 .first()
-                .map(|v| crate::ops::to_number(*v))
-                .unwrap_or(10.0);
-            let out = if radix == 10.0 || radix.is_nan() {
+                .copied()
+                .filter(|v| !matches!(v, Value::Undefined))
+            else {
+                return Ok(Value::Object(vm.alloc_string(format_number_decimal(n))));
+            };
+            let radix = to_integer_or_infinity(crate::ops::to_number(arg));
+            if !(2.0..=36.0).contains(&radix) {
+                return Err(range_error(
+                    vm,
+                    "toString() radix argument must be between 2 and 36",
+                ));
+            }
+            let radix = radix as u32;
+            let out = if radix == 10 {
                 format_number_decimal(n)
-            } else if (2.0..=36.0).contains(&radix) {
-                let r = radix as u32;
-                format_number_radix(n, r)
             } else {
-                format_number_decimal(n)
+                format_number_radix(n, radix)
             };
             Ok(Value::Object(vm.alloc_string(out)))
         }
         "valueOf" => Ok(Value::Number(n)),
         "toFixed" => {
-            let digits = args
-                .first()
-                .map(|v| crate::ops::to_number(*v))
-                .unwrap_or(0.0)
-                .clamp(0.0, 100.0) as usize;
-            Ok(Value::Object(vm.alloc_string(format!("{n:.digits$}"))))
+            // toFixed([digits])：`ToIntegerOrInfinity` 后 ∈ [0,100]（NaN → 0）
+            let f = to_integer_or_infinity(
+                args.first().map_or(f64::NAN, |v| crate::ops::to_number(*v)),
+            );
+            if !(0.0..=100.0).contains(&f) {
+                return Err(range_error(
+                    vm,
+                    "toFixed() digits argument must be between 0 and 100",
+                ));
+            }
+            let out = crate::bigdec::to_fixed(n, f as usize);
+            Ok(Value::Object(vm.alloc_string(out)))
         }
         "toExponential" => {
-            let digits = args
-                .first()
-                .map(|v| crate::ops::to_number(*v))
-                .unwrap_or(0.0);
-            Ok(Value::Object(vm.alloc_string(format!(
-                "{:.*e}",
-                digits.clamp(0.0, 100.0) as usize,
-                n
-            ))))
+            // toExponential([fractionDigits])：实参缺省/`undefined` → 最短可往返
+            // 数字，否则 `ToIntegerOrInfinity` ∈ [0,100]（NaN → 0）
+            let digits = match args.first().copied() {
+                None | Some(Value::Undefined) => None,
+                Some(v) => {
+                    let f = to_integer_or_infinity(crate::ops::to_number(v));
+                    if !(0.0..=100.0).contains(&f) {
+                        return Err(range_error(
+                            vm,
+                            "toExponential() argument must be between 0 and 100",
+                        ));
+                    }
+                    Some(f as usize)
+                }
+            };
+            let out = crate::bigdec::to_exponential(n, digits);
+            Ok(Value::Object(vm.alloc_string(out)))
         }
         "toPrecision" => {
-            let p = args
-                .first()
-                .map(|v| crate::ops::to_number(*v))
-                .unwrap_or(0.0);
-            let out = if p <= 0.0 || p >= 21.0 {
-                format_number_decimal(n)
-            } else {
-                let digits = p as usize;
-                if n.abs() >= 10f64.powi(digits as i32 - 1) || n == 0.0 {
-                    format!("{:.*}", digits - 1, n)
-                } else {
-                    format!("{:.*e}", digits - 1, n)
+            // toPrecision([precision])：实参缺省/`undefined` → ToString(x)，
+            // 否则 `ToIntegerOrInfinity` ∈ [1,100]（NaN → 0 → RangeError）
+            let digits = match args.first().copied() {
+                None | Some(Value::Undefined) => None,
+                Some(v) => {
+                    let p = to_integer_or_infinity(crate::ops::to_number(v));
+                    if !(1.0..=100.0).contains(&p) {
+                        return Err(range_error(
+                            vm,
+                            "toPrecision() argument must be between 1 and 100",
+                        ));
+                    }
+                    Some(p as usize)
                 }
+            };
+            let out = match digits {
+                Some(p) => crate::bigdec::to_precision(n, p),
+                None => format_number_decimal(n),
             };
             Ok(Value::Object(vm.alloc_string(out)))
         }
@@ -734,37 +763,30 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
     }
 }
 
+/// `ToIntegerOrInfinity`（ECMAScript 7.1.5）：NaN → `+0`，其余取整数部分
+/// （`-0` 与 `±∞` 原样保留，故区间判定能正确拒绝 `Infinity`）。
+fn to_integer_or_infinity(v: f64) -> f64 {
+    if v.is_nan() { 0.0 } else { v.trunc() }
+}
+
+/// 抛 `RangeError`（`name`/`message` 文案对齐 Node 22）。
+fn range_error(vm: &mut Vm, msg: &str) -> VmError {
+    let err = vm.alloc_error_instance(msg);
+    let name = vm.alloc_string("RangeError".to_owned());
+    let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+    VmError::Thrown(Value::Object(err))
+}
+
 /// 十进制数字字符串化（JS `String(n)` 形态：NaN/±Infinity 字面、
 /// 整数不带尾零、否则最短十进制表示）。
 fn format_number_decimal(n: f64) -> String {
     crate::ops::js_number_to_string(n)
 }
 
-/// 以给定进制格式化数字（2~36；整数位截断，负号保留）。
+/// 以给定进制格式化数字（2~36）：整数位走 bignum（double 整数部分可超
+/// `i128`），小数位按 V8 delta 算法产最短可往返数字；NaN/±Infinity 字面。
 fn format_number_radix(n: f64, radix: u32) -> String {
-    if n.is_nan() {
-        return "NaN".to_owned();
-    }
-    if n == 0.0 {
-        return "0".to_owned();
-    }
-    let neg = n < 0.0;
-    let mut v = n.abs().trunc() as u64;
-    let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    let mut out = Vec::new();
-    while v > 0 {
-        out.push(digits[(v % u64::from(radix)) as usize] as char);
-        v /= u64::from(radix);
-    }
-    if out.is_empty() {
-        out.push('0');
-    }
-    out.reverse();
-    let mut s = out.into_iter().collect::<String>();
-    if neg {
-        s.insert(0, '-');
-    }
-    s
+    crate::bigdec::to_radix_string(n, radix)
 }
 
 /// `RegExp.prototype.exec.call(re, str)`。

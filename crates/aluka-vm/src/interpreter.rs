@@ -4977,8 +4977,25 @@ fn math_method(method: &str, args: &[Value]) -> Value {
         "round" => nums
             .first()
             .map(|n| {
-                // JS Math.round：+.5 向上（含负数），与 Rust round 的远离零不同
-                (n + 0.5).floor()
+                // 规范 Math.round：非有限或整数原样返回；`-0` 与 `(-0.5, 0)` → `-0`；
+                // 其余取最接近的整数，并列时取**较大**者（`-2.5 → -2`）。
+                // 不能用 `(n + 0.5).floor()`：`0.49999999999999994 + 0.5` 恰好舍入成
+                // `1.0` 而错得 `1`；`2^52` 附近的 `n + 0.5` 也会因舍入而多进一位。
+                if !n.is_finite() || n.fract() == 0.0 {
+                    return *n;
+                }
+                if *n > 0.0 && *n < 0.5 {
+                    return 0.0;
+                }
+                if *n < 0.0 && *n >= -0.5 {
+                    return -0.0;
+                }
+                let floor = n.floor();
+                if *n - floor >= 0.5 {
+                    floor + 1.0
+                } else {
+                    floor
+                }
             })
             .unwrap_or(f64::NAN),
         "trunc" => nums.first().map(|n| n.trunc()).unwrap_or(f64::NAN),

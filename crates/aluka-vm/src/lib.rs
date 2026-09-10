@@ -2,6 +2,7 @@
 //!
 //! 负责字节码解释循环执行、堆对象管理、调用帧与作用域隔离、类与原型链继承。
 
+pub(crate) mod bigdec;
 pub mod builtins;
 pub mod call;
 pub mod class;

@@ -857,7 +857,13 @@ pub(crate) fn add_constant(unit: &mut CompiledUnit, c: Constant) -> u32 {
 pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
     match expr {
         Expr::Number(n) => {
-            if *n >= 0.0 && n.fract() == 0.0 && *n <= MAX_IMMEDIATE {
+            // `-0.0 >= 0.0` 为真，但 `PushInt` 会把负零的符号丢掉（`1 / -0` 应为
+            // `-Infinity`），故负零必须走常量池以保留 f64 位型。
+            if *n >= 0.0
+                && !(n.is_sign_negative() && *n == 0.0)
+                && n.fract() == 0.0
+                && *n <= MAX_IMMEDIATE
+            {
                 unit.code.push(Instr::new(Op::PushInt, *n as u32));
             } else if *n < 0.0 && n.fract() == 0.0 && -*n <= MAX_IMMEDIATE {
                 unit.code.push(Instr::new(Op::PushNegInt, (-*n) as u32));

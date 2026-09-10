@@ -18,8 +18,8 @@ pub fn to_number(val: Value) -> f64 {
 
 /// ECMAScript `ToString(Number)`：最短有效数字 + 指数切换规则
 /// （k ≤ n ≤ 21 补零；0 < n ≤ 21 插小数点；-6 < n ≤ 0 前导 0.；
-/// 其余科学计数法 `d.ddde±x`）。Rust `{}` 不产指数形态、`{:e}` 恒为
-/// 指数形态——借 `{:e}` 取最短有效数字后按规范重排。
+/// 其余科学计数法 `d.ddde±x`）。Rust `{}` 不产指数形态、`{:e}` 恒为指数形态——
+/// 借 [`crate::bigdec::shortest_spec_digits`] 取规范要求的有效数字后按上述规则重排。
 #[must_use]
 pub fn js_number_to_string(n: f64) -> String {
     if n.is_nan() {
@@ -38,14 +38,11 @@ pub fn js_number_to_string(n: f64) -> String {
         return "0".to_owned();
     }
     let neg = n.is_sign_negative();
-    let e_form = format!("{a:e}");
-    let (mant, exp) = e_form.split_once('e').unwrap_or((e_form.as_str(), "0"));
-    let exp: i32 = exp.parse().unwrap_or(0);
-    let digits: String = mant.chars().filter(|c| *c != '.').collect();
-    let digits = digits.trim_end_matches('0');
-    let digits = if digits.is_empty() { "0" } else { digits };
+    // 最短有效数字 + 规范要求的「并列取偶」（Rust `{:e}` 并列时取较大者，
+    // 需借精确展开修正；详见 `bigdec::shortest_spec_digits`）
+    let (digits, n) = crate::bigdec::shortest_spec_digits(a);
+    let digits = digits.as_str();
     let k = digits.len() as i32;
-    let n = exp + 1; // 规范记号：value = 0.digits × 10^n
     let mut out = String::new();
     if neg {
         out.push('-');
