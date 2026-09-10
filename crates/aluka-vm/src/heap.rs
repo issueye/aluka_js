@@ -148,15 +148,17 @@ pub enum HeapObject {
         /// 描述文本（`Symbol()` 为空串）
         description: String,
     },
-    /// Map/Set 对象（键字符串化；`get/set/has/groupBy` 运行时）
+    /// Map/Set 对象（键为原始 `Value` + SameValueZero 语义；`get/set/has/groupBy` 运行时）
     ///
     /// **有序存储**（`Vec` 保持插入序——`Map.prototype.entries/keys/values`、
-    /// `Set.prototype.values` 迭代与 Node 一致按插入序遍历；键经
-    /// `to_property_key` 字符串化）。Set 复用之：`value` 保留原元素、
-    /// `key` 仅作去重/查找键。
+    /// `Set.prototype.values` 迭代与 Node 一致按插入序遍历）。键保留**原始
+    /// `Value`**（不再经 `to_property_key` 字符串化），查找/去重一律用
+    /// SameValueZero（NaN 相等、±0 相等、对象按引用身份——见
+    /// `interpreter::values_same_zero`），因此 `new Set([3, '3']).size === 2`。
+    /// Set 复用之：`key` 与 `value` 同为元素原值（双槽约定，迭代从 value 槽取）。
     Map {
-        /// 有序项集（键经 `to_property_key` 字符串化；Set 的 value = 元素原值）
-        entries: Vec<(String, Value)>,
+        /// 有序项集（键为原始 `Value`；Set 的 key = value = 元素原值）
+        entries: Vec<(Value, Value)>,
     },
     /// 正则表达式对象（模式与标志原文；匹配经 `aluka-regex` 引擎求值）
     RegExp {
@@ -522,8 +524,9 @@ impl Vm {
 
     /// 在堆上分配 Map/Set 对象，返回句柄。
     ///
-    /// `entries` 按**插入序**保留（迭代协议依赖；`set` 更新既有键时保持原位置）。
-    pub fn alloc_map(&mut self, entries: Vec<(String, Value)>) -> ObjectRef {
+    /// `entries` 按**插入序**保留（迭代协议依赖；`set` 更新既有键时保持原位置）；
+    /// 键为原始 `Value`（SameValueZero 语义，见 [`HeapObject::Map`]）。
+    pub fn alloc_map(&mut self, entries: Vec<(Value, Value)>) -> ObjectRef {
         self.push_object(HeapObject::Map { entries })
     }
 
@@ -653,7 +656,12 @@ impl HeapObject {
                 }
             }
             HeapObject::Map { entries } => {
-                for (_, v) in entries {
+                // 键与值都是原始 `Value`（键不再字符串化），两者都可能引用
+                // 堆对象：必须全部标记——漏标键会让 GC 误回收键对象（悬垂）
+                for (k, v) in entries {
+                    if let Value::Object(r) = k {
+                        f(r.0);
+                    }
                     if let Value::Object(r) = v {
                         f(r.0);
                     }

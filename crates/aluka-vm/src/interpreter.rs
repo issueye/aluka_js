@@ -2743,10 +2743,10 @@ impl Vm {
                     } else if method_name == "groupBy"
                         && self.map_ctor.is_some_and(|c| receiver == Value::Object(c))
                     {
-                        // Map.groupBy(arr, cb)：分组到 Map（键字符串化）
+                        // Map.groupBy(arr, cb)：分组到 Map（键保留原值 + SameValueZero
+                        // 语义；首见顺序即插入序——Vec 保序，非字符串化分组）
                         let cb = args.get(1).copied().unwrap_or(Value::Undefined);
-                        let mut groups: std::collections::HashMap<String, Vec<Value>> =
-                            std::collections::HashMap::new();
+                        let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
                         let elems: Vec<Value> =
                             match args.first().copied().unwrap_or(Value::Undefined) {
                                 Value::Object(rr) => match self.heap.get(rr.0 as usize) {
@@ -2761,11 +2761,17 @@ impl Vm {
                                 Value::Undefined,
                                 &[*elem, Value::Number(i as f64), Value::Undefined],
                             )?;
-                            let key = self.to_property_key(key_val);
-                            groups.entry(key).or_default().push(*elem);
+                            if let Some(slot) = groups
+                                .iter_mut()
+                                .find(|(k, _)| self.values_same_zero(*k, key_val))
+                            {
+                                slot.1.push(*elem);
+                            } else {
+                                groups.push((key_val, vec![*elem]));
+                            }
                         }
-                        let mut map_entries: Vec<(String, Value)> = Vec::new();
-                        for (k, v) in groups.into_iter() {
+                        let mut map_entries: Vec<(Value, Value)> = Vec::new();
+                        for (k, v) in groups {
                             let arr = self.alloc_array(v);
                             map_entries.push((k, Value::Object(arr)));
                         }
@@ -2791,17 +2797,14 @@ impl Vm {
                                 Some(HeapObject::Map { .. })
                             )
                     ) {
-                        // Map/Set 实例方法（entries 键经 to_property_key；Set 复用
-                        // Map 变体：key=去重键、value=元素原值）
+                        // Map/Set 实例方法（键保留原始 Value + SameValueZero 查找；
+                        // Set 复用 Map 变体：key=value=元素原值）
                         let method = method_name.as_ref();
-                        let key = args
-                            .first()
-                            .map(|v| self.to_property_key(*v))
-                            .unwrap_or_default();
+                        let key = args.first().copied().unwrap_or(Value::Undefined);
                         let mut result = Value::Undefined;
                         // 迭代类方法（keys/values/entries/forEach）先取有序快照
                         // 再分配迭代器（避免与可变借用冲突）
-                        let snapshot: Option<Vec<(String, Value)>> = match method {
+                        let snapshot: Option<Vec<(Value, Value)>> = match method {
                             "keys" | "values" | "entries" | "forEach" => match receiver {
                                 Value::Object(rr) => match self.heap.get(rr.0 as usize) {
                                     Some(HeapObject::Map { entries }) => Some(entries.clone()),
@@ -2858,11 +2861,12 @@ impl Vm {
                                             }
                                         } else {
                                             for (k, v) in entries {
-                                                let ks = self.alloc_string(k);
+                                                // 键身份：直接回传原键 Value（对象键
+                                                // 必须 `seen === 原键`，不得重建字符串）
                                                 self.invoke_callable(
                                                     cb,
                                                     this_arg,
-                                                    &[v, Value::Object(ks), receiver],
+                                                    &[v, k, receiver],
                                                 )?;
                                             }
                                         }
@@ -2872,6 +2876,16 @@ impl Vm {
                                 }
                             }
                         } else if let Value::Object(rr) = receiver {
+                            // SameValueZero 命中下标：先在**不可变**借用下求出，再进入
+                            // 可变借用改写——比较需读堆判定字符串内容（本 VM 以堆对象
+                            // 表示字符串，句柄不同但内容相同必须视为同键），若在
+                            // `get_mut` 的闭包里比较会同时持有 &mut self.heap 与 &self。
+                            let hit = match self.heap.get(rr.0 as usize) {
+                                Some(HeapObject::Map { entries }) => entries
+                                    .iter()
+                                    .position(|(k, _)| self.values_same_zero(*k, key)),
+                                _ => None,
+                            };
                             if let Some(HeapObject::Map { entries }) =
                                 self.heap.get_mut(rr.0 as usize)
                             {
@@ -2883,34 +2897,36 @@ impl Vm {
                                             }
                                             _ => args.first().copied().unwrap_or(Value::Undefined),
                                         };
-                                        // 有序语义：既有键原位更新（保插入位置），
+                                        // 有序语义：既有键命中则原位更新（保插入位置），
                                         // 否则追加末尾（Node Map/Set 插入序）
-                                        if let Some(slot) =
-                                            entries.iter_mut().find(|(k, _)| *k == key)
-                                        {
-                                            slot.1 = value;
+                                        if let Some(i) = hit {
+                                            entries[i].1 = value;
                                         } else {
                                             entries.push((key, value));
                                         }
-                                        // 写屏障：Map/Set 容器写入年轻值
+                                        // 写屏障：Map/Set 容器（可能已升代）写入年轻引用
+                                        // ——键与值都必须分别屏障（漏键屏障会让键对象在
+                                        // minor 中被误回收）
                                         self.gc_write_barrier(rr, value);
+                                        self.gc_write_barrier(rr, key);
                                         result = receiver;
                                     }
                                     "get" => {
-                                        result = entries
-                                            .iter()
-                                            .find(|(k, _)| *k == key)
-                                            .map(|(_, v)| *v)
-                                            .unwrap_or(Value::Undefined);
+                                        result =
+                                            hit.map(|i| entries[i].1).unwrap_or(Value::Undefined);
                                     }
                                     "has" => {
-                                        result =
-                                            Value::Boolean(entries.iter().any(|(k, _)| *k == key));
+                                        result = Value::Boolean(hit.is_some());
                                     }
                                     "delete" => {
-                                        let before = entries.len();
-                                        entries.retain(|(k, _)| *k != key);
-                                        result = Value::Boolean(entries.len() != before);
+                                        // SameValueZero 语义下至多命中一项
+                                        result = Value::Boolean(match hit {
+                                            Some(i) => {
+                                                entries.remove(i);
+                                                true
+                                            }
+                                            None => false,
+                                        });
                                     }
                                     "clear" => {
                                         entries.clear();
@@ -3645,8 +3661,9 @@ impl Vm {
                                         from += elems.len() as f64;
                                     }
                                     let from = from.max(0.0) as usize;
-                                    let found =
-                                        elems[from..].iter().any(|e| values_same_zero(*e, needle));
+                                    let found = elems[from..]
+                                        .iter()
+                                        .any(|e| self.values_same_zero(*e, needle));
                                     self.stack.push(Value::Boolean(found));
                                 }
                                 "indexOf" => {
@@ -4817,15 +4834,22 @@ fn format_radix(n: i128, radix: u32) -> String {
     digits.iter().rev().collect()
 }
 
-/// SameValueZero 相等（`Array.prototype.includes` 语义：NaN 视为相等，
-/// `+0`/`-0` 相等；对象按引用身份）。
-pub(crate) fn values_same_zero(a: Value, b: Value) -> bool {
-    if let (Value::Number(x), Value::Number(y)) = (a, b) {
-        if x.is_nan() && y.is_nan() {
-            return true;
+impl Vm {
+    /// SameValueZero 相等（`Array.prototype.includes` / Map/Set 键语义：
+    /// NaN 视为相等、`+0`/`-0` 相等；对象按引用身份、**字符串按内容**）。
+    ///
+    /// 注意：`Value` 的 `PartialEq` 对 `Value::Object` 是**句柄比较**，而本 VM
+    /// 以堆对象表示字符串——若直接 `a == b`，内容相同但句柄不同的两个字符串
+    /// 会判为不等（`["a", "b"].includes("b")` 曾因此返回 `false`）。故委托
+    /// [`crate::ops::strict_eq`]（`===` 语义，已按内容比对堆字符串）后补 NaN 自等。
+    pub(crate) fn values_same_zero(&self, a: Value, b: Value) -> bool {
+        if let (Value::Number(x), Value::Number(y)) = (a, b) {
+            if x.is_nan() && y.is_nan() {
+                return true;
+            }
         }
+        crate::ops::strict_eq(a, b, &self.heap, &self.current_constants)
     }
-    a == b
 }
 
 /// 归一化切片下标（`fill`/`copyWithin` 的 start/end 语义）：

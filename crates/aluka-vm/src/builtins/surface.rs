@@ -373,6 +373,20 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         "Symbol.iterator",
         map_set_iter_handler,
     );
+
+    // 内建迭代器对象的属性面（见 iter.rs `attach_iterator_surface`）
+    register_handler(
+        registry,
+        "Iterator.prototype",
+        "next",
+        iterator_next_handler,
+    );
+    register_handler(
+        registry,
+        "Iterator.prototype",
+        "Symbol.iterator",
+        iterator_self_handler,
+    );
 }
 
 macro_rules! proto_getter {
@@ -804,21 +818,38 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                             .collect(),
                         Either::Arr(elements) => elements,
                         Either::None_ => {
-                            // 类数组：length + 数字下标自属性
-                            let len = vm
-                                .get_property(source, "length")
-                                .ok()
-                                .and_then(|v| match v {
-                                    Value::Number(n) => Some(n as usize),
-                                    _ => None,
-                                })
-                                .unwrap_or(0);
-                            (0..len)
-                                .map(|i| {
-                                    vm.get_property(source, &i.to_string())
-                                        .unwrap_or(Value::Undefined)
-                                })
-                                .collect()
+                            // 可迭代对象（Map/Set/四类内建迭代器/自定义 Symbol.iterator）
+                            // 优先走迭代协议：它们在 Node 中是可迭代的，若按类数组
+                            // （length + 数字下标）处理会静默得到空数组
+                            // （`Array.from(new Map(...))` 曾为 `[]`）。
+                            let iter_key = match vm.well_known_symbol("iterator") {
+                                Value::Object(s) => crate::symbol::mangled_key(s),
+                                _ => String::new(),
+                            };
+                            let iterable = !iter_key.is_empty()
+                                && matches!(
+                                    vm.get_property(source, &iter_key),
+                                    Ok(Value::Object(_))
+                                );
+                            if iterable {
+                                vm.collect_iter_values(source)?
+                            } else {
+                                // 类数组：length + 数字下标自属性
+                                let len = vm
+                                    .get_property(source, "length")
+                                    .ok()
+                                    .and_then(|v| match v {
+                                        Value::Number(n) => Some(n as usize),
+                                        _ => None,
+                                    })
+                                    .unwrap_or(0);
+                                (0..len)
+                                    .map(|i| {
+                                        vm.get_property(source, &i.to_string())
+                                            .unwrap_or(Value::Undefined)
+                                    })
+                                    .collect()
+                            }
                         }
                     }
                 }
@@ -953,14 +984,12 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             let needle = args.first().copied().unwrap_or(Value::Undefined);
             let pos = elems(vm, r)
                 .iter()
-                .position(|e| crate::interpreter::values_same_zero(*e, needle));
+                .position(|e| vm.values_same_zero(*e, needle));
             Ok(Value::Number(pos.map(|i| i as f64).unwrap_or(-1.0)))
         }
         "includes" => {
             let needle = args.first().copied().unwrap_or(Value::Undefined);
-            let hit = elems(vm, r)
-                .iter()
-                .any(|e| crate::interpreter::values_same_zero(*e, needle));
+            let hit = elems(vm, r).iter().any(|e| vm.values_same_zero(*e, needle));
             Ok(Value::Boolean(hit))
         }
         "length" => Ok(Value::Number(elems(vm, r).len() as f64)),
@@ -1049,4 +1078,37 @@ fn map_set_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
         }
         _ => Ok(Value::Undefined),
     }
+}
+
+/// 内建迭代器对象的 `next()` 属性面入口。
+///
+/// 与 `interpreter.rs` 中 CALL_METHOD 的按名硬编码分派等价，但走「属性读到的
+/// NativeFn」路径——`typeof it.next === 'function'` 与 `it.next()` 因此都成立
+/// （此前只有按名调用可用、属性读为 `undefined`）。
+fn iterator_next_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = super::current_receiver();
+    let Value::Object(r) = this else {
+        return Ok(Value::Undefined);
+    };
+    if vm.is_array_iterator(this) {
+        return vm.array_iterator_next(r);
+    }
+    if vm.is_string_iterator(this) {
+        return vm.string_iterator_next(r);
+    }
+    if vm.is_map_iterator(this) {
+        return vm.map_iterator_next(r);
+    }
+    if vm.is_set_iterator(this) {
+        return vm.set_iterator_next(r);
+    }
+    Ok(Value::Undefined)
+}
+
+/// 迭代器对象的 `[Symbol.iterator]()`：返回自身（规范：迭代器对象自迭代）。
+///
+/// 没有这条属性时 `[...it]` / `Array.from(it)` / `Object.fromEntries(it)` 会
+/// 读不到 `Symbol.iterator`，静默产生**空结果**（此前实测缺陷）。
+fn iterator_self_handler(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    Ok(super::current_receiver())
 }

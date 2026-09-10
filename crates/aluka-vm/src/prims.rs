@@ -140,7 +140,12 @@ impl Vm {
                         out.push(']');
                         seen.pop();
                     }
-                    Some(HeapObject::Ordinary { .. }) => {
+                    // Map/Set 也在此分支：其内部条目不是属性，`own_entries` 对
+                    // `HeapObject::Map` 返回空 → 序列化为 `{}`，与 Node 一致
+                    // （`JSON.stringify(new Map())` 曾落入 `_ => "null"` 得到 `null`）。
+                    // 登记：用户额外挂在 Map 上的自有属性同样不会被序列化（`own_entries`
+                    // 只读 Ordinary 的 props）——属本实现折衷，未在 Node 中复现。
+                    Some(HeapObject::Ordinary { .. } | HeapObject::Map { .. }) => {
                         seen.push(r.0);
                         out.push('{');
                         // 键序（规范 [[OwnPropertyKeys]] 的 JSON 子集）：

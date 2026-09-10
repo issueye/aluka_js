@@ -106,11 +106,22 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             Ok(Value::Object(vm.alloc_array(out)))
         }
         "fromEntries" => {
-            let list = args
-                .first()
-                .copied()
-                .map(|v| vm.to_array_values(v))
-                .unwrap_or_default();
+            let arg = args.first().copied().unwrap_or(Value::Undefined);
+            // 可迭代实参（Map/Set/四类内建迭代器）走迭代协议取 `[key, value]`
+            // 序列——它们经 `to_array_values` 会静默得到空表
+            // （`Object.fromEntries(new Map(...))` 曾为 `{}`）。
+            // 数组与类数组维持 `to_array_values` 既有语义。
+            let list = if vm.is_map_instance(arg)
+                || vm.is_set_instance(arg)
+                || vm.is_array_iterator(arg)
+                || vm.is_string_iterator(arg)
+                || vm.is_map_iterator(arg)
+                || vm.is_set_iterator(arg)
+            {
+                vm.collect_iter_values(arg)?
+            } else {
+                vm.to_array_values(arg)
+            };
             let out = vm.alloc_ordinary();
             for pair in list {
                 let vals = vm.to_array_values(pair);

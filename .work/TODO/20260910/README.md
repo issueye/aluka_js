@@ -472,3 +472,140 @@ conformance 全量（--nocapture）                                   → Result
 - `aluka npm ls` 在祖先解析正确的前提下，项目名打印为 `<unnamed>`（版本正确读出），
   而父级 `package.json` 明确有 `"name": "parent"` → `ls` 的名称显示面疑有独立缺陷，
   未深究，建议另立小专项复核。
+
+---
+
+## 待办 11 · Map/Set 键语义 Correctness（SameValueZero 化）
+
+> 来源：M5 复审报告 §4.3 定级的**独立 P0**（超出 M5 范围，本轮单独立项）。
+> round7 亦曾以「Set 键字符串化（3 与 '3' 同键）」登记为引擎既有面缺口。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线）**：
+
+| 表达式 | Node 22 | Aluka 现状 |
+|---|---|---|
+| `new Set([3, '3']).size` | 2 | **1** |
+| `new Map().set(3,'n').set('3','s').get(3)` | `'n'`（size 2） | **`'s'`**（size 1） |
+
+**根因**：`crates/aluka-vm/src/heap.rs:158` 的 Map/Set 表示把键字符串化——
+```rust
+/// 有序项集（键经 `to_property_key` 字符串化；Set 的 value = 元素原值）
+entries: Vec<(String, Value)>,
+```
+`interpreter.rs:2797` 用 `to_property_key` 求键，比较处一律 `String` 相等
+（`interpreter.rs:2889/2908/2912`）。于是数字/字符串/布尔/对象键被归一
+（`3`≡`'3'`、`true`≡`'true'`、两个不同对象≡`"[object Object]"`）。
+附带缺陷：`Map.forEach` 的键由 `alloc_string(k)` 重新分配（:2857），
+不是原键对象；`heap.rs:655` 的 GC 扫描**只标记 value 不标记 key**（因键是 String）。
+
+**目标**：键槽保留原始 `Value`，比较改用 **SameValueZero**
+（`NaN`≡`NaN`、`+0`≡`-0`、对象按引用身份、字符串按内容），并保证插入序、
+`forEach` 键身份、GC 根覆盖键槽。
+
+**验收标准**：
+
+| # | 用例 | 期望（Node 22） |
+|---|---|---|
+| 1 | `new Set([3,'3']).size` | 2 |
+| 2 | `new Map().set(3,'n').set('3','s')` → `get(3)` / `size` | `'n'` / 2 |
+| 3 | `new Set([true,'true',1,'1']).size` | 4 |
+| 4 | `new Set([NaN, NaN]).size` | 1 |
+| 5 | `new Map().set(-0,'z')` → `has(0)` / `size` | `true` / 1 |
+| 6 | 两个不同 `{}` 键 / 同一对象键两次 | size 2 / 1 |
+| 7 | 插入序：先 a 后 b，覆盖 a 后再 `keys()` | `[a, b]`（原序不变） |
+| 8 | `map.forEach((v,k)=>{seen=k})` → `seen === 原键对象` | true（对象键同一性） |
+| 9 | `[...set]` / `for...of` / `Array.from` / `entries/keys/values` | 与 Node 逐字一致 |
+| 10 | `util.inspect(new Map([[1,'a']]))` | 键显示为数字非 `'1'` |
+| 11 | worker 结构化克隆往返（数字键/对象键 Map、数字元素 Set） | 语义保持 |
+| 12 | `ALUKA_GC_STRESS` 下对象键不被误回收 | 存活 |
+| 13 | 门禁三连 | fmt/clippy/全量 + conformance 全绿、`invalid` 不增加 |
+
+### 交付摘要
+
+**核心目标达成：Map/Set 键语义与 Node 一致；并连带修复同源的 4 个既有缺陷。**
+
+#### 1. 键语义 SameValueZero 化（任务本体）
+
+- `heap.rs:158`：`entries: Vec<(String, Value)>` → **`Vec<(Value, Value)>`**（Set 保持
+  key = value = 元素原值的双槽约定）；`alloc_map` 签名随动。
+- `interpreter.rs`：键来源去 `to_property_key`（`args.first()` 直取原值）；
+  快照类型随动；`forEach` 直传原键（键身份正确）；`Map.groupBy` 改 Vec + SameValueZero；
+  `get/set/has/delete` 统一 SameValueZero；**补键写屏障**。
+- `call.rs`：`new Map/Set(iterable)` 改走 `collect_iter_values`（见 §3）。
+- `worker_clone.rs`：Map 键线格式由 `self.str()` 改为 `serialize_value`（读端
+  `self.value()` 成对）、`T_SET` 键=元素原值、`push_map_entry` 改 `Value` 键 +
+  **补写屏障**（原实现无屏障，属既有缺口）。
+- **GC 关键点**：`heap.rs` 的 `trace_refs` Map 分支原**只标记 value**；键改 `Value`
+  后补标记键槽（所有 GC 标记路径都经此处，一处生效）。
+
+#### 2. 连带修复的既有缺陷（本任务外新发现，均已实测）
+
+| # | 缺陷（改前实测） | 根因 | 修复 |
+|---|---|---|---|
+| A | **`["a","b"].includes("b")` → `false`**（连字面量都错） | `values_same_zero` 只做 `a == b`，而 `Value` 的 `PartialEq` 对堆字符串是**句柄比较** | 改为 `Vm::values_same_zero`：`ops::strict_eq`（已按内容比字符串）+ NaN 自等 |
+| B | `[...[1,2].values()]`、`Array.from(map)`、`Object.fromEntries(map)` **静默为空** | `collect_iter_values` 按容器类型识别，迭代器对象落入空分支；`Array.from`/`Object.fromEntries` 各自按类数组处理 | 迭代器对象挂**真实 `next` / `Symbol.iterator` 属性**（`iter.rs::attach_iterator_surface` + `surface.rs` 两个 handler）；`collect_iter_values` 补迭代器排空分支；`Array.from`/`Object.fromEntries` 补可迭代优先分支 |
+| C | `new Set("ab").size` → **0**、`new Map([[1,'a'],[1,'b']])` **不去重** | `call.rs` 的 Map/Set 构造只识别 `HeapObject::Array` | 改走 `collect_iter_values`（接受任意可迭代） |
+| D | `JSON.stringify(new Map())` → **`null`** | `json_write` 对 Map 变体落入 `_ => "null"` | Map/Set 并入 Ordinary 分支 → `{}`（与 Node 一致） |
+
+**其中 A 的波及面远超 Map/Set**（`Array.prototype.includes`/`indexOf` 是常用 API），
+是本轮价值最高的发现。
+
+#### 3. 验收结果（探针逐行对比 Node v22.3.0）
+
+- **`accept_probe.js`（32 项：键语义 16 + 迭代器 16）**：改前 **46 行差异** → 改后
+  **仅剩 1 行**，且为**有意登记的偏离**（见 §4）。
+  关键项：`Set([3,'3']).size=2`、`Map` 数字/字符串键分离、`new Set([true,'true',1,'1']).size=4`、
+  `NaN` 键、`±0` 同键、对象键身份、插入序、`delete` 后重加序、`forEach` 键身份、
+  `[...it]`/`Array.from`/`Object.fromEntries`/`keys/values/entries` 全部一致。
+- **`samezero_probe.js`（11 项数组/集合比较）**：**IDENTICAL**。
+- **GC 键存活**：对象作 Map 键/Set 元素，20 万次分配逼 GC 后仍正确；默认、
+  `ALUKA_GC_STRESS=16`、`=1024` 三种压力下输出一致。
+- **worker 往返**：含数字/字符串/对象键的 Map 与 Set `postMessage` 往返后键类型与
+  语义保持，**与 Node 逐字节一致**。
+- **deviations 语料再判定**：`cases/gen/deviations/` 中 12 个 Map/Set 用例
+  **10 个现已与 Node 一致**（改前全部分歧）；剩 2 个为**其他已登记缺口**
+  （`gen-object-json-0025` 需 `structuredClone` 全局；`gen-eval-matrix-0008`
+  需 `instanceof`，受原型属性读面所限）。
+  > 按既有流程，重新分区应由 `cases/gen/partition.py` 执行，本轮**未手工搬移文件**。
+
+#### 4. 本轮引入并登记的偏离（刻意折衷）
+
+1. **迭代器 `next` / `Symbol.iterator` 挂为自有属性**：Node 挂在各迭代器**原型**上，
+   `Object.prototype.hasOwnProperty.call(it,'next')` 在 Node 为 `false`、本实现为
+   `true`（已写入 `iter.rs` 注释登记）。行为等价（可读、可调、自迭代），仅属性归属不同。
+2. **Map/Set 上的用户自有属性不被 `JSON.stringify` 序列化**（`own_entries` 只读
+   Ordinary 的 props）——已写入 `prims.rs` 注释。
+3. `new Map(5)` 得空 Map（Node 抛 TypeError）——非可迭代实参未做类型校验，**未修**，
+   本轮登记。
+
+#### 5. 门禁（回填真实输出）
+
+```
+cargo fmt --all --check                        → exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                               → exit 0，warnings=0 errors=0
+cargo test --workspace --all-features          → exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                                → Result: 864/864 passed, 3 invalid
+```
+
+586/0/1 与 864/864/3 **与本轮基线完全一致** —— 行为面大改但**零回归**。
+
+#### 6. 本轮未做（另立专项，附理由）
+
+- **迭代器内部标记属性泄漏**：`Object.keys([1,2].values())` → `["_isArrayIterator","_iterArray"]`
+  （Node `[]`）、`JSON.stringify(iter)` → 内部结构（Node `{}`）。需把标记改为不可枚举
+  或改用真实原型面，属表示层重构，**非本任务范围**；
+- `util.inspect`/`console.log` 无 Map/Set 格式化特判（验收项 10 **未达成**，缺的是
+  `util.inspect` 的 Map 显示实现，与键语义无关）；
+- `structuredClone` 全局未实现；
+- `instanceof Map` 为 false（原型属性读面，已登记的系统性缺口）。
+
+#### 7. 验收项达成对照
+
+| # | 验收项 | 结果 |
+|---|---|---|
+| 1-9, 11, 12 | 键语义 / 迭代 / worker 往返 / GC 存活 | ✅ 达成（探针逐行一致） |
+| 10 | `util.inspect(Map)` 键类型显示 | ❌ **未达成**——`util.inspect` 无 Map 特判（既有功能缺口，非键语义） |
+| 13 | 门禁三连 | ✅ 达成（零回归） |

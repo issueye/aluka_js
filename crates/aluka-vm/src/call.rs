@@ -365,38 +365,49 @@ impl Vm {
                     "Object" => return Ok(Value::Object(self.alloc_ordinary())),
                     "RegExp" => return self.construct_regexp(args),
                     "Map" => {
-                        // new Map(iterable?)：接受 `[[key, value], ...]` 数组
-                        // （有序插入；Node 语义）；无参为空 Map
-                        let mut entries: Vec<(String, Value)> = Vec::new();
-                        if let Some(Value::Object(r)) = args.first().copied() {
-                            if let Some(HeapObject::Array { elements, .. }) =
-                                self.heap.get(r.0 as usize)
-                            {
-                                for elem in elements.clone() {
-                                    let pair = self.to_array_values(elem);
-                                    if pair.len() >= 2 {
-                                        let key = self.to_property_key(pair[0]);
-                                        entries.push((key, pair[1]));
-                                    }
+                        // new Map(iterable?)：逐项按 `[key, value]` 取键值
+                        // （有序插入；Node 语义）；无参为空 Map。
+                        // 接受**任意可迭代**（数组 / Map / Set / 四类内建迭代器 /
+                        // 字符串 / 自定义 Symbol.iterator）——此前只识别数组，
+                        // `new Map("ab")` 之类会静默得到空 Map。
+                        // 键保留**原始 Value** + SameValueZero 去重：重复键不新增
+                        // 条目、保持首次出现的位置、值取后者（Node 语义）。
+                        let arg = args.first().copied().unwrap_or(Value::Undefined);
+                        let items = if matches!(arg, Value::Undefined | Value::Null) {
+                            Vec::new()
+                        } else {
+                            self.collect_iter_values(arg)?
+                        };
+                        let mut entries: Vec<(Value, Value)> = Vec::new();
+                        for item in items {
+                            let pair = self.to_array_values(item);
+                            if pair.len() >= 2 {
+                                let key = pair[0];
+                                if let Some(slot) = entries
+                                    .iter_mut()
+                                    .find(|(k, _)| self.values_same_zero(*k, key))
+                                {
+                                    slot.1 = pair[1];
+                                } else {
+                                    entries.push((key, pair[1]));
                                 }
                             }
                         }
                         return Ok(Value::Object(self.alloc_map(entries)));
                     }
                     "Set" => {
-                        // new Set(iterable?)：元素按 to_property_key 去重，
-                        // 值保留原元素（size/has 语义）
-                        let mut entries: Vec<(String, Value)> = Vec::new();
-                        if let Some(Value::Object(r)) = args.first().copied() {
-                            if let Some(HeapObject::Array { elements, .. }) =
-                                self.heap.get(r.0 as usize)
-                            {
-                                for elem in elements.clone() {
-                                    let key = self.to_property_key(elem);
-                                    if !entries.iter().any(|(k, _)| *k == key) {
-                                        entries.push((key, elem));
-                                    }
-                                }
+                        // new Set(iterable?)：接受**任意可迭代**，元素按
+                        // SameValueZero 去重，键与值同存元素原值（size/has/迭代语义）
+                        let arg = args.first().copied().unwrap_or(Value::Undefined);
+                        let items = if matches!(arg, Value::Undefined | Value::Null) {
+                            Vec::new()
+                        } else {
+                            self.collect_iter_values(arg)?
+                        };
+                        let mut entries: Vec<(Value, Value)> = Vec::new();
+                        for elem in items {
+                            if !entries.iter().any(|(k, _)| self.values_same_zero(*k, elem)) {
+                                entries.push((elem, elem));
                             }
                         }
                         let set_ref = self.alloc_map(entries);

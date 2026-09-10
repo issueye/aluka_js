@@ -320,7 +320,9 @@ impl Ser<'_> {
             if as_set {
                 self.serialize_value(val)?;
             } else {
-                self.str(&k);
+                // 键为原始 `Value`（数字/布尔/对象等），按值序列化——
+                // 与读端 `self.value()` 成对，改一端会让跨线程克隆静默错值
+                self.serialize_value(k)?;
                 self.serialize_value(val)?;
             }
         }
@@ -581,9 +583,9 @@ impl De<'_, '_> {
                 let map = self.vm.alloc_map(Vec::new());
                 self.objects.push(Value::Object(map));
                 for _ in 0..count {
-                    let k = self.str()?;
+                    let k = self.value()?;
                     let v = self.value()?;
-                    self.vm.push_map_entry(map, &k, v);
+                    self.vm.push_map_entry(map, k, v);
                 }
                 Ok(Value::Object(map))
             }
@@ -594,8 +596,8 @@ impl De<'_, '_> {
                 self.objects.push(Value::Object(set));
                 for _ in 0..count {
                     let v = self.value()?;
-                    let key = self.vm.to_property_key(v);
-                    self.vm.push_map_entry(set, &key, v);
+                    // 键与值同存元素原值（SameValueZero 去重语义）
+                    self.vm.push_map_entry(set, v, v);
                 }
                 Ok(Value::Object(set))
             }
@@ -636,16 +638,28 @@ impl De<'_, '_> {
     }
 }
 
-/// Map/Set 追加条目（键已字符串化的容器存储）。
+/// Map/Set 追加条目（键为原始 `Value` + SameValueZero 语义；含写屏障）。
 impl Vm {
-    pub(crate) fn push_map_entry(&mut self, map: aluka_core::ObjectRef, key: &str, val: Value) {
+    pub(crate) fn push_map_entry(&mut self, map: aluka_core::ObjectRef, key: Value, val: Value) {
+        // 先在不可变借用下求 SameValueZero 命中下标（比较需读堆判定字符串内容，
+        // 与 interpreter 的 Map/Set 方法块同构），再进入可变借用写入
+        let hit = match self.heap.get(map.0 as usize) {
+            Some(HeapObject::Map { entries }) => entries
+                .iter()
+                .position(|(k, _)| self.values_same_zero(*k, key)),
+            _ => None,
+        };
         if let Some(HeapObject::Map { entries }) = self.heap.get_mut(map.0 as usize) {
-            if let Some(slot) = entries.iter_mut().find(|(k, _)| k == key) {
-                slot.1 = val;
+            if let Some(i) = hit {
+                entries[i].1 = val;
             } else {
-                entries.push((key.to_owned(), val));
+                entries.push((key, val));
             }
         }
+        // 写屏障：键与值都可能是堆对象引用（与 interpreter 的 set/add 分支一致；
+        // 此处原实现无屏障，属既有缺口，一并补上）
+        self.gc_write_barrier(map, key);
+        self.gc_write_barrier(map, val);
     }
 }
 
