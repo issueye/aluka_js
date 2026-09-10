@@ -3363,6 +3363,51 @@ impl Vm {
                                         self.stack.push(Value::Undefined);
                                     }
                                 }
+                                "pop" => {
+                                    // 删末元素并返回它（空数组 → undefined）
+                                    // 此前本 match 缺该分支 → 落到通用路径返回
+                                    // undefined 且**不改数组**（已登记分歧转为缺陷）
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        let out = elements.pop().unwrap_or(Value::Undefined);
+                                        self.stack.push(out);
+                                    } else {
+                                        self.stack.push(Value::Undefined);
+                                    }
+                                }
+                                "shift" => {
+                                    // 删首元素并返回它、其余前移（空数组 → undefined）
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        let out = if elements.is_empty() {
+                                            Value::Undefined
+                                        } else {
+                                            elements.remove(0)
+                                        };
+                                        self.stack.push(out);
+                                    } else {
+                                        self.stack.push(Value::Undefined);
+                                    }
+                                }
+                                "unshift" => {
+                                    // 前插全部实参并返回新长度（实参顺序保持）
+                                    for a in args {
+                                        self.gc_write_barrier(r, *a);
+                                    }
+                                    if let Some(HeapObject::Array { elements, .. }) =
+                                        self.heap.get_mut(idx)
+                                    {
+                                        for (i, a) in args.iter().enumerate() {
+                                            elements.insert(i, *a);
+                                        }
+                                        let len = elements.len() as f64;
+                                        self.stack.push(Value::Number(len));
+                                    } else {
+                                        self.stack.push(Value::Undefined);
+                                    }
+                                }
                                 "map" => {
                                     let (cb, this_arg) = self.array_cb_ctx(args);
                                     let elems =

@@ -980,6 +980,32 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             }
             Ok(out)
         }
+        "shift" => {
+            // 删首元素并返回它、其余前移（空数组 → undefined）
+            let mut parts = elems(vm, r);
+            let out = if parts.is_empty() {
+                Value::Undefined
+            } else {
+                parts.remove(0)
+            };
+            if let Some(HeapObject::Array { elements, .. }) = vm.heap.get_mut(r.0 as usize) {
+                *elements = parts;
+            }
+            Ok(out)
+        }
+        "unshift" => {
+            // 前插全部实参并返回新长度（实参顺序保持）
+            let mut parts = elems(vm, r);
+            for (i, a) in args.iter().enumerate() {
+                vm.gc_write_barrier(r, *a);
+                parts.insert(i, *a);
+            }
+            let len = parts.len();
+            if let Some(HeapObject::Array { elements, .. }) = vm.heap.get_mut(r.0 as usize) {
+                *elements = parts;
+            }
+            Ok(Value::Number(len as f64))
+        }
         "indexOf" => {
             let needle = args.first().copied().unwrap_or(Value::Undefined);
             let pos = elems(vm, r)

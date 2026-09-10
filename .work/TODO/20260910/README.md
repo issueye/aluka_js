@@ -609,3 +609,67 @@ conformance 全量                                → Result: 864/864 passed, 3 
 | 1-9, 11, 12 | 键语义 / 迭代 / worker 往返 / GC 存活 | ✅ 达成（探针逐行一致） |
 | 10 | `util.inspect(Map)` 键类型显示 | ❌ **未达成**——`util.inspect` 无 Map 特判（既有功能缺口，非键语义） |
 | 13 | 门禁三连 | ✅ 达成（零回归） |
+
+---
+
+## 待办 12 · 数组变异方法 `pop` / `shift` / `unshift` 修复
+
+> 来源：本轮复核 `cases/gen/deviations/` 时发现——该目录里的 `gen-array-0037/0039/0040`
+> 把「`[1,2,3].pop()` 返回 `undefined`」登记为**已知分歧**，但因为它位于隔离区
+> （不参与门禁），864 例全绿也从未覆盖到它。这是"conformance 全绿 ≠ 引擎正确"的又一例证。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线）**：
+
+| 表达式 | Node 22 | Aluka 改前 |
+|---|---|---|
+| `const a=[1,2,3]; a.pop()` | `3`，`a` → `[1,2]` | **`undefined`，`a` 仍为 `[1,2,3]`** |
+| `[1,2,3].shift()` | `1` | **`undefined`** |
+| `[2,3].unshift(1)` | `2` | **`undefined`** |
+
+即"返回值错 **且不改写数组**"——静默错误结果。同批探针确认 `push` / `splice` /
+`sort` / `reverse` / `slice` / `map` / `join` / `at` 等**均正常**，问题被限定在这三个方法。
+
+**根因**：解释器里存在**第二处**数组方法内联分派（`interpreter.rs` 的
+`else if let Value::Object(r) = receiver` + `matches!(heap[idx], HeapObject::Array)`
+分支，`push`/`map`/`sort`/`splice` 等在此），其中**缺 `pop`/`shift`/`unshift` 三个
+分支** → 落到通用兜底 `Value::Undefined`；而 `surface.rs` 的注册表路径
+（`array_method_dispatch`）只有 `pop` 分支、缺 `shift`/`unshift`。
+
+**目标与验收**：
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | 补齐 `interpreter.rs` 数组内联分派的三个缺失分支 | `pop`/`shift`/`unshift` 返回值与数组改写与 Node 一致；空数组返回 `undefined`；`unshift` 多参顺序正确；`unshift` 补写屏障 |
+| 2 | 补齐 `surface.rs` 注册表路径的 `shift`/`unshift`（`Array.prototype.pop.call(...)` 形态） | 两条路径行为一致 |
+| 3 | 回归用例入门禁语料 | 新增 `28-array-mutators.cjs`；Node 侧确定性（多次运行同哈希）且与 Aluka 逐字节一致；`invalid` 不增加 |
+| 4 | 门禁三连 | fmt / clippy / 全量 + conformance 全绿，零回归 |
+
+### 交付摘要
+
+**4/4 达成。**
+
+- `interpreter.rs` 数组分派补 `pop`（删末元素并返回）、`shift`（删首元素、其余前移）、
+  `unshift`（前插全部实参、返回新长度、**补写屏障**）三分支；
+- `surface.rs` 的 `array_method_dispatch` 同步补 `shift`/`unshift`（`pop` 分支原本已正确）；
+- 新增门禁语料 **`28-array-mutators.cjs`**（12 项：三大方法 × 空/非空、多参顺序、
+  与 push/splice 混用、`length` 变化、字符串元素），把该缺陷从隔离区移入受保护范围。
+
+**验收实测**：
+
+```
+arrmethods_probe.js（20 项数组方法）  →  与 Node IDENTICAL
+28-array-mutators.cjs                 →  Node 侧 5/5 运行同哈希；Aluka IDENTICAL
+gen-array-0037 / 0039 / 0040          →  MATCH（改前均为登记分歧）
+cargo fmt --all --check               →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                      →  exit 0，warnings=0 errors=0
+cargo test --workspace --all-features →  exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                       →  Result: 865/865 passed, 3 invalid
+                                         （864 + 新增 1；invalid 未增加）
+```
+
+**本轮顺带登记（未修）**：`JSON.stringify.call(JSON, 3)` 在 Aluka 抛
+`TypeError: [function Function] is not a function`（Node 返回 `3`）——
+属原生函数上的 `Function.prototype.call`/`apply` 面缺口，与数组方法无关，另立。
