@@ -1151,4 +1151,70 @@ cargo test -p aluka-cli --all-features --test builtins_phase4_zlib_test
 
 ### 交付摘要
 
-（待回填）
+**3/3 达成——但根因与开工假设完全不同，实际修复的是更严重的编译器缺口。**
+
+**开工假设被实测推翻**：原以为这是 `instanceof` 判定缺陷。实测（逐构造单独成文件——
+因为一个不支持的语法会让**整个文件**解析失败、污染批量对比）后发现：
+
+| 构造 | 改前 | 结论 |
+|---|---|---|
+| 顶层 `class A { m(){} }` + `new A().m()` | 正常 | 顶层无问题 |
+| 顶层 `class B extends A` + `instanceof`/`super`/覆盖/三级链 | 全部正常 | **继承与 `instanceof` 本身没问题** |
+| **函数/箭头/IIFE 体内** `class A { m(){} }` | `typeof A` → undefined、`new A().m` → undefined、`new B() instanceof A` → false | **真正的缺口** |
+| 解析器：class 字段、`static` 方法/字段/块、getter/setter、`#p`、class 表达式作操作数 | 解析错误 | 另一族（parser/lexer），本轮未动 |
+
+`gen-class-proto-0002/0006/0009`「看似是 `instanceof` 问题」，实为该生成器把用例包在
+**箭头 IIFE** 里 —— 触发的是作用域缺口。
+
+**关键误导点**：`new A()` 在类未绑定时**居然成功**，一度让人以为绑定存在。实测
+`new TotallyUndeclared()` 同样不报错（Node 抛 `ReferenceError`）——`new <未声明标识符>`
+存在宽松回退。故 `new A()` 可用是**假信号**。
+
+**根因（精确定位）**：
+- `crates/aluka-compiler/src/codegen.rs:746`：`Stmt::Function(_) | Stmt::Class { .. } => {}`
+  —— 常规语句编译路径把类声明当**空操作**丢弃，注释称「在 compile_module 中提取」；
+- 而提取只发生在 **`compile`（模块顶层语句）**：`module.rs:454` 有完整的 `MakeClass`
+  装配（含 `extends` 的 `__home_ctor__`/`__home_proto__` 槽）；
+- **嵌套函数**路径 `compile_function_with_parent`（`module.rs:1063` 的语句循环）只特判
+  `Stmt::Function`，`Stmt::Class` 落到 `compile_stmt` → 被丢弃。该路径的**槽位预注册**
+  已含 `Stmt::Class`（`module.rs:996`），只缺**发射**。
+
+**改法（`module.rs` 单点、镜像顶层）**：在嵌套语句循环新增 `Stmt::Class` 分支，复用
+`self.compile_class(...)` + `Op::MakeClass` + `StoreLocal`，并对 `extends` 同样装配父类
+构造器与原型槽。约 60 行；未改动顶层路径与 VM。
+
+**验收实测**：
+
+```
+【逐构造矩阵】33 项（classmat/classscope/classdiag 系列，本会话自建）
+   改前：函数作用域内 9 项失败
+   改后：函数/箭头/IIFE/嵌套函数 全部与 Node 一致；diag4 四行与 Node 完全一致
+
+【8 个 gen-class-proto 分歧用例】4 个转 MATCH（0001/0002/0006/0009 —— 作用域族）
+   剩余 4 个（0003 getter / 0004 static 方法 / 0005 私有字段 / 0010 static 块）
+   为 parser/lexer 缺口，根因不同，本轮未动
+
+【新增门禁语料】tests/conformance/node22/cases/33-class-scope.cjs（23 行）
+   → Node 侧 5/5 同哈希；与 Aluka 逐字节一致；PASS
+
+cargo fmt --all --check                                  → exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                                         → exit 0，warnings=0 errors=0
+cargo test --workspace --all-features（默认并行）          → exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                                          → Result: 870/870 passed, 3 invalid
+                                                            （869 + 新增 1；invalid 未增加）
+```
+
+**隔离区偏差再判定**：`cases/gen/deviations/` 170 例中 **38 例现已与 Node 一致**
+（累计 13 → 22 → 30 → 34 → 38）。
+
+**本轮登记、未做**（均经实测确认根因不同）：
+1. **`class` 在裸块 `{ class A {} }` 内仍失效** —— 走 `Stmt::Block`（codegen.rs:202）
+   递归 `compile_stmt` → 同被丢弃；修复需连带块的 let/const 遮蔽簿记
+   （`scope_shadow_log`），风险高于函数路径，故本轮只修函数族（真实代码影响面最大者）；
+2. **解析器缺口**：class 字段、`static` 方法/字段/块、getter/setter、私有字段、
+   class 表达式作操作数 —— 属 aluka-parser 改造；
+3. **`new <未声明标识符>` 宽松回退**：不报错（Node 抛 `ReferenceError`），会掩盖真实
+   绑定错误 —— 本轮由它产生过误导，建议优先复核；
+4. **类名 `A.name` 返回 `A_constructor`**（Node 为 `A`）—— `compile_class` 里
+   `format!("{name}_constructor")` 的默认构造器命名泄漏到 `name` 字段。

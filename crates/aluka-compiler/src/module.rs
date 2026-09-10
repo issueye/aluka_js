@@ -1084,6 +1084,67 @@ impl ModuleCompiler {
                         .push(Instr::new(Op::MakeClosure, child_idx as u32));
                     unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
                 }
+                // 类声明（**函数作用域内**）：镜像顶层装配。
+                //
+                // 此前 `Stmt::Class` 落到下方 `compile_stmt` 的空实现
+                // （codegen.rs 的 `Stmt::Function | Stmt::Class => { ... }` 只处理
+                // 栈平衡，注释称「在 compile_module 中提取」），而提取只发生在
+                // **模块顶层**语句上——于是函数体内 `class A { m() {} }` 既不绑定
+                // 名字也不挂方法：`typeof A` → undefined、`new A().m` → undefined。
+                // `new A()` 之所以「看似可用」，是因为 `new <未声明标识符>` 有宽松
+                // 回退（`new TotallyUndeclared()` 也不报错），并非绑定真的存在。
+                Stmt::Class {
+                    name,
+                    super_class,
+                    constructor,
+                    methods,
+                } => {
+                    let class_id = self.classes.len();
+                    if let Some(super_expr) = super_class {
+                        compile_expr(super_expr, &mut unit);
+                        unit.code.push(Instr::new(Op::Dup, 0));
+
+                        let ctor_sym = format!("__home_ctor_{class_id}__");
+                        let ctor_slot = unit.locals;
+                        unit.locals += 1;
+                        unit.symbol_map.insert(ctor_sym, ctor_slot);
+                        unit.code.push(Instr::new(Op::StoreLocal, ctor_slot as u32));
+
+                        unit.code.push(Instr::new(Op::LoadLocal, ctor_slot as u32));
+                        let proto_idx = crate::codegen::add_constant(
+                            &mut unit,
+                            aluka_bytecode::Constant::String("prototype".to_owned()),
+                        );
+                        unit.code.push(Instr::new(Op::GetProp, proto_idx));
+                        let proto_sym = format!("__home_proto_{class_id}__");
+                        let proto_slot = unit.locals;
+                        unit.locals += 1;
+                        unit.symbol_map.insert(proto_sym, proto_slot);
+                        unit.code
+                            .push(Instr::new(Op::StoreLocal, proto_slot as u32));
+                    }
+
+                    let parent_info =
+                        ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
+                    let class_idx = self.compile_class(
+                        name,
+                        super_class.is_some(),
+                        constructor,
+                        methods,
+                        Some(&parent_info),
+                        class_id,
+                    );
+                    unit.code.push(Instr::new(Op::MakeClass, class_idx as u32));
+                    let slot = if let Some(&s) = unit.symbol_map.get(name) {
+                        s
+                    } else {
+                        let s = unit.locals;
+                        unit.locals += 1;
+                        unit.symbol_map.insert(name.clone(), s);
+                        s
+                    };
+                    unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                }
                 other => {
                     compile_stmt(other, &mut unit, is_last);
                 }
