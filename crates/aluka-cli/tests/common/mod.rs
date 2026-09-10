@@ -5,6 +5,7 @@
 
 #![allow(dead_code)]
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -25,25 +26,57 @@ pub fn repo_root() -> PathBuf {
 /// 19 分钟）：超时即 kill 并以显式 panic 失败，绝不静默挂死门禁。
 pub const E2E_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// 带超时的子进程收尾：轮询 try_wait，超时 kill 并 panic。
+/// 带超时的子进程收尾：读取线程阻塞在管道 EOF（子进程退出即关闭 stdout/stderr），
+/// 主线程用 `recv_timeout` 精确等待；超时 kill 并 panic。
+///
+/// **不用 `try_wait` + `sleep` 轮询**：Windows 默认定时器粒度 15.6ms，实测
+/// `sleep(250ms)` 会让一个仅需约 19ms 的子进程白等约 250ms；本 helper 被 100+
+/// 个 e2e 用例共享，这份白等会原样计入门禁墙钟（实测同一手法在 conformance
+/// runner 上每子进程省一个定时器周期，见 conformance_node22_test.rs 的注释）。
 fn finish_with_timeout(mut child: std::process::Child) -> std::process::Output {
+    let stdout = child.stdout.take().expect("stdout 已 piped");
+    let stderr = child.stderr.take().expect("stderr 已 piped");
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut out = stdout;
+        let _ = out.read_to_end(&mut buf);
+        let _ = out_tx.send(buf);
+    });
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let mut err = stderr;
+        let _ = err.read_to_end(&mut buf);
+        let _ = err_tx.send(buf);
+    });
+
     let deadline = std::time::Instant::now() + E2E_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return child.wait_with_output().expect("等待子进程失败"),
-            Ok(None) => {
-                if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    panic!(
-                        "e2e 子进程超过 {:.0}s 未结束，已终止——疑似引擎性能回归或死锁",
-                        E2E_TIMEOUT.as_secs_f64()
-                    );
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
-            Err(e) => panic!("轮询子进程失败: {e}"),
+    let mut timed_out = false;
+    let mut stdout_buf = Vec::new();
+    let mut stderr_buf = Vec::new();
+    for (rx, buf) in [(&out_rx, &mut stdout_buf), (&err_rx, &mut stderr_buf)] {
+        match rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())) {
+            Ok(chunk) => buf.extend_from_slice(&chunk),
+            // 超时：读取线程会在子进程被杀后随管道关闭自行退出（不再 join）
+            Err(_) => timed_out = true,
         }
+    }
+    if timed_out {
+        let _ = child.kill();
+    }
+    // 管道已 EOF ≈ 子进程已退出，wait() 立即返回；超时路径则在 kill 后收尸
+    let status = child.wait().expect("等待子进程失败");
+    if timed_out {
+        panic!(
+            "e2e 子进程超过 {:.0}s 未结束，已终止——疑似引擎性能回归或死锁",
+            E2E_TIMEOUT.as_secs_f64()
+        );
+    }
+    std::process::Output {
+        status,
+        stdout: stdout_buf,
+        stderr: stderr_buf,
     }
 }
 

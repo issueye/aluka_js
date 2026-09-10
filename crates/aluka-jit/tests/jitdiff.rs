@@ -244,9 +244,8 @@ fn generate(rng: &mut Rng, id: usize) -> FuncTemplate {
     }
 }
 
-/// 解释器执行。
-fn interp_run(func: &FuncTemplate) -> f64 {
-    let mut vm = aluka_vm::Vm::new(0);
+/// 解释器执行（复用调用方传入的 VM：内置原型/构造器单例只需预建一次）。
+fn interp_run(vm: &mut aluka_vm::Vm, func: &FuncTemplate) -> f64 {
     let ret = vm.run_func(func).expect("解释器执行");
     to_f64(ret)
 }
@@ -257,6 +256,9 @@ fn jitdiff_3200_generated_cases_zero_mismatch() {
     let mut rng = Rng::new(0x4D35_2026);
     let mut mismatch = 0usize;
     let mut executed = 0usize;
+    // 解释用共享 VM：`Vm::new` 会在堆上预建内置原型与构造器单例，
+    // 每例重建一次是纯浪费；单例语义对所有用例通用，故循环外建一次复用。
+    let mut interp_vm = aluka_vm::Vm::new(0);
     // 编译用共享 VM（模块 Import 解析 helper 地址；运行走零 ctx 纯数值路径）
     let mut compile_vm = aluka_vm::Vm::new(0);
     for id in 0..3200usize {
@@ -274,7 +276,7 @@ fn jitdiff_3200_generated_cases_zero_mismatch() {
             }
             panic!("case {id} 未过静态校验: {e:?}");
         }
-        let expected = interp_run(&func);
+        let expected = interp_run(&mut interp_vm, &func);
         let consts = std::rc::Rc::new(func.constants.clone());
         let compile_ctx = compile_vm.build_jit_ctx(&consts);
         let jit = match jit_compile(&func, &compile_ctx.vtable) {

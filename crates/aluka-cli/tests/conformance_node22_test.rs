@@ -18,7 +18,7 @@
 //! 环境不算失败）。`ALUKA_CONF_FILTER=<子串>` 可只跑名字匹配的用例。
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -98,23 +98,70 @@ fn run_case(ctx: &RunCtx<'_>, case: &std::path::Path, name: &str) -> CaseOutcome
     }
 }
 
+/// 用例是否触碰**进程/机器级共享资源**：固定端口、cwd 固定文件名、真网外呼，
+/// 或起子进程 / worker / cluster。
+///
+/// 这类用例必须串行——原设计「默认全串行」正是为此（语料会绑固定端口或向 cwd
+/// 写固定文件名）。其余纯语义用例彼此完全独立（各自只写由用例名唯一推导的
+/// `.bc`），可安全并行。判定**故意放宽**：宁可多判几个去串行，也不让共享资源
+/// 用例落进并发桶；源码读不出来时按敏感处理。
+fn is_isolation_sensitive(case: &Path) -> bool {
+    const MARKERS: &[&str] = &[
+        "listen(",
+        "createServer",
+        "createConnection",
+        ".connect(",
+        "net.",
+        "dgram",
+        "cluster",
+        "worker_threads",
+        "child_process",
+        "spawnSync",
+        "writeFile",
+        "appendFile",
+        "mkdir",
+        "createWriteStream",
+        "createReadStream",
+        "fs.",
+        "fetch(",
+        "http",
+        "tls",
+        "dns",
+        "process.env",
+        ".pem",
+    ];
+    let Ok(src) = std::fs::read_to_string(case) else {
+        return true;
+    };
+    MARKERS.iter().any(|m| src.contains(m))
+}
+
+/// 并发度：默认 `min(可用核数, 8)`（每例要起 3 个子进程，核数打满后收益递减）；
+/// `ALUKA_CONF_JOBS=1` 可强制退回全串行（排查疑似并发干扰时用）。
+fn conf_jobs() -> usize {
+    match std::env::var("ALUKA_CONF_JOBS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(n) => n.max(1),
+        None => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(8),
+    }
+}
+
 /// 执行全部用例，返回**与入参同序**的结果。
 ///
 /// 每个用例要跑 3 个子进程（node / alukac / aluvm）。872 例逐例计时实测各阶段
 /// 占比：node 66% / alukac 13% / aluvm 19%，分项之和占墙钟 99.0%（无空转、
-/// 最慢用例仅 335 ms、0 例超时），且用例之间**完全独立**——因此本套件是典型的
-/// 可并行负载，`ALUKA_CONF_JOBS=N` 可用于本地加速（**加速比尚未实测取证**，
-/// 落地前需多次运行确认全绿）。
+/// 最慢用例仅 335 ms、0 例超时）——即耗时**几乎全是进程启动**，用例之间彼此
+/// 独立，属典型可并行负载。单测拿不到 libtest 的并行（那只在测试函数之间），
+/// 只能在这里自己开线程，否则 11/12 个逻辑核全程闲置。
 ///
-/// 默认仍为**顺序执行**（`jobs = 1`）：部分语料会绑定固定端口或向 cwd 写固定
-/// 文件名（http/net/dgram/cluster/fs 用例），并发时可能相互干扰；为保证门禁
-/// 结果稳定，并行只作为显式选入。
-fn run_cases(cases: &[(PathBuf, String)], ctx: &RunCtx<'_>) -> Vec<CaseOutcome> {
-    let jobs = std::env::var("ALUKA_CONF_JOBS")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(1)
-        .clamp(1, cases.len().max(1));
+/// `jobs` 为并发度，1 = 顺序执行。
+fn run_cases(cases: &[(PathBuf, String)], ctx: &RunCtx<'_>, jobs: usize) -> Vec<CaseOutcome> {
+    let jobs = jobs.clamp(1, cases.len().max(1));
     if jobs <= 1 {
         return cases
             .iter()
@@ -363,16 +410,45 @@ fn node22_conformance_matches_node_stdout() {
             })
         })
         .collect();
-    let outcomes = run_cases(
-        &cases,
-        &RunCtx {
-            node: &node,
-            alukac,
-            aluvm,
-            work_dir: &work_dir,
-            tmp: &tmp,
-        },
+    let ctx = RunCtx {
+        node: &node,
+        alukac,
+        aluvm,
+        work_dir: &work_dir,
+        tmp: &tmp,
+    };
+    // 分区执行 + 按原始顺序回填：隔离敏感用例串行，其余按 `conf_jobs()` 并行。
+    // 回填保证输出顺序与「全串行」逐字节一致（PASS/INV/失败的行序不变）。
+    let mut sensitive: Vec<usize> = Vec::new();
+    let mut pure: Vec<usize> = Vec::new();
+    for (i, (case, _)) in cases.iter().enumerate() {
+        if is_isolation_sensitive(case) {
+            sensitive.push(i);
+        } else {
+            pure.push(i);
+        }
+    }
+    let jobs = conf_jobs();
+    eprintln!(
+        "[conf] 共 {} 例：隔离敏感 {} 例串行 / 纯语义 {} 例并行（jobs={jobs}）",
+        cases.len(),
+        sensitive.len(),
+        pure.len()
     );
+    let pick = |idx: &[usize]| -> Vec<(PathBuf, String)> {
+        idx.iter().map(|&i| cases[i].clone()).collect()
+    };
+    let mut slots: Vec<Option<CaseOutcome>> = (0..cases.len()).map(|_| None).collect();
+    for (slot, outcome) in sensitive.iter().zip(run_cases(&pick(&sensitive), &ctx, 1)) {
+        slots[*slot] = Some(outcome);
+    }
+    for (slot, outcome) in pure.iter().zip(run_cases(&pick(&pure), &ctx, jobs)) {
+        slots[*slot] = Some(outcome);
+    }
+    let outcomes: Vec<CaseOutcome> = slots
+        .into_iter()
+        .map(|slot| slot.expect("每个用例都已由某一批次回填"))
+        .collect();
 
     let mut pass = 0usize;
     let mut invalid = 0usize;

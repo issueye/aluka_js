@@ -11,7 +11,7 @@
 //! 语料目录缺失时整个测试跳过。`ALUKA_T262_FILTER=<子串>` 可单跑匹配用例。
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -85,40 +85,182 @@ fn strip_frontmatter(code: &str) -> String {
 }
 
 /// 带超时运行命令（stdout+stderr 合并，对齐 run.go 的 CombinedOutput）。
+///
+/// 等待方式是「读线程阻塞在管道 EOF + 主线程 `recv_timeout`」，不再用
+/// `try_wait` + `sleep(25ms)` 轮询：Windows 定时器粒度 15.6ms，实测 `sleep(25ms)`
+/// 真实睡眠 ≈30ms，而 alukac/aluvm 单次分别只需约 5ms / 19ms——每个子进程都要
+/// 白等一个定时器周期；本套件 154 例 × 最多 2 个子进程，这份白等原样计入门禁墙钟。
 fn run_with_timeout(cmd: &mut Command, wait: Duration) -> (Option<i32>, Vec<u8>, bool) {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("命令可执行");
-    let mut stdout = child.stdout.take().expect("stdout piped");
-    let mut stderr = child.stderr.take().expect("stderr piped");
-    let out_reader = std::thread::spawn(move || {
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
+    let (out_tx, out_rx) = std::sync::mpsc::channel();
+    let (err_tx, err_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
+        let mut out = stdout;
+        let _ = out.read_to_end(&mut buf);
+        let _ = out_tx.send(buf);
     });
-    let err_reader = std::thread::spawn(move || {
+    std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
+        let mut err = stderr;
+        let _ = err.read_to_end(&mut buf);
+        let _ = err_tx.send(buf);
     });
-    let started = Instant::now();
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status.code(),
-            Ok(None) => {
-                if started.elapsed() > wait {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    break None;
-                }
-                std::thread::sleep(Duration::from_millis(25));
-            }
-            Err(_) => break None,
+
+    let deadline = Instant::now() + wait;
+    let mut timed_out = false;
+    let mut output = Vec::new();
+    // 按 stdout → stderr 顺序收（与 `>out 2>&1` 拼接口径一致）
+    for rx in [&out_rx, &err_rx] {
+        match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(chunk) => output.extend_from_slice(&chunk),
+            // 超时：读线程会随子进程被杀、管道关闭而自行退出（不再 join）
+            Err(_) => timed_out = true,
         }
+    }
+    let code = if timed_out {
+        let _ = child.kill();
+        let _ = child.wait();
+        None
+    } else {
+        // 管道已 EOF ≈ 子进程已退出，wait() 立即返回
+        child.wait().ok().and_then(|status| status.code())
     };
-    let timed_out = code.is_none() && started.elapsed() > wait;
-    let mut output = out_reader.join().unwrap_or_default();
-    output.extend_from_slice(&err_reader.join().unwrap_or_default());
     (code, output, timed_out)
+}
+
+/// 并发度：默认 `min(可用核数, 8)`；`ALUKA_T262_JOBS=1` 强制全串行。
+///
+/// 用例只写自己那份 `{用例名}.js` / `{用例名}.bc`（名字由用例名唯一推导，互不
+/// 碰撞），且 154 例全是纯语义用例（无端口 / 无共享文件 / 无 worker / 无外呼），
+/// 因此可安全并行。
+fn t262_jobs() -> usize {
+    match std::env::var("ALUKA_T262_JOBS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        Some(n) => n.max(1),
+        None => std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+            .min(8),
+    }
+}
+
+/// 单个用例的判定结果（纯数据，供并行后按序汇总）。
+struct CaseResult {
+    /// 用例文件名
+    name: String,
+    /// 是否通过
+    ok: bool,
+    /// 失败原因（通过时为空串）
+    reason: String,
+    /// aluvm 退出码（未执行时为 None）
+    code: Option<i32>,
+}
+
+/// 跑单个用例：写临时用例 → alukac 编译 → aluvm 执行 → 判定。
+///
+/// 纯函数式（不打印、不累加计数），以便并行执行后按序汇总输出；临时产物名由
+/// 用例名唯一推导，故多线程并行不冲突。
+fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str) -> CaseResult {
+    let name = case
+        .file_name()
+        .expect("有文件名")
+        .to_string_lossy()
+        .into_owned();
+    let src = std::fs::read_to_string(case).expect("读用例");
+    let negative = parse_negative(&src);
+    // harness + 剥离 frontmatter 的用例体
+    let js = tmp.join(format!("{name}.js"));
+    std::fs::write(&js, format!("{HARNESS}\n{}", strip_frontmatter(&src))).expect("写临时用例");
+
+    // 编译（parse 负例允许编译失败——错误输出参与判定）
+    let bc = tmp.join(format!("{name}.bc"));
+    let compiled = Command::new(alukac)
+        .args(["compile", &js.to_string_lossy(), "-o"])
+        .arg(&bc)
+        .output()
+        .expect("alukac 可执行");
+    if !compiled.status.success() {
+        // 编译失败：仅 parse 负例可凭 SyntaxError 判过
+        let (ok, reason) = eval_result(
+            negative.as_ref(),
+            None,
+            b"",
+            Some(compiled.stderr.as_slice()),
+        );
+        return CaseResult {
+            name,
+            ok,
+            reason,
+            code: None,
+        };
+    }
+    let mut vm_cmd = Command::new(aluvm);
+    vm_cmd.arg("run").arg(&bc);
+    let (vm_code, vm_out, timed_out) = run_with_timeout(&mut vm_cmd, CASE_WAIT);
+    if timed_out {
+        return CaseResult {
+            name,
+            ok: false,
+            reason: format!("aluvm 超时（{CASE_WAIT:?}），疑似事件循环挂死"),
+            code: vm_code,
+        };
+    }
+    let (ok, reason) = eval_result(negative.as_ref(), vm_code, &vm_out, None);
+    CaseResult {
+        name,
+        ok,
+        reason,
+        code: vm_code,
+    }
+}
+
+/// 按 `jobs` 并发执行用例，返回**与入参同序**的结果（无锁取号 + 按序回填）。
+fn run_cases_ordered(
+    files: &[PathBuf],
+    tmp: &Path,
+    alukac: &str,
+    aluvm: &str,
+    jobs: usize,
+) -> Vec<CaseResult> {
+    let jobs = jobs.clamp(1, files.len().max(1));
+    if jobs <= 1 {
+        return files
+            .iter()
+            .map(|case| run_case(case, tmp, alukac, aluvm))
+            .collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<CaseResult>>> = (0..files.len())
+        .map(|_| std::sync::Mutex::new(None))
+        .collect();
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(case) = files.get(i) else {
+                        break;
+                    };
+                    let result = run_case(case, tmp, alukac, aluvm);
+                    *slots[i].lock().expect("槽位锁未中毒") = Some(result);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .expect("槽位锁未中毒")
+                .expect("槽位已填充")
+        })
+        .collect()
 }
 
 /// 判定（对齐 run.go 的 evalResult）：
@@ -220,59 +362,29 @@ fn test262_subset_conformance() {
         .collect();
     files.sort();
 
+    // 过滤子集（ALUKA_T262_FILTER），再按 `jobs` 并发执行后按序汇总
+    let targets: Vec<PathBuf> = files
+        .into_iter()
+        .filter(|case| {
+            filter.as_ref().is_none_or(|f| {
+                case.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains(f.as_str()))
+            })
+        })
+        .collect();
+    let jobs = t262_jobs();
+    eprintln!("[t262] 共 {} 例（jobs={jobs}）", targets.len());
+    let results = run_cases_ordered(&targets, &tmp, alukac, aluvm, jobs);
+
     let mut pass = 0usize;
     let mut failures: Vec<String> = Vec::new();
-    for case in &files {
-        let name = case
-            .file_name()
-            .expect("有文件名")
-            .to_string_lossy()
-            .into_owned();
-        if let Some(f) = &filter {
-            if !name.contains(f.as_str()) {
-                continue;
-            }
-        }
-        let src = std::fs::read_to_string(case).expect("读用例");
-        let negative = parse_negative(&src);
-        // harness + 剥离 frontmatter 的用例体
-        let js = tmp.join(format!("{name}.js"));
-        std::fs::write(&js, format!("{HARNESS}\n{}", strip_frontmatter(&src))).expect("写临时用例");
-
-        // 编译（parse 负例允许编译失败——错误输出参与判定）
-        let bc = tmp.join(format!("{name}.bc"));
-        let compiled = Command::new(alukac)
-            .args(["compile", &js.to_string_lossy(), "-o"])
-            .arg(&bc)
-            .output()
-            .expect("alukac 可执行");
-        let compile_err = (!compiled.status.success()).then_some(compiled.stderr.as_slice());
-        let (ok, reason, code);
-        if compiled.status.success() {
-            let mut vm_cmd = Command::new(aluvm);
-            vm_cmd.arg("run").arg(&bc);
-            let (vm_code, vm_out, timed_out) = run_with_timeout(&mut vm_cmd, CASE_WAIT);
-            if timed_out {
-                (ok, reason, code) = (
-                    false,
-                    format!("aluvm 超时（{CASE_WAIT:?}），疑似事件循环挂死"),
-                    vm_code,
-                );
-            } else {
-                let (verdict, why) = eval_result(negative.as_ref(), vm_code, &vm_out, None);
-                (ok, reason, code) = (verdict, why, vm_code);
-            }
-        } else {
-            // 编译失败：仅 parse 负例可凭 SyntaxError 判过
-            let (verdict, why) = eval_result(negative.as_ref(), None, b"", compile_err);
-            (ok, reason, code) = (verdict, why, None);
-        }
-        if ok {
-            eprintln!("PASS {name}");
+    for r in results {
+        if r.ok {
+            eprintln!("PASS {}", r.name);
             pass += 1;
         } else {
-            eprintln!("FAIL {name} (vm_rc={code:?}) {reason}");
-            failures.push(format!("{name}: {reason}"));
+            eprintln!("FAIL {} (vm_rc={:?}) {}", r.name, r.code, r.reason);
+            failures.push(format!("{}: {}", r.name, r.reason));
         }
     }
 

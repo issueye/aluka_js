@@ -1561,3 +1561,111 @@ conformance 全量（顺序，默认 jobs=1）→  Result: 873/873 passed, 3 inv
 全局 `credential.helper` 指向
 `C:/Users/User/.workbuddy/binaries/PortableGit/versions/1.2.0/mingw64/bin/git-credential-manager.exe`
 （GCM 2.9.0），首次使用时会要求选择凭据存储。
+
+---
+
+## 待办 23 · 门禁耗时优化（保覆盖压缩墙钟 + 实测取证）
+
+> 触发问题：「优化测试，在保证测试到点位的情况下又要压缩一定的时间，避免等待时间过长」。
+> 承接 [待办 22](#待办-22--conformance-门禁耗时评审现象记录--归因进行中) 的「待决策项」：
+> 22 已把 conformance 的等待方式改为管道 EOF、把并行通路写好但**默认关闭**（`jobs=1`）；
+> 本次把它按「分区并行」落成默认，并推广到 test262 与共享 e2e helper。
+
+### 开工前登记（目标 + 验收标准）
+
+**基线（本次实测，热构建）**：`cargo test --workspace --all-features` = **183.0 s**，
+编译阶段仅 0.79 s；82 个测试二进制 / 593 个测试全绿。`cargo` 是**逐个**运行测试
+二进制的：各二进制自身耗时之和 179.4 s ≈ 墙钟 183.0 s——二进制之间没有并行，
+而 libtest 只在**测试函数之间**并行，因此「一个测试函数内的长循环」会让 12 个
+逻辑核里的 11 个全程闲置。耗时 TOP3（占 80%）：
+
+| 目标 | 耗时 | 内在形态 |
+|---|---|---|
+| `conformance_node22_test` | 72.1 s | 单 `#[test]` 循环 876 例 × 3 子进程（node/alukac/aluvm） |
+| `jitdiff` | 50.1 s | 单 `#[test]` 循环 3200 例（进程内） |
+| `core_semantics_test` | 23.9 s | 21 个 test，其中 `deep_recursion_fib` 一个就 19.8 s |
+
+**目标**：
+1. 墙钟显著下降，且**用例数、判定口径、语料规模一律不变**（PASS/INV/失败的行序
+   与全串行逐字节一致）；
+2. 不引入并发干扰：绑固定端口 / 写固定文件名 / worker / cluster / 外呼的用例
+   必须留在串行桶；
+3. 三条门禁（`fmt` / `clippy -D warnings` / `cargo test --workspace --all-features`）全绿。
+
+**验收标准**：
+- conformance 仍为 `874/874 passed, 2 invalid`（共 876 例）；
+- test262 仍为 `154/154 passed`；
+- 门禁总墙钟 ≤ 120 s（相对 183.0 s 至少 −34%）；
+- `ALUKA_CONF_JOBS=1` / `ALUKA_T262_JOBS=1` 可退回全串行（旧行为可复现）。
+
+### 交付摘要（实测证据）
+
+**总效果**：`cargo test --workspace --all-features` **183.0 s → 85.0 s（−53.5%）**，
+593 个测试全绿，且**用例数 / 判定口径 / 语料规模一字未改**。
+
+| 轮次 | 墙钟 | 二进制用时合计 | passed | failed |
+|---|---|---|---|---|
+| 改前基线 | 183.0 s | 179.4 s | 593 | 0 |
+| 改后 #1 | 92.4 s | 86.8 s | 593 | 0 |
+| 改后 #2（稳定性） | —（脚本花括号 bug，未采到墙钟） | 84.2 s | 593 | 0 |
+| 改后 #3（稳定性） | —（同上） | 82.6 s | 593 | 0 |
+| 改后 #4（最终复跑） | **85.0 s** | 82.6 s | 593 | 0 |
+
+→ 连续 4 轮全绿，**并发默认值没有引入任何偶发失败**（这正是待办 22「待决策项 1」
+要求「至少连续 3 次全绿」的落地证据）。
+
+**逐目标前后对比（单测自身报告耗时）**
+
+| 目标 | 改前 | 改后 | 机制 |
+|---|---|---|---|
+| `conformance_node22_test` | 72.1 s（门禁内）/ 60.1 s（单跑） | **18.8 s / 17.9 s** | 分区并行：19 例隔离敏感串行 + 857 例纯语义并行（jobs=8） |
+| `test262_subset_test` | 6.3 s | **1.2 s** | 去 25 ms 轮询 + 154 例按序并行 |
+| `jitdiff` | 50.1 s / 50.8 s | **21.9 s / 25.1 s** | 3200 例复用同一个解释器 VM（不再每例 `Vm::new`） |
+| `core_semantics_test` | 23.9 s | **21.0–22.7 s** | 共享 helper 去 250 ms 轮询地板 |
+
+**覆盖未缩水的硬证据**
+
+- conformance：`[conf] 共 876 例：隔离敏感 19 例串行 / 纯语义 857 例并行（jobs=8）`
+  → `Result: 874/874 passed, 2 invalid`（与改前**完全一致**）；
+- test262：`[t262] 共 154 例（jobs=8）` → `test262 subset: 154/154 passed`；
+- jitdiff：3200 例与 `executed >= 3000` / `mismatch == 0` 断言原样保留并通过；
+- 输出行序：分区执行后按**原始用例序号回填**，PASS/INV/失败的行序与全串行逐字节相同。
+
+**归因实测（本次新增的数字）**
+
+| 事实 | 实测 |
+|---|---|
+| debug 构建单次进程启动（空脚本，暖缓存） | `aluvm` **18.9 ms**（产物 24.0 MB）、`alukac` **5.3 ms**、`node` **37.1 ms** |
+| 由上推算 conformance 60.1 s 的构成 | 876 例 × 61.3 ms ≈ **53.6 s（89%）纯粹是进程启动**，真正编译+执行不足 6.5 s |
+| `core_semantics_test` 21 个 test 的形态 | 20 个整齐落在 0.27–0.28 s（= `finish_with_timeout` 的 250 ms 轮询地板 + 18.9 ms 实际执行）；`deep_recursion_fib` 一个 19.81 s |
+| jitdiff 分阶段（3200 例） | `generate+verify` 0.075 s / `interp`（含每例 `Vm::new`）22.88 s（`Vm::new` 单次 ≈7.1–7.9 ms）/ `jit_compile` 22.10 s / `call_ctx` 0.024 s |
+
+**改动清单（4 个文件，无生产码改动、无 unsafe）**
+
+| 文件 | 改动 |
+|---|---|
+| `crates/aluka-cli/tests/common/mod.rs` | `finish_with_timeout`：`try_wait` + `sleep(250ms)` 轮询 → 读线程阻塞管道 EOF + `recv_timeout` 精确等待（惠及 100+ 个 e2e 用例） |
+| `crates/aluka-cli/tests/conformance_node22_test.rs` | 新增 `is_isolation_sensitive`（触发共享资源的用例判定，**故意放宽**、读不出源码按敏感处理）、`conf_jobs`（默认 `min(核数, 8)`）；`run_cases` 增 `jobs` 形参；用例分「敏感串行 / 纯语义并行」两批执行后按原序回填 |
+| `crates/aluka-cli/tests/test262_subset_test.rs` | `run_with_timeout` 同上改管道 EOF；用例体抽为纯函数 `run_case` + `run_cases_ordered`（无锁取号 + 按序回填）；新增 `t262_jobs` |
+| `crates/aluka-jit/tests/jitdiff.rs` | `interp_run` 改为复用循环外创建的解释器 VM（`Vm::new` 会预建内置原型/构造器单例，3200 次重建是纯浪费） |
+
+**门禁状态**
+
+- `cargo fmt --all --check` → exit 0；
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` → exit 0
+  （输出中 180 条 warning **全部**是环境级 `hard linking files in the incremental
+  compilation cache failed`，即 E: 盘不支持硬链接，与本改动无关；无任何 rustc lint 警告）；
+- `cargo test --workspace --all-features` → 4 轮全绿，593 passed / 0 failed。
+
+**未做（留作决策，不含未取证结论）**
+
+1. **`deep_recursion_fib` 现已是单测耗时第一名（19.81 s，占门禁 21%）**。同一
+   `fib(25)+fib(30)` probe：debug 构建 **19.8 s** vs release 构建 **0.44 s**（≈45×，
+   两次实测，输出均为 `fib25: 75025 / fib30: 832040`）。即该热点**纯粹是「未优化构建」的代价**，
+   测试侧已无空间。要再降只能动构建 profile（如 `[profile.test] opt-level = 1`），
+   那会改变「门禁验证的是什么构建」这一语义，并抬高编译时间——**需用户决策**，本次未动。
+2. jitdiff 残余 21–25 s 中 ≈22 s 是 `jit_compile`（3200 次 × 6.9 ms），位于
+   `crates/aluka-jit/src` **生产码**，不在本次「优化测试」范围内。
+3. 待办 22「待决策项 2」（把 oracle 换成 `pi-node` 的 v22.23.1）本次**未动**。
+4. 另发现：`crates/aluka-cli/examples/fib_bench.rs` 裸跑以 `0xC00000FD`（栈溢出）
+   退出。它是 example，`cargo test` 只编译不运行，**不影响门禁**，仅记录。
