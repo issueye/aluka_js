@@ -320,6 +320,64 @@ impl Vm {
                 };
                 Some(Ok(Number(code)))
             }
+            "codePointAt" => {
+                // `codePointAt(pos)`：返回该位置的**码点**（越界 → undefined）。
+                // 注：本实现的字符串按码点寻址（Rust String 为合法 UTF-8，无法表示
+                // 孤立代理），故对代理对的**低位下标**与 Node 不同（Node 返回低位代理
+                // 值 0xDC00..0xDFFF）——已登记偏离，仅影响显式寻址到代理对内部的用法。
+                let i = arg_index_num(self, args, 0);
+                // 规范 ToIntegerOrInfinity：NaN → 0（`'a'.codePointAt(NaN)` → 97）
+                let i = if i.is_nan() { 0.0 } else { i.trunc() };
+                let cp = if i < 0.0 {
+                    None
+                } else {
+                    chars.get(i as usize).map(|c| *c as u32 as f64)
+                };
+                Some(Ok(cp.map(Number).unwrap_or(Value::Undefined)))
+            }
+            "at" => {
+                // `at(i)`：负下标自尾部计数；越界 → undefined（Node 语义）
+                // 规范 ToIntegerOrInfinity：NaN → 0（`'abc'.at(NaN)` → "a"）
+                let n = arg_index_num(self, args, 0);
+                let n = if n.is_nan() { 0.0 } else { n.trunc() };
+                let len = chars.len() as f64;
+                let idx = if n < 0.0 { len + n } else { n };
+                let out = if idx < 0.0 || idx >= len {
+                    Value::Undefined
+                } else {
+                    Value::Object(self.alloc_string(chars[idx as usize].to_string()))
+                };
+                Some(Ok(out))
+            }
+            "padStart" | "padEnd" => {
+                // `padStart(targetLength[, padString])`：不足则用 padString **循环
+                // 截断**补齐（默认空格）；已足够或 padString 为空 → 原串返回。
+                let target_f = arg_num(args, 0).unwrap_or(0.0);
+                let target = if target_f.is_nan() || target_f < 0.0 {
+                    0usize
+                } else {
+                    target_f as usize
+                };
+                let fill = match args.get(1) {
+                    Some(v) if !matches!(v, Value::Undefined) => self.format_value(*v),
+                    _ => " ".to_owned(),
+                };
+                if target <= chars.len() || fill.is_empty() {
+                    ret_str!(text.to_owned());
+                }
+                let pad_len = target - chars.len();
+                let fill_chars: Vec<char> = fill.chars().collect();
+                let mut pad = String::with_capacity(pad_len);
+                for k in 0..pad_len {
+                    pad.push(fill_chars[k % fill_chars.len()]);
+                }
+                let out = if method == "padStart" {
+                    format!("{pad}{text}")
+                } else {
+                    format!("{text}{pad}")
+                };
+                ret_str!(out);
+            }
             "indexOf" => {
                 let needle = arg_str(self, args, 0);
                 let from_f = arg_num(args, 1).unwrap_or(0.0);

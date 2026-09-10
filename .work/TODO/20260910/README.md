@@ -1316,3 +1316,61 @@ conformance 全量                                          → Result: 871/871 
    `JSON.stringify({get x(){return 1}})` 应调 getter（1）、`Intl` 缺失（1）、
    `delete undefined` 应 false（1）、sloppy `this` 应 globalThis（1）、`console.error/warn`
    应走 stderr（3，部分属 harness 口径）。
+
+
+---
+
+## 待办 20 · 字符串方法补齐（`padStart` / `padEnd` / `at` / `codePointAt`）
+
+> 来源：§待办 19 的数据驱动归因显示此为**剩余最大簇**（约 14 例偏差）。
+
+### 开工前登记（目标 + 验收标准）
+
+**缺陷（实测，改前基线）**：四者在 `String.prototype` 面上**已注册但无实现**
+（`surface.rs` 的方法名清单里有，`prims.rs::call_string_method` 未覆盖）→ 调用得 `undefined`：
+
+| 表达式 | Node | Aluka 改前 |
+|---|---|---|
+| `"abc".padStart(5, "*")` | `"**abc"` | **undefined** |
+| `"abc".padEnd(5, "-")` | `"abc--"` | **undefined** |
+| `"abc".at(-1)` | `"c"` | **undefined** |
+| `"a".codePointAt(0)` | `97` | **undefined** |
+
+`cases/gen/deviations/` 中 padStart/padEnd 共 10 例、at/codePointAt 各 1–2 例。
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | 实现四个方法 | padStart/padEnd 循环截断补齐、默认空格、target≤len 原串返回；`at` 负下标与越界 undefined；`codePointAt` 越界 undefined |
+| 2 | 参数按规范 `ToIntegerOrInfinity` | `NaN` → 0（`"abc".at(NaN)` → `"a"`、`"a".codePointAt(NaN)` → 97） |
+| 3 | 门禁语料 + 三连 | 新增 `35-string-methods.cjs`；零回归 |
+
+### 交付摘要
+
+**3/3 达成。**
+
+- `prims.rs::call_string_method` 新增四分支（padStart/padEnd 共用一支，按 `method` 分流）；
+- **首版把 `NaN` 当越界**（返回 undefined），被自建语料的 `at-nan`/`cpa-nan` 两项发现——
+  按规范 `ToIntegerOrInfinity(NaN) = 0` 修正后一致；
+- 新增门禁语料 `tests/conformance/node22/cases/35-string-methods.cjs`（53 行，覆盖
+  两方法的补齐/截断/循环/默认值/空串/数字填充、`at` 正负与越界、`codePointAt` 各形态、
+  `.call` 形态、以及与既有字符串方法的边界）。
+
+**验收实测**：
+
+```
+【专项探针】strmeth_probe.js（20 项）      →  改前 16 项差异 → 改后 IDENTICAL
+【新增门禁语料】35-string-methods.cjs      →  Node 侧 5/5 同哈希；IDENTICAL；PASS
+cargo fmt --all --check                    →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                           →  exit 0，warnings=0 errors=0
+cargo test --workspace --all-features      →  exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                            →  Result: 872/872 passed, 3 invalid
+                                              （871 + 新增 1；invalid 未增加）
+```
+
+**隔离区偏差再判定**：**65 例现已与 Node 一致**（本轮 49 → 65；累计 13→22→30→34→38→49→65）。
+
+**已登记偏离（本实现字符串按码点寻址，Node 按 UTF-16 码元）**：
+`"😀".length` 应 2（本实现 1）、`"😀".codePointAt(1)` Node 返回低位代理 0xDE00、
+`"😀".at(1)`、padStart 的 targetLength 对代理对的计数。Rust `String` 为合法 UTF-8、
+无法表示孤立代理，故属系统性改造，已在实现处与用例注释双处登记。
