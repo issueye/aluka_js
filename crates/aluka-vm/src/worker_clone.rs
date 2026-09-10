@@ -663,6 +663,45 @@ impl Vm {
     }
 }
 
+/// `structuredClone(value[, { transfer }])`：全局结构化克隆。
+///
+/// 复用 worker `postMessage` / 同线程往返（`json_roundtrip`）同一套自描述
+/// 序列化（`serialize` + `deserialize`），因此类型面、循环与共享引用、transfer
+/// 移交与源 detach、以及不可克隆值的 `DataCloneError` 语义，与 worker 传值完全一致。
+impl Vm {
+    pub(crate) fn structured_clone(&mut self, args: &[Value]) -> Result<Value, VmError> {
+        let Some(value) = args.first().copied() else {
+            // Node：TypeError: The value argument must be specified
+            return Err(clone_type_error(
+                self,
+                "The value argument must be specified",
+            ));
+        };
+        // `{ transfer: [...] }`：ArrayBuffer 或其视图的移交列表（可选）
+        let transfer = match args.get(1).copied() {
+            Some(Value::Object(opts)) => {
+                let arr = self
+                    .get_property(Value::Object(opts), "transfer")
+                    .unwrap_or(Value::Undefined);
+                self.to_array_values(arr)
+            }
+            _ => Vec::new(),
+        };
+        let bytes = serialize(self, value, &transfer)?;
+        deserialize(self, &bytes).map_err(|_| data_clone_error(self, "Object could not be cloned."))
+    }
+}
+
+/// TypeError 错误对象（Node validator 文本形态：`name` = "TypeError"）。
+fn clone_type_error(vm: &mut Vm, msg: &str) -> VmError {
+    let obj = vm.alloc_ordinary();
+    let n = vm.alloc_string("TypeError".to_owned());
+    let _ = vm.set_property(Value::Object(obj), "name", Value::Object(n));
+    let m = vm.alloc_string(msg.to_owned());
+    let _ = vm.set_property(Value::Object(obj), "message", Value::Object(m));
+    VmError::Thrown(Value::Object(obj))
+}
+
 /// TypedKind → 传输 tag（枚举序稳定，deserialize 反向映射）。
 fn kind_tag(kind: crate::typed_array::TypedKind) -> u8 {
     use crate::typed_array::TypedKind::*;

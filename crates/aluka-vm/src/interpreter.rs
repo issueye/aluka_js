@@ -913,6 +913,12 @@ impl Vm {
                 let f = self.alloc_native_fn("queueMicrotask");
                 Value::Object(f)
             }
+            // 全局结构化克隆（`structuredClone(value[, { transfer }])`）：
+            // 实现复用 worker_clone 的自描述序列化（与 worker postMessage 同源）
+            "structuredClone" => {
+                let f = self.alloc_native_fn("structuredClone");
+                Value::Object(f)
+            }
             "String" => self.proto_ctor_value("String"),
             "Symbol" => self.proto_ctor_value("Symbol"),
             "JSON" => {
@@ -4171,6 +4177,11 @@ impl Vm {
                             self.microtask_queue
                                 .push_back(crate::builtins::Job::Call(cb, Value::Undefined));
                             self.stack.push(Value::Undefined);
+                        } else if self.is_native_fn(Value::Object(r), "structuredClone") {
+                            // structuredClone(value[, { transfer }])：结构化克隆往返
+                            // （序列化字节 → 反序列化到本堆，与 worker postMessage 同源）
+                            let out = self.structured_clone(args)?;
+                            self.stack.push(out);
                         } else {
                             let ret =
                                 self.invoke_callable(Value::Object(r), Value::Undefined, args)?;

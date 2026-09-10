@@ -1,4 +1,4 @@
-﻿//! `util` 内置模块（Phase 2）：`format` / `inspect` / `util.types` 类型判断。
+//! `util` 内置模块（Phase 2）：`format` / `inspect` / `util.types` 类型判断。
 //!
 //! 语义实测对齐 Node.js 22 LTS 标准（`nodeutil`）：
 //! - `format(...)`：无 `%` 时全部参数空格连接；`%s/%d/%j/%o/%O` 占位消费参数
@@ -198,9 +198,49 @@ fn inspect_value(vm: &Vm, val: Value) -> String {
                 format!("{{ {} }}", strs.join(", "))
             }
             Some(HeapObject::RegExp { pattern, flags }) => format!("/{pattern}/{flags}"),
+            // Map/Set 格式化（Node 形态：`Map(1) { 1 => 'a' }` / `Set(2) { 1, 2 }`；
+            // 空集合为 `Map(0) {}` / `Set(0) {}`）。此前落入 `[object Object]`。
+            Some(HeapObject::Map { entries }) => {
+                let is_set = vm.is_set_instance(val);
+                let n = entries.len();
+                if n == 0 {
+                    return if is_set {
+                        "Set(0) {}".to_owned()
+                    } else {
+                        "Map(0) {}".to_owned()
+                    };
+                }
+                let items: Vec<String> = if is_set {
+                    // Set 的键与值同存元素原值，取其一即可
+                    entries.iter().map(|(_, v)| inspect_entry(vm, *v)).collect()
+                } else {
+                    entries
+                        .iter()
+                        .map(|(k, v)| {
+                            format!("{} => {}", inspect_entry(vm, *k), inspect_entry(vm, *v))
+                        })
+                        .collect()
+                };
+                if is_set {
+                    format!("Set({n}) {{ {} }}", items.join(", "))
+                } else {
+                    format!("Map({n}) {{ {} }}", items.join(", "))
+                }
+            }
             _ => "[object Object]".to_owned(),
         },
     }
+}
+
+/// `util.inspect` 的「条目级」表示：字符串加单引号（对齐 Node 的 `Map(1) { 1 => 'a' }`、
+/// `Set(1) { 's' }`）；其余类型复用紧凑递归表示。
+fn inspect_entry(vm: &Vm, val: Value) -> String {
+    if let Value::Object(r) = val {
+        if let Some(HeapObject::String(s)) = vm.heap.get(r.index()) {
+            return format!("'{s}'");
+        }
+    }
+    inspect_value(vm, val)
 }
 
 /// `util.types.isArray(v)`。

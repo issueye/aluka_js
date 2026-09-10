@@ -673,3 +673,68 @@ conformance 全量                       →  Result: 865/865 passed, 3 invalid
 **本轮顺带登记（未修）**：`JSON.stringify.call(JSON, 3)` 在 Aluka 抛
 `TypeError: [function Function] is not a function`（Node 返回 `3`）——
 属原生函数上的 `Function.prototype.call`/`apply` 面缺口，与数组方法无关，另立。
+
+---
+
+## 待办 13 · `structuredClone` 全局接线 + `util.inspect` 的 Map/Set 格式化
+
+> 承接 §待办 11 §6 的两条"小而立即可做"项：`structuredClone` 全局未接线、
+> `util.inspect` 无 Map/Set 特判（后者是本人在 §待办 11 判定**未达成**的验收项 10）。
+
+### 开工前登记（目标 + 验收标准）
+
+| # | 任务 | 验收标准 |
+|---|---|---|
+| 1 | `structuredClone(value[, { transfer }])` 全局接线 | 基本类型/对象/嵌套/循环引用/Map/Set/Date/RegExp 往返正确；与原值**互相独立**（改克隆不影响源）；`transfer` 移交后源 detach（`byteLength` 归零）且克隆保有字节；不可克隆值（函数/Symbol）抛 `DataCloneError`；无参抛 `TypeError` |
+| 2 | `util.inspect` 的 Map/Set 格式化 | 与 Node 形态逐字一致：`Map(n) { k => v }`、`Set(n) { v }`、空集合 `Map(0) {}` / `Set(0) {}`、条目级字符串加单引号 |
+| 3 | 两条回归用例入门禁语料 | Node 侧确定性（多次运行同哈希）且与 Aluka 逐字节一致；`invalid` 不增加 |
+| 4 | 门禁三连 | fmt / clippy / 全量 + conformance 全绿，零回归 |
+
+### 交付摘要
+
+**4/4 达成。**
+
+**1. `structuredClone`（复用既有序列化，未新写克隆逻辑）**
+
+- `interpreter.rs`：全局名 `structuredClone` 注册 + `CALL` 分派分支（与
+  `queueMicrotask` 同处，同属"全局原生函数"形态）；
+- `worker_clone.rs`：新增 `Vm::structured_clone(args)`——取首参为值、第二参
+  `{ transfer: [...] }` 为移交列表，复用 **`serialize` + `deserialize`**
+  （与 worker `postMessage`、同线程 `json_roundtrip` 同一套自描述序列化），
+  故类型面/循环与共享引用/transfer+detach/`DataCloneError` 语义与 worker 传值完全一致；
+  无参时抛 TypeError（Node 文本 `The value argument must be specified`）。
+- **复用价值**：未新增任何克隆算法，只接线——这是"小改动"判断成立的原因。
+
+**2. `util.inspect` 的 Map/Set 格式化**
+
+- `builtins/util.rs`：`inspect_value` 补 `HeapObject::Map` 分支（经 `is_set_instance`
+  区分 Map/Set），条目级新增 `inspect_entry`（字符串加单引号）；
+- 改前 `util.inspect(new Map([[1,'a']]))` → `[object Object]`，现为 `Map(1) { 1 => 'a' }`。
+
+**验收实测**（Node v22.3.0 逐行对拍）：
+
+```
+sc2_probe.js（12 项 structuredClone）        →  核心语义全一致（见下"登记偏离"）
+insp_probe.js（9 项 util.inspect）           →  IDENTICAL
+29-structured-clone-global.cjs（16 项）      →  Node 5/5 同哈希；Aluka IDENTICAL
+30-util-inspect-mapset.cjs（11 项）          →  Node 5/5 同哈希；Aluka IDENTICAL
+cargo fmt --all --check                      →  exit 0
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+                                             →  exit 0，warnings=0 errors=0
+cargo test --workspace --all-features        →  exit 0，586 passed / 0 failed / 1 ignored
+conformance 全量                              →  Result: 867/867 passed, 3 invalid
+                                                （865 + 新增 2；invalid 未增加）
+```
+
+**本轮登记的两处刻意回避（用例层面已注明，避免伪对拍）**：
+
+1. `structuredClone(new Map()) instanceof Map` —— Node `true` / Aluka `false`，
+   受**原型属性读面**所限（§待办 11 亦命中此项）。用例改判 `size`/`get`/`has`，
+   **不以 `instanceof` 作为通过条件**；
+2. `DataCloneError` 的 **message 文案**——Node 含被克隆值的源码文本
+   （`() => 1 could not be cloned.`），Aluka 为通用文案（`Function could not be cloned.`）；
+   用例只判 `name`。
+
+**本轮未做**：§待办 11 §6 的第 3 项（迭代器内部标记属性泄漏：`Object.keys(it)` 暴露
+`_isArrayIterator` 等、`JSON.stringify(iter)` 暴露内部结构）——属表示层重构，改动半径
+最大且与 `constructor`/`instanceof` 同根，仍待专项。
