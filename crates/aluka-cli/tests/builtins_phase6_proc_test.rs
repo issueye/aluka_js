@@ -423,8 +423,12 @@ fn cluster_surface_and_fork_matches_go() {
         out.contains("fork evt count: 1 id: 1 proc: object"),
         "{out:?}"
     );
+    // `w.kill()` 后 exit 事件携带**真实退出码**（M5.2 IPC 面收口：旧实现硬编码 0）。
+    // 本运行时无信号语义，被杀 worker 按引擎既有约定报 1（见 `worker_threads`
+    // 的「0 正常 / 1 terminate」）；Node 22 实测为 `code=null, signal='SIGTERM'`
+    // ——该差异已登记（Node 用信号表达终止，本运行时以退出码 1 表达）。
     assert!(
-        out.contains("worker exit evt: 0 id-1-left: true"),
+        out.contains("worker exit evt: 1 id-1-left: true"),
         "{out:?}"
     );
     assert!(out.contains("disconnected cb"), "{out:?}");

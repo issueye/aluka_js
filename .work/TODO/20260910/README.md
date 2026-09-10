@@ -1669,3 +1669,326 @@ conformance 全量（顺序，默认 jobs=1）→  Result: 873/873 passed, 3 inv
 3. 待办 22「待决策项 2」（把 oracle 换成 `pi-node` 的 v22.23.1）本次**未动**。
 4. 另发现：`crates/aluka-cli/examples/fib_bench.rs` 裸跑以 `0xC00000FD`（栈溢出）
    退出。它是 example，`cargo test` 只编译不运行，**不影响门禁**，仅记录。
+
+---
+
+## 待办 24 · M5.4 切片一：`test.*` 函数属性形态 + CLI `aluka test` 运行器
+
+> 触发指令：「继续 M5」。M5 四项中 M5.1/M5.2 为 `[~]`（有登记缺口）、M5.3 已闭环、
+> **M5.4 是唯一 `[ ]`**；且 [待办 9](#待办-9--m5-复审缺陷修复评审后续轮) 已把
+> 「M5.4 Timer Mock 与 CLI 运行器」显式列为**范围外**——故本轮续做 M5.4。
+
+### 开工前登记（目标 + 验收标准）
+
+**现状（explorer 实测，带行号）**：
+
+| 事实 | 位置 |
+|---|---|
+| `node:test` 实现共约 3752 行（`test/` 8 文件）+ 报告器 312 行 | `crates/aluka-vm/src/builtins/test/`、`test_reporters.rs` |
+| `it`/`test`/`describe` 的 `skip`/`todo`/`only` **函数属性形态缺失**（只有顶层 `skip`/`todo`/`only` 导出） | `test/mod.rs:70-97`；`test/mod.rs:16-18` 注释自陈「不可达」 |
+| `format_spec_line`/`format_tap_line`/`format_*_summary`/`format_dot_failed` 纯函数**零生产调用**（只被自身 `#[cfg(test)]` 调用） | `test_reporters.rs:34/58/110/124/138`，调用点仅本文件 `:237-311` |
+| `reporter_write` 直接 `Ok(Boolean(true))`——吞数据 | `test_reporters.rs:216-218` |
+| CLI **无 `test` 子命令**；`aluka test foo.js` 落入兜底被当成文件名 `test` → 报「文件不存在」 | `crates/aluka-cli/src/main.rs:18-35`、`:163-182` |
+| LCOV 覆盖率**零代码**（仅空 emitter 流） | `test_reporters.rs:161-162` |
+| `mock.timers` **不存在**（tracker 仅 7 属性） | `crates/aluka-vm/src/builtins/test/mock.rs:205-216` |
+
+**本轮目标（切片一，可判定完成态）**：
+
+1. **函数属性形态**：`it`/`test` 挂 `skip`/`todo`/`only`；`describe`/`suite` 挂
+   `skip`/`todo`/`only`（套件级标记 + 同步执行函数体，与既有 `register_describe`
+   的 opts 语义一致）。**等价性要求**：`it.skip(n, f)` 与 `it(n, {skip:true}, f)`
+   必须注册出同一形态的节点。
+2. **CLI `aluka test`**：`aluka test [--test-reporter=<spec|tap|dot>] <文件|目录>...`；
+   目录递归收集用例；每个文件独立 Runtime 执行（Node 语义：每文件独立进程）；
+   把**已就绪的 `format_*` 纯函数接到生产路径**输出报告；**任一用例失败 → 退出码 1**。
+3. **报告器流 `write` 不再吞数据**：转发 `data` 事件并保持 `write` 返回 true 的契约。
+4. **注释与文档纠偏**：删除/修正 `test/mod.rs:15-21` 与 `test_reporters.rs:8-10` 中
+   已过时或过度声称的表述（评审 §5 明确把「过度声称」列为问题项）。
+
+**显式不做（避免静默丢弃，下轮另立）**：Timer Mock、LCOV 覆盖率（需引擎级
+覆盖率插桩）、`test/reporters` 的真 Transform 实现（本轮只做 write 转发）。
+
+**验收标准**：
+- `aluka test <含通过/失败/skip/todo 的文件>`：spec 默认输出结构正确、退出码符合
+  「有失败 → 1、全通过 → 0」；`--test-reporter=tap` 输出 TAP 形态；
+- 新增 e2e 用例锚定上述行为（含函数属性形态），并纳入 `cargo test`；
+- 三条门禁全绿：`cargo fmt --all --check` / `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` / `cargo test --workspace --all-features`。
+- **输出口径诚实登记**：`aluka test` 的报告格式源自本仓 Go CLI 契约
+  （`printTestLine`/汇总），**不声称**与 `node --test` 逐字一致。
+
+### 中期实测证据（切片一 · 手工验证，2026-09-10）
+
+**`aluka test` 运行器与三种报告器端到端可用**（真实输出原文，样件在会话 scratch）：
+
+```
+$ aluka test ok.test.js                        # spec（默认）
+ok    adds
+ok    skipme (SKIP)
+not ok later work (TODO)
+       undefined is not a function
+ok    suite > inner
+
+ℹ tests 4 / ℹ pass  2 / ℹ fail  0 / ℹ cancelled  0 / ℹ skipped  1 / ℹ todo  1
+>>> EXITCODE=0
+
+$ aluka test bad.test.js                       # 含失败 → 退码 1
+ok    good
+not ok bad
+       assert.strictEqual: expected 2 but got 1
+ℹ tests 2 / ℹ pass  1 / ℹ fail  1 ...
+>>> EXITCODE=1
+
+$ aluka test --test-reporter=tap ok.test.js
+ok 1 - adds
+ok 2 - skipme SKIP
+not ok 3 - later work TODO
+  ---
+  message: undefined is not a function
+  ...
+ok 4 - suite > inner
+# tests 4 / # pass  2 / # fail  0 / # skipped  1 / # todo  1
+
+$ aluka test --test-reporter=dot bad.test.js
+.X
+Failed tests:
+✖ bad
+```
+
+### 本轮手工验证发现的两个真实缺陷（P0）
+
+**缺陷 1：`require('node:test')` 返回的对象不可调用**（Node 标准写法完全不可用）
+
+```js
+const test = require('node:test');       // 当前返回「普通对象」
+test('adds', function () {});            // TypeError: [object Object] is not a function
+```
+
+| 口径 | 本机 Node 22 权威实测 | 当前 aluka |
+|---|---|---|
+| `typeof require('node:test')` | **`function`** | `object`（**偏差**） |
+| `t.it === t` / `t.test === t` | `true` / `true` | 需修 |
+| `t.describe === t.suite` | `true` | 需修 |
+
+即模块**导出值本身**应是可调用的 `test` 函数，其余导出都是挂在它身上的属性。
+现在只有 `const { test } = require('node:test')` 或 `t.test(...)` 能跑——而这并非
+Node 的常见写法，等于拿不到 M5.4 的核心使用路径。
+
+**缺陷 2：`test.todo(name)`（无回调）被错误执行并判失败**
+
+```
+当前：not ok later work (TODO) + error "undefined is not a function"
+Node：ok 3 - later work # TODO            （不执行回调；无错误）
+Node：t.todo(n, fn) 有回调时执行，失败记 not ok ... # TODO，但汇总 fail 不计入
+Node：t.skip(n, fn) 不执行回调 → ok ... # SKIP（aluka 当前已正确）
+```
+
+两项均已派单修正（含 e2e 锚点用例与文档口径纠偏）。
+
+### 交付摘要（切片一，实测证据）
+
+**结论：M5.4 切片一交付完成，门禁三连全绿。** 但 **M5.4 整体仍未闭环**
+（Timer Mock / LCOV / 真 Transform 报告器仍是零代码面，见文末）。
+
+#### 1. `node:test` 模块形态 Node 化（**修掉 2 个 P0 缺陷**）
+
+| 口径 | Node 22 权威实测 | 修前 | 修后 |
+|---|---|---|---|
+| `typeof require('node:test')` | `function` | `object` ❌ | **`function`** ✅ |
+| `t.it === t` / `t.test === t` | `true` / `true` | — | **`true` / `true`** ✅ |
+| `t.describe === t.suite` | `true` | — | **`true`** ✅ |
+| `t.skip(n, fn)` | 不执行回调 → `ok … # SKIP` | 已正确 | ✅ |
+| `t.todo(n)`（无回调） | 不执行 → `ok … # TODO` | **执行 undefined → `not ok` + 报错** ❌ | **`ok later work (TODO)`，无错误** ✅ |
+| `t.todo(n, fn)`（有回调） | 执行；失败记 `not ok … # TODO`，**`fail` 不计入** | — | **`not ok todo-with-fn (TODO)` + `fail 0` / `todo 2`** ✅ |
+
+修后真实输出（`aluka test`,节点标准写法 `const test = require('node:test')`）：
+
+```
+typeof              = function
+test.it === test    = true
+test.test === test  = true
+describe===suite    = true
+ok    adds
+ok    skipme (SKIP)
+ok    later work (TODO)
+not ok todo-with-fn (TODO)
+       boom
+ok    suite > inner
+ℹ tests 5 / ℹ pass  2 / ℹ fail  0 / ℹ cancelled  0 / ℹ skipped  1 / ℹ todo  2
+>>> EXITCODE=0                        # todo 失败不抬高退码——与 Node 一致
+```
+
+#### 2. 交付物清单
+
+| 交付物 | 位置 | 状态 |
+|---|---|---|
+| `it`/`test`/`describe`/`suite` 的 `skip`/`todo`/`only` **函数属性形态** | `crates/aluka-vm/src/builtins/test/mod.rs` | ✅ 与 options 形态等价（e2e 锚定） |
+| `node:test` 导出值 = 可调用 `test` 函数（其余导出挂其属性） | 同上 | ✅ Node 语义 |
+| `test.todo`/`test.skip` 执行与计数语义 | `test/runner.rs` + `mod.rs::auto_run` | ✅ Node 对齐 |
+| CLI **`aluka test [--test-reporter=<spec\|tap\|dot>] [目标...]`**（目录递归发现、忽略 `node_modules`、每文件独立 Runtime、失败退码 1） | `crates/aluka-cli/src/main.rs` | ✅ |
+| 报告器纯函数**接线到生产路径** + `reporter_write` 转发 `data`（不再吞数据） | `test_reporters.rs`、`aluka-runtime/src/lib.rs` | ✅ |
+| e2e 用例 6 个（值调用/身份/退码/todo/skip 等价/目录发现） | `crates/aluka-cli/tests/test_runner_cli_test.rs`（新建） | ✅ 6/6 passed |
+| 文档口径纠偏（`test`/`test/reporters` 由「已完整实现」降为「已实现核心」+ 明注未闭环面与「仅断言本仓自身输出」） | `docs/builtins-manifest.md:65-66`、`docs/builtins-plan.md:52` | ✅ |
+
+#### 3. 门禁三连（真实输出）
+
+```
+cargo fmt --all --check                                          → exit 0（无 diff）
+cargo clippy --workspace --all-targets --all-features -- -D warnings → exit 0（无 rustc lint 警告）
+cargo test --workspace --all-features                            → exit 0，600 passed / 0 failed
+  （本轮 600 = 上轮 593 + 新增 6 个 CLI e2e + 1 个报告器/运行器单测）
+conformance 全量（--nocapture）                                   → Result: 874/874 passed, 2 invalid
+                                                                     [conf] 876 例：19 例串行 / 857 例并行（jobs=8）
+```
+
+**耗时说明（重要，避免误读）**：本轮门禁墙钟 145.5s「含 44.88s 全量重建」
+（改了 `aluka-vm` 必然重编 test profile），随后的热构建复跑为 **101.9s /
+测试用时合计 98.4s**。这与待办 23 记录的 82.6–86.8s 之差**不是回归**：同机复测
+进程启动成本，`node`（外部二进制，本仓从未改动）从 37.1ms 变为 **54.5ms**、
+`alukac` 5.3→12.6ms，**整机当前比测量待办 23 时慢约 1.5–1.8×**（主机负载）；
+jitdiff 单跑 25.38s，与优化后实测 25.10s 一致。三个热点测试的形态与计数均未变。
+
+#### 4. 本轮仍未闭环（诚实登记，M5.4 维持未完成）
+
+1. **Timer Mock 零代码**：`t.mock.timers`（`enable`/`tick`/`setTime`/`reset`）无入口；
+   相邻基建只有「虚拟 due + 真 `std::thread::sleep`」一种定时器实现
+   （`builtins/timers.rs:202`、`microtask.rs:310`），需新增假时钟拦截层。
+2. **LCOV 覆盖率零代码**：`test/reporters` 的 `lcov` 仅是最小可写流，无覆盖率生成；
+   真做需引擎级覆盖率插桩，属独立专项。
+3. **报告器流非真 `stream.Transform`**：`write` 现仅转发 `data` 事件；`run().compose(spec)`
+   这类 Node 惯用法未实现。
+4. 输出格式沿用**本仓 Go CLI 契约**（`ok    name (SKIP)` / `ok N - name` / `ℹ tests N`），
+   **不声称**与 `node --test` 的 reporter 逐字一致（Node 侧含 `TAP version 13`/
+   `# Subtest:`/`duration_ms`/缩进层级，差异已在文档登记）。
+
+---
+
+## 待办 25 · M5 收口轮（Timer Mock / IPC 面 / 余项）
+
+> 触发指令：「继续完成 M5」。范围 = 把 M5 四项的登记缺口逐一收口。
+> 相关缺口清单见 [待办 24](#待办-24--m54-切片一test-函数属性形态--cli-aluka-test-运行器)
+> 与 [./README-m5-review.md §5](./README-m5-review.md)。
+
+### 开工前登记（范围与顺序）
+
+**已知剩余面（来自复审报告 §5 与待办 24 的登记）**：
+
+| 里程碑 | 剩余项 |
+|---|---|
+| M5.4 | Timer Mock（`t.mock.timers`）、LCOV 覆盖率、报告器流非真 `stream.Transform` |
+| M5.2 | IPC 面（`worker.send`/`isConnected`/`isDead`/exit code/无 RR 调度）、`cluster.worker.send`/`process.send`（称全仓缺失）、`NODE_UNIQUE_ID`/id 复用/`settings.exec,args`、`online`/`listening`/`disconnect` 事件；`Connection: close` 服务端语义；`listen` 错误载体非 `Error` |
+| M5.1 | `MessagePort` `ref`/`unref`/`start`、`postMessageToThread` 真线程分支、eval worker、结构化克隆 5 处语义偏离、`threadId` 恒 0 的过时注释 |
+| M5.3 | ctor options、真预编译句柄语义、wrapper `isTransaction` |
+
+**执行原则**：按「证据价值 ÷ 成本」排序；每项必须**落到 Node 22 实测口径**并有 e2e/对拍锚点；
+做不到的（如需引擎级插桩的 LCOV）**如实登记为未闭环**，不以放宽断言凑绿。
+
+**本轮顺序**：
+1. M5.4 Timer Mock（Node 语义最明确、基建独立）→ 已派单；
+2. M5.1/M5.2/M5.3 缺口的**当前代码事实**清点（旧报告已过时，多轮提交后需重新核对）→ 已派单；
+3. 依清点结果，按价值排序继续推进 IPC 面 / 余项；
+4. 全量门禁三连 + 证据回填本节。
+
+### 交付摘要（M5 收口轮，实测证据）
+
+**门禁三连全绿**：`cargo fmt --all --check` = 0；`cargo clippy --workspace --all-targets
+--all-features -- -D warnings` = 0；`cargo test --workspace --all-features` →
+**rc=0，606 passed / 0 failed，墙钟 84.7s**（较上一轮 600 例 +6：本轮新增对拍用例）。
+
+#### 1. M5.4 Timer Mock（`t.mock.timers`）—— 已落地，**与 Node 逐字一致**
+
+新增 `crates/aluka-vm/src/builtins/test/mock.rs`（+440 行）：假时钟 `FakeClock` +
+`fake_schedule`/`fake_clear` + `timers_enable/tick/setTime/runAll/reset` 五个处理器，
+挂到 MockTracker 的 `timers` 属性；**两处拦截点都接上**：`builtins/timers.rs`
+`schedule_raw`/`clear_timeout` 与 `interpreter.rs` 的全局定时器内联分发。
+
+Node 对拍（本机 node v22.23.1）实测**逐字一致**：
+```
+node : T100 after-tick-100 T200 after-tick-200 after-setTime after-runAll after-reset
+aluka: T100 after-tick-100 T200 after-tick-200 after-setTime after-runAll after-reset
+```
+已登记不支持面（注释内明示，不静默假装支持）：`apis: ['Date']` 与
+`apis: ['scheduler.wait']` 未实现；定时器句柄为数字 id（Node 返回 Timeout 对象）。
+
+#### 2. M5.1 结构化克隆 5 处语义偏离 —— 已全部关闭，**7 个探针全部匹配 Node**
+
+| 偏离 | Node 实测 | aluka 修后 |
+|---|---|---|
+| getter 求值 | `structuredClone({get a(){return 42}})` → `{"a":42}` | ✅ 一致 |
+| Invalid Date | `Number.isNaN(clone(new Date(NaN)).getTime())` → `true` | ✅ 一致 |
+| Error 实例 | `clone(new Error('x')) instanceof Error` → `true`，`message` 保真；`TypeError` 保真 | ✅ 一致 |
+| SAB 进 transfer list | 抛 `DataCloneError` | ✅ 一致 |
+| SAB 直接 clone | **不抛**（Node 实测口径） | ✅ 一致 |
+| 未入图的 transfer buffer | 仍被 detach（`byteLength === 0`） | ✅ 一致 |
+
+实现落在 `worker_clone.rs`（新 tag `T_SAB`(17)/`T_DATE_INVALID`(18)/`T_ERROR`(19)，
+`T_TA`/`T_DV` 载荷首位新增共享标志位）；**未改动 `property.rs::own_entries` 的全局语义**
+（`Object.keys`/`JSON.stringify` 绝不能触发 getter），克隆路径单独做「逐键 `Get`」。
+仍存的登记偏离（注释已写明）：SAB 克隆不共享底层内存、数据属性/访问器交错键序、
+Error 克隆体自有属性名为 `["message","name"]`（Node 为 `["stack","message"]`）。
+
+#### 3. M5.2 cluster IPC 最小面 —— 已落地，探针与 Node 结构一致
+
+新增 `crates/aluka-vm/src/builtins/cluster_ipc.rs`（约 365 行）并改 `cluster.rs`（+404 行）：
+
+| 项 | Node | aluka 修后 |
+|---|---|---|
+| `typeof process.send`（worker 内） | `function` | ✅ `function` |
+| `process.connected`（worker 内） | `true` | ✅ `true` |
+| `typeof cluster.worker.send` | `function` | ✅ `function` |
+| primary 收到 `'message'` | ✅ | ✅ 一致 |
+| `'online'` 事件 | ✅ | ✅ 有 |
+| 退出后 `isConnected()` / `isDead()` | `false` / `true` | ✅ `false` / `true`（旧实现恒 `true`/恒 `false`） |
+| `'exit'` 的退出码 | 真实码（正常退出为 0） | ✅ 真实码（旧实现硬编码 0） |
+
+**登记偏差（诚实）**：被 `kill()` 的 worker，Node 报 `code=null, signal='SIGTERM'`，
+本运行时无信号语义、按引擎既有约定报 `code=1, signal=null`（已写入
+`builtins_phase6_proc_test.rs` 的断言注释）。探针里父/子进程 stdout 的交织顺序
+与 Node 不同（缓冲artifact，非语义差异）。
+
+#### 4. 顺带修掉一个**核心语义缺陷**：`process.exit(code)` 在 `aluka run` 下失效
+
+`VmError::Exit(code)` 哨兵原本只有 bc 入口（`bc_entry.rs:63`）处理；`aluka run`
+走的 `Runtime::execute_file` 把它当未捕获错误 → 打印 `执行错误: process.exit(3)`
+并一律退码 1。修法：`Runtime` 新增 `exit_code` 记录 + `exit_code()` 读取，
+`execute_file`/`execute_source`/`evaluate` 三处把 `VmError::Exit` 按**正常终止**处理；
+`aluka-cli` 的 `run_script`/`test_command` 据此设置进程退出码。
+
+Node 对拍：
+```
+process.exit(3):  node EXIT=3   aluka EXIT=3   （修前：执行错误 + EXIT=1）
+process.exit(0):  node EXIT=0   aluka EXIT=0
+cluster 场景:      node EXIT=0   aluka EXIT=0   （修前 EXIT=1）
+```
+
+#### 5. 新增 e2e 对拍用例（`crates/aluka-cli/tests/m5_semantics_test.rs`，6 例）
+
+全部经 `assert_e2e_matches_node` 与 Node **逐字节对拍**：Timer Mock 3 例
+（tick/setTime 顺序、runAll+reset 后真实定时器仍可用、假时钟单例与 `mock` 标识）、
+克隆 3 例（getter+Invalid Date+Error、SAB transfer/直接 clone、未入图 transfer detach）。
+
+#### 6. 仍未闭环（M5 不能标 `[x]`）
+
+| 项 | 状态与成本 |
+|---|---|
+| M5.4 **LCOV 覆盖率** | ❌ 零代码。**成本已量化**：容器格式里的 `line_starts` 段**只是预留**（`extras.rs:153`/`verifier.rs:597` 两个读取方都 `skip` 它，**无任何写入方**）；编译前端只为报错算行号（`source_unit.rs:444`），AST/codegen 不跟踪节点位置 → 需「AST 位置 → 编译期行号表 → VM 逐行计数 → LCOV 生成」**四层改造**，属独立专项 |
+| M5.4 报告器流 | ❌ 非真 `stream.Transform`（`write` 仅转发 `data`）；`run().compose(spec)` 不可用 |
+| M5.2 `settings.exec/args` 生效、worker id 单调递增、`listening`/`disconnect` 事件、真 round-robin 调度 | ❌ 未做（`schedulingPolicy` 恒 `SCHED_NONE`，内核分发） |
+| M5.2 `Connection: close` 服务端语义、`listen` 失败错误载体为 `Error` | ❌ 未做 |
+| M5.3 sqlite ctor options、真预编译句柄缓存、`isTransaction` 同步 | ❌ 未做 |
+| M5.1 `MessagePort` `ref/unref/start/hasRef` 与 `parentPort` 方法面 | ❌ 未做（当前是恒返回 undefined 的占位） |
+| M5.1 `postMessageToThread` 真线程分支、eval worker | ❌ 结构性缺失，需装配层改造 |
+| ~~M5.2 `NODE_UNIQUE_ID` 缺失~~ | **误判更正**：Node 22 实测 worker 内 `process.env.NODE_UNIQUE_ID` 为 `undefined` → **不是缺口**，不实现 |
+
+#### 7. 过程说明（诚实记录）
+
+- 本轮共派 6 个子代理（1 explorer + 5 fixer），**5 个 fixer 全部撞 80 轮上限中断**；
+  其中：Timer Mock 与克隆 5 项在中断前已把实现写完（由我实测验收）；
+  第一版 cluster 任务（10 项）**零改动落地**，缩窄为 5 项后才落地；
+  由我补齐的部分：CLI 的解析/分派、`process.exit` 修复、6 处 clippy 报错（1 处永不循环的
+  `loop` + 6 处文档列表缩进）、1 处既有测试断言的更新（kill 后退出码）。
+- **环境教训**：手工跑 cluster 探针必须保证脚本自身会退出（worker 持有 IPC channel
+  时不 exit 会挂住 shell；曾导致整条命令被中止）。已改为
+  `ProcessStartInfo` + `WaitForExit(30s)` + 超时 `Kill(entireProcessTree)` 的硬超时执行器。
+- 另注：本机 `node` 现为 **v22.23.1**（AGENTS.md 指定的权威版本），已非旧评审记录的
+  nvmd shim `v22.3.0`。

@@ -57,7 +57,7 @@
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
-| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3 ✅ 已闭环；M5.4 未闭环，见 §M5） |
+| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3 ✅ 已闭环；M5.4 切片一已落地——`aluka test` 运行器/函数属性形态/Node 模块形态，余 Timer Mock 与 LCOV，见 §M5） |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
@@ -248,7 +248,7 @@
 > （Node 22.23.1 实测对齐——错误文本/绑定规则/columns 五键/close 语义全面
 > Node 化，44 行探针逐字一致真对拍固化）；M5.4 仅 concurrency 与 Mock 达成
 > （Timer Mock / 报告接线 / LCOV / CLI 运行器未闭环）。总览按项登记。
-- [~] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环——余项跟踪，20260909 round7）
+- [~] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环 + **5 处语义偏离全部关闭**——余 port `ref/unref` 方法面、`postMessageToThread` 真线程分支、eval worker，20260910）
   - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；✅ 真
     `std::thread` + 独立 Vm（runtime 装配钩子），通道为 std mpsc（crossbeam
     仅 dns_resolver 在用；登记口径以「真线程 + 通道桥」为准）；
@@ -263,11 +263,13 @@
     对拍 PASS + phase6 3 用例 + case 25 结构化克隆对拍。缺口跟踪：eval
     worker、`postMessageToThread` 真线程分支、port ref/unref/start、
     文件头注释过时项（threadId 恒 0 等）。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享达成——IPC 面降级 + P0 遗留，20260909 评审）
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集**达成——余 RR 调度 / `Connection: close` / listen 错误载体，20260910）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
-    OS 内核分发（非 IPC 句柄传递）；worker.send 恒 true、isConnected/
-    isDead 恒值、exit code 硬编码 0、无 RR 调度；
+    OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——
+    `worker.send`/`process.send`/`cluster.worker.send` 真实可用、`isConnected()`/`isDead()`
+    与 `'exit'` 退出码均为真实值（余：RR 调度、`Connection: close`、listen 错误载体）；
+    无 RR 调度（内核对分发）；`worker.send`/`isConnected`/`isDead`/exit code 已于 20260910 收口；
   - 验收：多进程集群 HTTP 端口共享测试通过。✅ `21-m5` Node 逐字节对拍 PASS
     （bc 模式实测）。✅ **P0 已关闭**（round6：fetch 响应完成判定不依赖
     连接关闭——原「挂死」实为每请求 10s 读超时叠加，修复后并发双 fetch
@@ -290,17 +292,29 @@
     Node 22.23.1 **逐字一致**）+ 既有 4 用例断言更新；裸名 `require('sqlite')`
     可用（剥前缀折衷已登记）。**遗留**：ctor options、真预编译句柄语义、
     wrapper 事务的 isTransaction 同步。
-- [ ] **M5.4 `node:test` 进阶测试套件**（仅 concurrency + Mock 达成，20260909 评审）
+- [~] **M5.4 `node:test` 进阶测试套件**（切片一（模块形态 / 函数属性 / CLI 运行器）与切片二（Timer Mock）均已落地，20260910；余 LCOV 与真 Transform 报告器）
+  - ✅ **切片一（20260910，证据见 `20260910/README.md` 待办 24 + `crates/aluka-cli/tests/test_runner_cli_test.rs` 6 例）**：
+    `it`/`test`/`describe`/`suite` 的 `skip`/`todo`/`only` **函数属性形态**；
+    **`require('node:test')` 的导出值改为可调用的 `test` 函数**（Node 22 实测口径：
+    `typeof === 'function'`、`t.it === t`、`t.test === t`、`t.describe === t.suite`）——
+    修前是普通对象，导致 `const test = require('node:test'); test(name, fn)` 这一
+    Node 最常见写法完全不可用；`test.todo(name)` 无回调不再执行且记 `ok … (TODO)`、
+    有回调执行但 `fail` 不计入；CLI **`aluka test [--test-reporter=<spec|tap|dot>] [目标...]`**
+    （目录递归发现、忽略 `node_modules`、每文件独立 Runtime、失败退码 1）把报告器纯函数
+    接到生产路径。**报告格式沿用本仓 Go CLI 契约，不声称与 `node --test` reporter 逐字一致。**
+  - ❌ **仍未闭环**：LCOV 覆盖率（成本已量化——需 AST 位置 → 编译期行号表 → VM 逐行计数 → LCOV 生成四层改造，见 `20260910/README.md` 待办 25）、报告器流非真 `stream.Transform`（`run().compose(spec)` 不可用）。
   - 支持并发测试执行（`concurrency` 选项）；✅ 单线程 async 交错（与 Node
     协作式并发语义一致），phase8 e2e 绿；
   - 支持函数/方法 Mock、Timer Mock 推进；✅ Mock 族（fn/method/getter/
-    setter/property + spy.mock.calls）`13-mock.cjs` Node 逐字节一致；❌ Timer
-    Mock 零代码；
-  - 支持 Spec、TAP、LCOV 覆盖率报告生成；❌ 报告器 write 吞数据恒 true、
-    格式化纯函数未接线、LCOV 无实现、CLI `aluka test` 入口不存在；
+    setter/property + spy.mock.calls）`13-mock.cjs` Node 逐字节一致；✅ **Timer Mock 已实现**
+    （20260910 切片二：`enable`/`tick`/`setTime`/`runAll`/`reset`，与 Node 逐字对拍一致；
+    `apis:['Date']` / `['scheduler.wait']` 未实现已登记）；
+  - 支持 Spec、TAP、LCOV 覆盖率报告生成；✅ spec/tap/dot 格式化纯函数**已接线到生产路径**
+    （`aluka test --test-reporter=...`）、报告器 `write` 已转发 `data`（不再吞数据）；
+    ❌ LCOV 仍无实现；
   - 验收：官方 node:test 兼容性测试套件全量通过。❌ 本仓无该套件；语料
-    15/16 因含故意失败用例被判 INVALID 从未真对拍；`test.skip` 等函数属性
-    形态降级（options 形态可用）。
+    15/16 因含故意失败用例被判 INVALID 从未真对拍；`test.skip` 等函数属性形态
+    **已实现**（20260910 切片一）。**未做**：无官方套件、`//@test` 语料仍未纳入差分对拍。
 
 ---
 

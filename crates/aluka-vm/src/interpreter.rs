@@ -465,6 +465,15 @@ impl Vm {
             let f = vm.alloc_native_fn(&format!("process.{method}"));
             let _ = vm.set_property(Value::Object(process_obj), method, Value::Object(f));
         }
+        // cluster worker / fork 子进程的 IPC 面（M5.2）：Node 在 bootstrap 阶段
+        // 建立通道（与是否 require('cluster') 无关），此后 `process.send` 存在、
+        // `process.connected` 为 true；primary 无通道，二者均为 undefined。
+        if crate::builtins::cluster::worker_setup_channel() {
+            let f = vm.alloc_native_fn("process.send");
+            let _ = vm.set_property(Value::Object(process_obj), "send", Value::Object(f));
+            let connected = Value::Boolean(crate::builtins::cluster::worker_channel_connected());
+            let _ = vm.set_property(Value::Object(process_obj), "connected", connected);
+        }
         vm.process_object = Some(process_obj);
         // path 内置模块（方法经 CALL_METHOD 拦截求值）
         let path_mod = vm.alloc_ordinary();
@@ -4145,17 +4154,27 @@ impl Vm {
                             self.stack.push(Value::Undefined);
                         } else if self.is_native_fn(Value::Object(r), "setImmediate") {
                             // setImmediate(cb)：延时 0 的单次宏任务（Node 语义，
-                            // express router 的 next 链核心调度）
+                            // express router 的 next 链核心调度）。
+                            // M5.4 切片二：`mock.timers.enable({apis:['setImmediate']})`
+                            // 时由假时钟接管（只登记假队列，不写 macro_tasks）。
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
-                            self.timer_counter += 1;
-                            let id = self.timer_counter;
-                            let last_due = self
-                                .macro_tasks
-                                .back()
-                                .map(|(_, d, _, _, _)| *d)
-                                .unwrap_or(0);
-                            self.macro_tasks.push_back((id, last_due, 0, cb, false));
-                            self.stack.push(Value::Number(id as f64));
+                            if let Some(id) = crate::builtins::test::mock::fake_schedule(
+                                cb,
+                                0,
+                                crate::builtins::test::mock::FakeApi::SetImmediate,
+                            ) {
+                                self.stack.push(id);
+                            } else {
+                                self.timer_counter += 1;
+                                let id = self.timer_counter;
+                                let last_due = self
+                                    .macro_tasks
+                                    .back()
+                                    .map(|(_, d, _, _, _)| *d)
+                                    .unwrap_or(0);
+                                self.macro_tasks.push_back((id, last_due, 0, cb, false));
+                                self.stack.push(Value::Number(id as f64));
+                            }
                         } else if self.is_native_fn(Value::Object(r), "setTimeout")
                             || self.is_native_fn(Value::Object(r), "setInterval")
                         {
@@ -4168,19 +4187,31 @@ impl Vm {
                                 .unwrap_or(0);
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
                             let repeating = self.is_native_fn(Value::Object(r), "setInterval");
-                            self.timer_counter += 1;
-                            let id = self.timer_counter;
-                            // 到期时间 = 队尾累计到期 + 延迟（同批注册按时间序）
-                            let last_due = self
-                                .macro_tasks
-                                .back()
-                                .map(|(_, d, _, _, _)| *d)
-                                .unwrap_or(0);
-                            let due = last_due + delay;
-                            self.macro_tasks.push_back((id, due, delay, cb, repeating));
-                            // Node 返回 Timeout/Interval 句柄；简化返回数字 id
-                            // （clear* 接受数字或对象，数字自洽）
-                            self.stack.push(Value::Number(id as f64));
+                            // M5.4 切片二：假时钟接管判定（同上）。
+                            let fake_api = if repeating {
+                                crate::builtins::test::mock::FakeApi::SetInterval
+                            } else {
+                                crate::builtins::test::mock::FakeApi::SetTimeout
+                            };
+                            if let Some(id) =
+                                crate::builtins::test::mock::fake_schedule(cb, delay, fake_api)
+                            {
+                                self.stack.push(id);
+                            } else {
+                                self.timer_counter += 1;
+                                let id = self.timer_counter;
+                                // 到期时间 = 队尾累计到期 + 延迟（同批注册按时间序）
+                                let last_due = self
+                                    .macro_tasks
+                                    .back()
+                                    .map(|(_, d, _, _, _)| *d)
+                                    .unwrap_or(0);
+                                let due = last_due + delay;
+                                self.macro_tasks.push_back((id, due, delay, cb, repeating));
+                                // Node 返回 Timeout/Interval 句柄；简化返回数字 id
+                                // （clear* 接受数字或对象，数字自洽）
+                                self.stack.push(Value::Number(id as f64));
+                            }
                         } else if self.is_native_fn(Value::Object(r), "clearTimeout")
                             || self.is_native_fn(Value::Object(r), "clearInterval")
                         {
@@ -4191,7 +4222,16 @@ impl Vm {
                                     _ => None,
                                 })
                                 .unwrap_or(0);
-                            self.active_timers.insert(id);
+                            // M5.4 切片二：假时钟接管时清除只作用于假队列
+                            // （Node `#clearTimer` 只认假句柄）。
+                            let fake_api = if self.is_native_fn(Value::Object(r), "clearInterval") {
+                                crate::builtins::test::mock::FakeApi::SetInterval
+                            } else {
+                                crate::builtins::test::mock::FakeApi::SetTimeout
+                            };
+                            if !crate::builtins::test::mock::fake_clear(id, fake_api) {
+                                self.active_timers.insert(id);
+                            }
                             self.stack.push(Value::Undefined);
                         } else if self.is_native_fn(Value::Object(r), "queueMicrotask") {
                             let cb = args.first().copied().unwrap_or(Value::Undefined);

@@ -17,6 +17,8 @@ use aluka_webapi::Capability;
 
 /// 字节码入口执行装配（`aluka run *.bc` / `aluvm run` 单一事实来源）。
 pub mod bc_entry;
+/// 测试报告器形态与汇总计数（`aluka test` 子命令与嵌入方共用）。
+pub use aluka_vm::builtins::test_reporters::{ReportCounts, ReportStatus, ReporterKind};
 pub use bc_entry::execute_bc;
 
 /// 运行时装配、编译或执行失败的原因。
@@ -66,6 +68,12 @@ pub struct Runtime {
     capabilities: Vec<Capability>,
     stdout_records: Vec<String>,
     uncaught_formatted: Option<String>,
+    /// 测试运行器报告器（`enable_test_runner` 启用；None = 不自动跑用例）。
+    test_reporter: Option<ReporterKind>,
+    /// 最近一次执行收尾的测试汇总（未启用/无用例/已显式 run() 时为 None）。
+    test_summary: Option<ReportCounts>,
+    /// 最近一次执行的 `process.exit(code)` 退出码（None = 未调用）。
+    exit_code: Option<i32>,
 }
 
 impl Runtime {
@@ -79,14 +87,50 @@ impl Runtime {
             capabilities: Capability::all().to_vec(),
             stdout_records: Vec::new(),
             uncaught_formatted: None,
+            test_reporter: None,
+            test_summary: None,
+            exit_code: None,
         }
+    }
+
+    /// 启用 `node:test` 收尾自动运行（`aluka test` 子命令入口）。
+    ///
+    /// 启用后，`execute_file`/`execute_source`/`evaluate` 的执行收尾会调用
+    /// `aluka_vm::builtins::test::auto_run`：把报告行按序追加到 stdout 记录
+    /// （与 `console.log` 同一输出通道），并记录汇总计数供退码判定。
+    pub fn enable_test_runner(&mut self, kind: ReporterKind) {
+        self.test_reporter = Some(kind);
+    }
+
+    /// 最近一次执行收尾的测试汇总计数（未启用运行器、注册表为空、脚本已
+    /// 显式调用 `test.run()` 时为 `None`）。
+    #[must_use]
+    pub fn test_summary(&self) -> Option<ReportCounts> {
+        self.test_summary
+    }
+
+    /// 最近一次执行是否由 `process.exit(code)` 正常终止；是则给出其退出码
+    /// （对齐 Node：宿主据此设置进程退出码）。未发生 `process.exit` 时为 `None`。
+    #[must_use]
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit_code
     }
 
     /// 执行一棵已解析的语法树，返回其求值结果（M-1 兼容接口）。
     pub fn evaluate(&mut self, program: &Program) -> Result<Value, RuntimeError> {
         let unit = compile(program);
         let mut vm = Vm::new(unit.locals);
-        let res = vm.run(&unit.code)?;
+        let res = match vm.run(&unit.code) {
+            Ok(v) => v,
+            // 同 `execute_file`：`process.exit` 属正常终止（记录退出码）
+            Err(VmError::Exit(code)) => {
+                self.stdout_records = vm.stdout_records.clone();
+                self.exit_code = Some(code);
+                return Ok(Value::Undefined);
+            }
+            Err(e) => return Err(RuntimeError::Vm(e)),
+        };
+        self.test_summary = auto_test_run(&mut vm, self.test_reporter);
         self.stdout_records = vm.stdout_records.clone();
         Ok(res)
     }
@@ -134,14 +178,29 @@ impl Runtime {
         vm.setup_cjs(path);
 
         let run_res = vm.run_module(&module);
+        // 测试运行器（`aluka test`）收尾：脚本无未捕获异常时才自动跑用例
+        // （文件级失败已足以判定退码，避免半程注册表产出误导性报告）。
+        self.test_summary = if run_res.is_ok() {
+            auto_test_run(&mut vm, self.test_reporter)
+        } else {
+            None
+        };
         self.stdout_records = vm.stdout_records.clone();
         if let Err(VmError::Thrown(exc)) = &run_res {
             self.uncaught_formatted = Some(format_uncaught_with_vm(&mut vm, *exc, path));
         } else {
             self.uncaught_formatted = None;
         }
-        let res = run_res?;
-        Ok(res)
+        match run_res {
+            Ok(res) => Ok(res),
+            // `process.exit(code)` 是**正常终止**（对齐 `bc_entry` 的 `VmError::Exit`
+            // 口径与 Node 语义：立即终止、退出码交给宿主），不是未捕获异常。
+            Err(VmError::Exit(code)) => {
+                self.exit_code = Some(code);
+                Ok(Value::Undefined)
+            }
+            Err(e) => Err(RuntimeError::Vm(e)),
+        }
     }
 
     /// 直接从源码字符串执行指定的脚本或模块。
@@ -178,14 +237,28 @@ impl Runtime {
         vm.setup_cjs(path_buf);
 
         let run_res = vm.run_module(&module);
+        // 测试运行器（`aluka test`）收尾：同 `execute_file`（异常时跳过自动运行）。
+        self.test_summary = if run_res.is_ok() {
+            auto_test_run(&mut vm, self.test_reporter)
+        } else {
+            None
+        };
         self.stdout_records = vm.stdout_records.clone();
         if let Err(VmError::Thrown(exc)) = &run_res {
             self.uncaught_formatted = Some(format_uncaught_with_vm(&mut vm, *exc, path_buf));
         } else {
             self.uncaught_formatted = None;
         }
-        let res = run_res?;
-        Ok(res)
+        match run_res {
+            Ok(res) => Ok(res),
+            // `process.exit(code)` 是**正常终止**（对齐 `bc_entry` 的 `VmError::Exit`
+            // 口径与 Node 语义），不是未捕获异常：记录退出码后按正常返回。
+            Err(VmError::Exit(code)) => {
+                self.exit_code = Some(code);
+                Ok(Value::Undefined)
+            }
+            Err(e) => Err(RuntimeError::Vm(e)),
+        }
     }
 
     /// 获取最近一次执行产生的格式化未捕获异常文本（若发生异常）。
@@ -262,6 +335,16 @@ impl Default for Runtime {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// 执行收尾的测试运行器挂钩：启用时调用 VM 侧 `test::auto_run`（把报告行
+/// 写入 `vm.stdout_records`，由 CLI 统一打印），返回汇总计数供退码判定；
+/// 未启用运行器时返回 `None`（普通 `aluka run` 路径行为完全不变）。
+///
+/// 分层方向：装配层（aluka-runtime）→ 执行层（aluka-vm），不得反向依赖。
+fn auto_test_run(vm: &mut Vm, reporter: Option<ReporterKind>) -> Option<ReportCounts> {
+    let kind = reporter?;
+    aluka_vm::builtins::test::auto_run(vm, kind)
 }
 
 /// 装配动态求值编译器 Hook（eval / new Function）：源码 → 编译 → 字节码。

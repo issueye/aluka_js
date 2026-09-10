@@ -121,6 +121,62 @@ impl Vm {
         }
         out
     }
+    /// 克隆专用自有属性枚举：`(键, Some(数据值))` = 数据属性；`(键, None)`
+    /// = 访问器（或纯 setter）键——调用方须按 **`Get`** 求值（触发 getter）。
+    ///
+    /// 与 [`Vm::own_entries`] 的差异**仅在访问器键的取值面**：`own_entries`
+    /// 返回访问器函数值（服务于 `Object.keys` / `JSON.stringify` 等场景，
+    /// 那些场景**绝不能**触发 getter），故其行为保持不变。键序沿用
+    /// `own_entries`（数据属性按存储序在前，访问器键随后按键名升序——访问器
+    /// 表为 HashMap，无插入序可依，升序至少保证跨进程确定性）。
+    pub(crate) fn own_clone_entries(&self, idx: usize) -> Vec<(String, Option<Value>)> {
+        let mut out: Vec<(String, Option<Value>)> = self
+            .own_entries(idx)
+            .into_iter()
+            .map(|(k, v)| (k, Some(v)))
+            .collect();
+        let Some(HeapObject::Ordinary {
+            getters,
+            setters,
+            non_enum,
+            ..
+        }) = self.heap.get(idx)
+        else {
+            return out;
+        };
+        // 访问器键改判（访问器优先于同名数据槽：`defineProperty` 覆盖数据属性
+        // 为访问器时数据槽仍在 `props` 里，读取面由 getters 表优先）
+        let mut keys: Vec<&String> = getters
+            .keys()
+            .chain(setters.keys())
+            .filter(|k| !non_enum.contains(k.as_str()))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        for k in keys {
+            match out.iter_mut().find(|(k2, _)| k2 == k) {
+                Some(e) => e.1 = None,
+                None => out.push((k.clone(), None)),
+            }
+        }
+        out
+    }
+
+    /// 把自有属性登记为**不可枚举**（只影响 `Object.keys` / `JSON.stringify`
+    /// 等枚举面）。
+    ///
+    /// 克隆重建 Error 实例专用：Node 的克隆体 `Object.keys` / `JSON.stringify`
+    /// 面为空集，而本运行时 Error 的 `message`/`name` 由
+    /// [`Vm::alloc_error_instance`] 经普通数据路径建立（默认可枚举）。键不
+    /// 存在时无副作用（调用方保证先建属性）。
+    pub(crate) fn mark_non_enumerable(&mut self, obj: Value, key: &str) {
+        let Value::Object(r) = obj else {
+            return;
+        };
+        if let Some(HeapObject::Ordinary { non_enum, .. }) = self.heap.get_mut(r.0 as usize) {
+            non_enum.insert(key.to_owned());
+        }
+    }
 
     /// 删除 Ordinary 对象的自有属性。
     ///

@@ -19,6 +19,8 @@ pub mod broadcast_channel;
 pub mod buffer;
 pub mod child_process;
 pub mod cluster;
+/// cluster / fork 子进程的 IPC 传输层（无 JS 可见面，仅 `cluster` 内部使用）。
+pub(crate) mod cluster_ipc;
 pub mod constants;
 pub mod crypto;
 pub mod dgram;

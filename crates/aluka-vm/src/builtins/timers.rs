@@ -5,6 +5,8 @@
 //! - `timers/promises`：`setTimeout(delay, [value]) -> Promise<value>`、`setImmediate([value]) -> Promise<value>`，可直接供 async 函数 `await`。
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
+// 假时钟（`node:test` 的 `mock.timers`）拦截：定时器注册/清除的唯一入口。
+use crate::builtins::test::mock;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
@@ -73,9 +75,9 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "timers", "setTimeout", set_timeout);
     register_handler(registry, "timers", "clearTimeout", clear_timeout);
     register_handler(registry, "timers", "setInterval", set_interval);
-    register_handler(registry, "timers", "clearInterval", clear_timeout);
+    register_handler(registry, "timers", "clearInterval", clear_interval);
     register_handler(registry, "timers", "setImmediate", set_immediate);
-    register_handler(registry, "timers", "clearImmediate", clear_timeout);
+    register_handler(registry, "timers", "clearImmediate", clear_immediate);
     // M4.3：AbortSignal 'abort' → 定时器清除（signal 联动内部通道）
     register_handler(registry, "timers", "signalClear", timers_signal_clear);
 
@@ -108,18 +110,18 @@ fn build_promises(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectR
 
 /// `timers.setTimeout(cb, [delay])`
 fn set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    schedule_timer(vm, args, false)
+    schedule_timer(vm, args, mock::FakeApi::SetTimeout)
 }
 
 /// `timers.setInterval(cb, [delay])`
 fn set_interval(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    schedule_timer(vm, args, true)
+    schedule_timer(vm, args, mock::FakeApi::SetInterval)
 }
 
 /// `timers.setImmediate(cb[, options])`：options.signal 联动（M4.3）。
 fn set_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let cb = args.first().copied().unwrap_or(Value::Undefined);
-    let id_val = schedule_raw(vm, cb, 0, false)?;
+    let id_val = schedule_raw(vm, cb, 0, mock::FakeApi::SetImmediate)?;
     if let Some(opts) = args.get(1) {
         if let Value::Number(id) = id_val {
             attach_timer_signal(vm, id as u64, opts)?;
@@ -169,8 +171,26 @@ fn timers_signal_clear(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
-/// `timers.clearTimeout(id)` / `clearInterval`
+/// `timers.clearTimeout(id)`
 fn clear_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    clear_timer(vm, args, mock::FakeApi::SetTimeout)
+}
+
+/// `timers.clearInterval(id)`
+fn clear_interval(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    clear_timer(vm, args, mock::FakeApi::SetInterval)
+}
+
+/// `timers.clearImmediate(id)`
+fn clear_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    clear_timer(vm, args, mock::FakeApi::SetImmediate)
+}
+
+/// `timers.clearTimeout/clearInterval/clearImmediate` 共用实现。
+///
+/// 假时钟接管时（见 [`mock::fake_clear`]）清除请求只作用于假队列——Node
+/// `MockTimers.#clearTimer` 只认假句柄，传入真实句柄是 no-op。
+fn clear_timer(vm: &mut Vm, args: &[Value], api: mock::FakeApi) -> Result<Value, VmError> {
     let id = args
         .first()
         .and_then(|v| match v {
@@ -178,11 +198,14 @@ fn clear_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             _ => None,
         })
         .unwrap_or(0);
+    if mock::fake_clear(id, api) {
+        return Ok(Value::Undefined);
+    }
     vm.active_timers.insert(id);
     Ok(Value::Undefined)
 }
 
-fn schedule_timer(vm: &mut Vm, args: &[Value], repeating: bool) -> Result<Value, VmError> {
+fn schedule_timer(vm: &mut Vm, args: &[Value], api: mock::FakeApi) -> Result<Value, VmError> {
     let cb = args.first().copied().unwrap_or(Value::Undefined);
     let delay = args
         .get(1)
@@ -191,7 +214,7 @@ fn schedule_timer(vm: &mut Vm, args: &[Value], repeating: bool) -> Result<Value,
             _ => None,
         })
         .unwrap_or(0);
-    let id_val = schedule_raw(vm, cb, delay, repeating)?;
+    let id_val = schedule_raw(vm, cb, delay, api)?;
     // M4.3：第三参 options.signal 联动
     if let (Some(opts), Value::Number(id)) = (args.get(2), id_val) {
         attach_timer_signal(vm, id as u64, opts)?;
@@ -199,7 +222,16 @@ fn schedule_timer(vm: &mut Vm, args: &[Value], repeating: bool) -> Result<Value,
     Ok(id_val)
 }
 
-fn schedule_raw(vm: &mut Vm, cb: Value, delay: u64, repeating: bool) -> Result<Value, VmError> {
+/// 定时器入队（真实宏任务队列）。
+///
+/// **假时钟先行拦截**（M5.4 切片二）：`mock.timers.enable({apis})` 覆盖该 api 时，
+/// 定时器只登记进假时钟队列，**不写 `macro_tasks`**——既不真调度、也不走
+/// `wait_until_due` 的真 `sleep`；`None` 时保持原有真实定时器行为。
+fn schedule_raw(vm: &mut Vm, cb: Value, delay: u64, api: mock::FakeApi) -> Result<Value, VmError> {
+    if let Some(id) = mock::fake_schedule(cb, delay, api) {
+        return Ok(id);
+    }
+    let repeating = matches!(api, mock::FakeApi::SetInterval);
     vm.timer_counter += 1;
     let id = vm.timer_counter;
     let last_due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
@@ -225,7 +257,12 @@ fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     set_resolver_val(resolver.0, val);
 
-    let id_val = schedule_raw(vm, Value::Object(resolver), delay, false)?;
+    let id_val = schedule_raw(
+        vm,
+        Value::Object(resolver),
+        delay,
+        mock::FakeApi::SetTimeout,
+    )?;
 
     // M4.3：options.signal——abort → 清除定时器 + promise 兑现 reason
     //（Node 语义：reason 缺省 AbortError；reject 与 resolve 经引擎同形
@@ -257,6 +294,7 @@ fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `timers/promises.setImmediate([value])`
+/// （假时钟启用 `setImmediate` 时经 [`schedule_raw`] 拦截，fired 即兑现 promise）
 fn promises_set_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let val = args.first().copied().unwrap_or(Value::Undefined);
     let promise = vm.alloc_pending_promise();
@@ -264,7 +302,7 @@ fn promises_set_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
 
     set_resolver_val(resolver.0, val);
 
-    schedule_raw(vm, Value::Object(resolver), 0, false)?;
+    schedule_raw(vm, Value::Object(resolver), 0, mock::FakeApi::SetImmediate)?;
 
     Ok(Value::Object(promise))
 }

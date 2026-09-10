@@ -1,13 +1,43 @@
-﻿//! node:test mock 面（Phase 8）：函数/方法 spy 与 MockTracker。
+﻿//! node:test mock 面（Phase 8）：函数/方法 spy、MockTracker 与 `mock.timers` 假时钟。
 //!
-//! 移植 Node.js 22 LTS 标准（`nodetest/test_mock.go`）的 MockTracker 表面：
-//! `fn` / `method` / `getter` / `setter` / `property` / `restoreAll` / `reset`。
-//! spy 函数以「固定槽位 trampoline 池」实现（Rust 处理器为 fn 指针、
+//! 移植 Node.js 22 LTS 标准（`nodetest/`）的 MockTracker 表面：
+//! `fn` / `method` / `getter` / `setter` / `property` / `timers` / `restoreAll` /
+//! `reset`。spy 函数以「固定槽位 trampoline 池」实现（Rust 处理器为 fn 指针、
 //! 无闭包捕获——每槽位一个常量泛型实例化，状态存于线程局部表）。
 //!
 //! 已知限制：spy 为原生函数对象（无属性表），Node 的 `spy.mock.calls`
 //! 观测面不可达——调用记录保存在引擎内侧（`MockTracker` 语义），`restore`
 //! /委托/`mockImplementation` 行为完整。
+//!
+//! # `mock.timers`（M5.4 切片二：假时钟）
+//!
+//! 逐条对齐 Node 22.23.1 的 `internal/test_runner/mock/mock_timers.js`：
+//! `enable({ apis, now })`（apis 默认 `['setTimeout','setInterval','setImmediate']`、
+//! now 默认 0；重复 enable 抛 `ERR_INVALID_STATE`，未知 api 名抛
+//! `ERR_INVALID_ARG_VALUE`）、`tick(time = 1)`（推进假时钟后按
+//! `(runAt, id)` 升序执行到期回调，周期任务重排）、`setTime(time = 0)`
+//! （**只设时间、不执行回调**）、`runAll()`（≡ Node
+//! `tick(最晚到期任务.runAt - now)`）、`reset()`（未启用时 no-op）。
+//! `mock.reset()` ≡ Node `restoreAll() + timers.reset()`，同样复位假时钟。
+//!
+//! 拦截点有两处（两处都必须拦截，否则部分调用会绕过假时钟）：
+//! 1. [`crate::builtins::timers`] 的 `schedule_raw`（`require('timers')`、
+//!    全局 `timers/promises` 的注册点）；
+//! 2. `interpreter.rs` 全局 `setTimeout`/`setInterval`/`setImmediate` 的内联分发。
+//!
+//! 两处都只调 [`fake_schedule`]/[`fake_clear`]；假时钟队列**不写 `macro_tasks`**，
+//! 因此既不真调度也不走 `wait_until_due` 的真 `sleep`。
+//!
+//! ## 已登记的不支持面（不静默假装支持）
+//! - `apis: ['Date']`：**未实现**——`Date.now()` / `new Date()` 仍为真实时间；
+//!   api 名通过校验（Node 不报错）但不产生任何副作用。
+//! - `apis: ['scheduler.wait']`：**未实现**（同上）。
+//! - 定时器句柄为**数字 id**（与引擎真实定时器一致；Node 返回 Timeout 对象）——
+//!   `clearTimeout(id)`/`clearInterval(id)` 仍可用。
+//! - 假时钟是**引擎级单例**：`t.mock.timers` 与模块级 `mock.timers` 控制同一份
+//!   时钟（Node 为每 tracker 独立实例），且测试结束不自动 `reset()`（需显式调用）。
+//! - 错误对象为 Error + `.code`（Node 为 `TypeError` 子类实例）。
+//! - `tick`/`setTime` 的入参按整数毫秒截断（Node 接受浮点）。
 
 use super::context;
 use crate::builtins::BuiltinHandler;
@@ -197,6 +227,388 @@ fn record_call(
     }
 }
 
+// ---------------------------------------------------------------------------
+// M5.4 切片二：`mock.timers` 假时钟
+// ---------------------------------------------------------------------------
+
+/// Node `internal/timers` 的 `TIMEOUT_MAX`（`#createTimer` 超界延时夹到 1ms 的阈值）。
+const TIMEOUT_MAX: u64 = 2_147_483_647;
+
+/// 假时钟可接管的定时器面（Node `SUPPORTED_APIS` 中本仓已实现的子集；
+/// `'Date'` / `'scheduler.wait'` 见模块头「已登记的不支持面」）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FakeApi {
+    /// `setTimeout` / `clearTimeout` / `timers/promises.setTimeout`。
+    SetTimeout,
+    /// `setInterval` / `clearInterval`。
+    SetInterval,
+    /// `setImmediate` / `clearImmediate` / `timers/promises.setImmediate`。
+    SetImmediate,
+}
+
+/// 假定时器条目（对齐 Node `Timeout` 的 `id` / `runAt` / `interval` / `callback`）。
+#[derive(Clone)]
+struct FakeTimer {
+    /// 句柄 id（假时钟自增，Node `#currentTimer` 从 1 起）。
+    id: u64,
+    /// 到期假时间（epoch 毫秒；`setImmediate` 为 `now - 1`，对齐 Node）。
+    run_at: i64,
+    /// 周期（`setInterval` 的延时；其余为 `None`）。
+    interval: Option<u64>,
+    /// 回调值。
+    cb: Value,
+}
+
+/// 假时钟状态（Node `MockTimers` 实例；本仓为引擎级单例）。
+struct FakeClock {
+    /// 是否已 `enable`。
+    enabled: bool,
+    /// 当前假时间（epoch 毫秒；`reset` 归 0）。
+    now: i64,
+    /// 被接管的 api 面。
+    apis: Vec<FakeApi>,
+    /// 待执行队列（线性扫描取最小 `(run_at, id)`——即 Node 优先队列比较器）。
+    queue: Vec<FakeTimer>,
+    /// 下一个句柄 id。
+    next_id: u64,
+}
+
+impl FakeClock {
+    /// 初始状态（未启用、now = 0、id 从 1 起——Node `kInitialEpoch` / `#currentTimer`）。
+    fn new() -> Self {
+        Self {
+            enabled: false,
+            now: 0,
+            apis: Vec::new(),
+            queue: Vec::new(),
+            next_id: 1,
+        }
+    }
+
+    /// 该 api 是否由假时钟接管。
+    fn intercepts(&self, api: FakeApi) -> bool {
+        self.enabled && self.apis.contains(&api)
+    }
+}
+
+thread_local! {
+    /// 假时钟（`mock.timers`；单例，见模块头限制）。
+    static FAKE_CLOCK: RefCell<FakeClock> = RefCell::new(FakeClock::new());
+}
+
+/// 假时钟接管判定 + 登记（`setTimeout`/`setInterval`/`setImmediate` 两个真实
+/// 注册点都会调用）。
+///
+/// 返回 `Some(id)`：假时钟已接管，调用方**不得**再写入 `macro_tasks`
+/// （既不真调度也不真 `sleep`）；返回 `None`：该 api 未被 `enable`，
+/// 调用方按原有真实定时器语义继续。
+pub fn fake_schedule(cb: Value, delay_ms: u64, api: FakeApi) -> Option<Value> {
+    FAKE_CLOCK.with(|c| {
+        let mut clock = c.borrow_mut();
+        if !clock.intercepts(api) {
+            return None;
+        }
+        // 对齐 Node `#createTimer`：setImmediate 用 -1 作延时（runAt = now - 1，
+        // 故 tick(0) 即到期）；超出 TIMEOUT_MAX 的延时夹到 1ms。
+        let delay: i64 = match api {
+            FakeApi::SetImmediate => -1,
+            _ if delay_ms > TIMEOUT_MAX => 1,
+            _ => i64::try_from(delay_ms).unwrap_or(1),
+        };
+        let id = clock.next_id;
+        clock.next_id += 1;
+        let interval = matches!(api, FakeApi::SetInterval).then_some(delay.max(0) as u64);
+        let run_at = clock.now + delay;
+        clock.queue.push(FakeTimer {
+            id,
+            run_at,
+            interval,
+            cb,
+        });
+        Some(Value::Number(id as f64))
+    })
+}
+
+/// 假时钟清除接管（`clearTimeout`/`clearInterval`/`clearImmediate` 的调用点调用）。
+///
+/// 返回 `true`：清除请求已由假时钟处理（Node `#clearTimer` 只认假句柄，
+/// 传入真实句柄 = no-op）；`false`：该 api 未被接管，调用方走真实清除路径。
+pub fn fake_clear(id: u64, api: FakeApi) -> bool {
+    FAKE_CLOCK.with(|c| {
+        let mut clock = c.borrow_mut();
+        if !clock.intercepts(api) {
+            return false;
+        }
+        clock.queue.retain(|t| t.id != id);
+        true
+    })
+}
+
+/// 假时钟复位（`mock.timers.reset()` 与 `mock.reset()` 共用；未启用时 no-op）。
+fn reset_clock() {
+    FAKE_CLOCK.with(|c| {
+        let mut clock = c.borrow_mut();
+        if clock.enabled {
+            *clock = FakeClock::new();
+        }
+    });
+}
+
+/// 假时钟是否已启用。
+fn clock_enabled() -> bool {
+    FAKE_CLOCK.with(|c| c.borrow().enabled)
+}
+
+/// 构造 Node 风格错误码异常（Error + `.code`；Node 为 `TypeError` 子类实例）。
+fn code_error(vm: &mut Vm, code: &str, msg: &str) -> VmError {
+    let err = vm.alloc_error_instance(msg);
+    let code_val = Value::Object(vm.alloc_string(code.to_owned()));
+    let _ = vm.set_property(Value::Object(err), "code", code_val);
+    VmError::Thrown(Value::Object(err))
+}
+
+/// `tick`/`setTime`/`enable` 的时间入参校验（Node `#assertTimeArg`：负数即抛）。
+fn time_arg_error(vm: &mut Vm, time: i64) -> VmError {
+    code_error(
+        vm,
+        "ERR_INVALID_ARG_VALUE",
+        &format!("The argument 'time' {time}. Received 'positive integer'"),
+    )
+}
+
+/// 未启用时的错误（Node `#assertTimersAreEnabled`）。
+fn not_enabled_error(vm: &mut Vm) -> VmError {
+    code_error(
+        vm,
+        "ERR_INVALID_STATE",
+        "You should enable MockTimers first by calling the .enable function",
+    )
+}
+
+/// 读取时间入参（缺省 `default`；非数字/负数按 Node 抛错）。
+fn time_arg(vm: &mut Vm, v: Option<Value>, default: i64) -> Result<i64, VmError> {
+    match v {
+        None | Some(Value::Undefined) => Ok(default),
+        Some(Value::Number(n)) => {
+            if n.is_nan() {
+                return Err(code_error(
+                    vm,
+                    "ERR_INVALID_ARG_VALUE",
+                    "The argument 'time' is not a positive integer",
+                ));
+            }
+            let t = n as i64;
+            if t < 0 {
+                return Err(time_arg_error(vm, t));
+            }
+            Ok(t)
+        }
+        Some(other) => Err(code_error(
+            vm,
+            "ERR_INVALID_ARG_TYPE",
+            &format!(
+                "The \"time\" argument must be of type number. Received {}",
+                vm.format_value(other)
+            ),
+        )),
+    }
+}
+
+/// 推进假时钟 `delta` 毫秒并按 `(runAt, id)` 升序执行到期回调
+/// （Node `tick` 主体：`#now += time` 后反复取队内最小任务，`runAt > now` 即停；
+/// 周期任务 `runAt += interval` 后重排，回调内被 clear 则不重排）。
+///
+/// **不调用 `wait_until_due`**：假时钟只做逻辑时间推进，不产生任何真实 `sleep`。
+fn advance_clock(vm: &mut Vm, delta: i64) -> Result<(), VmError> {
+    let target = FAKE_CLOCK.with(|c| {
+        let mut clock = c.borrow_mut();
+        clock.now += delta;
+        clock.now
+    });
+    loop {
+        let picked = FAKE_CLOCK.with(|c| {
+            let clock = c.borrow();
+            let mut best: Option<&FakeTimer> = None;
+            for t in clock.queue.iter() {
+                if t.run_at > target {
+                    continue;
+                }
+                let better = best
+                    .map(|b| (t.run_at, t.id) < (b.run_at, b.id))
+                    .unwrap_or(true);
+                if better {
+                    best = Some(t);
+                }
+            }
+            best.cloned()
+        });
+        let Some(timer) = picked else { break };
+        vm.invoke_callable(timer.cb, Value::Undefined, &[])?;
+        FAKE_CLOCK.with(|c| {
+            let mut clock = c.borrow_mut();
+            // 回调期间句柄仍在队列（Node peek 语义）：被 clear 则整条不见；
+            // 仍在则摘除，周期任务按 interval 重排。
+            if let Some(pos) = clock.queue.iter().position(|t| t.id == timer.id) {
+                let mut done = clock.queue.remove(pos);
+                if let Some(interval) = done.interval {
+                    done.run_at += i64::try_from(interval).unwrap_or(i64::MAX);
+                    clock.queue.push(done);
+                }
+            }
+        });
+    }
+    Ok(())
+}
+
+/// 构造 `mock.timers` 对象（Node `MockTimers` 实例表面；分派命名空间
+/// `test:mockTimers`，见 `builtins::try_dispatch` 形态二）。
+fn new_timers_object(vm: &mut Vm) -> Value {
+    let obj = vm.alloc_ordinary();
+    let ns_val = Value::Object(vm.alloc_string("test:mockTimers".to_owned()));
+    let _ = vm.set_property(Value::Object(obj), "_builtinNs", ns_val);
+    for (prop, name) in [
+        ("enable", "test:mockTimers.enable"),
+        ("tick", "test:mockTimers.tick"),
+        ("setTime", "test:mockTimers.setTime"),
+        ("runAll", "test:mockTimers.runAll"),
+        ("reset", "test:mockTimers.reset"),
+    ] {
+        let fn_ref = vm.alloc_native_fn(name);
+        let _ = vm.set_property(Value::Object(obj), prop, Value::Object(fn_ref));
+    }
+    Value::Object(obj)
+}
+
+/// `mock.timers.enable({ apis, now })`：按 `apis` 接管全局定时器，`now` 为起始假时间
+/// （Node 语义：apis 缺省三面全开、now 缺省 0；重复 enable 抛 `ERR_INVALID_STATE`）。
+fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if clock_enabled() {
+        return Err(code_error(
+            vm,
+            "ERR_INVALID_STATE",
+            "MockTimers is already enabled!",
+        ));
+    }
+    let opts = args.first().copied().unwrap_or(Value::Undefined);
+    let apis_val = vm.get_property(opts, "apis").unwrap_or(Value::Undefined);
+    let mut apis = vec![
+        FakeApi::SetTimeout,
+        FakeApi::SetInterval,
+        FakeApi::SetImmediate,
+    ];
+    if !matches!(apis_val, Value::Undefined) {
+        let Value::Object(r) = apis_val else {
+            return Err(code_error(
+                vm,
+                "ERR_INVALID_ARG_TYPE",
+                "The \"options.apis\" property must be of type Array.",
+            ));
+        };
+        apis.clear();
+        for v in vm.array_elements(r.index()) {
+            match vm.format_value(v).as_str() {
+                "setTimeout" => apis.push(FakeApi::SetTimeout),
+                "setInterval" => apis.push(FakeApi::SetInterval),
+                "setImmediate" => apis.push(FakeApi::SetImmediate),
+                // Node 的 SUPPORTED_APIS 含 'Date' / 'scheduler.wait'（本仓未实现，
+                // 见模块头「已登记的不支持面」）：名字通过校验但不产生副作用。
+                "Date" | "scheduler.wait" => {}
+                other => {
+                    return Err(code_error(
+                        vm,
+                        "ERR_INVALID_ARG_VALUE",
+                        &format!(
+                            "The argument 'options.apis' {other} is not supported. \
+                             Received 'setTimeout, setInterval, setImmediate'"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    let now = match vm.get_property(opts, "now").unwrap_or(Value::Undefined) {
+        Value::Undefined => 0,
+        Value::Number(n) if !n.is_nan() => {
+            let t = n as i64;
+            if t < 0 {
+                return Err(time_arg_error(vm, t));
+            }
+            t
+        }
+        other => {
+            return Err(code_error(
+                vm,
+                "ERR_INVALID_ARG_TYPE",
+                &format!(
+                    "The \"options.now\" property must be of type number. Received {}",
+                    vm.format_value(other)
+                ),
+            ));
+        }
+    };
+    FAKE_CLOCK.with(|c| {
+        let mut clock = c.borrow_mut();
+        clock.enabled = true;
+        clock.now = now;
+        clock.apis = apis;
+        clock.queue.clear();
+        clock.next_id = 1;
+    });
+    Ok(Value::Undefined)
+}
+
+/// `mock.timers.tick(time = 1)`：推进假时钟并执行到期回调。
+fn timers_tick(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if !clock_enabled() {
+        return Err(not_enabled_error(vm));
+    }
+    let time = time_arg(vm, args.first().copied(), 1)?;
+    advance_clock(vm, time)?;
+    Ok(Value::Undefined)
+}
+
+/// `mock.timers.setTime(time = 0)`：只设当前假时间，**不执行**任何回调（Node 语义）。
+fn timers_set_time(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if !clock_enabled() {
+        return Err(not_enabled_error(vm));
+    }
+    let time = time_arg(vm, args.first().copied(), 0)?;
+    FAKE_CLOCK.with(|c| c.borrow_mut().now = time);
+    Ok(Value::Undefined)
+}
+
+/// `mock.timers.runAll()`：Node 语义为 `tick(队内最晚到期任务.runAt - now)`，
+/// 无任务时 no-op。
+///
+/// 注意（Node 22.23.1 实测 + `mock_timers.js` 源码锚定）：若最晚到期任务**早于**
+/// 当前假时间（先 `setTime` 往后跳再 `runAll`），Node 会以负增量调用 `tick` 并抛
+/// `ERR_INVALID_ARG_VALUE`；本实现同样抛出——不发明「补齐执行过期任务」的语义。
+fn timers_run_all(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    if !clock_enabled() {
+        return Err(not_enabled_error(vm));
+    }
+    let (longest, now) = FAKE_CLOCK.with(|c| {
+        let clock = c.borrow();
+        (clock.queue.iter().map(|t| t.run_at).max(), clock.now)
+    });
+    let Some(longest) = longest else {
+        return Ok(Value::Undefined);
+    };
+    let delta = longest - now;
+    if delta < 0 {
+        return Err(time_arg_error(vm, delta));
+    }
+    advance_clock(vm, delta)?;
+    Ok(Value::Undefined)
+}
+
+/// `mock.timers.reset()`：还原被接管的全局定时器（清假时钟）、清空队列、
+/// 时间归 0；未启用时 no-op（Node 语义）。
+fn timers_reset(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    reset_clock();
+    Ok(Value::Undefined)
+}
+
 /// MockTracker 构造（模块级 `mock` 与 per-test `t.mock` 共用）。
 pub fn new_tracker(vm: &mut Vm, scope: TrackerScope) -> Value {
     let mock_obj = vm.alloc_ordinary();
@@ -214,6 +626,9 @@ pub fn new_tracker(vm: &mut Vm, scope: TrackerScope) -> Value {
         let fn_ref = vm.alloc_native_fn(name);
         let _ = vm.set_property(Value::Object(mock_obj), prop, Value::Object(fn_ref));
     }
+    // timers：`mock.timers` 假时钟面（Node MockTracker 的 `timers` getter）。
+    let timers_obj = new_timers_object(vm);
+    let _ = vm.set_property(Value::Object(mock_obj), "timers", timers_obj);
     let _ = scope;
     Value::Object(mock_obj)
 }
@@ -451,7 +866,8 @@ fn mock_spy_restore(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
-/// `mock.reset()`：恢复全部原始实现（调用历史保留——Node 22.23 语义）。
+/// `mock.reset()`：恢复全部原始实现（调用历史保留——Node 22.23 语义）并复位
+/// `mock.timers` 假时钟（Node `MockTracker.reset()` = `restoreAll()` + `timers.reset()`）。
 fn mock_reset(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let slots: Vec<usize> = SPY_STORE.with(|s| {
         s.borrow()
@@ -464,6 +880,9 @@ fn mock_reset(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     for slot in slots {
         restore_slot(vm, slot);
     }
+    // Node `MockTracker.reset()` = `restoreAll()` + `timers.reset()`：
+    // 同时复位假时钟（还原被接管的全局定时器并清空队列）。
+    reset_clock();
     Ok(Value::Undefined)
 }
 
@@ -478,6 +897,12 @@ pub fn register_handlers(registry: &mut crate::builtins::BuiltinRegistry) {
     register_handler(registry, "test:mock", "restoreAll", mock_restore_all);
     register_handler(registry, "test:mock", "reset", mock_reset);
     register_handler(registry, "test:mock", "restoreSpySlot", mock_spy_restore);
+    // mock.timers（假时钟）：分派命名空间 test:mockTimers（对象 `_builtinNs`）。
+    register_handler(registry, "test:mockTimers", "enable", timers_enable);
+    register_handler(registry, "test:mockTimers", "tick", timers_tick);
+    register_handler(registry, "test:mockTimers", "setTime", timers_set_time);
+    register_handler(registry, "test:mockTimers", "runAll", timers_run_all);
+    register_handler(registry, "test:mockTimers", "reset", timers_reset);
 }
 
 /// GC 根快照：spy 槽位的 target/原实现/替换实现值。
@@ -490,6 +915,12 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
             out.push(spy.original);
             out.push(spy.impl_val);
             out.push(spy.once_impl);
+        }
+    });
+    // 假时钟队列中的回调（`mock.timers` 待执行定时器）。
+    FAKE_CLOCK.with(|c| {
+        for timer in c.borrow().queue.iter() {
+            out.push(timer.cb);
         }
     });
 }

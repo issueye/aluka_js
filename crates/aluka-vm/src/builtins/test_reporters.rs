@@ -6,8 +6,9 @@
 //!   到可写流实例：`write`/`end`/`on`/`pipe`；`end` 触发 `finish`+`close`）；
 //!   `lcov` 为预构造实例（Node 22：不可 new）；
 //! - 格式化面：spec/tap 报告行与汇总的纯函数移植（Go CLI 契约，
-//!   `aluka test` 子命令使用；本仓 CLI 尚无 test 子命令，先以纯函数
-//!   形式落位并用 Go 实测样张锚定）。
+//!   `aluka test` 子命令生产路径实际调用——报告格式源自本仓 CLI
+//!   `printTestLine`/汇总格式，**不声称与 `node --test` 逐字一致**；
+//!   dot 报告器的逐用例标记沿用 Node dot 报告器 `.`/`X` 形态）。
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
@@ -27,6 +28,67 @@ pub enum ReportStatus {
     Ok,
     /// 失败。
     NotOk,
+}
+
+/// 报告器形态（`aluka test --test-reporter=<spec|tap|dot>`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReporterKind {
+    /// spec：`ok    <name>` 逐用例行 + `ℹ tests N` 汇总（默认）。
+    Spec,
+    /// tap：`ok 1 - <name>` 逐用例行 + `# tests N` 汇总。
+    Tap,
+    /// dot：`.``X` 逐用例标记 + 失败清单块。
+    Dot,
+}
+
+/// 单用例的报告输入（与 VM 解耦：CLI 只依赖展示面数据，不依赖解释器类型）。
+#[derive(Clone, Debug)]
+pub struct ReportCase {
+    /// 展示名（完整名，套件内为 "suite > case"）。
+    pub name: String,
+    /// 展示状态（`ok`/`not ok` 二值）。
+    pub status: ReportStatus,
+    /// 备注（`# SKIP`/`# TODO`/空串）。
+    pub note: String,
+    /// 失败消息（通过用例为 None）。
+    pub error: Option<String>,
+}
+
+/// 按报告器形态生成逐用例行（tap 的序号从 1 起）。
+#[must_use]
+pub fn format_report_lines(cases: &[ReportCase], kind: ReporterKind) -> Vec<String> {
+    match kind {
+        ReporterKind::Spec => cases
+            .iter()
+            .map(|c| format_spec_line(c.status, &c.name, &c.note, c.error.as_deref()))
+            .collect(),
+        ReporterKind::Tap => cases
+            .iter()
+            .enumerate()
+            .map(|(i, c)| format_tap_line(i + 1, c.status, &c.name, &c.note, c.error.as_deref()))
+            .collect(),
+        // dot：每用例一个无换行标记（`.` 通过 / `X` 失败），由调用方拼接输出。
+        ReporterKind::Dot => cases
+            .iter()
+            .map(|c| match c.status {
+                ReportStatus::Ok => ".".to_owned(),
+                ReportStatus::NotOk => "X".to_owned(),
+            })
+            .collect(),
+    }
+}
+
+/// 按报告器形态生成汇总块（spec → `format_spec_summary`；tap →
+/// `format_tap_summary`；dot → `format_dot_failed`）。
+///
+/// `failed` 仅 dot 形态使用（失败清单）；空串表示无需输出。
+#[must_use]
+pub fn format_summary(counts: &ReportCounts, failed: &[String], kind: ReporterKind) -> String {
+    match kind {
+        ReporterKind::Spec => format_spec_summary(counts),
+        ReporterKind::Tap => format_tap_summary(counts),
+        ReporterKind::Dot => format_dot_failed(failed),
+    }
 }
 
 /// spec 报告器单用例行（对齐 Go `printTestLine` 非 tap 分支）：
@@ -175,7 +237,7 @@ fn reporter_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// 报告器底层可写流：发射器实例 + `_builtinNs` 分派（on/emit 等复用
-/// `events:instance` 处理器），`write`（吞数据）/`end`（finish+close）/
+/// `events:instance` 处理器），`write`（转发 `data` 事件）/`end`
 /// `pipe`（返回自身）——对齐 Go `newReporterStream`。
 fn new_reporter_stream(vm: &mut Vm) -> ObjectRef {
     let w = crate::builtins::events::create_emitter_instance(vm);
@@ -212,8 +274,14 @@ fn new_reporter_stream(vm: &mut Vm) -> ObjectRef {
     w
 }
 
-/// `write(...)`：吞数据返回 true（对齐 Go）。
-fn reporter_write(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+/// `write(chunk)`：把 chunk 以 `data` 事件转发（Node 可写流契约；此前直接
+/// 吞掉数据，报告器实例因此无任何可见输出），返回值恒为 `true`（背压已接受）。
+fn reporter_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let w = crate::builtins::current_receiver();
+    let chunk = args.first().copied().unwrap_or(Value::Undefined);
+    let emit_fn = vm.get_property(w, "emit")?;
+    let ev_name = Value::Object(vm.alloc_string("data".to_owned()));
+    vm.invoke_callable(emit_fn, w, &[ev_name, chunk])?;
     Ok(Value::Boolean(true))
 }
 
@@ -307,6 +375,73 @@ mod tests {
         assert_eq!(
             format_dot_failed(&["a > b".to_owned()]),
             "\nFailed tests:\n✖ a > b\n"
+        );
+    }
+
+    /// 报告器形态分派（M5.4 切片一）：逐用例行与汇总块按 kind 组合既有纯函数。
+    #[test]
+    fn reporter_kind_dispatch_reuses_existing_formatters() {
+        let cases = vec![
+            ReportCase {
+                name: "alpha".to_owned(),
+                status: ReportStatus::Ok,
+                note: String::new(),
+                error: None,
+            },
+            ReportCase {
+                name: "beta".to_owned(),
+                status: ReportStatus::NotOk,
+                note: String::new(),
+                error: Some("boom".to_owned()),
+            },
+            ReportCase {
+                name: "gamma".to_owned(),
+                status: ReportStatus::Ok,
+                note: "# SKIP".to_owned(),
+                error: None,
+            },
+        ];
+        assert_eq!(
+            format_report_lines(&cases, ReporterKind::Spec),
+            vec![
+                "ok    alpha".to_owned(),
+                "not ok beta\n       boom".to_owned(),
+                "ok    gamma (SKIP)".to_owned(),
+            ]
+        );
+        assert_eq!(
+            format_report_lines(&cases, ReporterKind::Tap),
+            vec![
+                "ok 1 - alpha".to_owned(),
+                "not ok 2 - beta\n  ---\n  message: boom\n  ...".to_owned(),
+                "ok 3 - gamma SKIP".to_owned(),
+            ]
+        );
+        // dot：逐用例无换行标记（拼接由调用方完成，对齐 Node dot 报告器）。
+        assert_eq!(
+            format_report_lines(&cases, ReporterKind::Dot),
+            vec![".".to_owned(), "X".to_owned(), ".".to_owned()]
+        );
+
+        let counts = ReportCounts {
+            pass: 2,
+            fail: 1,
+            cancelled: 0,
+            skipped: 1,
+            todo: 0,
+        };
+        assert_eq!(
+            format_summary(&counts, &[], ReporterKind::Spec),
+            format_spec_summary(&counts)
+        );
+        assert_eq!(
+            format_summary(&counts, &[], ReporterKind::Tap),
+            format_tap_summary(&counts)
+        );
+        assert_eq!(format_summary(&counts, &[], ReporterKind::Dot), "");
+        assert_eq!(
+            format_summary(&counts, &["beta".to_owned()], ReporterKind::Dot),
+            format_dot_failed(&["beta".to_owned()])
         );
     }
 }

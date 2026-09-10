@@ -1,24 +1,49 @@
 ﻿//! `test` 内置模块（Phase 8）：Node 22 `node:test` 的 describe/it/test/
 //! hooks/mock/assert 表面与「注册 + 顺序执行」模型。
 //!
+//! 模块导出值本身即**可调用的 `test` 函数**（Node 22 实测锚定：
+//! `typeof require("node:test") === "function"`、`t.it === t.test === t`、
+//! `t.describe === t.suite`、`t.skip === t.test.skip`）；其余导出
+//! （before/after/beforeEach/afterEach/skip/todo/only/mock/assert/register/
+//! snapshot/run/default）都是挂在该函数**自有属性**上的值。
+//!
 //! 逐函数移植 Node.js 22 LTS 标准（`nodetest/`）实际注册的表面：
-//! - 注册面：`test`/`it`（同一函数）、`describe`/`suite`、`beforeEach`/
-//!   `afterEach`/`before`/`after`、顶层 `skip`/`todo`/`only` 别名、
-//!   `mock`、`assert`（复用 node:assert 单例）、`register`、`snapshot`、
-//!   `run`、`default`（模块自身——CJS 互操作）；
+//! - 注册面：`test`/`it`（同一函数对象）、`describe`/`suite`（同一函数对象）、
+//!   二者各自的 `skip`/`todo`/`only` 函数属性形态（M5.4 切片一）、
+//!   `beforeEach`/`afterEach`/`before`/`after`、顶层 `skip`/`todo`/`only`
+//!   别名、`mock`、`assert`（复用 node:assert 单例）、`register`、
+//!   `snapshot`、`run`、`default`（模块自身——CJS 互操作；Node 22.23.1
+//!   实测 `t.default` 为 undefined，本项为本仓保留的互操作超集）；
 //! - 执行面：`run()` 程序化运行（Node 语义：返回事件流，异步派发
 //!   `test:start`/`test:pass`/`test:fail`/`test:skip`/`test:todo`/
 //!   `test:plan`/`end`；派发任务经宏任务调度——与 Go `PostTask` 一致，
 //!   需要事件循环存活，即脚本存在定时器/微任务时才会驱动）；
+//! - 执行面（M5.4 切片一）：`auto_run()` 收尾自动运行——`aluka test`
+//!   子命令用（见函数注释：显式 `run()` 过则不重复执行）；
 //! - describe 函数体注册时同步执行（Node 语义）。
 //!
-//! 已知限制（引擎能力边界，逐条对齐 Go 实测行为后记录）：
-//! - `test.skip`/`describe.skip` 等函数属性形态不可达（原生函数对象无
-//!   属性表）——用等价的 options 形态 `it(name, {skip: true}, fn)` 或
-//!   顶层 `skip/todo/only`；
+//! `todo` 语义（Node 22 实测锚定，M5.4 切片一修正）：`t.todo(name)`
+//! **无回调**时不执行、报告 `ok` + `# TODO`；**有回调**时执行，失败行状态为
+//! `not ok ... # TODO` 但汇总 `fail` 不计入（只计 `todo`）；`skip` 一律不执行。
+//!
+//! 函数属性形态的等价性（Node 22 实测锚定）：`t.it === t`、`t.describe ===
+//! t.suite` 均为 true，且四者的 `skip`/`todo`/`only` 属性都是函数。用例级
+//! 形态复用顶层 skip/todo/only 的处理器（`it.skip(n, f)` ≡
+//! `it(n, {skip: true}, f)`）；套件级形态为套件标记（`describe.skip(n, f)` ≡
+//! `describe(n, {skip: true}, f)`），行为与 `register_describe` 一致，只是把
+//! 对应 flag 置真。
+//!
+//! 已知限制与口径说明（引擎能力边界，逐条对齐 Node/Go 实测行为后记录）：
 //! - 纯同步脚本（无任何定时器/微任务）中 Go 丢弃 `run()` 的派发任务
 //!   （实测），Rust 侧宏任务无条件驱动——已知偏离；
-//! - spy 函数的 `spy.mock.calls` 观测面不可达（同函数属性限制）。
+//! - `spy.mock.calls` 观测面**可达**（旧注释曾称不可达，已按代码更正）：
+//!   安装 spy 时经 `set_native_fn_property` 挂 `.mock`（mock.rs:244），每次
+//!   调用就地追加调用记录；
+//! - 模块导出函数是原生函数对象（"test.test"），`CALL_METHOD` 分派对
+//!   NativeFn 接收者先试「接收者原名.方法名」复合键、未命中回退接收者原名，
+//!   故 **`node:test` 全方法面与属性形态都必须显式登记复合键**（见 build 末尾
+//!   登记表）；未登记的方法名（Node 本身也没有的名字）会被回退吞成
+//!   `register_it`——`test.test`/`test.test.*` 之外无其它入口。
 
 pub mod asserts;
 pub mod context;
@@ -27,12 +52,13 @@ pub mod registry;
 pub mod runner;
 pub mod state;
 
+use crate::builtins::test_reporters::{ReportCase, ReportCounts, ReportStatus, ReporterKind};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 /// `require("test")` / `require("node:test")` 模块条目。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -43,6 +69,8 @@ pub const MODULE: ModuleDef = ModuleDef {
 thread_local! {
     /// `run()` 建立的事件流（宏任务派发时取用）。
     static RUN_STREAM: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// 脚本是否已显式调用过 `run()`（`auto_run` 去重标记；模块 build 时清零）。
+    static RUN_EXPLICIT: Cell<bool> = const { Cell::new(false) };
 }
 
 /// 是否可调用值（函数）。
@@ -59,28 +87,60 @@ fn stream_pipe(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     Ok(crate::builtins::current_receiver())
 }
 
-/// 构建 node:test 模块导出对象（对齐 Go `NewTest`）。
+/// 构建 node:test 模块导出值（对齐 Go `NewTest`）。
+///
+/// 返回的句柄**就是**那个可调用的 `test` 函数对象（Node 22 实测：模块导出值
+/// 本身是函数），其余导出全部挂在它的自有属性上。
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     // 注册表重置（对齐 Go：每个测试文件运行前 ResetTestRegistry）。
     registry::reset();
+    // 显式 run() 标记清零（与注册表同生命周期：新测试文件不复用旧标记）。
+    RUN_EXPLICIT.with(|f| f.set(false));
 
-    let m = vm.alloc_ordinary();
+    // 模块导出对象 = `test` 函数自身（Node 22 实测：`t.test === t.it === t`）；
+    // 各导出经 `set_property` 的 NativeFn 自有属性分支挂载（先例见 mock spy
+    // 的 `.mock`），属性读取走同一张表，`typeof require("node:test")` 因此为
+    // "function"、值调用形态 `test(name, fn)` 直接命中下面登记的 "test.test"。
+    let m = vm.alloc_native_fn("test.test");
 
-    // it/test：同一处理器的两个导出名（Node 22 语义：同一函数对象别名）。
-    for (prop, name) in [("it", "test.it"), ("test", "test.test")] {
-        let fn_ref = vm.alloc_native_fn(name);
-        set_module_prop(vm, m, prop, Value::Object(fn_ref))?;
+    // 顶层 shorthand skip/todo/only：Node 22 实测与函数属性形态是**同一函数
+    // 对象**（`t.skip === t.test.skip`），故两处挂载点共用同一句柄。
+    for (attr, key) in [
+        ("skip", "test.skip"),
+        ("todo", "test.todo"),
+        ("only", "test.only"),
+    ] {
+        let attr_fn = vm.alloc_native_fn(key);
+        vm.set_native_fn_property(m, attr, Value::Object(attr_fn));
     }
-    // describe/suite：suite 是 describe 的别名（Node 22）。
-    for (prop, name) in [("describe", "test.describe"), ("suite", "test.suite")] {
-        let fn_ref = vm.alloc_native_fn(name);
-        set_module_prop(vm, m, prop, Value::Object(fn_ref))?;
+
+    // it/test 指向自身（同上实测：`t.it === t`、`t.test === t`）。
+    for prop in ["it", "test"] {
+        set_module_prop(vm, m, prop, Value::Object(m))?;
+    }
+
+    // describe/suite：Node 22 实测 `t.describe === t.suite`（同一函数对象）。
+    // 函数属性形态为**套件级**标记：`describe.skip(n, f)` ≡
+    // `describe(n, { skip: true }, f)`（套件整体标 SKIP），处理器见下方
+    // register_describe_skip/todo/only。
+    let describe_fn = vm.alloc_native_fn("test.describe");
+    for (attr, key) in [
+        ("skip", "test.describeSkip"),
+        ("todo", "test.describeTodo"),
+        ("only", "test.describeOnly"),
+    ] {
+        let attr_fn = vm.alloc_native_fn(key);
+        vm.set_native_fn_property(describe_fn, attr, Value::Object(attr_fn));
+    }
+    for prop in ["describe", "suite"] {
+        set_module_prop(vm, m, prop, Value::Object(describe_fn))?;
     }
     // 钩子。
     for prop in ["beforeEach", "afterEach", "before", "after"] {
         let fn_ref = vm.alloc_native_fn(&format!("test.{prop}"));
         set_module_prop(vm, m, prop, Value::Object(fn_ref))?;
     }
+
     // mock：模块级 MockTracker（不自动还原）。
     let tracker = mock::new_tracker(vm, mock::TrackerScope::Global);
     set_module_prop(vm, m, "mock", tracker)?;
@@ -89,12 +149,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     if let Some(assert_ref) = registry_module_of(vm, "assert") {
         set_module_prop(vm, m, "assert", Value::Object(assert_ref))?;
     }
-
-    // 顶层 shorthand：skip/todo/only（Go：从 test.skip 等拷贝的别名）。
-    for prop in ["skip", "todo", "only"] {
-        let fn_ref = vm.alloc_native_fn(&format!("test.{prop}"));
-        set_module_prop(vm, m, prop, Value::Object(fn_ref))?;
-    }
+    // 顶层 shorthand skip/todo/only 已在上方作为 `m` 自身的函数属性挂载
+    // （Node 22：`t.skip === t.test.skip`，同一函数对象，不重复分配）。
 
     // register(name, fn)：注册自定义断言（挂到 t.assert）。
     let register_fn = vm.alloc_native_fn("test.register");
@@ -141,15 +197,45 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "test", "after", |vm, args| {
         hook_register("after", vm, args)
     });
-    register_handler(registry, "test", "skip", |vm, args| {
-        register_flagged(vm, args, Flag::Skip)
+    register_handler(registry, "test", "skip", register_skip);
+    register_handler(registry, "test", "todo", register_todo);
+    register_handler(registry, "test", "only", register_only);
+    // 模块对象自身是 NativeFn "test.test"（含点）：`CALL_METHOD` 对 NativeFn
+    // 接收者先按「接收者原名.方法名」拼键、未命中即回退到接收者原名（见
+    // `builtins::try_dispatch` 形态一），而原名键 "test.test" 就是 `register_it`
+    // ——不登记复合键的话 `t.run()`/`t.describe()` 会全部被吞成「注册用例」，
+    // 故 `t.<method>()` 的复合键必须逐一登记（`it.skip(...)`/`t.skip(...)`
+    // 同样落在这层）。裸调用形态（`const f = it.skip; f(...)`）则经属性值原名
+    //（"test.skip"）直接命中上表。处理器本体同一处，不另建语义。
+    register_handler(registry, "test.test", "test", register_it);
+    register_handler(registry, "test.test", "it", register_it);
+    register_handler(registry, "test.test", "describe", register_describe);
+    register_handler(registry, "test.test", "suite", register_describe);
+    register_handler(registry, "test.test", "beforeEach", |vm, args| {
+        hook_register("beforeEach", vm, args)
     });
-    register_handler(registry, "test", "todo", |vm, args| {
-        register_flagged(vm, args, Flag::Todo)
+    register_handler(registry, "test.test", "afterEach", |vm, args| {
+        hook_register("afterEach", vm, args)
     });
-    register_handler(registry, "test", "only", |vm, args| {
-        register_flagged(vm, args, Flag::Only)
+    register_handler(registry, "test.test", "before", |vm, args| {
+        hook_register("before", vm, args)
     });
+    register_handler(registry, "test.test", "after", |vm, args| {
+        hook_register("after", vm, args)
+    });
+    register_handler(registry, "test.test", "skip", register_skip);
+    register_handler(registry, "test.test", "todo", register_todo);
+    register_handler(registry, "test.test", "only", register_only);
+    register_handler(registry, "test.test", "register", register_custom);
+    register_handler(registry, "test.test", "run", run);
+    // 套件级函数属性形态（describe.skip / suite.todo / ...）：套件标记
+    // 语义 + 复合键，理由同上。
+    register_handler(registry, "test", "describeSkip", register_describe_skip);
+    register_handler(registry, "test", "describeTodo", register_describe_todo);
+    register_handler(registry, "test", "describeOnly", register_describe_only);
+    register_handler(registry, "test.describe", "skip", register_describe_skip);
+    register_handler(registry, "test.describe", "todo", register_describe_todo);
+    register_handler(registry, "test.describe", "only", register_describe_only);
     register_handler(registry, "test", "register", register_custom);
     register_handler(registry, "test", "run", run);
     register_handler(
@@ -202,7 +288,36 @@ fn register_it(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// describe 注册并同步执行函数体（其内的 it/describe/beforeEach 注册子项）。
 fn register_describe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let (name, fn_val, opts) = parse_options(vm, args);
+    register_suite(vm, args, None)
+}
+
+/// 套件级 skip/todo/only 变体（函数属性形态 describe.skip/todo/only）：
+/// 与 [`register_describe`] 行为完全一致，只是把对应 flag 置真——等价于
+/// options 形态 `describe(n, {skip: true}, f)`。
+fn register_describe_skip(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    register_suite(vm, args, Some(Flag::Skip))
+}
+
+/// 套件级 todo 变体（`describe.todo(n, f)`）。
+fn register_describe_todo(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    register_suite(vm, args, Some(Flag::Todo))
+}
+
+/// 套件级 only 变体（`describe.only(n, f)`；套件体必须传函数）。
+fn register_describe_only(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    register_suite(vm, args, Some(Flag::Only))
+}
+
+/// 套件注册共用实现：`push_suite` + （传入函数则）同步执行函数体 +
+/// `pop_suite`；`flag` 为函数属性形态带来的套件标记。
+fn register_suite(vm: &mut Vm, args: &[Value], flag: Option<Flag>) -> Result<Value, VmError> {
+    let (name, fn_val, mut opts) = parse_options(vm, args);
+    match flag {
+        Some(Flag::Skip) => opts.skip = true,
+        Some(Flag::Todo) => opts.todo = true,
+        Some(Flag::Only) => opts.only = true,
+        None => {}
+    }
     if !is_function_value(vm, fn_val) && !opts.skip && !opts.todo {
         return Err(asserts::type_fail(vm, "describe() requires a function"));
     }
@@ -230,7 +345,8 @@ fn register_describe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
-/// 标记形态枚举（skip/todo/only 变体注册共用）。
+/// 标记形态枚举（skip/todo/only 用例级与套件级变体注册共用）。
+#[derive(Clone, Copy)]
 enum Flag {
     /// 跳过。
     Skip,
@@ -238,6 +354,21 @@ enum Flag {
     Todo,
     /// 仅运行。
     Only,
+}
+
+/// `it.skip`/`test.skip` 处理器（顶层 `skip` 别名与函数属性形态同一处）。
+fn register_skip(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    register_flagged(vm, args, Flag::Skip)
+}
+
+/// `it.todo`/`test.todo` 处理器。
+fn register_todo(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    register_flagged(vm, args, Flag::Todo)
+}
+
+/// `it.only`/`test.only` 处理器。
+fn register_only(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    register_flagged(vm, args, Flag::Only)
 }
 
 /// skip/todo/only 变体注册（对齐 Go skipReg/todoReg/onlyReg）。
@@ -375,6 +506,9 @@ fn new_test_stream(vm: &mut Vm) -> ObjectRef {
 /// `run(options)`：程序化运行已注册用例。返回事件流（EventEmitter），
 /// 派发任务加入宏任务队列（Go `PostTask` 语义：需要事件循环存活）。
 fn run(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    // 显式运行标记：`auto_run`（`aluka test` 收尾自动运行）据此避让——
+    // 脚本自己已经跑过一遍注册表，再自动跑一次会重复执行用例并重复打印报告。
+    RUN_EXPLICIT.with(|f| f.set(true));
     // 事件流：每次 run() 新建（对齐 Go NewEmitterInstance）。
     let stream = new_test_stream(vm);
     RUN_STREAM.with(|s| *s.borrow_mut() = Some(Value::Object(stream)));
@@ -475,6 +609,94 @@ fn ordinary(vm: &mut Vm, entries: &[(&str, Value)]) -> ObjectRef {
         let _ = vm.set_property(Value::Object(obj), k, *v);
     }
     obj
+}
+
+// ---------------------------------------------------------------------------
+// M5.4 切片一：`aluka test` 收尾自动运行
+// ---------------------------------------------------------------------------
+
+/// 收尾自动运行已注册用例（`aluka test` 子命令用）：执行注册表全部用例，
+/// 按 `kind` 生成报告行追加到 `vm.stdout_records`（CLI 侧统一 `println!`，
+/// 与 `run_script` 的 `stdout_records()` 路径一致），返回汇总计数。
+///
+/// 返回 `None`（且不产生任何输出）的三种情形：
+/// 1. 脚本已显式调用过 `test.run()`——显式运行已经消费过注册表，自动运行
+///    再跑一次会把用例执行两遍并重复打印报告，故直接避让；
+/// 2. 注册表为空——普通脚本（`require("node:test")` 但没注册用例）不得被
+///    报告行污染；
+/// 3. 注册用例全部被过滤（结果为空）——同 2，不做无意义输出。
+///
+/// 报告格式为**本仓 CLI 契约**（源自 Go CLI `printTestLine`/汇总格式），
+/// 不声称与 `node --test` 输出逐字一致；dot 报告器的逐用例标记沿用 Node
+/// dot 报告器的 `.`/`X` 形态（失败清单仍取 CLI 契约）。
+pub fn auto_run(vm: &mut Vm, kind: ReporterKind) -> Option<ReportCounts> {
+    if RUN_EXPLICIT.with(Cell::get) {
+        return None;
+    }
+    if !registry::has_tests() {
+        return None;
+    }
+    let results = runner::run_registered_tests(vm);
+    if results.is_empty() {
+        return None;
+    }
+
+    let cases: Vec<ReportCase> = results
+        .iter()
+        .map(|r| ReportCase {
+            name: r.full_name.clone(),
+            status: if r.passed {
+                ReportStatus::Ok
+            } else {
+                ReportStatus::NotOk
+            },
+            note: if r.skipped {
+                "# SKIP".to_owned()
+            } else if r.todo {
+                "# TODO".to_owned()
+            } else {
+                String::new()
+            },
+            error: r.error.clone(),
+        })
+        .collect();
+
+    // 计数口径与 `posted_run` 的事件派发一致（cancelled > skipped > todo >
+    // passed > fail）：cancelled 的用例 passed 为真但独立计数。
+    let mut counts = ReportCounts::default();
+    for r in &results {
+        if r.cancelled {
+            counts.cancelled += 1;
+        } else if r.skipped {
+            counts.skipped += 1;
+        } else if r.todo {
+            counts.todo += 1;
+        } else if r.passed {
+            counts.pass += 1;
+        } else {
+            counts.fail += 1;
+        }
+    }
+
+    let lines = crate::builtins::test_reporters::format_report_lines(&cases, kind);
+    if matches!(kind, ReporterKind::Dot) {
+        // dot：逐用例标记无换行（Node dot 报告器 `..X..` 形态），拼接成单条
+        // 记录交给 CLI 打印；spec/tap 则一行一条记录。
+        vm.stdout_records.push(lines.concat());
+    } else {
+        vm.stdout_records.extend(lines);
+    }
+
+    let failed: Vec<String> = results
+        .iter()
+        .filter(|r| !r.passed)
+        .map(|r| r.full_name.clone())
+        .collect();
+    let summary = crate::builtins::test_reporters::format_summary(&counts, &failed, kind);
+    if !summary.is_empty() {
+        vm.stdout_records.push(summary);
+    }
+    Some(counts)
 }
 
 /// GC 根快照：运行流对象。

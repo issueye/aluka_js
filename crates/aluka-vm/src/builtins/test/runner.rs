@@ -278,6 +278,14 @@ fn run_test_case(
         error: None,
     };
 
+    // todo 且**无回调**：不执行、报告 `ok` + `# TODO`（Node 22 实测锚定：
+    // `t.todo("n")` → `ok 1 - n # TODO`）。此前无回调的 todo 用例仍去调用
+    // `undefined`，输出 `not ok n (TODO)` + `undefined is not a function`——
+    // Node 最常见的待办写法因此被误判为失败。
+    if is_todo && !super::is_function_value(vm, tc.fn_val) {
+        return Some(vec![res]);
+    }
+
     // 收集套件链（根 → 叶）。
     let mut chain: Vec<usize> = Vec::new();
     let mut cur = Some(suite_idx);
@@ -644,6 +652,12 @@ fn run_concurrent_batch(
             cancelled: false,
             error: None,
         };
+        // todo 且无回调：不执行、直接以 `ok` + `# TODO` 收尾（与顺序路径
+        // 同一语义，见 `run_test_case`）。
+        if is_todo && !super::is_function_value(vm, tc.fn_val) {
+            out.push(res);
+            continue;
+        }
         // beforeEach（外层 → 内层）：失败 → 该用例标失败并跳过函数体。
         let mut hook_err: Option<String> = None;
         for &s in &chain {

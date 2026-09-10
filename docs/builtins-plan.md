@@ -49,8 +49,9 @@
 | **T4 网络与重件** | http/https/net/tls/dns、url 深化（parse/format）、crypto、zlib、inspector、vm、worker_threads | nodehttp/nodenet/nodecrypto/nodevm | 大件，验收=conformance 语义等价 |
 
 > 备注：registry.go 中 `node:sqlite`（nodesqlite）为演示性注册，Go 侧亦非
-> 完整实现，Tier 4 排后；`node:test`（nodetest）是 15-test-runner 用例的
-> 依赖，列 Tier 3.5 由 T3 完成后跟组。
+> 完整实现，Tier 4 排后；`node:test`（nodetest）作为 15-test-runner 用例的
+> 依赖列 Tier 3.5——注册/执行模型与 `aluka test` 子命令已落地（M5.4 切片一），
+> 遗留 Timer Mock（`t.mock.timers`）与 LCOV 覆盖率输出未闭环。
 
 ## 4. 分批路线（每批：实现 → Go Oracle e2e 对拍 → 固化 cjs_test → 门禁）
 

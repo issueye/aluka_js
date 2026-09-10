@@ -1,4 +1,4 @@
-﻿//! node:test 注册表（Phase 8）：describe/it 收集的 suite 树。
+//! node:test 注册表（Phase 8）：describe/it 收集的 suite 树。
 //!
 //! 逐函数移植 Node.js 22 LTS 标准（`nodetest/test_registry.go` 的注册数据结构）：
 //! 注册表为线程局部单例（JS 执行单线程语义；`cargo test` 并行用例各占
@@ -157,6 +157,18 @@ pub fn snapshot() -> Option<Registry> {
     REGISTRY.with(|r| r.borrow().clone())
 }
 
+/// 注册表是否已有用例/套件（`auto_run` 判定「空注册表不输出」用）。
+///
+/// 根套件 children 为空即视为空——套件函数体在注册期同步执行，任何
+/// `it`/`describe` 注册都会落到根套件的 children 上。
+#[must_use]
+pub fn has_tests() -> bool {
+    REGISTRY.with(|r| {
+        r.borrow()
+            .as_ref()
+            .is_some_and(|reg| !reg.suites[0].children.is_empty())
+    })
+}
 thread_local! {
     /// `register()` 注册的自定义断言（name → fn）。
     static CUSTOM_ASSERTS: RefCell<HashMap<String, Value>> = RefCell::new(HashMap::new());
