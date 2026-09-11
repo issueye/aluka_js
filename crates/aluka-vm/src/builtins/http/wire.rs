@@ -17,6 +17,10 @@ pub(crate) struct RequestHead {
     pub method: String,
     /// 请求目标（RequestURI，如 `/abc`）
     pub target: String,
+    /// 请求行声明的 HTTP 版本（`(major, minor)`）。服务端据此判定默认
+    /// keep-alive（HTTP/1.1 默认保持、HTTP/1.0 默认关闭）与响应体定界
+    /// （HTTP/1.0 客户端不写 `Content-Length`/chunked，改以关连接定界）。
+    pub version: (u8, u8),
     /// 全部头（小写名，保序）
     pub headers: HeaderList,
     /// Content-Length（无则 None）
@@ -95,10 +99,45 @@ fn request_head(
     Some(RequestHead {
         method,
         target,
+        version: parse_http_version(start_line),
         headers,
         content_length,
         chunked,
     })
+}
+
+/// 解析起始行声明的 HTTP 版本（`"HTTP/1.0"` → `(1, 0)`）。
+/// 请求缺乏／畸形版本声明时按 HTTP/1.1 兜底（llhttp 对请求行的容错口径）。
+pub(crate) fn parse_http_version(start_line: &str) -> (u8, u8) {
+    let Some(token) = start_line.split(' ').next_back() else {
+        return (1, 1);
+    };
+    let Some(rest) = token.strip_prefix("HTTP/") else {
+        return (1, 1);
+    };
+    let mut parts = rest.split('.');
+    let major = parts.next().and_then(|v| v.parse::<u8>().ok()).unwrap_or(1);
+    let minor = parts.next().and_then(|v| v.parse::<u8>().ok()).unwrap_or(1);
+    (major, minor)
+}
+
+/// 头值是否含指定 token（按非 token 字符切分后整词忽略大小写比较）。
+///
+/// 等价于 Node 的 `RE_CONN_CLOSE = /(?:^|\W)close(?:$|\W)/i`
+/// （`_http_outgoing.js:93`）以及 llhttp 对 `Connection` 值的匹配口径：
+/// `"keep-alive, close"` 同时含两个 token，`"close"` 只含 `close`。
+pub(crate) fn conn_token(value: &str, token: &str) -> bool {
+    value
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .any(|t| t.eq_ignore_ascii_case(token))
+}
+
+/// 取某头的首值（小写名；缺失返回 None）。
+pub(crate) fn header_value(headers: &HeaderList, name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(n, _)| n == name)
+        .and_then(|(_, v)| v.first().cloned())
 }
 
 /// 尝试从缓冲取走一个完整请求（头 + 体），成功时消费已用字节。

@@ -26,6 +26,12 @@ pub(crate) struct Conn {
     pub eof: bool,
     /// 是否有请求正处理中（响应写出前不再解析后续请求）
     pub res_active: bool,
+    /// 响应判定为「本连接最后一次」（Node `res._last`：请求 `Connection: close`、
+    /// HTTP/1.0 无 keep-alive、或响应显式设 `close`）。`out` 全部落盘后 shutdown
+    /// 写方向，向客户端发出 FIN。
+    pub close_after_write: bool,
+    /// 已发出 FIN（明文 `shutdown`／TLS `close_notify` 已入队），防重复
+    pub fin_sent: bool,
 }
 
 /// 一个监听中的 HTTP 服务器。
@@ -119,6 +125,13 @@ pub(crate) struct RespBinding {
     pub body: Vec<u8>,
     /// 是否已 end
     pub finished: bool,
+    /// 请求侧 keep-alive 判定（llhttp `shouldKeepAlive`）：HTTP/1.1 默认 true，
+    /// HTTP/1.0 默认 false，`Connection` 头可覆盖（`close` 优先）。
+    pub should_keep_alive: bool,
+    /// 本响应的默认体定界是否为 chunked（Node `useChunkedEncodingByDefault`）：
+    /// HTTP/1.1 为 true；HTTP/1.0 客户端为 false → 不写 `Content-Length`／
+    /// `Transfer-Encoding`，以关连接定界（与 Node 实测一致）。
+    pub use_chunked_by_default: bool,
 }
 
 /// 解析请求后暂存的派发项（锁外构造 JS 对象并调用 handler）。
@@ -135,6 +148,10 @@ pub(crate) struct ReqDispatch {
     pub headers: Vec<(String, Vec<String>)>,
     /// 请求体
     pub body: Vec<u8>,
+    /// 请求侧 keep-alive 判定（llhttp `shouldKeepAlive`）
+    pub should_keep_alive: bool,
+    /// 默认体定界是否 chunked（Node `useChunkedEncodingByDefault`）
+    pub use_chunked_by_default: bool,
 }
 
 /// 监听器条目（回调 + 是否一次性）。
@@ -353,31 +370,45 @@ pub(crate) fn schedule_task(vm: &mut Vm, cb: Value, delay: u64) {
         .push_back((id, last_due + delay, delay, cb, false));
 }
 
-/// 响应绑定快照：`(server_obj, conn_id, status, live, wire, body, finished)`。
-pub(crate) type BindingSnapshot = (
-    u32,
-    u64,
-    u16,
-    Vec<(String, Vec<String>)>,
-    Option<Vec<(String, Vec<String>)>>,
-    Vec<u8>,
-    bool,
-);
+/// 响应绑定快照（`finalize_response` 的读视图；锁外构造响应字节用）。
+pub(crate) struct BindingSnapshot {
+    /// 所属 Server 对象堆句柄
+    pub server_obj: u32,
+    /// 连接编号
+    pub conn_id: u64,
+    /// 状态码
+    pub status: u16,
+    /// 活动头表
+    pub live: Vec<(String, Vec<String>)>,
+    /// 已冻结的线上头
+    pub wire: Option<Vec<(String, Vec<String>)>>,
+    /// 已缓冲响应体
+    pub body: Vec<u8>,
+    /// 是否已 end
+    pub finished: bool,
+    /// 请求侧 keep-alive 判定
+    pub should_keep_alive: bool,
+    /// 默认体定界是否 chunked
+    pub use_chunked_by_default: bool,
+}
 
 /// 读取 ServerResponse 绑定（不存在返回 None 的克隆快照）。
 pub(crate) fn response_binding(res_id: u32) -> Option<BindingSnapshot> {
     RESPONSES.with(|g| {
-        g.borrow().as_ref().and_then(|m| m.get(&res_id)).map(|b| {
-            (
-                b.server_obj,
-                b.conn_id,
-                b.status,
-                b.live.clone(),
-                b.wire.clone(),
-                b.body.clone(),
-                b.finished,
-            )
-        })
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&res_id))
+            .map(|b| BindingSnapshot {
+                server_obj: b.server_obj,
+                conn_id: b.conn_id,
+                status: b.status,
+                live: b.live.clone(),
+                wire: b.wire.clone(),
+                body: b.body.clone(),
+                finished: b.finished,
+                should_keep_alive: b.should_keep_alive,
+                use_chunked_by_default: b.use_chunked_by_default,
+            })
     })
 }
 

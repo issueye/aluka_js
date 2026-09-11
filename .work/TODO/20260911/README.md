@@ -329,4 +329,147 @@ $ cargo test --workspace --all-features       # suites=86 passed=618 failed=0 ig
 - **构建耗时观察**：`CARGO_INCREMENTAL=0` 下全量测试门禁墙钟约 5 分钟（增量开启时
   约 85~117s）；本轮因 ICE 权衡取正确性优先。
 
+---
+
+## 8. 待办 27 · M5.2 剩余项②：服务端 `Connection: close` 语义
+
+### 8.1 开工前登记（目标 + 验收标准）
+
+| # | 目标 | 验收标准 | 证据 |
+|---|---|---|---|
+| 1 | 服务端按 Node 判定写 `Connection` 头 | 请求带 `close`／响应显式设 `close`／HTTP/1.0 无 keep-alive／HTTP/1.0 + keep-alive → 响应 `Connection: close`；其余 → `Connection: keep-alive` + `Keep-Alive: timeout=5` | 五情形原始报文对拍（§8.4） |
+| 2 | 判定为「最后一次」时关闭 socket | 客户端观测到服务端 FIN（`server-ended`/`server-closed` = true），且不发生残留字节截断 | 同上 |
+| 3 | keep-alive 真复用不回归 | 同一 socket 串行两次请求均得响应且服务端不关；`close` 情形第二次请求不再得响应 | 复用对拍 2 例（§8.4） |
+| 4 | 既有 `http`/`net`/`https`/`tls`/Express 用例不回归 | 定向套件全绿 + 门禁三连全绿 | §8.5 |
+
+**开工前事实**：`http/server.rs` 写出响应后只调 `mark_conn_idle`（解除占用标记），
+**从不关闭连接**；全 `http/` 目录无任何 `Connection:` 响应头生成。
+
+### 8.2 Oracle 取证（先取权威语义，再动代码）
+
+下载 Node v22.22.2 官方 JS 实现（`.work/scratch/m52-conn-close/node-_http_outgoing.js`
+/ `node-_http_server.js`），语义链路如下：
+
+| 环节 | 出处 | 语义 |
+|---|---|---|
+| 请求侧 keep-alive | llhttp `shouldKeepAlive` | `(Connection 含 keep-alive ‖ HTTP/1.1) && !Connection 含 close`（`close` 优先） |
+| 响应默认体定界 | `_http_server.js:207-209` | HTTP/1.0 请求 → `useChunkedEncodingByDefault = (TE 含 chunked)`（本情形为假）、`shouldKeepAlive = false` |
+| `Connection` 头 | `_http_outgoing.js:520-546` | ① 用户已设 → 原样保留，`_last = Connection 含 close`（`RE_CONN_CLOSE`）；② 否则 `shouldSendKeepAlive = shouldKeepAlive && (已设 Content-Length ‖ useChunkedEncodingByDefault)` → 真写 `keep-alive`（并在用户未自设 `Keep-Alive` 时补 `timeout=<_keepAliveTimeout/1000>`），假写 `close` 且 `_last = true` |
+| 关连接时机 | `_http_server.js:1034-1036` | `res._last` → `socket.destroySoon()`（flush 完成后销毁） |
+| 头顺序 | `_storeHeader` | 用户头 → `Date` → `Connection`(+`Keep-Alive`) → `Content-Length`/`Transfer-Encoding` |
+
+实测锚点（`node probe.js`，5 情形；`Date` 属时间戳，比较时剔除）：
+
+```
+[req-close]         status-line=HTTP/1.1 200 OK  connection=close       content-length=5        server-ended=true
+[res-close]         status-line=HTTP/1.1 200 OK  connection=close       content-length=5        server-ended=true
+[http10]            status-line=HTTP/1.1 200 OK  connection=close       content-length=<absent> server-ended=true
+[http10-keepalive]  status-line=HTTP/1.1 200 OK  connection=close       content-length=<absent> server-ended=true
+[default]           status-line=HTTP/1.1 200 OK  connection=keep-alive  keep-alive=timeout=5    content-length=5  server-ended=false
+```
+
+两处**非显然**结论（仅靠记忆不可能得出，故必须实测）：
+1. HTTP/1.0 响应**不带 `Content-Length`**，响应体以关连接定界；
+2. HTTP/1.0 **即使带 `Connection: keep-alive` 也仍是 `close`** ——
+   因 `shouldSendKeepAlive` 里 `useChunkedEncodingByDefault === false` 且未设 CL，
+   与 `res.shouldKeepAlive = true` 无关。
+
+### 8.3 实现要点
+
+1. **`wire.rs`**：`RequestHead` 增 `version: (u8, u8)`；新增 `parse_http_version`（起始行
+   兜底 HTTP/1.1）与 `conn_token`（等价 `RE_CONN_CLOSE` 的词边界整词匹配）、
+   `header_value`；头顺序由既有 `serialize_response` 的向量顺序承载，无需改动。
+2. **`state.rs`**：`Conn` 增 `close_after_write` / `fin_sent`；`RespBinding` 增
+   `should_keep_alive` / `use_chunked_by_default`（请求侧判定，派发时冻结）；
+   `ReqDispatch` 携带两者；`BindingSnapshot` 从 7 元组改为**具名结构体**（9 字段，
+   避免不可读的长元组解构）。
+3. **`server.rs`**：新增 `request_conn_policy`（请求侧两判定）、`append_conn_headers`
+   （`Connection` 装配 + 返回 `_last`，`finalize_response` 与无 handler 的 500 兜底共用）、
+   `mark_conn_close_after_write`。`finalize_response` 按 `用户头 → date →
+   connection(+keep-alive) → content-length → content-type` 装配；`!use_chunked_by_default`
+   时不写 `Content-Length`。
+4. **泵**：flush 段在 `out` 落空后按 `close_after_write` 发 FIN（明文
+   `shutdown(Shutdown::Write)`；TLS `send_close_notify` + `write_tls` 冲刷），
+   以 `fin_sent` 纳入回收条件（对齐 `destroySoon`：flush 后即回收）。
+   回收条件补 `out.is_empty()` 守卫——**顺带修掉一处既有潜在缺陷**：原实现
+   `eof && !res_active` 即可回收，会在 `WouldBlock` 残留未落盘时截断响应尾字节。
+   TLS 分支额外要求 `!tls.wants_write()`：`out` 清空仅代表**明文**已喂给会话
+   writer，密文仍可能滞留在 rustls 内部缓冲，此时回收会连同未发出的记录一起丢弃。
+5. **新增 e2e**：`crates/aluka-cli/tests/m52_conn_close_test.rs`（2 例，含逐字段
+   期望串断言，防「两侧同为空白输出」的假一致）。
+6. **改动顺序说明（证据完整性）**：TLS 的 `wants_write` 守卫是在首轮门禁之后补入的，
+   因此**门禁三连与全部探针已针对最终代码重跑**（见 §8.4/§8.5）。
+
+### 8.4 对拍证据（aluka vs Node 22，逐字节）
+
+```bash
+$ node probe.js > node-oracle.txt ; aluvm run probe.bc > aluka-out.txt
+$ diff node-oracle.txt aluka-out.txt      # 无输出 → IDENTICAL
+$ # 稳定性：probe1 ×3 / probe2 ×3 全部 IDENTICAL
+probe1 IDENTICAL(1)  probe1 IDENTICAL(2)  probe1 IDENTICAL(3)
+probe2 IDENTICAL(1)  probe2 IDENTICAL(2)  probe2 IDENTICAL(3)
+```
+
+- 五情形原始报文（`req-close` / `res-close` / `http10` / `http10-keepalive` / `default`）
+  的 `status-line`、`connection`、`keep-alive`、`content-length`、
+  `transfer-encoding`、`body`、头顺序（范围内）、`server-ended`、`server-closed`
+  **全部与 Node 一致**。
+- 复用对拍：`keepalive-reuse` resp-count=2 / server-ended=false；
+  `req-close-no-reuse` resp-count=1 / server-ended=true —— 两侧一致。
+- **TLS 关闭路径冒烟**（`probe-tls.js`：https 自签回环 + 客户端带
+  `Connection: close` + 5KB body）：两侧均输出
+  `STATUS 200 / CONN close / LEN 5000 / BODY-OK true / CLOSED` —— 无截断。
+- 定向回归：`builtins_phase5_http_test` / `builtins_phase5_net_test` /
+  `m52_http_cluster_test`（3） / `m52_settings_test`（7） / `https_tls_loopback_test`（1）
+  / `m3_tls_loopback_test`（2） / `express_e2e_test`（1） 全绿。
+- **证据边界（显式声明）**：TLS 路径为**行为冒烟**（JS 可见输出一致），未做报文级
+  逐字节对拍（TLS 记录已加密，无法直接文本比对）；报文级对拍仅覆盖明文路径。
+
+### 8.5 门禁三连（真实输出）
+
+```bash
+$ cargo fmt --all --check                                   # FMT_EXIT=0
+$ cargo clippy --all-targets --all-features -- -D warnings   # CLIPPY_EXIT=0（零 lint 告警）
+$ CARGO_INCREMENTAL=0 cargo test --workspace --all-features  # TEST_EXIT=0
+```
+
+聚合统计（**最终代码**，日志 `.work/scratch/m52-conn-close/full-test-final.log`，
+即 TLS `wants_write` 守卫补入后重跑）：
+`suites=87 passed=620 failed=0 ignored=1`，`grep -cE "^test result: FAILED|^error"` = **0**。
+
+- 与上一轮基线（§7.4：86 suites / 618 passed / 0 failed / 1 ignored）对照：
+  **+1 套件、+2 用例**，恰好等于本轮新增的 `m52_conn_close_test.rs`；
+  `1 ignored` 为既有 doc-test（`builtins::builtin_module`），非本轮引入。
+
+### 8.6 本轮新登记的偏离（诚实登记，不静默）
+
+| 项 | Node | 本运行时 | 影响 |
+|---|---|---|---|
+| **空闲 keep-alive 连接超时清扫** | `server.keepAliveTimeout = 5000` + `keepAliveTimeoutBuffer = 1000` → 实测响应后约 **6.03s** 断连 | **无清扫**，连接长期保留（实测 7s 后仍 open） | 只广播 `Keep-Alive: timeout=5` 但**不强制断连**；长连接数量可能累积 |
+| `server.keepAliveTimeout` 取值 | 可配置，广播值 = 该值/1000 | 恒广播 `timeout=5` | 自定义值不生效（`http/server.rs:60` 仅作属性表面） |
+| `server.maxRequestsPerSocket` 达上限 | 写 `Connection: close` | 未接线 | 未复刻 |
+| 响应 `Content-Type` 嗅探 | Node 不补 | 补 `text/plain; charset=utf-8` 等（Go 缓冲 writer 行为） | 既有偏差；本轮探针从「头顺序」对比中剔除并显式注释理由 |
+| `settings.…`（承 §7.5） | — | — | 见 §7.5 |
+
+### 8.7 工程隐患与探针纪律（本轮新增）
+
+- **⚠️ 定时器到期模型（既有设计，尚未登记为偏离）**：`timers.rs::schedule_raw` /
+  `http::state::schedule_task` 把到期时间算作「**队尾 due + delay**」（累加），
+  而非「now + delay」。多定时器并存时**触发顺序即与 Node 不同**。实测（`dbg-timer.js`）：
+
+  ```
+  node : t250 @265   t400 @420   t800 @821
+  aluka: t250 @429   t400 @1106  t800 @2408      # 顺序同但整体延迟；跨来源计时器会乱序
+  ```
+  本轮首次写复用探针时用 `setTimeout(250)` 发第二请求，实测该回调被排到 800ms 定时器
+  **之后**（`dbg2.js`：`DONE → CLIENT-END → CLIENT-SEND-2`），一度误判为
+  「keep-alive 复用失效」。**修正**：探针改为「收到首个响应即在 `data` 回调内发第二
+  请求」的事件驱动写法，判定随即与 Node 一致。→ 建议立专项评估该模型（影响面覆盖
+  `timers` 全量对拍与所有多定时器场景，超出 M5 范围）。
+- **`os error 5` 写入被拒**：一次全量测试编译在写
+  `target/debug/deps/builtins_phase4_events_test-*.d` 时报「拒绝访问」，重试即过
+  （Windows 文件锁抖动，非代码缺陷）。`CARGO_INCREMENTAL=0` 仍是本轮固定口径
+  （规避 §7.6 的 rustc ICE）。
+- **构建耗时**：`CARGO_INCREMENTAL=0` 下全量门禁墙钟 5m23s~5m56s。
+
 

@@ -264,12 +264,12 @@
     worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
     与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
     已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** 达成——余 RR 调度 / 服务端 `Connection: close`，20260911）
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** 达成——余 RR 调度与 `listening`/`disconnect` 事件，20260911）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
     OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——
     `worker.send`/`process.send`/`cluster.worker.send` 真实可用、`isConnected()`/`isDead()`
-    与 `'exit'` 退出码均为真实值（余：RR 调度、服务端 `Connection: close`）；
+    与 `'exit'` 退出码均为真实值（余：RR 调度）；
     无 RR 调度（内核对分发）；`worker.send`/`isConnected`/`isDead`/exit code 已于 20260910 收口；
     `settings.exec/args/silent/cwd` 生效 + settings 契约（默认值/浅合并/对象重建 +
     `fork` 隐式 `setupPrimary`）+ validator 文本面已于 20260911 收口（详见
@@ -277,9 +277,14 @@
   - 验收：多进程集群 HTTP 端口共享测试通过。✅ `21-m5` Node 逐字节对拍 PASS
     （bc 模式实测）。✅ **P0 已关闭**（round6：fetch 响应完成判定不依赖
     连接关闭——原「挂死」实为每请求 10s 读超时叠加，修复后并发双 fetch
-    20s → 13ms、phase9 71s → 1.1s；conformance 全量绿）。遗留：⚠️ IPC 面
-    （worker.send/isConnected/isDead/exit code）降级、`Connection: close`
-    响应后关闭连接的 server 语义（listen 错误载体已于 20260910 收敛为真 `Error`）。
+    20s → 13ms、phase9 71s → 1.1s；conformance 全量绿）。✅ **服务端
+    `Connection: close` 已闭环**（20260911）：请求 `close`／响应显式设 `close`／
+    HTTP/1.0 无 keep-alive／HTTP/1.0 + keep-alive → 响应带 `Connection: close`
+    且落盘后发 FIN；其余写 `keep-alive` + `Keep-Alive: timeout=5`。副作用对齐：
+    HTTP/1.0 客户端响应不写 `Content-Length`（关连接定界）。五情形原始报文 +
+    连接复用两组探针与 Node 逐字节一致（详见
+    [20260911/README.md §8](./20260911/README.md)）。遗留：RR 调度、
+    `listening`/`disconnect` 事件未接线。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
     （每次执行重编译，语义等价）登记跟踪；`columns()` 对齐 Node 五键

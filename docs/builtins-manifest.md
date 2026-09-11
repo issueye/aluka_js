@@ -37,7 +37,7 @@
 | 26 | `stream/consumers`| 流消费者 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/stream.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/stream.rs#L305) | `builtins_phase4_stream_test.rs::stream_consumers_text_e2e_matches_go` |
 | 27 | `crypto` | 加密与哈希 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/crypto/`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/crypto/mod.rs) | `builtins_phase4_crypto_test.rs`（15 用例逐字对拍） |
 | 28 | `zlib` | 数据压缩 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/zlib.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/zlib.rs) | `builtins_phase4_zlib_test.rs`（18 用例 roundtrip 对拍） |
-| 29 | `http` | HTTP 客户端/服务端 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/http/`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/http/mod.rs) | `builtins_phase5_http_test.rs`（10 用例逐字对拍） |
+| 29 | `http` | HTTP 客户端/服务端 | **[已实现核心]**（客户端 + 服务端主线；服务端 `Connection` 语义已于 20260911 对齐 Node——close/keep-alive 判定、落盘后 FIN、HTTP/1.0 关连接定界；余**空闲 keep-alive 连接不作超时清扫**——只广播 `Keep-Alive: timeout=5` 不强制断连，另响应自动嗅探 `Content-Type` 属既有 Go 风格偏差，见 §M5） | [`crates/aluka-vm/src/builtins/http/`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/http/mod.rs) | `builtins_phase5_http_test.rs`（10 用例逐字对拍）+ `m52_conn_close_test.rs`（服务端 `Connection` 语义：五情形原始报文 + 连接复用，2 例对拍） |
 | 30 | `https` | HTTPS 协议 | **[已完整实现]**（表面级，TLS 握手为纯 Rust 约束限制） | [`crates/aluka-vm/src/builtins/https.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/https.rs) | `builtins_phase5_http_test.rs` |
 | 31 | `net` | TCP/IPC 网络 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/net.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/net.rs) | `builtins_phase5_net_test.rs`（真实 TCP 回环对拍） |
 | 32 | `tls` | TLS/SSL 网络 | **[已完整实现]**（表面级，TLS 握手为纯 Rust 约束限制） | [`crates/aluka-vm/src/builtins/tls.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/tls.rs) | `builtins_phase5_net_test.rs` |
@@ -47,7 +47,7 @@
 | 36 | `http2` | HTTP/2 协议 | **[已完整实现]**（表面级） | [`crates/aluka-vm/src/builtins/http2.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/http2.rs) | `builtins_phase5_http_test.rs` |
 | 37 | `child_process` | 子进程管理 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/child_process.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/child_process.rs) | `builtins_phase6_proc_test.rs`（11 用例逐字对拍） |
 | 38 | `worker_threads` | 多线程工作池 | **[已实现核心]**（真物理线程 + 结构化克隆闭环 + 端口 `ref/unref/start/hasRef`；`postMessageToThread` 真线程分支、eval worker 未实现，见 §M5） | [`crates/aluka-vm/src/builtins/worker_threads.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/worker_threads.rs) | `conformance_node22_test.rs`（`20-m5-worker-threads` / `25-m5-structured-clone` / `27-m5-worker-timer` 与 Node 22 逐字节对拍）+ `m5_semantics_test.rs`（3 例克隆边界对拍）+ `builtins_phase6_proc_test.rs`（本地锚点，**未与 Node 对拍**） |
-| 39 | `cluster` | 多进程集群 | **[已实现核心]**（真多进程拓扑 + 内核端口共享 + IPC 最小面 + `listen` 错误载体 `Error` 化 + `settings.exec/args/silent/cwd` 生效；服务端 `Connection: close`、真 round-robin 调度未实现，见 §M5） | [`crates/aluka-vm/src/builtins/cluster.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/cluster.rs) | `conformance_node22_test.rs`（`21-m5-cluster-http` 与 Node 22 逐字节对拍）+ `m52_settings_test.rs`（settings 契约 / exec·args 生效 / 裸 fork 回退 / cwd / silent / validator 文本，7 例对拍）+ `m52_http_cluster_test.rs`（EADDRINUSE 全属性对拍 3 例）+ `builtins_phase6_proc_test.rs`（本地锚点，**未与 Node 对拍**） |
+| 39 | `cluster` | 多进程集群 | **[已实现核心]**（真多进程拓扑 + 内核端口共享 + IPC 最小面 + `listen` 错误载体 `Error` 化 + `settings.exec/args/silent/cwd` 生效 + 服务端 `Connection` 语义（该 HTTP 面支撑已于 20260911 收口，见 `http`(29) 行）；真 round-robin 调度、`listening`/`disconnect` 事件未实现，见 §M5） | [`crates/aluka-vm/src/builtins/cluster.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/cluster.rs) | `conformance_node22_test.rs`（`21-m5-cluster-http` 与 Node 22 逐字节对拍）+ `m52_settings_test.rs`（settings 契约 / exec·args 生效 / 裸 fork 回退 / cwd / silent / validator 文本，7 例对拍）+ `m52_http_cluster_test.rs`（EADDRINUSE 全属性对拍 3 例）+ `builtins_phase6_proc_test.rs`（本地锚点，**未与 Node 对拍**） |
 | 40 | `vm` | 虚拟机上下文 | **[已完整实现]**（表面级，源码求值为架构限制） | [`crates/aluka-vm/src/builtins/vm.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/vm.rs) | `builtins_phase6_vm_module_test.rs` |
 | 41 | `diagnostics_channel`| 诊断通道 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/diagnostics_channel.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/diagnostics_channel.rs) | `builtins_phase7_diag_test.rs` |
 | 42 | `async_hooks` | 异步追踪钩子 | **[已完整实现]** | [`crates/aluka-vm/src/builtins/async_hooks.rs`](file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/crates/aluka-vm/src/builtins/async_hooks.rs) | `builtins_phase7_diag_test.rs` |
@@ -445,8 +445,10 @@
 ## 二·补、Phase 4 ~ Phase 8 多代理并发开发完成记录（2026-09-04）
 
 全部 60 项矩阵已收敛为「已完整实现」（**该结论为 2026-09-04 快照**；其后 M5 复审按
-Node 22 实测口径重新分级，`fs`(同步族)、`worker_threads`、`cluster`、`test`、
-`test/reporters` 共 5 项下调为「已实现核心」并附剩余缺口，以矩阵表当前状态为准）。收口验收：`builtins_all_modules_test.rs` 对
+Node 22 实测口径重新分级，`fs`(同步族)、`worker_threads`、`cluster`、`http`、`test`、
+`test/reporters` 共 6 项下调为「已实现核心」并附剩余缺口——其中 `http` 于 20260911
+因「空闲 keep-alive 连接不作超时清扫」（Node 实测约 6.03s 断连）补齐登记，以矩阵表
+当前状态为准）。收口验收：`builtins_all_modules_test.rs` 对
 59 个可 require 模块逐一加载，aluvm 与 Go Oracle 输出逐字一致（`loaded: 59 /
 failed: / getBuiltinModule: object`）。新增对拍测试文件与覆盖组：
 

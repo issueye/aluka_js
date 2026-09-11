@@ -6,7 +6,12 @@
 //!   `'request'`（构造 handler 亦注册为该监听器）；
 //! - 无 handler 时按 Go 行为回 `500 no handler`；
 //! - 响应在 `end` 时统一写出（Go 缓冲语义），自动补 `Date`、
-//!   `Content-Length` 与嗅探的 `Content-Type`（bodyless 状态码除外）。
+//!   `Content-Length` 与嗅探的 `Content-Type`（bodyless 状态码除外）；
+//! - 连接复用按 Node `_http_outgoing.js` 判定：请求 `Connection: close`／
+//!   HTTP/1.0 无 keep-alive／响应显式设 `close` → 响应写 `Connection: close`
+//!   并在落盘后发 FIN；其余写 `Connection: keep-alive`（附
+//!   `Keep-Alive: timeout=5`）。HTTP/1.0 客户端不写 `Content-Length`，
+//!   响应体以关连接定界（同 Node `useChunkedEncodingByDefault === false`）。
 
 use super::state::{
     self, Conn, ReqDispatch, RespBinding, Server, add_listener, has_listener, next_conn_id,
@@ -440,15 +445,34 @@ fn response_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// 汇总并写出响应字节（`end` 路径；连接已消失则静默丢弃）。
+///
+/// 线上头顺序对齐 Node `_storeHeader`：用户头 → `Date` → `Connection`
+/// （必要时附 `Keep-Alive`）→ `Content-Length` → 嗅探的 `Content-Type`。
+/// `Connection` 语义同 Node `_http_outgoing.js:500-576`：
+/// - 用户已在响应头中显式设置 `Connection` → 原样保留，仅按 `close` token
+///   决定是否关闭连接（`matchHeader` 的 `RE_CONN_CLOSE` 判定）；
+/// - 否则按 `shouldSendKeepAlive = shouldKeepAlive && (有 CL 定界 ||
+///   chunked-by-default)` 决定写 `keep-alive`（附 `Keep-Alive: timeout=N`）
+///   还是 `close`，后者置本连接为「最后一次」，写出后关闭。
 fn finalize_response(vm: &mut Vm, res_id: u32, prop_status: Option<u16>) -> Result<(), VmError> {
     let _ = vm;
-    let binding = state::response_binding(res_id);
-    let Some((server_obj, conn_id, state_status, live, wire, body, finished)) = binding else {
+    let Some(binding) = state::response_binding(res_id) else {
         return Ok(());
     };
-    if finished {
+    if binding.finished {
         return Ok(());
     }
+    let state::BindingSnapshot {
+        server_obj,
+        conn_id,
+        status: state_status,
+        live,
+        wire,
+        body,
+        should_keep_alive,
+        use_chunked_by_default,
+        ..
+    } = binding;
     let status = prop_status.unwrap_or(state_status);
     // 线上头：writeHead 冻结快照优先，否则当前活动头。
     let mut headers: Vec<(String, String)> = match wire {
@@ -464,8 +488,12 @@ fn finalize_response(vm: &mut Vm, res_id: u32, prop_status: Option<u16>) -> Resu
     if !has_date {
         headers.push(("date".to_owned(), wire::http_date_now()));
     }
+    // `Connection`：用户已设置则保留；否则按 Node 的 keep-alive 判定补写。
+    let last = append_conn_headers(&mut headers, should_keep_alive, use_chunked_by_default);
     if !wire::status_is_bodyless(status) {
-        if !has_cl {
+        // HTTP/1.0 客户端：Node 的 `useChunkedEncodingByDefault === false`，
+        // 既不写 CL 也不写 chunked —— 响应体以关连接定界（实测对齐）。
+        if !has_cl && use_chunked_by_default {
             headers.push(("content-length".to_owned(), body.len().to_string()));
         }
         if !body.is_empty() && !has_ct {
@@ -481,7 +509,59 @@ fn finalize_response(vm: &mut Vm, res_id: u32, prop_status: Option<u16>) -> Resu
         b.finished = true;
     });
     mark_conn_idle(server_obj, conn_id);
+    if last {
+        mark_conn_close_after_write(server_obj, conn_id);
+    }
     Ok(())
+}
+
+/// 追加 `Connection`（必要时附 `Keep-Alive`）响应头，返回本响应是否为该连接的
+/// 最后一次（Node `res._last`）。对齐 `_http_outgoing.js:520-546`：
+///
+/// - 用户已显式设置 `Connection` → 原样保留，仅按 `close` token
+///   （`RE_CONN_CLOSE`）判定 `_last`；
+/// - 否则 `shouldSendKeepAlive = shouldKeepAlive && (已设 Content-Length ||
+///   useChunkedEncodingByDefault)`：真则写 `keep-alive`（并在用户未自设
+///   `Keep-Alive` 时补 `timeout=<server.keepAliveTimeout/1000>`），假则写
+///   `close` 并置 `_last`。
+fn append_conn_headers(
+    headers: &mut Vec<(String, String)>,
+    should_keep_alive: bool,
+    use_chunked_by_default: bool,
+) -> bool {
+    match headers
+        .iter()
+        .find(|(n, _)| n == "connection")
+        .map(|(_, v)| v.clone())
+    {
+        Some(value) => wire::conn_token(&value, "close"),
+        None => {
+            let has_cl = headers.iter().any(|(n, _)| n == "content-length");
+            if should_keep_alive && (has_cl || use_chunked_by_default) {
+                headers.push(("connection".to_owned(), "keep-alive".to_owned()));
+                if !headers.iter().any(|(n, _)| n == "keep-alive") {
+                    // `server.keepAliveTimeout` 默认 5000ms（`_http_server.js:486`）。
+                    headers.push(("keep-alive".to_owned(), "timeout=5".to_owned()));
+                }
+                false
+            } else {
+                headers.push(("connection".to_owned(), "close".to_owned()));
+                true
+            }
+        }
+    }
+}
+
+/// 标记连接在本轮响应写完后关闭（Node `res._last` → `socket.destroySoon()`）。
+/// 实际 FIN 由泵在 `out` 全部落盘后发出。
+fn mark_conn_close_after_write(server_obj: u32, conn_id: u64) {
+    with_servers(|servers| {
+        if let Some(s) = servers.iter_mut().find(|s| s.obj == server_obj) {
+            if let Some(c) = s.conns.iter_mut().find(|c| c.id == conn_id) {
+                c.close_after_write = true;
+            }
+        }
+    });
 }
 
 /// 把响应字节写入连接（`WouldBlock` 残留进 `out`，泵轮补写）。
@@ -714,6 +794,35 @@ fn io_round() -> (Vec<Value>, Vec<ReqDispatch>) {
                             conn.out.drain(..n);
                         }
                     }
+                    // 响应判定为最后一次（`res._last`）：待写字节全部落盘后发 FIN
+                    // （Node `socket.destroySoon()`；此处以 shutdown 写方向等价实现）。
+                    // TLS 需额外确认 rustls 无待发密文——`out` 清空只代表明文已喂给
+                    // 会话 writer，密文仍可能滞留在 rustls 内部缓冲。
+                    if conn.close_after_write && !conn.fin_sent && conn.out.is_empty() {
+                        match conn.tls.as_mut() {
+                            Some(tls) if tls.wants_write() => {}
+                            Some(tls) => {
+                                tls.send_close_notify();
+                                loop {
+                                    match tls.write_tls(&mut conn.stream) {
+                                        Ok(0) => break,
+                                        Ok(_) => {}
+                                        Err(ref e)
+                                            if e.kind() == std::io::ErrorKind::WouldBlock =>
+                                        {
+                                            break;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                conn.fin_sent = true;
+                            }
+                            None => {
+                                let _ = conn.stream.shutdown(std::net::Shutdown::Write);
+                                conn.fin_sent = true;
+                            }
+                        }
+                    }
                 }
             }
             // accept 全部待决连接
@@ -734,6 +843,8 @@ fn io_round() -> (Vec<Value>, Vec<ReqDispatch>) {
                         out: Vec::new(),
                         eof: false,
                         res_active: false,
+                        close_after_write: false,
+                        fin_sent: false,
                     });
                     new_conns += 1;
                 }
@@ -824,8 +935,13 @@ fn io_round() -> (Vec<Value>, Vec<ReqDispatch>) {
                     s.conns[ci].res_active = true;
                     dispatches.push(build_dispatch(s.obj, s.conns[ci].id, head, body));
                 }
-                // EOF 且无待处理请求：对端已关闭，回收连接
-                if s.conns[ci].eof && !s.conns[ci].res_active {
+                // 对端已关闭、或本端已发 FIN（最后一次性响应），且无待处理请求与
+                // 残留待写字节时回收连接（同 Node `socket.destroySoon()`：flush
+                // 完成后即销毁；`out` 守卫避免截断 WouldBlock 残留的尾字节）。
+                if (s.conns[ci].eof || s.conns[ci].fin_sent)
+                    && !s.conns[ci].res_active
+                    && s.conns[ci].out.is_empty()
+                {
                     closed_idx.push(ci);
                 }
             }
@@ -858,6 +974,7 @@ fn build_dispatch(
             headers.push(("content-length".to_owned(), vec![cl.to_string()]));
         }
     }
+    let (should_keep_alive, use_chunked_by_default) = request_conn_policy(&head);
     ReqDispatch {
         server_obj,
         conn_id,
@@ -865,21 +982,51 @@ fn build_dispatch(
         target: head.target,
         headers,
         body,
+        should_keep_alive,
+        use_chunked_by_default,
     }
+}
+
+/// 请求侧连接策略（Node `parserOnIncoming` 的两个入参）：
+///
+/// - `should_keep_alive`：llhttp `shouldKeepAlive` 口径——
+///   `(Connection 含 keep-alive || HTTP/1.1) && !Connection 含 close`；
+/// - `use_chunked_by_default`：`ServerResponse` 构造口径——HTTP/1.0 请求为
+///   `Transfer-Encoding: chunked` 时才置真，否则假（响应改以关连接定界）。
+fn request_conn_policy(head: &wire::RequestHead) -> (bool, bool) {
+    let conn_value = wire::header_value(&head.headers, "connection");
+    let has_close = conn_value
+        .as_deref()
+        .is_some_and(|v| wire::conn_token(v, "close"));
+    let has_keep_alive = conn_value
+        .as_deref()
+        .is_some_and(|v| wire::conn_token(v, "keep-alive"));
+    let is_http11 = head.version >= (1, 1);
+    let should_keep_alive = (has_keep_alive || is_http11) && !has_close;
+    let use_chunked_by_default = is_http11 || head.chunked;
+    (should_keep_alive, use_chunked_by_default)
 }
 
 /// 派发一个请求：构造 req/res 对象 → `'request'`（或 Go 的 500 兜底）→
 /// 微任务收口 → 体事件 `'data'`/`'end'`。
 fn dispatch_request(vm: &mut Vm, d: ReqDispatch) -> Result<(), VmError> {
     let req_val = super::build_message_instance(vm, &d.method, &d.target, &d.headers);
-    let res_val = build_response_instance(vm, d.server_obj, d.conn_id);
+    let res_val = build_response_instance(
+        vm,
+        d.server_obj,
+        d.conn_id,
+        d.should_keep_alive,
+        d.use_chunked_by_default,
+    );
     let server_val = Value::Object(aluka_core::ObjectRef(d.server_obj));
     if has_listener(d.server_obj, "request") {
         state::emit(vm, server_val, "request", &[req_val, res_val])?;
     } else {
-        // Go：无 handler 时 `WriteHeader(500)` + `"no handler"`。
+        // Go：无 handler 时 `WriteHeader(500)` + `"no handler"`（该路径为 Go
+        // 语义补位，Node 无对应行为；连接语义仍按请求侧判定对齐）。
         let body = b"no handler";
         let mut headers = vec![("date".to_owned(), wire::http_date_now())];
+        let last = append_conn_headers(&mut headers, d.should_keep_alive, d.use_chunked_by_default);
         headers.push(("content-length".to_owned(), body.len().to_string()));
         headers.push((
             "content-type".to_owned(),
@@ -888,6 +1035,9 @@ fn dispatch_request(vm: &mut Vm, d: ReqDispatch) -> Result<(), VmError> {
         let bytes = wire::serialize_response(500, &headers, body);
         write_conn_bytes(d.server_obj, d.conn_id, &bytes);
         mark_conn_idle(d.server_obj, d.conn_id);
+        if last {
+            mark_conn_close_after_write(d.server_obj, d.conn_id);
+        }
     }
     // Go：handler 返回后 FlushMicrotasks，再发射体事件。
     vm.drain_microtasks()?;
@@ -900,7 +1050,13 @@ fn dispatch_request(vm: &mut Vm, d: ReqDispatch) -> Result<(), VmError> {
 }
 
 /// 构造 `ServerResponse` 实例并绑定连接（响应写出通道）。
-fn build_response_instance(vm: &mut Vm, server_obj: u32, conn_id: u64) -> Value {
+fn build_response_instance(
+    vm: &mut Vm,
+    server_obj: u32,
+    conn_id: u64,
+    should_keep_alive: bool,
+    use_chunked_by_default: bool,
+) -> Value {
     let obj = vm.alloc_ordinary();
     let ns = vm.alloc_string("http:response".to_owned());
     let _ = vm.set_property(Value::Object(obj), "_builtinNs", Value::Object(ns));
@@ -941,6 +1097,8 @@ fn build_response_instance(vm: &mut Vm, server_obj: u32, conn_id: u64) -> Value 
                 wire: None,
                 body: Vec::new(),
                 finished: false,
+                should_keep_alive,
+                use_chunked_by_default,
             },
         );
     });
