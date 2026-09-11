@@ -57,7 +57,7 @@
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
-| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3 ✅ 已闭环；M5.4 切片一（`aluka test` 运行器/函数属性形态）+ 切片二（Timer Mock）均已落地，余 LCOV 覆盖率与真 `stream.Transform` 报告器，见 §M5） |
+| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1 ✅ 已结项（`postMessageToThread` 真线程通路 + eval worker 于 20260911 关闭）；M5.2 主体达成余 RR 调度决策；M5.3 ✅ 已闭环；M5.4 切片一 + 切片二均已落地，余 LCOV 覆盖率与真 `stream.Transform` 报告器，见 §M5） |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
@@ -266,11 +266,11 @@
 ### M5 · 多线程并发与系统级扩展
 > **2026-09-09 评审 + round5 结项登记**（证据见 `20260909/README.md` §15 与
 > `README-round5.md`）：
-> M5.1/M5.2 主体达成（真物理线程/端口共享 + Node 对拍绿）；**M5.3 已闭环**
+> M5.1 已结项（真物理线程/postMessageToThread 通道/eval worker + Node 对拍绿）；M5.2 主体达成；**M5.3 已闭环**
 > （Node 22.23.1 实测对齐——错误文本/绑定规则/columns 五键/close 语义全面
 > Node 化，44 行探针逐字一致真对拍固化）；M5.4 仅 concurrency 与 Mock 达成
 > （Timer Mock / 报告接线 / LCOV / CLI 运行器未闭环）。总览按项登记。
-- [~] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环 + **5 处语义偏离全部关闭** + **端口 `ref/unref/start/hasRef` 与 `parentPort` 方法面**——余 `postMessageToThread` 真线程分支、eval worker，20260910）
+- [x] **M5.1 `worker_threads` 跨物理线程支持**（✅ 结构化克隆闭环 + 5 处语义偏离全部关闭 + 端口 `ref/unref/start/hasRef` 与 `parentPort` 方法面 + **`postMessageToThread` 真线程通路（`process.on('workerMessage')` 通道）** + **eval worker 现场编译**——两个点名缺口已于 20260911 关闭（见 [20260911/README.md §14](./20260911/README.md)），20260911 结项）
   - 基于 Rust 原生系统线程与 `crossbeam-channel` 实现真物理多线程；✅ 真
     `std::thread` + 独立 Vm（runtime 装配钩子），通道为 std mpsc（crossbeam
     仅 dns_resolver 在用；登记口径以「真线程 + 通道桥」为准）；
@@ -286,6 +286,15 @@
     worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
     与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
     已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
+    ✅ **20260911 结项**（证据见 [20260911/README.md §14](./20260911/README.md)）：
+    `postMessageToThread` 真线程通路（Node `process.on('workerMessage')` 通道口径：
+    Promise 返回 + SAME_THREAD/FAILED/ERRORED/TIMEOUT 四错误面 + worker→worker
+    经主线程中转 + 真实超时到期，`37`/`38` 用例与 Node 22.23.1 逐字一致）与
+    eval worker（装配层现场编译 + `__filename='[worker eval]'` + 未捕获异常
+    Error 对象化 + 两类构造同步校验，`39` 用例逐字一致）全部关闭。
+    **持续登记偏离**：MessagePort 经 transferList 移交未实现（仅 ArrayBuffer）；
+    `Error` 族子类 `constructor.name` 恒 'Error'；语法错误消息文本为解析器自有；
+    Node 对裸相对 filename 同步抛 `ERR_WORKER_PATH`（aluka 按 Go 口径接受）。
 - [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** + **primary 侧生命周期事件（`listening`/`disconnect`/`state`/异步 `fork`）** + **worker 侧 IPC 面（`process.on('message')` 接收 / `process.disconnect()` / `process` 真实事件器 / `cluster.worker` 事件面与桥接 / 通道默认保活）** + **`process.channel` 对象面（`ref`/`unref`/`refCounted`/`unrefCounted`/`fd`）** + **断连闭环（primary `{"t":"d"}` 帧路径 + worker `cluster.worker.disconnect()` + 断连关闭 worker 内 server）** 达成——余 RR 调度（架构级，见 §10.6/§11.5 决策记录），20260911）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT

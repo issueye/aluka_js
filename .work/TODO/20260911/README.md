@@ -1565,4 +1565,19 @@ passed: 632, failed: 0（与 §13.4 基线 632 持平；新增 conformance 用�
 
 ### 14.6 提交证据
 
-（实施后回填）
+```text
+$ git commit -F -   # fix(worker): M5.1 收口——postMessageToThread 真线程通路与 eval worker
+[master c177b4b] 11 files changed, 1117 insertions(+), 74 deletions(-)
+ create mode 100644 tests/conformance/node22/cases/37-m5-post-to-thread.cjs
+ create mode 100644 tests/conformance/node22/cases/38-m5-post-to-thread-relay.cjs
+ create mode 100644 tests/conformance/node22/cases/39-m5-eval-worker.cjs
+```
+
+只暂存目标文件（`.work/scratch/` 未入库）。改动文件：
+`crates/aluka-vm/src/worker.rs` / `crates/aluka-vm/src/builtins/worker_threads.rs` /
+`crates/aluka-vm/src/builtins/timers.rs` / `crates/aluka-vm/src/interpreter.rs` /
+`crates/aluka-vm/src/modules.rs` / `crates/aluka-runtime/src/lib.rs`（实现本体）/
+`crates/aluka-cli/tests/builtins_phase6_proc_test.rs`（锚点复核）/
+`tests/conformance/node22/cases/37`/`38`/`39`（差分用例）/
+`.work/TODO/20260911/README.md`。总表同步（`.work/TODO/README.md` M5.1 结项）随
+后续 docs 提交入库。
