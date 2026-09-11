@@ -328,10 +328,8 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
             .builtin_registry
             .module("stream/promises")
             .map(|r| {
-                matches!(
-                    vm.get_property(Value::Object(r), "finished"),
-                    Ok(ValueCase::Object(_))
-                )
+                vm.get_property(Value::Object(r), "finished")
+                    .is_ok_and(|v| v.is_object())
             })
             .unwrap_or(false);
         eprintln!("[bisect] after register_all finished-fn={st}");

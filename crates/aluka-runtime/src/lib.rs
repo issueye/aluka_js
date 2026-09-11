@@ -322,7 +322,7 @@ impl Runtime {
 
 /// 利用拥有完整堆对象的 VM 实例格式化异常。
 fn format_uncaught_with_vm(vm: &mut Vm, exc: Value, path: &Path) -> String {
-    let msg = if matches!(exc, Value::Object(_)) {
+    let msg = if exc.is_object() {
         let name = vm
             .get_property(exc, "name")
             .ok()
@@ -495,13 +495,13 @@ fn exc_name_message(vm: &mut aluka_vm::interpreter::Vm, exc: aluka_vm::Value) ->
     let name = vm
         .get_property(exc, "name")
         .ok()
-        .filter(|v| !matches!(v, aluka_vm::Value::Undefined))
+        .filter(|v| !v.is_undefined())
         .map(|v| vm.format_value(v))
         .unwrap_or_else(|| "Error".to_owned());
     let message = vm
         .get_property(exc, "message")
         .ok()
-        .filter(|v| !matches!(v, aluka_vm::Value::Undefined))
+        .filter(|v| !v.is_undefined())
         .map(|v| vm.format_value(v))
         .unwrap_or_else(|| vm.format_value(exc));
     (name, message)
@@ -683,7 +683,7 @@ mod tests {
         };
         let mut runtime = Runtime::new();
         match runtime.evaluate(&program) {
-            Ok(Value::Number(n)) => assert_eq!(n, 42.0),
+            Ok(v) => assert_eq!(v.as_number(), Some(42.0)),
             other => panic!("expected Number(42), got {other:?}"),
         }
     }

@@ -214,7 +214,7 @@ fn wasi_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // options.args：数组。
     if let Some(o) = opts_val {
         let av = vm.get_property(o, "args")?;
-        if !matches!(av, Value::Undefined).case() {
+        if !av.is_undefined() {
             let is_array = matches!(av.case(), ValueCase::Object(ar)
                 if matches!(vm.heap.get(ar.index()), Some(HeapObject::Array { .. })));
             if !is_array {
@@ -353,7 +353,7 @@ fn setup_instance(vm: &mut Vm, args: &[Value]) -> Result<(), VmError> {
 /// started 标记检查 + 置位（对齐 Go：先置位后校验，失败路径保持已启动）。
 fn check_and_mark_started(vm: &mut Vm) -> Result<(), VmError> {
     let receiver = current_receiver();
-    if matches!(vm.get_property(receiver, "_started")?, ValueCase::Boolean(true)) {
+    if vm.get_property(receiver, "_started")?.as_bool() == Some(true) {
         return Err(code_error(
             vm,
             "ERR_WASI_ALREADY_STARTED",

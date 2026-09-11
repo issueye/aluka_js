@@ -30,8 +30,7 @@ pub(crate) fn url_search_params_ctor(vm: &mut Vm, args: &[Value]) -> Result<Valu
 pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = Vec::new();
     let init_text = vm.format_value(init);
-    if !init_text.is_empty() && !matches!(init, Value::Undefined | Value::Null | ValueCase::Boolean(_))
-    {
+    if !init_text.is_empty() && !init.is_undefined() && !init.is_null() && !init.is_boolean() {
         for pair in init_text.split('&').filter(|p| !p.is_empty()) {
             let mut it = pair.splitn(2, '=');
             entries.push((
@@ -74,7 +73,10 @@ pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> 
 }
 
 pub(crate) fn usp_entries(vm: &mut Vm, receiver: Value) -> Vec<(String, String)> {
-    let Ok(ValueCase::Object(arr)) = vm.get_property(receiver, "_uspEntries") else {
+    let Ok(ValueCase::Object(arr)) = vm
+        .get_property(receiver, "_uspEntries")
+        .map(ValueCase::from)
+    else {
         return Vec::new();
     };
     let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {
@@ -281,7 +283,7 @@ pub(crate) fn queuing_strategy_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value
     let name = pending_native_name();
     let strategy = name.rsplit('.').next().unwrap_or("");
     let init = args.first().copied().unwrap_or(Value::Undefined);
-    let hwm = match vm.get_property(init, "highWaterMark").map(|v| v.case()).map(ValueCase::from) {
+    let hwm = match vm.get_property(init, "highWaterMark").map(|v| v.case()) {
         Ok(ValueCase::Number(n)) => n,
         _ => 1.0,
     };

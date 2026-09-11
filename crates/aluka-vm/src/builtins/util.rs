@@ -57,7 +57,7 @@ fn inherits(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let super_ctor = args.get(1).copied().unwrap_or(Value::Undefined);
     let proto = vm.get_property(ctor, "prototype")?;
     let super_proto = vm.get_property(super_ctor, "prototype")?;
-    if let Some(_) = proto.as_object() {
+    if proto.as_object().is_some() {
         let sp = match super_proto.case() {
             ValueCase::Object(r) => Some(r),
             _ => None,
@@ -247,7 +247,7 @@ fn inspect_entry(vm: &Vm, val: Value) -> String {
 fn is_array(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let r = matches!(
-        args.first().copied().unwrap_or(Value::Undefined),
+        args.first().copied().unwrap_or(Value::Undefined).case(),
         ValueCase::Object(rr) if matches!(vm.heap.get(rr.index()), Some(HeapObject::Array { .. }))
     );
     Ok(Value::Boolean(r))
@@ -257,7 +257,7 @@ fn is_array(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn is_string(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let r = matches!(
-        args.first().copied().unwrap_or(Value::Undefined),
+        args.first().copied().unwrap_or(Value::Undefined).case(),
         ValueCase::Object(rr) if matches!(vm.heap.get(rr.index()), Some(HeapObject::String(_)))
     );
     Ok(Value::Boolean(r))
@@ -267,7 +267,7 @@ fn is_string(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn is_number(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let r = matches!(
-        args.first().copied().unwrap_or(Value::Undefined),
+        args.first().copied().unwrap_or(Value::Undefined).case(),
         ValueCase::Number(_)
     );
     Ok(Value::Boolean(r))

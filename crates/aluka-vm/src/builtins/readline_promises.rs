@@ -342,7 +342,7 @@ fn stream_on_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
-    if matches!(args.first(), Some(Value::Null)) {
+    if args.first().is_some_and(|v| v.is_null()) {
         return Ok(Value::Undefined);
     }
     let chunk = args

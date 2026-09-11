@@ -468,7 +468,7 @@ fn is_promise(vm: &Vm, v: Value) -> bool {
 fn promise_rejected(vm: &Vm, pv: Value) -> bool {
     if let Some(r) = pv.as_object() {
         if let Some(HeapObject::Promise { pending, value, .. }) = vm.heap.get(r.index()) {
-            return !*pending && !matches!(*value, Value::Undefined);
+            return !*pending && !value.is_undefined();
         }
     }
     false

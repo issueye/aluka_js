@@ -41,7 +41,10 @@ fn fail_expected_but_got(vm: &mut Vm, a: Value, b: Value) -> VmError {
 fn receiver_state_id(vm: &mut Vm) -> Option<u64> {
     let receiver = crate::builtins::current_receiver();
     if let Some(r) = receiver.as_object() {
-        if let Ok(ValueCase::Number(n)) = vm.get_property(Value::Object(r), "_stateId").map(ValueCase::from) {
+        if let Ok(ValueCase::Number(n)) = vm
+            .get_property(Value::Object(r), "_stateId")
+            .map(ValueCase::from)
+        {
             let id = n as u64;
             if id > 0 {
                 return Some(id);
@@ -180,7 +183,7 @@ pub fn ctx_assert_not_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<V
 pub fn ctx_assert_if_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if let Some(v) = args.first() {
-        if !matches!(*v, Value::Undefined | Value::Null) {
+        if !(v.is_undefined() || v.is_null()) {
             return Err(assert_fail(vm, "ifError got unwanted exception"));
         }
     }
@@ -253,7 +256,7 @@ fn promise_rejected(vm: &mut Vm, pv: Value) -> Result<bool, VmError> {
     vm.drain_microtasks()?;
     if let Some(r) = pv.as_object() {
         if let Some(HeapObject::Promise { pending, value, .. }) = vm.heap.get(r.index()) {
-            return Ok(!*pending && !matches!(*value, Value::Undefined));
+            return Ok(!*pending && !value.is_undefined());
         }
     }
     Ok(false)
@@ -277,7 +280,7 @@ pub fn ctx_assert_rejects(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
             }
         };
     }
-    if matches!(args[0], ValueCase::Object(_)) {
+    if args[0].is_object() {
         return if promise_rejected(vm, args[0])? {
             Ok(Value::Undefined)
         } else {
@@ -528,7 +531,7 @@ pub fn ctx_wait_for(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(type_fail(vm, "t.waitFor() requires a condition function"));
     }
     let mut timeout_ms = 0u64;
-    if let Some(v) = args.get(1).copied().map(ValueCase::from) {
+    if let Some(v) = args.get(1).copied() {
         if let Ok(ValueCase::Number(n)) = vm.get_property(v, "timeout").map(ValueCase::from) {
             if n > 0.0 {
                 timeout_ms = n as u64;

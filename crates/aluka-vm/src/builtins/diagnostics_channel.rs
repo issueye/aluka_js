@@ -448,7 +448,7 @@ fn trace_call(vm: &mut Vm, args: &[Value], tracing_id: u32) -> Result<Value, VmE
     }
     let mut context = Value::Object(vm.alloc_ordinary());
     if let Some(second) = args.get(1) {
-        if !matches!(*second, Value::Undefined | Value::Null) {
+        if !(second.is_undefined() || second.is_null()) {
             context = *second;
         }
     }

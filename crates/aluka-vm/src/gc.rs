@@ -915,10 +915,7 @@ mod tests {
         let sym = vm
             .symbol_for(&[Value::Object(key)])
             .expect("symbol_for 不应失败");
-        let first = match sym {
-            Value::Object(r) => r,
-            _ => panic!("应返回符号"),
-        };
+        let first = sym.as_object().expect("应返回符号");
         vm.force_gc();
         assert!(
             !vm.gc.is_free[first.0 as usize],

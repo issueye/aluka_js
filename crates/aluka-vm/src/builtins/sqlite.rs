@@ -181,7 +181,7 @@ fn database_sync_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         Some(s) => s,
         None => {
             // Buffer/Uint8Array 字节按 UTF-8 无损转换（Node 接受 Uint8Array 路径）。
-            if let Some(_) = raw.as_object() {
+            if raw.as_object().is_some() {
                 if let Some(bytes) = crate::builtins::buffer::extract_bytes(vm, raw) {
                     String::from_utf8_lossy(&bytes).into_owned()
                 } else {

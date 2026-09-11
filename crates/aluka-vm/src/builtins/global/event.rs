@@ -37,11 +37,11 @@ pub(crate) fn event_target_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value
         vm.format_value(first)
     };
     let cb = args.get(1).copied();
-    let map = match vm.get_property(target, "_etListeners").map(|v| v.case()).map(ValueCase::from) {
+    let map = match vm.get_property(target, "_etListeners").map(|v| v.case()) {
         Ok(ValueCase::Object(m)) => m,
         _ => return Ok(Value::Undefined),
     };
-    let arr = match vm.get_property(Value::Object(map), &ev).map(|v| v.case()).map(ValueCase::from) {
+    let arr = match vm.get_property(Value::Object(map), &ev).map(|v| v.case()) {
         Ok(ValueCase::Object(a)) => a,
         _ => {
             if name.ends_with("addEventListener") {
@@ -75,7 +75,7 @@ pub(crate) fn event_target_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value
                     vm.heap.get_mut(arr.0 as usize)
                 {
                     elements.retain(
-                        |e| !matches!((e, &cb), (ValueCase::Object(a), ValueCase::Object(b)) if a == b),
+                        |e| !matches!((e.case(), cb.case()), (ValueCase::Object(a), ValueCase::Object(b)) if a == b),
                     );
                 }
             }
@@ -87,7 +87,12 @@ pub(crate) fn event_target_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value
                 _ => Vec::new(),
             };
             let has = !callbacks.is_empty();
-            if let Some(e) = args.first().copied().unwrap_or(Value::Undefined).as_object() {
+            if let Some(e) = args
+                .first()
+                .copied()
+                .unwrap_or(Value::Undefined)
+                .as_object()
+            {
                 let _ = vm.set_property(Value::Object(e), "target", target);
             }
             let event_val = args.first().copied().unwrap_or(Value::Undefined);
@@ -108,11 +113,16 @@ pub(crate) fn event_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
     let ty_val = vm.alloc_string(ty);
     let _ = vm.set_property(Value::Object(event), "type", Value::Object(ty_val));
     let opts = args.get(1).copied().unwrap_or(Value::Undefined);
-    let bubbles = matches!(vm.get_property(opts, "bubbles").map(ValueCase::from), Ok(ValueCase::Boolean(true)));
-    let cancelable = matches!(
-        vm.get_property(opts, "cancelable"),
-        Ok(ValueCase::Boolean(true))
-    );
+    let bubbles = vm
+        .get_property(opts, "bubbles")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let cancelable = vm
+        .get_property(opts, "cancelable")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let _ = vm.set_property(Value::Object(event), "bubbles", Value::Boolean(bubbles));
     let _ = vm.set_property(
         Value::Object(event),

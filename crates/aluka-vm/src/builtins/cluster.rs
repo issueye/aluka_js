@@ -499,7 +499,7 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         env_pairs.push((cluster_ipc::ENV_KEY.to_owned(), key.clone()));
     }
     if let Some(user_env) = args.first().copied() {
-        if let Some(_) = user_env.as_object() {
+        if user_env.as_object().is_some() {
             for (k, v) in vm.own_properties(user_env) {
                 env_pairs.push((k, vm.format_value(v)));
             }
@@ -850,13 +850,14 @@ fn cluster_setup_master(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     set_own(vm, merged, "silent", Value::Boolean(false));
 
     // ② 旧 settings 覆盖默认值。
-    if let Ok(ValueCase::Object(prev)) = vm.get_property(self_val, "settings").map(ValueCase::from) {
+    if let Ok(ValueCase::Object(prev)) = vm.get_property(self_val, "settings").map(ValueCase::from)
+    {
         for (k, v) in vm.own_properties(Value::Object(prev)) {
             set_own(vm, merged, &k, v);
         }
     }
     // ③ options 浅合并覆盖（Node 用对象展开，未知键同样保留、undefined 同样覆盖）。
-    if let Some(_) = opts.and_then(|v| v.as_object()) {
+    if opts.and_then(|v| v.as_object()).is_some() {
         for (k, v) in vm.own_properties(opts.unwrap_or(Value::Undefined)) {
             set_own(vm, merged, &k, v);
         }
@@ -905,7 +906,10 @@ fn cli_args(vm: &mut Vm) -> Vec<Value> {
     let Some(p) = vm.process_object else {
         return Vec::new();
     };
-    let Ok(ValueCase::Object(arr)) = vm.get_property(Value::Object(p), "argv").map(ValueCase::from) else {
+    let Ok(ValueCase::Object(arr)) = vm
+        .get_property(Value::Object(p), "argv")
+        .map(ValueCase::from)
+    else {
         return Vec::new();
     };
     let Some(HeapObject::Array { elements, .. }) = vm.heap.get(arr.0 as usize) else {
@@ -1311,7 +1315,7 @@ fn self_disconnect_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// worker 进程内 `cluster.worker.isConnected()`：通道连通性（Node `Worker`
 /// 的 `this.process.connected`）。
 fn worker_self_is_connected(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    if let Some(proc) = process_value(vm).map(ValueCase::from) {
+    if let Some(proc) = process_value(vm) {
         if let Ok(ValueCase::Boolean(b)) = vm.get_property(proc, "connected").map(ValueCase::from) {
             return Ok(Value::Boolean(b));
         }

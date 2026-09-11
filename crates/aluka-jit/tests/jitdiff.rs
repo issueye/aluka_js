@@ -49,9 +49,9 @@ fn box_to_f64(b: u64) -> f64 {
 
 /// 数值化 VM 结果（Boolean → 1.0/0.0，与 JIT 表示对齐）。
 fn to_f64(v: Value) -> f64 {
-    match v {
-        Value::Number(n) => n,
-        Value::Boolean(b) => {
+    match v.case() {
+        aluka_vm::value::ValueCase::Number(n) => n,
+        aluka_vm::value::ValueCase::Boolean(b) => {
             if b {
                 1.0
             } else {

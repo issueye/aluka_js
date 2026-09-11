@@ -216,7 +216,7 @@ fn schedule_timer(vm: &mut Vm, args: &[Value], api: mock::FakeApi) -> Result<Val
         .unwrap_or(0);
     let id_val = schedule_raw(vm, cb, delay, api)?;
     // M4.3：第三参 options.signal 联动
-    if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val) {
+    if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val.case()) {
         attach_timer_signal(vm, id as u64, opts)?;
     }
     Ok(id_val)
@@ -274,15 +274,17 @@ fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // M4.3：options.signal——abort → 清除定时器 + promise 兑现 reason
     //（Node 语义：reason 缺省 AbortError；reject 与 resolve 经引擎同形
     // 兑现通道——非 undefined 值即拒绝近似）
-    if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val) {
+    if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val.case()) {
         if let Ok(signal) = vm.get_property(*opts, "signal") {
-            if !matches!(signal, Value::Undefined | Value::Null).case().map(ValueCase::from) {
-                if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
+            if !(signal.is_undefined() || signal.is_null()) {
+                if let Ok(ValueCase::Boolean(true)) =
+                    vm.get_property(signal, "aborted").map(ValueCase::from)
+                {
                     vm.active_timers.insert(id as u64);
                     let reason = vm
                         .get_property(signal, "reason")
                         .ok()
-                        .filter(|v| !matches!(*v, Value::Undefined))
+                        .filter(|v| !v.is_undefined())
                         .unwrap_or_else(|| {
                             let err = vm.alloc_error_instance("This operation was aborted");
                             let name = vm.alloc_string("AbortError".to_owned());

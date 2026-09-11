@@ -69,7 +69,10 @@ impl Vm {
     pub(crate) fn array_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let arr = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterArray").map(|v| v.case()) {
+                match self
+                    .own_value(iter.0 as usize, "_iterArray")
+                    .map(|v| v.case())
+                {
                     Some(ValueCase::Object(a)) => a,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
@@ -118,7 +121,10 @@ impl Vm {
     pub(crate) fn string_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let str_ref = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterStr").map(|v| v.case()) {
+                match self
+                    .own_value(iter.0 as usize, "_iterStr")
+                    .map(|v| v.case())
+                {
                     Some(ValueCase::Object(s)) => s,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
@@ -201,7 +207,10 @@ impl Vm {
     pub(crate) fn map_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let map_ref = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterMap").map(|v| v.case()) {
+                match self
+                    .own_value(iter.0 as usize, "_iterMap")
+                    .map(|v| v.case())
+                {
                     Some(ValueCase::Object(m)) => m,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
@@ -262,7 +271,10 @@ impl Vm {
     pub(crate) fn set_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let set_ref = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterSet").map(|v| v.case()) {
+                match self
+                    .own_value(iter.0 as usize, "_iterSet")
+                    .map(|v| v.case())
+                {
                     Some(ValueCase::Object(s)) => s,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
@@ -336,11 +348,13 @@ impl Vm {
             } else {
                 break;
             };
-            let ValueCase::Object(ro) = r.case() else { break };
-            if matches!(
-                self.own_value(ro.0 as usize, "done"),
-                Some(ValueCase::Boolean(true))
-            ) {
+            let ValueCase::Object(ro) = r.case() else {
+                break;
+            };
+            if self
+                .own_value(ro.0 as usize, "done")
+                .is_some_and(|v| v.as_bool() == Some(true))
+            {
                 break;
             }
             out.push(
@@ -414,7 +428,7 @@ impl Vm {
                 }
             }
             None => {
-                if let ValueCase::Object(r) = val
+                if let ValueCase::Object(r) = val.case()
                     && self.is_typed_array(val)
                 {
                     out = self.ta_to_values(r)?;

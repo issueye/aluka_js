@@ -597,10 +597,8 @@ impl Vm {
                 .builtin_registry
                 .module("stream/promises")
                 .map(|r| {
-                    matches!(
-                        vm.get_property(Value::Object(r), "finished"),
-                        Ok(ValueCase::Object(_))
-                    )
+                    vm.get_property(Value::Object(r), "finished")
+                        .is_ok_and(|v| v.is_object())
                 })
                 .unwrap_or(false);
             eprintln!(
@@ -1015,7 +1013,7 @@ impl Vm {
         let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
         self.ordinary_define_property(obj, key, Value::Object(desc))?;
         // 登记不可枚举键（for-in 过滤依据）
-        if let ValueCase::Object(r) = obj
+        if let ValueCase::Object(r) = obj.case()
             && let Some(crate::heap::HeapObject::Ordinary { non_enum, .. }) =
                 self.heap.get_mut(r.0 as usize)
         {
@@ -1414,7 +1412,7 @@ impl Vm {
             Some(v) => (self.format_value(Value::from(v)), String::new()),
         };
         if let Some(f) = args.get(1) {
-            if !matches!(*f, Value::Undefined) {
+            if !f.is_undefined() {
                 flags = self.format_value(*f);
             }
         }
@@ -3306,11 +3304,11 @@ impl Vm {
                     {
                         // Object.hasOwn(obj, key)：自有属性判定（不沿原型链）
                         let result = match (
-                            args.first().copied().unwrap_or(Value::Undefined),
+                            args.first().copied().unwrap_or(Value::Undefined).case(),
                             args.get(1)
                                 .map(|v| self.to_property_key(*v))
                                 .unwrap_or_default(),
-                        ).case() {
+                        ) {
                             (ValueCase::Object(rr), key) => match self.heap.get(rr.0 as usize) {
                                 Some(HeapObject::Ordinary { .. }) => {
                                     self.has_own_slot(rr.0 as usize, &key)
@@ -3590,9 +3588,7 @@ impl Vm {
                                     let arr_obj = Value::Object(ObjectRef(idx as u32));
                                     // 无初始值：累加器取末元素，从倒数第二个起迭代
                                     let (mut acc, start) = match args.get(1) {
-                                        Some(init) if !matches!(*init, Value::Undefined) => {
-                                            (*init, elems.len())
-                                        }
+                                        Some(init) if !init.is_undefined() => (*init, elems.len()),
                                         _ => match elems.last() {
                                             Some(last) => (*last, elems.len() - 1),
                                             None if elems.is_empty() => {
@@ -3652,16 +3648,17 @@ impl Vm {
                                     } else {
                                         start_raw.min(len) as usize
                                     };
-                                    let end = if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
-                                        let end_raw = n as i64;
-                                        if end_raw < 0 {
-                                            (len + end_raw).max(0) as usize
+                                    let end =
+                                        if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
+                                            let end_raw = n as i64;
+                                            if end_raw < 0 {
+                                                (len + end_raw).max(0) as usize
+                                            } else {
+                                                end_raw.min(len) as usize
+                                            }
                                         } else {
-                                            end_raw.min(len) as usize
-                                        }
-                                    } else {
-                                        len as usize
-                                    };
+                                            len as usize
+                                        };
                                     let sliced = if start < end && start < elems.len() {
                                         elems[start..end.min(elems.len())].to_vec()
                                     } else {
@@ -3976,7 +3973,7 @@ impl Vm {
                                     let items: Vec<String> = elems
                                         .iter()
                                         .map(|e| match e {
-                                            Value::Undefined | Value::Null => String::new(),
+                                            e if e.is_undefined() || e.is_null() => String::new(),
                                             v => self.format_value(*v),
                                         })
                                         .collect();
@@ -4447,7 +4444,9 @@ impl Vm {
                     let key = constant_string(&constants, instr.operand as usize);
                     let fn_val = self.pop()?;
                     let obj = self.peek()?;
-                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) =
+                        (obj.case(), fn_val.case())
+                    {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             getters,
@@ -4464,7 +4463,9 @@ impl Vm {
                     let key = constant_string(&constants, instr.operand as usize);
                     let fn_val = self.pop()?;
                     let obj = self.peek()?;
-                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) =
+                        (obj.case(), fn_val.case())
+                    {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             setters,
@@ -4482,7 +4483,9 @@ impl Vm {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);
                     let obj = self.peek()?;
-                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) =
+                        (obj.case(), fn_val.case())
+                    {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             getters,
@@ -4500,7 +4503,9 @@ impl Vm {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);
                     let obj = self.peek()?;
-                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) =
+                        (obj.case(), fn_val.case())
+                    {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             setters,
@@ -4952,7 +4957,7 @@ impl Vm {
     /// 会判为不等（`["a", "b"].includes("b")` 曾因此返回 `false`）。故委托
     /// [`crate::ops::strict_eq`]（`===` 语义，已按内容比对堆字符串）后补 NaN 自等。
     pub(crate) fn values_same_zero(&self, a: Value, b: Value) -> bool {
-        if let (ValueCase::Number(x), ValueCase::Number(y)) = (a, b) {
+        if let (ValueCase::Number(x), ValueCase::Number(y)) = (a.case(), b.case()) {
             if x.is_nan() && y.is_nan() {
                 return true;
             }
@@ -5146,7 +5151,7 @@ mod tests {
         ];
         let mut vm = Vm::new(0);
         match vm.run(&code) {
-            Ok(Value::Number(n)) => assert_eq!(n, 5.0),
+            Ok(v) => assert_eq!(v.as_number(), Some(5.0)),
             other => panic!("expected Number(5), got {other:?}"),
         }
     }
@@ -5163,7 +5168,7 @@ mod tests {
         ];
         let mut vm = Vm::new(1);
         match vm.run(&code) {
-            Ok(Value::Number(n)) => assert_eq!(n, 42.0),
+            Ok(v) => assert_eq!(v.as_number(), Some(42.0)),
             other => panic!("expected Number(42), got {other:?}"),
         }
     }
@@ -5294,10 +5299,7 @@ mod tests {
         assert_eq!(
             args.as_slice()
                 .iter()
-                .map(|value| match value {
-                    Value::Number(number) => *number,
-                    _ => 0.0,
-                })
+                .map(|value| value.as_number().unwrap_or(0.0))
                 .collect::<Vec<_>>(),
             (1..=9).map(f64::from).collect::<Vec<_>>()
         );
@@ -5310,7 +5312,7 @@ mod tests {
         let result = vm
             .invoke_callable(Value::Object(platform), Value::Undefined, &[])
             .expect("调用 os.arch");
-        let Value::Object(r) = result else {
+        let Some(r) = result.as_object() else {
             panic!("os.arch 应返回字符串对象，实际 {result:?}");
         };
         assert!(matches!(
@@ -5353,7 +5355,7 @@ mod tests {
         let name = vm
             .get_property(Value::Object(closure), "name")
             .expect("读取 name");
-        let Value::Object(name_ref) = name else {
+        let Some(name_ref) = name.as_object() else {
             panic!("name 应为字符串对象");
         };
         assert!(matches!(

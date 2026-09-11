@@ -1,4 +1,4 @@
-﻿//! KDF 模块面：`pbkdf2Sync` / `pbkdf2`、`scryptSync` / `scrypt`、
+//! KDF 模块面：`pbkdf2Sync` / `pbkdf2`、`scryptSync` / `scrypt`、
 //! `hkdfSync` / `hkdf`（含异步回调投递）。
 //!
 //! 语义对齐 Node.js 22 LTS 标准（`nodecrypto/crypto.go` 与 `crypto_kdf.go`）：
@@ -19,7 +19,11 @@ use crate::value::{Value, ValueCase};
 
 /// Go `nodebase.IntArg` 对应：第 i 个参数取整（缺失/非数字返回默认值）。
 pub(crate) fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
-    match args.get(i).map(|v| v.case()).unwrap_or(ValueCase::Undefined) {
+    match args
+        .get(i)
+        .map(|v| v.case())
+        .unwrap_or(ValueCase::Undefined)
+    {
         ValueCase::Number(n) => n as i64,
         _ => default,
     }
@@ -113,7 +117,10 @@ fn parse_scrypt_args(vm: &mut Vm, args: &[Value]) -> Result<ScryptArgs, VmError>
     let (mut n, mut r, mut p) = (16384i64, 8i64, 1i64);
     if let Some(opt_ref) = args.get(3).and_then(|v| v.as_object()) {
         for (key, dest) in [("N", &mut n), ("r", &mut r), ("p", &mut p)] {
-            if let Ok(ValueCase::Number(num)) = vm.get_property(Value::Object(opt_ref), key).map(ValueCase::from) {
+            if let Ok(ValueCase::Number(num)) = vm
+                .get_property(Value::Object(opt_ref), key)
+                .map(ValueCase::from)
+            {
                 *dest = num as i64;
             }
         }

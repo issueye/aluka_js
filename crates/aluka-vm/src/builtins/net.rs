@@ -397,9 +397,9 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args {
         if is_function(vm, *a) {
             connect_listener = Some(*a);
-        } else if is_plain_object(vm, *a).map(ValueCase::from) {
+        } else if is_plain_object(vm, *a) {
             if let Ok(v) = vm.get_property(*a, "host") {
-                if !matches!(v, Value::Undefined | Value::Null) {
+                if !(v.is_undefined() || v.is_null()) {
                     let s = vm.format_value(v);
                     if !s.is_empty() {
                         host = s;
@@ -442,8 +442,10 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     vm.activate_event_source("net", net_pump);
 
     // M4.3：signal 联动——已 abort 立即销毁；未 abort 挂监听（abort 时销毁）
-    if let Some(signal) = signal_opt.map(ValueCase::from) {
-        if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
+    if let Some(signal) = signal_opt {
+        if let Ok(ValueCase::Boolean(true)) =
+            vm.get_property(signal, "aborted").map(ValueCase::from)
+        {
             close_socket_lifecycle(obj.0);
         } else {
             let destroy_fn = vm.alloc_native_fn("net.signalDestroy");
@@ -482,13 +484,17 @@ fn net_is_ip(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `net.isIPv4(input)`。
 fn net_is_ipv4(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let ip = net_is_ip(vm, args)?;
-    Ok(Value::Boolean(matches!(ip.case(), ValueCase::Number(n) if n == 4.0)))
+    Ok(Value::Boolean(
+        matches!(ip.case(), ValueCase::Number(n) if n == 4.0),
+    ))
 }
 
 /// `net.isIPv6(input)`。
 fn net_is_ipv6(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let ip = net_is_ip(vm, args)?;
-    Ok(Value::Boolean(matches!(ip.case(), ValueCase::Number(n) if n == 6.0)))
+    Ok(Value::Boolean(
+        matches!(ip.case(), ValueCase::Number(n) if n == 6.0),
+    ))
 }
 
 // --- BlockList ------------------------------------------------------------
@@ -675,9 +681,9 @@ fn net_socket_address_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     let mut port = 0.0f64;
     let mut family = "ipv4".to_owned();
     let mut flowlabel = 0.0f64;
-    if let Some(opts) = args.first().copied().filter(|v| is_plain_object(vm, *v)).map(ValueCase::from) {
+    if let Some(opts) = args.first().copied().filter(|v| is_plain_object(vm, *v)) {
         if let Ok(v) = vm.get_property(opts, "address") {
-            if !matches!(v, Value::Undefined) {
+            if !v.is_undefined() {
                 address = vm.format_value(v);
             }
         }
@@ -685,7 +691,7 @@ fn net_socket_address_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
             port = n;
         }
         if let Ok(v) = vm.get_property(opts, "family") {
-            if !matches!(v, Value::Undefined) {
+            if !v.is_undefined() {
                 family = vm.format_value(v).to_lowercase();
             }
         }
@@ -786,7 +792,7 @@ fn net_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 监听器移除用的值同一性（对象比句柄；与 events 模块语义一致）。
 fn is_same_value(a: Value, b: Value) -> bool {
-    match (a, b).case() {
+    match (a.case(), b.case()) {
         (ValueCase::Object(x), ValueCase::Object(y)) => x == y,
         _ => false,
     }
@@ -1060,8 +1066,10 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             });
             vm.activate_event_source("net", net_pump);
             // M4.3：listen signal——已 abort 立即关停；未 abort 挂监听
-            if let Some(signal) = signal_opt.map(ValueCase::from) {
-                if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
+            if let Some(signal) = signal_opt {
+                if let Ok(ValueCase::Boolean(true)) =
+                    vm.get_property(signal, "aborted").map(ValueCase::from)
+                {
                     let _ = net_server_close(vm, &[]);
                 } else {
                     let close_fn = vm.alloc_native_fn("net.signalCloseServer");
@@ -1291,7 +1299,7 @@ fn net_pump(vm: &mut Vm) -> Result<bool, VmError> {
                     (obj, Some(NetAction::Composite(actions)))
                 });
                 if let (ValueCase::Object(r), Some(cloned)) = (
-                    obj_val,
+                    obj_val.case(),
                     with_net(|n| {
                         n.sockets
                             .iter()

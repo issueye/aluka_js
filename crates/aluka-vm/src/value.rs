@@ -35,7 +35,6 @@ const TAG_NULL: u64 = 1;
 const TAG_FALSE: u64 = 2;
 const TAG_TRUE: u64 = 3;
 const TAG_OBJECT: u64 = 4;
-const TAG_BOOL_MASK: u64 = 1;
 
 /// 运行时求值结果：8 字节 NaN-box 机器字。
 ///
@@ -49,16 +48,18 @@ pub struct Value(u64);
 
 impl Value {
     /// `undefined`（关联常量：构造与模式双兼容）。
+    #[allow(non_upper_case_globals)]
     pub const Undefined: Value = Value(TAG_PREFIX | TAG_UNDEFINED);
     /// `null`（关联常量：构造与模式双兼容）。
+    #[allow(non_upper_case_globals)]
     pub const Null: Value = Value(TAG_PREFIX | TAG_NULL);
 
-    /// 构造布尔值。
+    /// 构造布尔值（false=tag2 / true=tag3，两值编码不同）。
     #[allow(non_snake_case)]
     #[must_use]
     #[inline]
     pub fn Boolean(b: bool) -> Self {
-        Self(TAG_PREFIX | TAG_TRUE | u64::from(b))
+        Self(TAG_PREFIX | if b { TAG_TRUE } else { TAG_FALSE })
     }
 
     /// 构造数值（NaN 规范化）。
@@ -141,13 +142,6 @@ impl Value {
         }
     }
 
-    /// 数值出盒（已确认是数值的快速路径）。
-    #[must_use]
-    #[inline]
-    pub fn number_bits_unchecked(self) -> f64 {
-        f64::from_bits(self.0)
-    }
-
     /// 堆对象句柄出盒。
     #[must_use]
     #[inline]
@@ -164,7 +158,7 @@ impl Value {
     #[inline]
     pub fn as_bool(&self) -> Option<bool> {
         if self.is_boolean() {
-            Some((self.0 & TAG_BOOL_MASK) != 0)
+            Some((self.0 & 0xFF) == TAG_TRUE)
         } else {
             None
         }
@@ -241,12 +235,9 @@ impl From<Value> for ValueCase {
     }
 }
 
-impl Value {
-    /// 解构为模式匹配镜像（`match v.case(){ ValueCase::Object(r) => … }`）。
-    #[must_use]
-    #[inline]
-    pub fn case(&self) -> ValueCase {
-        ValueCase::from(self)
+impl From<ObjectRef> for ValueCase {
+    fn from(r: ObjectRef) -> Self {
+        ValueCase::Object(r)
     }
 }
 
@@ -262,9 +253,20 @@ impl From<ValueCase> for Value {
     }
 }
 
-/// 真值判定位于 `ops::to_boolean(val, heap)` / `Vm::truthy(val)`：
-/// 字符串是堆对象，空字符串必须为 falsy，判定需要堆访问。
+impl Value {
+    /// 解构为模式匹配镜像（`match v.case() { ValueCase::Object(r) => … }`）。
+    #[must_use]
+    #[inline]
+    pub fn case(&self) -> ValueCase {
+        ValueCase::from(self)
+    }
+}
 
+// M6.2 验收锚点：Value 必须恰为 8 字节机器字（编译期强制）
+const _: () = assert!(std::mem::size_of::<Value>() == 8);
+
+// 真值判定位于 `ops::to_boolean(val, heap)` / `Vm::truthy(val)`：
+// 字符串是堆对象，空字符串必须为 falsy，判定需要堆访问。
 impl From<Value> for aluka_core::Value {
     fn from(val: Value) -> Self {
         match val.kind() {

@@ -1,4 +1,4 @@
-﻿//! `vm` 内置模块（Node.js 22 语义，Node.js 22 LTS 标准：Node.js 22 LTS 规范）。
+//! `vm` 内置模块（Node.js 22 语义，Node.js 22 LTS 标准：Node.js 22 LTS 规范）。
 //!
 //! # 架构限制（本阶段）
 //! aluka-vm 执行的是字节码；在运行时编译 JS 源码需要 aluka-parser /
@@ -296,7 +296,9 @@ fn script_record(vm: &Vm, this: Value) -> Option<ScriptRecord> {
     if own_ns(vm, this).as_deref() != Some(NS_SCRIPT) {
         return None;
     }
-    let ValueCase::Object(r) = this.case() else { return None };
+    let ValueCase::Object(r) = this.case() else {
+        return None;
+    };
     SCRIPTS.with(|slot| slot.borrow().get(&r.0).cloned())
 }
 
@@ -377,7 +379,9 @@ fn is_ordinary(vm: &Vm, val: Value) -> bool {
 /// 读对象自有 `_builtinNs` 堆字符串（对齐 `builtins/mod.rs::builtin_ns`，
 /// 但只读自有属性、不沿原型链）。
 fn own_ns(vm: &Vm, val: Value) -> Option<String> {
-    let ValueCase::Object(r) = val.case() else { return None };
+    let ValueCase::Object(r) = val.case() else {
+        return None;
+    };
     if !matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
         return None;
     }
@@ -400,7 +404,7 @@ fn mark_ns(vm: &mut Vm, val: Value, ns: &str) {
 /// 文本实参（Go `nodebase.StrArg`）：缺失/null-ish 按空串。
 fn str_arg(vm: &Vm, args: &[Value], i: usize) -> String {
     match args.get(i) {
-        Some(v) if !matches!(*v, Value::Undefined | Value::Null) => vm.format_value(*v),
+        Some(v) if !(v.is_undefined() || v.is_null()) => vm.format_value(*v),
         _ => String::new(),
     }
 }

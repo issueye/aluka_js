@@ -419,7 +419,8 @@ fn proto_is_preloading(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// 缺参返回空串。
 fn module_wrap(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let wrapped = match args.first() {
-        None | Some(Value::Undefined) => String::new(),
+        None => String::new(),
+        Some(v) if v.is_undefined() => String::new(),
         Some(v) => format!(
             "(function (exports, require, module, __filename, __dirname) {{ {}\n}});",
             vm.format_value(*v)

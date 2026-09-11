@@ -194,7 +194,7 @@ fn process_event_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         return Ok(Value::Undefined);
     };
     let event = match args.first() {
-        Some(v) if !matches!(*v, Value::Undefined) => Some(vm.to_property_key(*v)),
+        Some(v) if !v.is_undefined() => Some(vm.to_property_key(*v)),
         _ => None,
     };
     crate::builtins::child_process::proc_common::emitter_remove_all(id, event.as_deref());

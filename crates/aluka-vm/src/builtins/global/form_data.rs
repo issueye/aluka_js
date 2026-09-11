@@ -117,7 +117,8 @@ pub(crate) fn form_data_method(vm: &mut Vm, args: &[Value]) -> Result<Value, VmE
 // ---- 内部辅助 ----
 
 pub(crate) fn fd_entries(vm: &mut Vm, receiver: Value) -> Vec<(String, String)> {
-    let Ok(ValueCase::Object(arr)) = vm.get_property(receiver, "_fdEntries") else {
+    let Ok(ValueCase::Object(arr)) = vm.get_property(receiver, "_fdEntries").map(ValueCase::from)
+    else {
         return Vec::new();
     };
     let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {

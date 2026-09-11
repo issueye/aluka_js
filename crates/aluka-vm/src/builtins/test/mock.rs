@@ -1,4 +1,4 @@
-﻿//! node:test mock 面（Phase 8）：函数/方法 spy、MockTracker 与 `mock.timers` 假时钟。
+//! node:test mock 面（Phase 8）：函数/方法 spy、MockTracker 与 `mock.timers` 假时钟。
 //!
 //! 移植 Node.js 22 LTS 标准（`nodetest/`）的 MockTracker 表面：
 //! `fn` / `method` / `getter` / `setter` / `property` / `timers` / `restoreAll` /
@@ -496,7 +496,7 @@ fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         FakeApi::SetInterval,
         FakeApi::SetImmediate,
     ];
-    if !matches!(apis_val, Value::Undefined).case() {
+    if !apis_val.is_undefined() {
         let ValueCase::Object(r) = apis_val.case() else {
             return Err(code_error(
                 vm,
@@ -526,7 +526,11 @@ fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
-    let now = match vm.get_property(opts, "now").unwrap_or(Value::Undefined).case() {
+    let now = match vm
+        .get_property(opts, "now")
+        .unwrap_or(Value::Undefined)
+        .case()
+    {
         ValueCase::Undefined => 0,
         ValueCase::Number(n) if !n.is_nan() => {
             let t = n as i64;

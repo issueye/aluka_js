@@ -1,4 +1,4 @@
-﻿//! node:test 断言实现（Phase 8）：结构深度比较与错误消息格式化。
+//! node:test 断言实现（Phase 8）：结构深度比较与错误消息格式化。
 //!
 //! 逐函数移植 Node.js 22 LTS 标准（`nodetest/test_assert.go`）：
 //! `deepStrictEqual`/`deepEqual` 递归结构比较、正则匹配与
@@ -11,8 +11,8 @@ use crate::value::{Value, ValueCase};
 /// 原始值/引用严格相等（对齐 Go `nodebase.StrictEqual`：NaN 不等、
 /// 字符串比内容、对象比引用）。
 pub fn strict_equal(vm: &Vm, a: Value, b: Value) -> bool {
-    match (a, b).case() {
-        (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => true,
+    match (a.case(), b.case()) {
+        (ValueCase::Undefined, ValueCase::Undefined) | (ValueCase::Null, ValueCase::Null) => true,
         (ValueCase::Boolean(x), ValueCase::Boolean(y)) => x == y,
         (ValueCase::Number(x), ValueCase::Number(y)) => x == y,
         (ValueCase::Object(x), ValueCase::Object(y)) => {
@@ -32,14 +32,14 @@ pub fn loose_equal(vm: &Vm, a: Value, b: Value) -> bool {
     if strict_equal(vm, a, b) {
         return true;
     }
-    if let (ValueCase::Number(x), ValueCase::Object(y)) = (a, b) {
+    if let (ValueCase::Number(x), ValueCase::Object(y)) = (a.case(), b.case()) {
         if let Some(HeapObject::String(s)) = vm.heap.get(y.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return x == n;
             }
         }
     }
-    if let (ValueCase::Object(x), ValueCase::Number(y)) = (a, b) {
+    if let (ValueCase::Object(x), ValueCase::Number(y)) = (a.case(), b.case()) {
         if let Some(HeapObject::String(s)) = vm.heap.get(x.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return n == y;
@@ -71,7 +71,9 @@ pub fn deep_strict_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
         if !is_array(vm, a) || !is_array(vm, b) {
             return false;
         }
-        let (Some(ValueCase::Object(ra)), Some(ValueCase::Object(rb))) = (Some(a), Some(b)) else {
+        let (Some(ValueCase::Object(ra)), Some(ValueCase::Object(rb))) =
+            (Some(a.case()), Some(b.case()))
+        else {
             unreachable!()
         };
         let (elems_a, elems_b) = match (vm.heap.get(ra.index()), vm.heap.get(rb.index())) {
@@ -90,7 +92,9 @@ pub fn deep_strict_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
             .all(|(x, y)| deep_strict_equal(vm, *x, *y));
     }
     if is_ordinary(vm, a) && is_ordinary(vm, b) {
-        let (Some(ValueCase::Object(ra)), Some(ValueCase::Object(rb))) = (Some(a), Some(b)) else {
+        let (Some(ValueCase::Object(ra)), Some(ValueCase::Object(rb))) =
+            (Some(a.case()), Some(b.case()))
+        else {
             unreachable!()
         };
         let props_a = vm.own_entries(ra.index());
@@ -120,14 +124,14 @@ pub fn deep_loose_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
     if deep_strict_equal(vm, a, b) {
         return true;
     }
-    if let (ValueCase::Number(x), ValueCase::Object(y)) = (a, b) {
+    if let (ValueCase::Number(x), ValueCase::Object(y)) = (a.case(), b.case()) {
         if let Some(HeapObject::String(s)) = vm.heap.get(y.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return x == n;
             }
         }
     }
-    if let (ValueCase::Object(x), ValueCase::Number(y)) = (a, b) {
+    if let (ValueCase::Object(x), ValueCase::Number(y)) = (a.case(), b.case()) {
         if let Some(HeapObject::String(s)) = vm.heap.get(x.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return n == y;

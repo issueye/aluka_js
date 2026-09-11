@@ -97,7 +97,8 @@ pub(crate) fn date_instance_method(vm: &mut Vm, args: &[Value]) -> Result<Value,
     let receiver = current_receiver();
     let t = date_time_value(vm, receiver);
     // 非 Date 接收者（`Date.prototype.getTime.call({})`）→ TypeError
-    let is_date = matches!(receiver.case(), ValueCase::Object(r) if vm.has_own_slot(r.0 as usize, "_isDate"));
+    let is_date =
+        matches!(receiver.case(), ValueCase::Object(r) if vm.has_own_slot(r.0 as usize, "_isDate"));
     if !is_date {
         let msg = if method == "toJSON" {
             "toISOString is not a function"

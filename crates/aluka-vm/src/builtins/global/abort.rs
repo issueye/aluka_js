@@ -109,10 +109,9 @@ pub(crate) fn abort_signal_ctor_impl(vm: &mut Vm, _args: &[Value]) -> Result<Val
 
 pub(crate) fn abort_signal_abort_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = crate::builtins::current_receiver();
-    let is_signal = matches!(
-        vm.get_property(this, "_isAbortSignal"),
-        Ok(ValueCase::Boolean(true))
-    );
+    let is_signal = vm
+        .get_property(this, "_isAbortSignal")
+        .is_ok_and(|v| v.as_bool() == Some(true));
     if is_signal {
         return signal_abort_impl(vm, args);
     }
@@ -150,7 +149,7 @@ pub(crate) fn signal_add_event_listener(vm: &mut Vm, args: &[Value]) -> Result<V
     let Some(cb) = args.get(1).copied() else {
         return Ok(Value::Undefined);
     };
-    let arr = match vm.get_property(this, "_listeners").map(|v| v.case()).map(ValueCase::from) {
+    let arr = match vm.get_property(this, "_listeners").map(|v| v.case()) {
         Ok(ValueCase::Object(r)) => r,
         _ => vm.alloc_array(Vec::new()),
     };

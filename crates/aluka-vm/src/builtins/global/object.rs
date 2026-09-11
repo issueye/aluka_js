@@ -76,7 +76,7 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             // 规范 SameValue：NaN 等值同真、+0/-0 异值（`Object.is` 实测缺失）
             let a = args.first().copied().unwrap_or(Value::Undefined);
             let b = args.get(1).copied().unwrap_or(Value::Undefined);
-            let same = match (&a, &b).case() {
+            let same = match (a.case(), b.case()) {
                 (ValueCase::Number(x), ValueCase::Number(y)) => {
                     if x.is_nan() && y.is_nan() {
                         true

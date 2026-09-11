@@ -352,9 +352,11 @@ pub fn attach_subtest_to(
             st.subtests.push(sub_id);
         }
     });
+    // 分配在借锁外完成：alloc 可触发 GC → store_roots 重入同一 RefCell
+    // （ALUKA_GC_STRESS 下确定性 panic，实测暴露）
+    let p = vm.alloc_pending_promise();
     SUBTEST_STATES.with(|m| {
         if let Some(sub) = m.borrow_mut().get_mut(&sub_id) {
-            let p = vm.alloc_pending_promise();
             sub.promise = Some(Value::Object(p));
         }
     });

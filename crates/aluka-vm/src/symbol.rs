@@ -108,7 +108,8 @@ impl Vm {
     /// `Symbol([description])`：分配唯一符号。
     pub(crate) fn symbol_create(&mut self, args: &[Value]) -> Value {
         let description = match args.first() {
-            Some(Value::Undefined) | None => String::new(),
+            None => String::new(),
+            Some(v) if v.is_undefined() => String::new(),
             Some(v) => self.format_value(*v),
         };
         let id = NEXT_SYM_ID.fetch_add(1, Ordering::Relaxed);

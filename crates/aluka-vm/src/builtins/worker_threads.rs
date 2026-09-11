@@ -299,10 +299,8 @@ fn wt_route_timeout_fire(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError>
     let (Some(request_id), origin, main_side) = (
         read_num("_request_id"),
         read_num("_origin"),
-        matches!(
-            vm.get_native_fn_property(r, "_main_side"),
-            Some(ValueCase::Boolean(true))
-        ),
+        vm.get_native_fn_property(r, "_main_side")
+            .is_some_and(|v| v.as_bool() == Some(true)),
     ) else {
         return Ok(Value::Undefined);
     };
@@ -528,13 +526,16 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut worker_data: Option<Value> = None;
     let mut eval = false;
     if let Some(opts) = args.get(1).copied() {
-        if let Some(o) = opts.as_object().map(ValueCase::from) {
+        if let Some(o) = opts.as_object() {
             if let Ok(v) = vm.get_property(opts, "workerData") {
-                if !matches!(v, Value::Undefined) {
+                if !v.is_undefined() {
                     worker_data = Some(json_roundtrip(vm, v)?);
                 }
             }
-            if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(o), "eval").map(ValueCase::from) {
+            if let Ok(ValueCase::Boolean(b)) = vm
+                .get_property(Value::Object(o), "eval")
+                .map(ValueCase::from)
+            {
                 eval = b;
             }
         }
@@ -1089,7 +1090,9 @@ fn wt_port_start(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `port.hasRef()`：是否处于 ref 状态（默认 true，`unref()` 后 false）。
 fn wt_port_has_ref(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let has = match crate::builtins::current_receiver().case() {
-        ValueCase::Object(r) => PORT_HAS_REF.with(|m| m.borrow().get(&r.0).copied().unwrap_or(true)),
+        ValueCase::Object(r) => {
+            PORT_HAS_REF.with(|m| m.borrow().get(&r.0).copied().unwrap_or(true))
+        }
         _ => true,
     };
     Ok(Value::Boolean(has))
@@ -1247,10 +1250,8 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 参数重载：`transferList` 为数字且 `timeout` 未传 → 数字即 timeout
     let mut transfer_arg = args.get(2).copied();
     let mut timeout_arg = args.get(3).copied();
-    if let Some(_) = transfer_arg.and_then(|v| v.as_number()) {
-        if timeout_arg.is_none() {
-            timeout_arg = transfer_arg.take();
-        }
+    if transfer_arg.and_then(|v| v.as_number()).is_some() && timeout_arg.is_none() {
+        timeout_arg = transfer_arg.take();
     }
 
     // Promise 面（校验失败也走 rejection——Node async 函数语义）
@@ -1296,7 +1297,9 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let current_tid = current_thread_id();
     // 同线程判定：仅数值与当前线程 id 相等才命中（Node `===` 语义）
-    let same_thread = matches!(args.first(), Some(ValueCase::Number(n)) if *n as u64 == current_tid && n.fract() == 0.0);
+    let same_thread = matches!(args.first().map(|v| v.case()), Some(ValueCase::Number(n))
+        if n as u64 == current_tid && n.fract() == 0.0
+    );
     if same_thread {
         let err = route_error(
             vm,

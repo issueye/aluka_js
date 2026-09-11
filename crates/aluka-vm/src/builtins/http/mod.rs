@@ -1,4 +1,4 @@
-﻿//! `node:http` 内置模块（Phase 5）：HTTP 服务器与客户端。
+//! `node:http` 内置模块（Phase 5）：HTTP 服务器与客户端。
 //!
 //! 语义以 Node.js 22 LTS 标准（Node.js 22 LTS 规范 +
 //! `http_agent.go`）为唯一真理逐字对齐：
@@ -446,8 +446,12 @@ pub(crate) fn thrown_error(vm: &mut Vm, msg: &str) -> VmError {
 
 /// `nodebase.IntArg`：第 `i` 个参数取整数值，缺失/非数返回 `default`。
 pub(crate) fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
-    match args.get(i).map(|v| v.case()).unwrap_or(ValueCase::Undefined) {
-        Some(ValueCase::Number(n)) => n as i64,
+    match args
+        .get(i)
+        .map(|v| v.case())
+        .unwrap_or(ValueCase::Undefined)
+    {
+        ValueCase::Number(n) => n as i64,
         _ => default,
     }
 }
@@ -473,7 +477,7 @@ pub(crate) fn header_values(vm: &mut Vm, v: Value) -> Vec<String> {
         if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
             return elements
                 .iter()
-                .filter(|e| !matches!(*e, Value::Undefined | Value::Null))
+                .filter(|e| !(e.is_undefined() || e.is_null()))
                 .map(|e| vm.format_value(*e))
                 .collect();
         }

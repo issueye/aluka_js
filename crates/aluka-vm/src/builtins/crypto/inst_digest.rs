@@ -203,7 +203,7 @@ pub(crate) fn one_shot_hash(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
     engine.update(&data);
     let sum = engine.finalize();
     if let Some(enc) = args.get(2) {
-        if !matches!(*enc, Value::Undefined | Value::Null) {
+        if !(enc.is_undefined() || enc.is_null()) {
             return match vm.format_value(*enc).as_str() {
                 "buffer" => Ok(Value::Object(create_buffer_instance(vm, sum))),
                 "hex" => Ok(Value::Object(vm.alloc_string(to_hex(&sum)))),

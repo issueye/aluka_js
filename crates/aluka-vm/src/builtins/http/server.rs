@@ -485,7 +485,7 @@ fn response_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(receiver);
     };
     if let Some(chunk) = args.first() {
-        if !matches!(*chunk, Value::Undefined | Value::Null) && !super::is_function(vm, *chunk) {
+        if !chunk.is_undefined() && !chunk.is_null() && !super::is_function(vm, *chunk) {
             let bytes = super::chunk_bytes(vm, *chunk);
             update_response(r.0, |b| {
                 if !b.finished {

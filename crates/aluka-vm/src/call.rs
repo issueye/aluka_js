@@ -156,7 +156,7 @@ impl Vm {
             };
             if let Some((promise, resolve)) = resolver {
                 let val = match args.first() {
-                    Some(v) if !matches!(*v, Value::Undefined) => *v,
+                    Some(v) if !v.is_undefined() => *v,
                     _ => {
                         crate::builtins::timers::take_resolver_val(r.0).unwrap_or(Value::Undefined)
                     }
@@ -240,7 +240,10 @@ impl Vm {
             // 处理器签名无法拿到自身 fn 对象，故在此特判）
             if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
                 if name == "Proxy.revoke" {
-                    if let Some(pr) = self.get_native_fn_property(r, "_revokes").and_then(|v| v.as_object()) {
+                    if let Some(pr) = self
+                        .get_native_fn_property(r, "_revokes")
+                        .and_then(|v| v.as_object())
+                    {
                         self.revoke_proxy(pr);
                     }
                     return Ok(Value::Undefined);
@@ -292,7 +295,8 @@ impl Vm {
                         // message 未传或为 undefined 时按规范置空串；
                         // 子类实例 name 置子类名（对齐 Node：e.name === 'TypeError'）
                         let message = match args.first() {
-                            Some(Value::Undefined) | None => String::new(),
+                            None => String::new(),
+                            Some(v) if v.is_undefined() => String::new(),
                             Some(v) => self.format_value(*v),
                         };
                         let err = self.alloc_error_instance(&message);
@@ -332,7 +336,7 @@ impl Vm {
                         // raw-body `new Array(arguments.length)` 依赖 length
                         // 语义——曾无条件空数组导致 done 回调参数全丢
                         if args.len() == 1
-                            && let ValueCase::Number(n) = args[0]
+                            && let Some(n) = args[0].as_number()
                         {
                             if n.fract() == 0.0 && (0.0..4294967296.0).contains(&n) {
                                 let len = n as usize;
@@ -457,7 +461,7 @@ impl Vm {
                 }
             }
         }
-        let proto_ref = match self.get_property(callee, "prototype").map(|v| v.case()).map(ValueCase::from) {
+        let proto_ref = match self.get_property(callee, "prototype").map(|v| v.case()) {
             Ok(ValueCase::Object(p)) => Some(p),
             _ => None,
         };

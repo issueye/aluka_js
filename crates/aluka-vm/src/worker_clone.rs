@@ -217,10 +217,12 @@ impl Ser<'_> {
 
     fn is_date(&mut self, idx: usize) -> Option<f64> {
         match self.vm.own_value(idx, "_isDate").map(|v| v.case()) {
-            Some(ValueCase::Boolean(true)) => match self.vm.own_value(idx, "_timeValue").map(|v| v.case()) {
-                Some(ValueCase::Number(n)) => Some(n),
-                _ => Some(f64::NAN),
-            },
+            Some(ValueCase::Boolean(true)) => {
+                match self.vm.own_value(idx, "_timeValue").map(|v| v.case()) {
+                    Some(ValueCase::Number(n)) => Some(n),
+                    _ => Some(f64::NAN),
+                }
+            }
             _ => None,
         }
     }

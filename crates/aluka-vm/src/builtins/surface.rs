@@ -514,14 +514,13 @@ fn obj_has_own_prop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `Object.prototype.toString.call(v)`：`[object Tag]`。
 fn obj_to_string_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    use crate::value::Value as V;
     let this = super::current_receiver();
-    let tag = match this {
-        V::Undefined => "Undefined",
-        V::Null => "Null",
-        V::Boolean(_) => "Boolean",
-        V::Number(_) => "Number",
-        V::Object(r) => match vm.heap.get(r.0 as usize) {
+    let tag = match this.case() {
+        ValueCase::Undefined => "Undefined",
+        ValueCase::Null => "Null",
+        ValueCase::Boolean(_) => "Boolean",
+        ValueCase::Number(_) => "Number",
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::String(_)) => "String",
             Some(HeapObject::Array { .. }) => "Array",
             Some(HeapObject::RegExp { .. }) => "RegExp",
@@ -619,7 +618,7 @@ fn str_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             Some(HeapObject::String(t)) => t.clone(),
             _ => vm.format_value(this),
         },
-        Value::Undefined | Value::Null => {
+        ValueCase::Undefined | ValueCase::Null => {
             let msg = vm.alloc_string(format!(
                 "Cannot convert undefined or null to object (String.prototype.{name})"
             ));
@@ -677,11 +676,7 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
             // toString([radix])：实参缺省/`undefined` → 10；否则
             // `ToIntegerOrInfinity` 后必须落在 [2,36]，越界（含 NaN/±∞/null → 0）
             // 抛 Node 同文案 RangeError。
-            let Some(arg) = args
-                .first()
-                .copied()
-                .filter(|v| !matches!(*v, Value::Undefined))
-            else {
+            let Some(arg) = args.first().copied().filter(|v| !v.is_undefined()) else {
                 return Ok(Value::Object(vm.alloc_string(format_number_decimal(n))));
             };
             let radix = to_integer_or_infinity(crate::ops::to_number(arg));
@@ -833,7 +828,7 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
         "from" => {
             let source = args.first().copied().unwrap_or(Value::Undefined);
             let mut items: Vec<Value> = match &source.case() {
-                Value::Undefined | Value::Null => {
+                ValueCase::Undefined | ValueCase::Null => {
                     let msg = vm.alloc_string(
                         "Array.from requires an array-like object - not null or undefined"
                             .to_owned(),
@@ -866,10 +861,9 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                                 _ => String::new(),
                             };
                             let iterable = !iter_key.is_empty()
-                                && matches!(
-                                    vm.get_property(source, &iter_key),
-                                    Ok(ValueCase::Object(_))
-                                );
+                                && vm
+                                    .get_property(source, &iter_key)
+                                    .is_ok_and(|v| v.is_object());
                             if iterable {
                                 vm.collect_iter_values(source)?
                             } else {
@@ -894,7 +888,7 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                 }
             };
             // mapFn 变换（第 2 参数；第 3 参数 thisArg）
-            if let Some(map_fn @ ValueCase::Object(_)) = args.get(1).copied() {
+            if let Some(map_fn) = args.get(1).copied().filter(|v| v.is_object()) {
                 let this_arg = args.get(2).copied().unwrap_or(Value::Undefined);
                 let mut mapped = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
@@ -914,7 +908,6 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// `Array.prototype.X.call(arr, ...)` 形态分派（express 的
 /// `$slice.call(arguments)` 等）：按方法实现核心语义，未实现返回 undefined。
 fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    use crate::value::Value as V;
     let full = super::pending_native_name();
     let name = full
         .rsplit("Array.prototype.")
@@ -936,28 +929,27 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             let parts = elems(vm, r);
             let len = parts.len() as i64;
             let norm = |v: Option<&Value>| -> usize {
-                match v {
-                    Some(V::Number(n)) => {
-                        if *n < 0.0 {
-                            ((len + *n as i64).max(0)) as usize
+                match v.and_then(|x| x.as_number()) {
+                    Some(n) => {
+                        if n < 0.0 {
+                            ((len + n as i64).max(0)) as usize
                         } else {
-                            (*n as usize).min(parts.len())
+                            (n as usize).min(parts.len())
                         }
                     }
                     _ => 0,
                 }
             };
             let start = norm(args.first());
-            let end = match args.get(1) {
-                Some(V::Number(n)) => {
-                    if *n < 0.0 {
-                        ((len + *n as i64).max(0)) as usize
+            let end = match args.get(1).and_then(|x| x.as_number()) {
+                Some(n) => {
+                    if n < 0.0 {
+                        ((len + n as i64).max(0)) as usize
                     } else {
-                        (*n as usize).min(parts.len())
+                        (n as usize).min(parts.len())
                     }
                 }
                 None => parts.len(),
-                _ => parts.len(),
             };
             let out = if start < end {
                 parts[start..end].to_vec()
@@ -969,10 +961,10 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
         "concat" => {
             let mut out = elems(vm, r);
             for a in args {
-                if let ValueCase::Object(ar) = a
+                if let ValueCase::Object(ar) = a.case()
                     && matches!(vm.heap.get(ar.0 as usize), Some(HeapObject::Array { .. }))
                 {
-                    out.extend(elems(vm, *ar));
+                    out.extend(elems(vm, ar));
                 } else {
                     out.push(*a);
                 }

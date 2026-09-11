@@ -109,10 +109,10 @@ fn hot_loop_jit_not_slower_than_interpreter() {
     for _ in 0..5 {
         let (i_ms, i_v) = min_of(1, || {
             let mut vm = aluka_vm::Vm::new(0);
-            match vm.run_func(&func).expect("解释执行") {
-                aluka_vm::Value::Number(n) => n,
-                _ => f64::NAN,
-            }
+            vm.run_func(&func)
+                .expect("解释执行")
+                .as_number()
+                .unwrap_or(f64::NAN)
         });
         if i_ms < interp_best {
             interp_best = i_ms;
@@ -241,10 +241,10 @@ fn prop_sum_pic_vs_interpreter() {
         let (i_ms, i_v) = min_of(1, || {
             let mut vm = aluka_vm::Vm::new(0);
             vm.set_jit_enabled(false);
-            match vm.run_func(&func).expect("解释执行 prop_sum") {
-                aluka_vm::Value::Number(n) => n,
-                _ => f64::NAN,
-            }
+            vm.run_func(&func)
+                .expect("解释执行 prop_sum")
+                .as_number()
+                .unwrap_or(f64::NAN)
         });
         if i_ms < interp_best {
             interp_best = i_ms;
@@ -419,10 +419,10 @@ fn closure_call_jit_vs_interpreter() {
             let mut vm = aluka_vm::Vm::new(0);
             vm.set_jit_enabled(false);
             setup(&mut vm);
-            match vm.run_func(&caller).expect("解释执行 closure_call_loop") {
-                aluka_vm::Value::Number(n) => n,
-                _ => f64::NAN,
-            }
+            vm.run_func(&caller)
+                .expect("解释执行 closure_call_loop")
+                .as_number()
+                .unwrap_or(f64::NAN)
         });
         if i_ms < interp_best {
             interp_best = i_ms;

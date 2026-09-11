@@ -330,7 +330,7 @@ impl Vm {
                 | "destroyed"
                 | "errored"
                 | "flowing"
-        ) && let ValueCase::Object(r) = obj
+        ) && let ValueCase::Object(r) = obj.case()
             && self.has_own_slot(r.0 as usize, "_isStream")
             && let Some(v) = crate::builtins::stream::stream_computed_prop(r.0, key)
         {
@@ -456,7 +456,7 @@ impl Vm {
         }
         let mut cur = obj;
         let mut depth = 0;
-        while let ValueCase::Object(r) = cur {
+        while let ValueCase::Object(r) = cur.case() {
             if depth > 100 {
                 break;
             }
@@ -997,7 +997,7 @@ impl Vm {
         }
         let mut cur = obj;
         let mut depth = 0;
-        while let ValueCase::Object(r) = cur {
+        while let ValueCase::Object(r) = cur.case() {
             if depth > 100 {
                 break;
             }
@@ -1116,7 +1116,9 @@ impl Vm {
         let mut cur = Some(val);
         for _ in 0..128 {
             let Some(v) = cur.take() else { break };
-            let ValueCase::Object(r) = v.case() else { break };
+            let ValueCase::Object(r) = v.case() else {
+                break;
+            };
             let idx = r.0 as usize;
             let Some(h) = self.heap.get(idx) else { break };
             let (keys, proto) = match h {
@@ -1460,7 +1462,7 @@ impl Vm {
     /// 检查 l instanceof r（沿着 l 的原型链查找 r.prototype）。
     pub fn check_instanceof(&mut self, l: Value, r: Value) -> bool {
         // RegExp 实例（无原型链字段的堆形态）对 RegExp 构造器特判
-        if let (ValueCase::Object(lr), ValueCase::Object(rr)) = (l, r) {
+        if let (ValueCase::Object(lr), ValueCase::Object(rr)) = (l.case(), r.case()) {
             if self.regexp_ctor == Some(rr)
                 && matches!(
                     self.heap.get(lr.0 as usize),
@@ -1475,7 +1477,7 @@ impl Vm {
         // 无法参与下方通用链遍历，故按「构造器 ↔ 堆变体」判定。
         // 仅在 `r` 是 VM 自建构造器（NativeCtor，且名字为内建名）时生效——
         // 用户自定义 class 是 Closure，不会误命中。
-        if let (ValueCase::Object(lr), ValueCase::Object(rr)) = (l, r) {
+        if let (ValueCase::Object(lr), ValueCase::Object(rr)) = (l.case(), r.case()) {
             if let Some(ctor_name) = match self.heap.get(rr.0 as usize) {
                 Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
                 _ => None,
@@ -1485,14 +1487,14 @@ impl Vm {
                 }
             }
         }
-        let target_proto = match self.get_property(r, "prototype").map(|v| v.case()).map(ValueCase::from) {
+        let target_proto = match self.get_property(r, "prototype").map(|v| v.case()) {
             Ok(ValueCase::Object(p)) => p,
             _ => return false,
         };
         // 原型链遍历对 Proxy 感知：链上 Proxy 经 getPrototypeOf trap 解析
         let mut cur = match l.case() {
             ValueCase::Object(lr) if self.proxy_parts(lr).is_some() => {
-                match self.proxy_get_prototype_of(lr).map(|v| v.case()).map(ValueCase::from) {
+                match self.proxy_get_prototype_of(lr).map(|v| v.case()) {
                     Ok(ValueCase::Object(p)) => Some(p),
                     _ => None,
                 }
@@ -1537,7 +1539,7 @@ mod tests {
         let _ = vm.set_property(a, "y", Value::Number(2.0));
         let _ = vm.set_property(b, "x", Value::Number(3.0));
         let _ = vm.set_property(b, "y", Value::Number(4.0));
-        let (Value::Object(ra), Value::Object(rb)) = (a, b) else {
+        let (Some(ra), Some(rb)) = (a.as_object(), b.as_object()) else {
             unreachable!()
         };
         let (HeapObject::Ordinary { props: pa, .. }, HeapObject::Ordinary { props: pb, .. }) =
@@ -1552,8 +1554,14 @@ mod tests {
         };
         assert_eq!(sa, sb, "结构相同的对象必须共享同一 shape（PIC 命中前提）");
         // 读写经 shape 路径正确
-        assert!(matches!(vm.get_property(a, "y"), Ok(Value::Number(2.0))));
-        assert!(matches!(vm.get_property(b, "y"), Ok(Value::Number(4.0))));
+        assert!(
+            vm.get_property(a, "y")
+                .is_ok_and(|v| v.as_number() == Some(2.0))
+        );
+        assert!(
+            vm.get_property(b, "y")
+                .is_ok_and(|v| v.as_number() == Some(4.0))
+        );
     }
 
     /// 属性数达字典阈值后整体转字典模式：海量键对象（Buffer 数值下标等）
@@ -1568,7 +1576,9 @@ mod tests {
         for i in 0..N {
             let _ = vm.set_property(o, &i.to_string(), Value::Number(i as f64));
         }
-        let Value::Object(r) = o else { unreachable!() };
+        let Some(r) = o.as_object() else {
+            unreachable!()
+        };
         let HeapObject::Ordinary { props, .. } = &vm.heap[r.0 as usize] else {
             unreachable!()
         };
@@ -1584,10 +1594,10 @@ mod tests {
         );
         // 全部属性可读、可枚举、可删
         for i in 0..N {
-            assert!(matches!(
-                vm.get_property(o, &i.to_string()),
-                Ok(Value::Number(n)) if n == i as f64
-            ));
+            assert!(
+                vm.get_property(o, &i.to_string())
+                    .is_ok_and(|v| v.as_number() == Some(i as f64))
+            );
         }
         assert_eq!(vm.own_entries(r.0 as usize).len(), N);
         vm.delete_property(o, "128");
@@ -1595,9 +1605,9 @@ mod tests {
         assert_eq!(vm.own_entries(r.0 as usize).len(), N - 1);
         // 删除后重写恢复
         let _ = vm.set_property(o, "128", Value::Number(128.0));
-        assert!(matches!(
-            vm.get_property(o, "128"),
-            Ok(Value::Number(128.0))
-        ));
+        assert!(
+            vm.get_property(o, "128")
+                .is_ok_and(|v| v.as_number() == Some(128.0))
+        );
     }
 }

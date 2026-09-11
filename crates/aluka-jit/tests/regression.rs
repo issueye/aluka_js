@@ -532,9 +532,7 @@ fn jit_call_invokes_interpreter_function() {
 
     // 解释器 oracle
     let interp = vm.run_func(&caller).expect("解释执行 caller");
-    let aluka_vm::Value::Number(expected) = interp else {
-        panic!("应为数值")
-    };
+    let expected = interp.as_number().expect("应为数值");
     assert_eq!(expected, 43.0, "21*2+1 应为 43");
 
     // JIT 执行同一函数
@@ -657,9 +655,7 @@ fn native_direct_call_hits_after_first_round() {
     vm.globals
         .insert("g".to_owned(), aluka_vm::Value::Object(g));
     let interp = vm.run_func(&caller).expect("解释执行 call_loop");
-    let aluka_vm::Value::Number(interp_val) = interp else {
-        panic!("应为数值")
-    };
+    let interp_val = interp.as_number().expect("应为数值");
     assert_eq!(interp_val, expected, "解释器基线");
 
     // 被调升级为机器码后再跑 JIT 版调用方
@@ -997,9 +993,7 @@ fn self_recursive_native_call_matches_interpreter() {
             Vec::new(),
         )
         .expect("解释执行 fib");
-    let aluka_vm::Value::Number(expected) = interp else {
-        panic!("应为数值")
-    };
+    let expected = interp.as_number().expect("应为数值");
     assert_eq!(expected, 2584.0, "fib(18) = 2584");
 
     let consts_rc = Rc::new(fib.constants.clone());

@@ -161,7 +161,7 @@ fn with_ws_state<R>(id: u32, f: impl FnOnce(&mut WsState) -> R) -> Option<R> {
 /// 读取接收者上的 `_wsId`（WritableStream / writer 共用关联键）。
 fn receiver_ws_id(vm: &mut Vm) -> Option<u32> {
     let this = crate::builtins::current_receiver();
-    match vm.get_property(this, "_wsId").map(|v| v.case()).map(ValueCase::from) {
+    match vm.get_property(this, "_wsId").map(|v| v.case()) {
         Ok(ValueCase::Number(n)) if n >= 0.0 => Some(n as u32),
         _ => None,
     }
@@ -244,7 +244,7 @@ fn set_method(vm: &mut Vm, obj: Value, ns: &str, method: &str) {
 /// 读取当前接收者（this）上记录的所属流 id。
 fn receiver_stream_id(vm: &mut Vm) -> Option<u32> {
     let this = crate::builtins::current_receiver();
-    match vm.get_property(this, "_streamId").map(|v| v.case()).map(ValueCase::from) {
+    match vm.get_property(this, "_streamId").map(|v| v.case()) {
         Ok(ValueCase::Number(n)) if n >= 0.0 => Some(n as u32),
         _ => None,
     }

@@ -436,7 +436,7 @@ fn crc32(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let data = buffer_arg(vm, Some(first))?;
     let mut value = 0u32;
-    if let Some(&ValueCase::Number(n)) = args.get(1) {
+    if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
         value = (n as i64) as u32;
     }
     Ok(Value::Number(f64::from(crc32_update(value, &data))))

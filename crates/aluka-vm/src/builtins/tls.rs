@@ -112,7 +112,7 @@ fn tls_create_server(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
     // 对齐 Go TLSConfigFromOptions 的三层错误消息。
-    let Some(opts) = options.filter(|v| !matches!(*v, Value::Undefined)) else {
+    let Some(opts) = options.filter(|v| !v.is_undefined()) else {
         let err = vm.alloc_error_instance("tls: createServer requires { key, cert } options");
         return Err(VmError::Thrown(Value::Object(err)));
     };

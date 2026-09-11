@@ -270,7 +270,7 @@ mod tests {
 #[cfg(test)]
 mod probe_tests {
     use crate::Vm;
-    use crate::value::{Value, ValueCase};
+    use crate::value::Value;
 
     #[test]
     fn probe_session_construct() {
@@ -285,10 +285,7 @@ mod probe_tests {
             Ok(v) => {
                 let conn = vm.get_property(*v, "connect").expect("get connect");
                 println!("connect = {conn:?}");
-                assert!(
-                    matches!(conn, Value::Object(_)),
-                    "new Session() 实例应带 connect 方法"
-                );
+                assert!(conn.is_object(), "new Session() 实例应带 connect 方法");
             }
             Err(e) => panic!("do_construct 失败: {e:?}"),
         }

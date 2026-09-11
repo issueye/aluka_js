@@ -1,4 +1,4 @@
-﻿//! `child_process` 内置模块（Phase 6）。
+//! `child_process` 内置模块（Phase 6）。
 //!
 //! 语义逐字对齐 Node.js 22 LTS 标准（Node.js 22 LTS 规范
 //! 与 `child_process_sync.go`）：
@@ -97,17 +97,23 @@ fn parse_spawn_opts(vm: &mut Vm, opts_val: Option<Value>) -> SpawnOpts {
     let Some(opts) = opts_val.and_then(|v| v.as_object()) else {
         return o;
     };
-    if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(opts), "silent").map(ValueCase::from) {
+    if let Ok(ValueCase::Boolean(b)) = vm
+        .get_property(Value::Object(opts), "silent")
+        .map(ValueCase::from)
+    {
         o.silent = Some(b);
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "cwd") {
         o.cwd = heap_string(vm, v).unwrap_or_default();
     }
-    if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(opts), "windowsHide").map(ValueCase::from) {
+    if let Ok(ValueCase::Boolean(b)) = vm
+        .get_property(Value::Object(opts), "windowsHide")
+        .map(ValueCase::from)
+    {
         o.windows_hide = b;
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "env") {
-        if let Some(_) = v.as_object() {
+        if v.as_object().is_some() {
             let mut env_list = Vec::new();
             for (k, ev) in vm.own_properties(v) {
                 env_list.push((k, vm.format_value(ev)));
@@ -390,7 +396,7 @@ fn parse_sync_opts(vm: &mut Vm, opts_val: Option<Value>) -> SyncOpts {
         o.cwd = heap_string(vm, v).unwrap_or_default();
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "env") {
-        if let Some(_) = v.as_object() {
+        if v.as_object().is_some() {
             let mut env_list = Vec::new();
             for (k, ev) in vm.own_properties(v) {
                 env_list.push((k, vm.format_value(ev)));
@@ -406,13 +412,19 @@ fn parse_sync_opts(vm: &mut Vm, opts_val: Option<Value>) -> SyncOpts {
             );
         }
     }
-    if let Ok(ValueCase::Number(n)) = vm.get_property(Value::Object(opts), "timeout").map(ValueCase::from) {
+    if let Ok(ValueCase::Number(n)) = vm
+        .get_property(Value::Object(opts), "timeout")
+        .map(ValueCase::from)
+    {
         o.timeout = (n as i64).max(0) as u64;
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "encoding") {
         o.encoding = heap_string(vm, v).unwrap_or_default();
     }
-    if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(opts), "windowsHide").map(ValueCase::from) {
+    if let Ok(ValueCase::Boolean(b)) = vm
+        .get_property(Value::Object(opts), "windowsHide")
+        .map(ValueCase::from)
+    {
         o.windows_hide = b;
     }
     o
@@ -626,7 +638,10 @@ fn sync_result_or_throw(
 ) -> Result<Value, VmError> {
     if let Some(err_obj) = vm.get_property(result, "error")?.as_object() {
         let mut code = "ENOENT".to_owned();
-        if let Ok(ValueCase::Object(c)) = vm.get_property(Value::Object(err_obj), "code").map(ValueCase::from) {
+        if let Ok(ValueCase::Object(c)) = vm
+            .get_property(Value::Object(err_obj), "code")
+            .map(ValueCase::from)
+        {
             code = heap_string(vm, Value::Object(c)).unwrap_or(code);
         }
         let message = format!("spawnSync {cmdline_for_error} {code}");
@@ -725,7 +740,7 @@ fn child_kill(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.destroy()`：置 destroyed 并返回流本身（Go destroyOnce 语义简化）。
 fn stream_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Some(_) = receiver.as_object() {
+    if receiver.as_object().is_some() {
         let _ = vm.set_property(receiver, "destroyed", Value::Boolean(true));
     }
     Ok(receiver)

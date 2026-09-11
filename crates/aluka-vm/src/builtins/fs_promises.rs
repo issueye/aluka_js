@@ -1,4 +1,4 @@
-﻿//! `fs/promises` 内置模块（Phase 4）：Node 异步文件系统 Promise 接口。
+//! `fs/promises` 内置模块（Phase 4）：Node 异步文件系统 Promise 接口。
 //!
 //! 语义实测完全对齐 Node.js 22 LTS 规范：
 //! - `readFile(path, [encoding]) -> Promise<Buffer | string>`：读取文件内容，默认返回 Buffer 实例，指定编码时返回字符串；
@@ -93,7 +93,10 @@ fn parse_encoding(vm: &mut Vm, opt: Value) -> String {
         ValueCase::Object(r) => {
             if let Some(HeapObject::String(s)) = vm.heap.get(r.index()) {
                 s.clone()
-            } else if let Ok(ValueCase::Object(er)) = vm.get_property(Value::Object(r), "encoding").map(ValueCase::from) {
+            } else if let Ok(ValueCase::Object(er)) = vm
+                .get_property(Value::Object(r), "encoding")
+                .map(ValueCase::from)
+            {
                 if let Some(HeapObject::String(s)) = vm.heap.get(er.index()) {
                     s.clone()
                 } else {

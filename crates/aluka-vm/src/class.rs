@@ -29,15 +29,9 @@ impl Vm {
 
         // 1. 创建 prototype 原型对象
         let super_proto_ref = if let Some(s) = super_ctor {
-            match self.get_property(s, "prototype").map(|v| v.case()).map(ValueCase::from) {
+            match self.get_property(s, "prototype").map(|v| v.case()) {
                 Ok(ValueCase::Object(p)) => Some(p),
-                _ => {
-                    if let Some(p) = s.as_object() {
-                        Some(p)
-                    } else {
-                        None
-                    }
-                }
+                _ => s.as_object(),
             }
         } else {
             None
@@ -89,15 +83,10 @@ impl Vm {
 
         // 静态继承：ctor 的 proto 指向 super_ctor
         if let Some(s_val) = super_ctor {
-            let actual_super_ctor = match self.get_property(s_val, "constructor").map(|v| v.case()).map(ValueCase::from) {
+            let actual_super_ctor = match self.get_property(s_val, "constructor").map(|v| v.case())
+            {
                 Ok(ValueCase::Object(c)) => Some(c),
-                _ => {
-                    if let Some(c) = s_val.as_object() {
-                        Some(c)
-                    } else {
-                        None
-                    }
-                }
+                _ => s_val.as_object(),
             };
             if let Some(s_ref) = actual_super_ctor {
                 if let Some(HeapObject::Closure { proto, .. }) =

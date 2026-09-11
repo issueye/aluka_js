@@ -253,7 +253,7 @@ impl Vm {
                 }
                 _ => Some((resolver, ret)),
             },
-            other => Some((resolver, other)),
+            other => Some((resolver, Value::from(other))),
         };
         if let Some((resolver, value)) = adopted {
             self.microtask_queue.push_back(Job::Call(resolver, value));

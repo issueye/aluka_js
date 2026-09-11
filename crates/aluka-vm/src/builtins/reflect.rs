@@ -134,9 +134,15 @@ fn proxy_revocable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `revoke` 属性还原捕获的 fn 对象再读 `_revokes`）。
 fn proxy_revoke(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Some(r) = receiver.as_object().map(ValueCase::from) {
-        if let Ok(ValueCase::Object(fr)) = vm.get_property(Value::Object(r), "revoke").map(ValueCase::from) {
-            if let Some(pr) = vm.get_native_fn_property(fr, "_revokes").and_then(|v| v.as_object()) {
+    if let Some(r) = receiver.as_object() {
+        if let Ok(ValueCase::Object(fr)) = vm
+            .get_property(Value::Object(r), "revoke")
+            .map(ValueCase::from)
+        {
+            if let Some(pr) = vm
+                .get_native_fn_property(fr, "_revokes")
+                .and_then(|v| v.as_object())
+            {
                 vm.revoke_proxy(pr);
             }
         }
@@ -267,7 +273,10 @@ fn reflect_is_extensible(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             return Ok(Value::Boolean(vm.proxy_is_extensible(r)?));
         }
     }
-    Ok(Value::Boolean(matches!(target.case(), ValueCase::Object(_))))
+    Ok(Value::Boolean(matches!(
+        target.case(),
+        ValueCase::Object(_)
+    )))
 }
 
 /// `Reflect.ownKeys(target)`。
@@ -300,7 +309,10 @@ fn reflect_prevent_extensions(vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
             return Ok(Value::Boolean(vm.proxy_prevent_extensions(r)?));
         }
     }
-    Ok(Value::Boolean(matches!(target.case(), ValueCase::Object(_))))
+    Ok(Value::Boolean(matches!(
+        target.case(),
+        ValueCase::Object(_)
+    )))
 }
 
 /// `Reflect.set(target, propertyKey, V[, receiver])`。

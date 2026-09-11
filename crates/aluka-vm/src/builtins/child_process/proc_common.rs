@@ -194,7 +194,7 @@ fn inst_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(receiver);
     };
     let event = match args.first() {
-        Some(v) if !matches!(*v, Value::Undefined) => Some(vm.to_property_key(*v)),
+        Some(v) if !v.is_undefined() => Some(vm.to_property_key(*v)),
         _ => None,
     };
     emitter_remove_all(r.0, event.as_deref());

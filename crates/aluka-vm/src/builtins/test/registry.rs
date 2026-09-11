@@ -211,7 +211,7 @@ pub fn apply_test_opts(vm: &mut crate::interpreter::Vm, o: Value, opts: &mut Tes
         opts.only = b;
     }
     // concurrency：true 或 ≥2 的数字均视为并发
-    match vm.get_property(o, "concurrency").map(|v| v.case()).map(ValueCase::from) {
+    match vm.get_property(o, "concurrency").map(|v| v.case()) {
         Ok(ValueCase::Boolean(b)) if b => opts.concurrency = true,
         Ok(ValueCase::Number(n)) if n >= 2.0 => opts.concurrency = true,
         _ => {}

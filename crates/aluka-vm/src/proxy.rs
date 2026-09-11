@@ -49,13 +49,15 @@ impl Vm {
     pub(crate) fn construct_proxy(&mut self, args: &[Value]) -> Result<Value, VmError> {
         let target = args.first().copied().unwrap_or(Value::Undefined);
         let handler = args.get(1).copied().unwrap_or(Value::Undefined);
-        if !matches!(target.case(), ValueCase::Object(_)) || !matches!(handler.case(), ValueCase::Object(_)) {
+        if !matches!(target.case(), ValueCase::Object(_))
+            || !matches!(handler.case(), ValueCase::Object(_))
+        {
             let msg = "Cannot create proxy with a non-object as target or handler";
             return Err(VmError::Thrown(Value::Object(
                 self.alloc_typed_error(msg, "TypeError"),
             )));
         }
-        let (ValueCase::Object(t), ValueCase::Object(h)) = (target, handler) else {
+        let (ValueCase::Object(t), ValueCase::Object(h)) = (target.case(), handler.case()) else {
             unreachable!("上方已校验均为对象");
         };
         Ok(Value::Object(self.alloc_proxy(t, h)))

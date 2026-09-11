@@ -133,7 +133,7 @@ fn format_uncaught(vm: &mut Vm, exc: Value) -> String {
             vm.current_func_idx, vm.last_pc
         );
     }
-    if matches!(exc, Value::Object(_)) {
+    if exc.is_object() {
         let name = vm
             .get_property(exc, "name")
             .ok()

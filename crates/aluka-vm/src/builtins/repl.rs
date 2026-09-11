@@ -85,7 +85,7 @@ fn repl_start(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut eval_fn: Option<Value> = None;
     if let Some(o) = args.first().copied().and_then(|v| v.as_object()) {
         if let Ok(v) = vm.get_property(Value::Object(o), "prompt") {
-            if !matches!(v, Value::Undefined) {
+            if !v.is_undefined() {
                 prompt = vm.format_value(v);
             }
         }
@@ -154,7 +154,7 @@ fn repl_start(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 自定义 eval 的回调 `cb(null, result)`：result 非 `undefined` 时打印。
 fn server_callback(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(v) = args.get(1) {
-        if !matches!(*v, Value::Undefined) {
+        if !v.is_undefined() {
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "{}", vm.format_value(*v));
             let _ = out.flush();

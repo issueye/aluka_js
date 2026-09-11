@@ -104,7 +104,7 @@ impl Vm {
                     }
                     _ => Some((*el, false)),
                 },
-                other => Some((other, false)),
+                other => Some((Value::from(other), false)),
             };
             match settled {
                 None => WATCHERS.with(|c| {

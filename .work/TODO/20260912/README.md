@@ -1,6 +1,6 @@
-# 2026-09-12 · 每日 TODO（M5 收口：LCOV 行覆盖 + RR 决策正式化；M6 现状盘点）
+# 2026-09-12 · 每日 TODO（M5 收口：LCOV 行覆盖 + RR 决策正式化；M6.2 NaN-boxing 落地；M6 现状盘点）
 
-**当前里程碑**：M5（收口）/ M6（盘点与推进）　|　**权威 Oracle**：Node.js 22 LTS (v22.23.1)
+**当前里程碑**：M5（结项）/ M6（M6.2 分支落地）/ 后续 M6.3　|　**权威 Oracle**：Node.js 22 LTS (v22.23.1)
 
 ## 1. 待办清单（开工先登记）
 
@@ -9,7 +9,8 @@
 | 1 | M5.4 LCOV 行覆盖四层闭环（`aluka test --test-reporter=lcov`） | `[x]` | M5.4 |
 | 2 | M5.2 RR 调度决策正式化（维持偏离结项） | `[x]` | M5.2 |
 | 3 | M6.1 已落地核验（gcPressure 1.35x PASS，总表同步） | `[x]` | M6.1 |
-| 4 | M6.2 / M6.3 评估与登记 | `[~]` | M6 |
+| 4 | M6.2 8 字节 NaN-boxing `Value` 表示切换（分支 m62-nanobox 全门禁绿） | `[x]` | M6.2 |
+| 5 | M6.3 解释器 PIC 全量接入 + JIT 全指令流扩容 | `[ ]` | M6 |
 
 ## 2. 待办 1 · M5.4 LCOV 行覆盖四层闭环
 
@@ -120,3 +121,48 @@ $ ALUKA_CONF_FILTER=m5 …conformance_node22_test
   ② JIT 扩容至调用/闭包/生成器/Try 等**全指令流**（现子集外编译期拒绝）。
 - 工作量：①≈1 天 + 基准；②≈2~3 天（涉及调用约定与 GC/栈映射协同）。
 - **结论：独立专项轮次，本轮不实施、不声称完成。**
+
+## 7. 待办 4 · M6.2：8 字节 NaN-boxing `Value` 表示切换（分支 m62-nanobox）
+
+### 7.1 实现记录
+
+| 项 | 内容 |
+|---|---|
+| 表示本体 | `crates/aluka-vm/src/value.rs` 重写：`Value` 从 16 字节 Tagged Enum → **8 字节 NaN-box 机器字**（`#[repr(transparent)] u64`，编译期 `size_of == 8` 断言）。编码与 `aluka-jit/src/valbox.rs` 同源：Number = f64 比特直存（NaN 规范化 `0x7FF8…`）；非数值 = `0xFFF7_0000_0000_0000 \| tag`（undefined=0/null=1/false=2/true=3/object=4，ObjectRef 占 8..=39 位） |
+| 兼容层（构造点零改动） | 关联常量 `Value::Undefined`/`Value::Null`（构造 + const pattern 双兼容）；关联函数 `Value::Number(x)`/`Value::Boolean(b)`/`Value::Object(r)`（调用形态与旧元组变体逐字相同）；`ValueCase` 镜像枚举（`v.case()`）承接旧解构模式；访问器 `as_number`/`as_object`/`as_bool`/`is_*`/`kind`/`bits`/`from_bits` |
+| 迁移范围 | 分支累计 3 轮 wip（4900+ 处 `Value::` 引用中的模式匹配面）；本轮收尾 174（vm lib）+ 2（runtime lib）+ 16（`#[cfg(test)]`，`--all-targets` 才暴露）+ 30 余处 clippy lint（双 `.map(ValueCase::from)` / `Some(_)` / manual_map / 无用导入），全工作区 `cargo check`/clippy 清零 |
+
+### 7.2 本轮关键缺陷（全部实测暴露、全部修复）
+
+1. **Boolean 编码错误**：`TAG_PREFIX \| TAG_TRUE \| u64::from(b)` 使 true/false 编码恒同（3\|1==3\|0）→ 全部布尔变 true（fact(2)=1）；改为 `if b { TAG_TRUE } else { TAG_FALSE }`；
+2. **pipe 回压死锁**：`read_high_water_mark` 重写后缺 `DEFAULT_HIGH_WATER_MARK` 回退返回 0 → 所有 pipe 即刻背压；已恢复默认回退；
+3. **aluka-core `is_object` 无限递归**：自动规则误伤 `matches!(self, Value::Object(_))` → 复原；
+4. **GC 重入 panic（M5 潜伏缺陷，GC 压力模式暴露）**：`test/state.rs` 在 `SUBTEST_STATES.borrow_mut()` 闭包内 `vm.alloc_pending_promise()`，压力下分配触发 GC → `store_roots` 重入同债 RefCell；分配移出借锁作用域，全仓扫描确认无同类（vm 调用 × borrow_mut 闭包仅此一处）。
+
+### 7.3 门禁证据（真实输出）
+
+```text
+$ cargo fmt --all --check                      → 通过
+$ cargo clippy --all-targets --all-features -- -D warnings
+    → 0 error
+$ cargo test --workspace --all-features
+    → TOTAL passed: 639, failed: 0, ignored: 1
+$ ALUKA_GC_STRESS=8 cargo test（cli 242 + vm 203 + 其余 100）
+    → 545 passed, 0 failed
+$ cargo test -p aluka-cli --test conformance_node22_test
+    → 1 passed（全量差分 vs node v22.23.1 stdout 逐字节一致，25.60s）
+$ cargo run --release -p aluka-cli --example fib_bench
+    → 分支 824.4931ms（min-of-5） vs master 840.397ms → 1.019x；输出校验 832040
+$ cargo run --release -p aluka-cli --example gcpressure
+    → 1.25x（M6.1 验收线 ≤3.0x）——较 M6.1 时的 1.35x 进一步改善
+      （8 字节值 → 堆峰值内存下降，NaN-box 的直接内存收益）
+```
+
+### 7.4 验收口径（如实登记）
+
+- **内存**：gcPressure 1.35x → 1.25x，NaN-box 表示的堆收益兑现 ✅；
+- **jitdiff 逐位一致**：JIT 值域与解释器共享同一编码的根基测试全绿 ✅；
+- **吞吐**：fib_bench 单项 1.02x——fib(30) 负载以函数调用压栈为主（269 万次调用），
+  表示切换的直接收益有限；总表 M6.2「≥1.5x」为表示切换 + M6.3（PIC 全量接入 +
+  JIT 扩容）协同后的复合目标，**不放宽验收线**，登记为待 M6.3 协同复核项；
+- **总表 M6.2 行**：合并后同步为「表示切换落地（本日），吞吐复合验收待 M6.3」。

@@ -1,4 +1,4 @@
-﻿//! `test` 内置模块（Phase 8）：Node 22 `node:test` 的 describe/it/test/
+//! `test` 内置模块（Phase 8）：Node 22 `node:test` 的 describe/it/test/
 //! hooks/mock/assert 表面与「注册 + 顺序执行」模型。
 //!
 //! 模块导出值本身即**可调用的 `test` 函数**（Node 22 实测锚定：
@@ -545,7 +545,7 @@ fn stream_compose(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 .ok()
                 .is_some_and(|v| vm.is_string_value(v));
             if already {
-                r
+                Value::from(r)
             } else {
                 // 工厂函数：调用后得实例
                 let inst = vm.invoke_callable(Value::from(r), Value::Undefined, &[])?;
@@ -612,10 +612,13 @@ fn stream_compose(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 事件转发：把 `{type, data}` 事件分块交报告器格式化，文本直通目的地
 /// （未 pipe 时缓冲；写目的地在状态锁外执行，避免 borrow 跨调用）。
 fn compose_forward(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let ValueCase::Object(callee) = crate::builtins::pending_callee() else {
+    let ValueCase::Object(callee) = crate::builtins::pending_callee().case() else {
         return Ok(Value::Undefined);
     };
-    let composed_id = match vm.get_native_fn_property(callee, "_composed").map(|v| v.case()) {
+    let composed_id = match vm
+        .get_native_fn_property(callee, "_composed")
+        .map(|v| v.case())
+    {
         Some(ValueCase::Number(n)) if n >= 0.0 => n as u32,
         _ => return Ok(Value::Undefined),
     };

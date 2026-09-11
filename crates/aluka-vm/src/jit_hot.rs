@@ -375,7 +375,7 @@ mod tests {
                     Vec::new(),
                 )
                 .expect("JIT 调用");
-            let (Value::Number(a), Value::Number(b)) = (v, results[i as usize]) else {
+            let (Some(a), Some(b)) = (v.as_number(), results[i as usize].as_number()) else {
                 panic!("均应为数值")
             };
             assert_eq!(
@@ -512,7 +512,7 @@ mod call_chain_tests {
             let v = vm
                 .invoke_function(0, Value::Undefined, &[], Vec::new())
                 .expect("调用 caller");
-            let Value::Number(n) = v else {
+            let Some(n) = v.as_number() else {
                 panic!("应为数值")
             };
             assert_eq!(n, 6.0, "cb(3) = 3*2 = 6");

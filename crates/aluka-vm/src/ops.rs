@@ -128,7 +128,7 @@ pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
 
 /// 字符串值相等：两个堆字符串按内容比较（JS 语义；句柄相同或内容相同）。
 pub fn string_values_eq(a: &Value, b: &Value, heap: &[HeapObject]) -> bool {
-    match (a, b).case() {
+    match (a.case(), b.case()) {
         (ValueCase::Object(x), ValueCase::Object(y)) => {
             if x == y {
                 return true;
@@ -165,12 +165,13 @@ pub fn eq(
     heap: &[HeapObject],
     constants: &[aluka_bytecode::Constant],
 ) -> bool {
-    match (left, right).case() {
+    match (left.case(), right.case()) {
         (ValueCase::Number(a), ValueCase::Number(b)) => a == b,
         (ValueCase::Boolean(a), ValueCase::Boolean(b)) => a == b,
-        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
-        (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
-        (ValueCase::Number(n), ValueCase::Object(r)) | (ValueCase::Object(r), ValueCase::Number(n)) => {
+        (ValueCase::Null, ValueCase::Null) | (ValueCase::Undefined, ValueCase::Undefined) => true,
+        (ValueCase::Null, ValueCase::Undefined) | (ValueCase::Undefined, ValueCase::Null) => true,
+        (ValueCase::Number(n), ValueCase::Object(r))
+        | (ValueCase::Object(r), ValueCase::Number(n)) => {
             if let Some(s) = get_string_repr(r.0 as usize, heap, constants) {
                 if let Ok(sn) = s.trim().parse::<f64>() {
                     return n == sn;
@@ -201,10 +202,10 @@ pub fn strict_eq(
     heap: &[HeapObject],
     constants: &[aluka_bytecode::Constant],
 ) -> bool {
-    match (left, right).case() {
+    match (left.case(), right.case()) {
         (ValueCase::Number(a), ValueCase::Number(b)) => a == b,
         (ValueCase::Boolean(a), ValueCase::Boolean(b)) => a == b,
-        (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
+        (ValueCase::Null, ValueCase::Null) | (ValueCase::Undefined, ValueCase::Undefined) => true,
         (ValueCase::Object(a), ValueCase::Object(b)) => {
             if a == b {
                 true
@@ -230,7 +231,7 @@ impl Vm {
 
     /// 执行加法运算（支持数值相加与 ECMAScript 字符串自动拼接）。
     pub fn add_values(&mut self, left: Value, right: Value) -> Value {
-        if let (ValueCase::Number(a), ValueCase::Number(b)) = (left, right) {
+        if let (ValueCase::Number(a), ValueCase::Number(b)) = (left.case(), right.case()) {
             return Value::Number(a + b);
         }
         let is_left_str = if let Some(r) = left.as_object() {
@@ -311,7 +312,9 @@ impl Vm {
     fn to_cmp_primitive(&self, v: Value) -> CmpPrimitive {
         match v.case() {
             ValueCase::Number(n) => CmpPrimitive::Num(n),
-            ValueCase::Boolean(_) | ValueCase::Null | ValueCase::Undefined => CmpPrimitive::Num(to_number(v)),
+            ValueCase::Boolean(_) | ValueCase::Null | ValueCase::Undefined => {
+                CmpPrimitive::Num(to_number(v))
+            }
             ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => CmpPrimitive::Str(s.clone()),
                 Some(HeapObject::BigInt(b)) => {

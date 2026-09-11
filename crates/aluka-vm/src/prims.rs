@@ -268,14 +268,18 @@ impl Vm {
         // 索引类参数按 JS ToInteger 语义强转：数字直用，字符串解析数值
         //（如 `charCodeAt('1')` → 1，对齐 Node），其余非数字为 NaN
         fn arg_index_num(vm: &Vm, args: &[Value], i: usize) -> f64 {
-            match args.get(i).map(|v| v.case()).unwrap_or(ValueCase::Undefined) {
-                Some(ValueCase::Number(n)) => n,
-                Some(ValueCase::Object(r)) => match vm.heap.get(r.0 as usize) {
+            match args
+                .get(i)
+                .map(|v| v.case())
+                .unwrap_or(ValueCase::Undefined)
+            {
+                ValueCase::Number(n) => n,
+                ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
                     Some(HeapObject::String(s)) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
                     _ => f64::NAN,
                 },
-                Some(ValueCase::Boolean(true)) => 1.0,
-                Some(ValueCase::Boolean(false)) | Some(Value::Null) => 0.0,
+                ValueCase::Boolean(true) => 1.0,
+                ValueCase::Boolean(false) | ValueCase::Null => 0.0,
                 _ => f64::NAN,
             }
         }
@@ -360,7 +364,7 @@ impl Vm {
                     target_f as usize
                 };
                 let fill = match args.get(1) {
-                    Some(v) if !matches!(*v, Value::Undefined) => self.format_value(*v),
+                    Some(v) if !v.is_undefined() => self.format_value(*v),
                     _ => " ".to_owned(),
                 };
                 if target <= chars.len() || fill.is_empty() {

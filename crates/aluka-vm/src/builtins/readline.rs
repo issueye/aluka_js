@@ -1,4 +1,4 @@
-﻿//! `readline` 内置模块（Phase 7）：Node 22 交互式逐行读取（回调版）。
+//! `readline` 内置模块（Phase 7）：Node 22 交互式逐行读取（回调版）。
 //!
 //! 语义严格对齐 Node.js 22 LTS 规范：
 //! - 顶层终端工具函数（差分环境无 TTY，全部 no-op）：`emitKeypressEvents`、
@@ -138,13 +138,16 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let mut output: Option<Value> = None;
     let mut terminal = true;
-    if let Some(o) = args.first().copied().and_then(|v| v.as_object()).map(ValueCase::from) {
+    if let Some(o) = args.first().copied().and_then(|v| v.as_object()) {
         if let Ok(v) = vm.get_property(Value::Object(o), "output") {
             if !matches!(v, Value::Undefined) {
                 output = Some(v);
             }
         }
-        if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(o), "terminal").map(ValueCase::from) {
+        if let Ok(ValueCase::Boolean(b)) = vm
+            .get_property(Value::Object(o), "terminal")
+            .map(ValueCase::from)
+        {
             terminal = b;
         }
     }

@@ -350,7 +350,7 @@ fn call_ic_writeback(
         // SAFETY: cell 由 JIT 提供、单线程独占、本次调用存活
         unsafe { (*cell).state = aluka_jit::ctx::CallCell::NO_FAST }
     };
-    let ValueCase::Object(r) = to_vm_value(callee) else {
+    let ValueCase::Object(r) = to_vm_value(callee).case() else {
         return no_fast(cell);
     };
     let func_idx = match vm.heap.get(r.0 as usize) {

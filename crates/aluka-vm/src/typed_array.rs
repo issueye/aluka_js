@@ -472,7 +472,7 @@ impl Vm {
                         )));
                     }
                     let len = match args.get(2) {
-                        Some(v) if !matches!(*v, Value::Undefined) => {
+                        Some(v) if !v.is_undefined() => {
                             let n = crate::ops::to_number(*v);
                             if n.is_nan() || n < 0.0 { 0 } else { n as usize }
                         }
@@ -566,7 +566,7 @@ impl Vm {
             )));
         }
         let blen = match args.get(2) {
-            Some(v) if !matches!(*v, Value::Undefined) => {
+            Some(v) if !v.is_undefined() => {
                 let n = crate::ops::to_number(*v);
                 if n.is_nan() || n < 0.0 { 0 } else { n as usize }
             }
@@ -637,14 +637,15 @@ impl Vm {
             }
             "join" => {
                 let sep = match args.first() {
-                    Some(Value::Undefined) | None => ",".to_owned(),
+                    None => ",".to_owned(),
+                    Some(v) if v.is_undefined() => ",".to_owned(),
                     Some(v) => self.format_value(*v),
                 };
                 let elems = self.ta_to_values(ta)?;
                 let items: Vec<String> = elems
                     .iter()
                     .map(|v| match v {
-                        Value::Undefined | Value::Null => String::new(),
+                        v if v.is_undefined() || v.is_null() => String::new(),
                         x => self.format_value(*x),
                     })
                     .collect();
@@ -679,7 +680,8 @@ impl Vm {
                 let needle = args.first().copied().unwrap_or(Value::Undefined);
                 let elems = self.ta_to_values(ta)?;
                 let found = elems.iter().any(|e| {
-                    if let (ValueCase::Number(x), ValueCase::Number(y)) = (e, needle) {
+                    if let (ValueCase::Number(x), ValueCase::Number(y)) = (e.case(), needle.case())
+                    {
                         if x.is_nan() && y.is_nan() {
                             return true;
                         }
@@ -701,7 +703,7 @@ impl Vm {
                 let len = self.ta_length(ta);
                 let s = normalized_index(arg_num(1), len);
                 let e = match args.get(2) {
-                    Some(v) if !matches!(*v, Value::Undefined) => {
+                    Some(v) if !v.is_undefined() => {
                         normalized_index(Some(crate::ops::to_number(*v)), len)
                     }
                     _ => len,
@@ -717,7 +719,7 @@ impl Vm {
                 let target = normalized_index(arg_num(0), len);
                 let start = normalized_index(arg_num(1), len);
                 let end = match args.get(2) {
-                    Some(v) if !matches!(*v, Value::Undefined) => {
+                    Some(v) if !v.is_undefined() => {
                         normalized_index(Some(crate::ops::to_number(*v)), len)
                     }
                     _ => len,
@@ -734,7 +736,7 @@ impl Vm {
                 self.check_detached(buffer)?;
                 let begin = normalized_index(arg_num(0), length);
                 let end = match args.get(1) {
-                    Some(v) if !matches!(*v, Value::Undefined) => {
+                    Some(v) if !v.is_undefined() => {
                         normalized_index(Some(crate::ops::to_number(*v)), length)
                     }
                     _ => length,
@@ -1037,9 +1039,7 @@ impl Vm {
         let len = data.len();
         let begin = normalized_index(args.first().map(|v| crate::ops::to_number(*v)), len);
         let end = match args.get(1) {
-            Some(v) if !matches!(*v, Value::Undefined) => {
-                normalized_index(Some(crate::ops::to_number(*v)), len)
-            }
+            Some(v) if !v.is_undefined() => normalized_index(Some(crate::ops::to_number(*v)), len),
             _ => len,
         };
         let sliced = data[begin..end.max(begin)].to_vec();

@@ -236,7 +236,7 @@ fn client_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     if let Some(chunk) = args.first() {
         // Go：仅排除 undefined 与函数（null 会按 "null" 追加，逐字对齐）。
-        if !matches!(*chunk, Value::Undefined) && !super::is_function(vm, *chunk) {
+        if !chunk.is_undefined() && !super::is_function(vm, *chunk) {
             let bytes = super::chunk_bytes(vm, *chunk);
             with_clients(|clients| {
                 if let Some(c) = clients.iter_mut().find(|c| c.obj == r.0) {
