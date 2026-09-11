@@ -1653,6 +1653,1953 @@ impl Vm {
     ///
     /// 遇到未接住的 `Thrown` 即返回，由 [`Vm::run_with_constants`] 查找 handler
     /// 后重入续跑；嵌套调用（`invoke_function`）在返回前已恢复本帧上下文。
+    /// 方法调用统一分派（M6.3 切片三：自 `Op::CallMethod` 内联链原样提取）。
+    ///
+    /// 解释器 `Op::CallMethod` 与 JIT 调用族 helper 共用本入口，内建分派链
+    /// 语义单源；`site` 为方法 IC 站点键（解释器传 `pic_site(pc)`，JIT 传
+    /// 无效站点禁用命中、仅写回）。
+    fn call_method_dispatch(
+        &mut self,
+        receiver: Value,
+        method_name: &str,
+        args: &[Value],
+        site: u64,
+    ) -> Result<Value, VmError> {
+        // 通用调用协议（优先于内置分派）：fn.call(thisArg, ...args) /
+        // fn.apply(thisArg, argsArray)——Function.prototype 语义，
+        // 不可被「模块名.方法名」拼接劫持。例外：解析出的方法值是
+        // Reflect./Proxy. 前缀原生函数时（如 Reflect.apply 本身即
+        // 规范静态方法），内置分派优先于通用协议
+        // bind：同样必须走 Function.prototype 语义——NativeFn
+        // receiver 的 try_dispatch 回退会错误地把 bind 分派到
+        // 函数自身方法（如 AsyncResource.runInAsyncScope.bind 被
+        // 劫持成 runInAsyncScope 调用，raw-body 依赖此形态）。
+        // 守卫：仅函数对象（Closure/NativeFn/NativeCtor）的 bind
+        // 才是 Function.prototype.bind；非函数 receiver 的 bind
+        // 是真实实例方法（dgram.Socket.bind() 等），必须走常规
+        // 方法分派——09-09 一刀切曾把 dgram bind 吞成绑定函数
+        let receiver_is_fn = matches!(receiver.case(), ValueCase::Object(rb)
+                if matches!(
+                    self.heap.get(rb.0 as usize),
+                    Some(HeapObject::Closure { .. })
+                        | Some(HeapObject::NativeFn { .. })
+                        | Some(HeapObject::NativeCtor { .. })
+                )
+        );
+        if method_name == "bind" && receiver_is_fn {
+            crate::builtins::set_current_receiver(receiver);
+            crate::builtins::set_pending_native_name("Function.prototype.bind");
+            let res = crate::builtins::surface::fn_proto_bind(self, args)?;
+            return Ok(res);
+        }
+        if matches!(method_name, "call" | "apply") {
+            let method_val = self.get_property(receiver, method_name)?;
+            let is_reflect_like = match &method_val.case() {
+                ValueCase::Object(mr) => match self.heap.get(mr.0 as usize) {
+                    Some(HeapObject::NativeFn { name, .. }) => {
+                        name.starts_with("Reflect.") || name.starts_with("Proxy.")
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            if is_reflect_like {
+                if let Some(res) = crate::builtins::try_dispatch(self, receiver, method_name, args)
+                {
+                    let val = res?;
+                    return Ok(val);
+                }
+            }
+            let this_arg = args.first().copied().unwrap_or(Value::Undefined);
+            let call_args: Vec<Value> = if method_name == "call" {
+                if args.is_empty() {
+                    Vec::new()
+                } else {
+                    args[1..].to_vec()
+                }
+            } else {
+                args.get(1)
+                    .copied()
+                    .map(|a| self.to_array_values(a))
+                    .unwrap_or_default()
+            };
+            let ret = self.invoke_callable(receiver, this_arg, &call_args)?;
+            return Ok(ret);
+        }
+        if let Some(r) = receiver.as_object() {
+            let is_reflect_like = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::NativeFn { name, .. }) => {
+                    name.starts_with("Reflect.") || name.starts_with("Proxy.")
+                }
+                _ => false,
+            };
+            if is_reflect_like {
+                if let Some(res) = crate::builtins::try_dispatch(self, receiver, method_name, args)
+                {
+                    let val = res?;
+                    return Ok(val);
+                }
+            }
+        }
+        if let Some(res) = crate::builtins::try_dispatch(self, receiver, method_name, args) {
+            let val = res?;
+            Ok(val)
+        } else if method_name == "log" {
+            let line = args
+                .iter()
+                .map(|v| self.format_console_value(*v))
+                .collect::<Vec<_>>()
+                .join(" ");
+            self.stdout_records.push(line);
+            Ok(Value::Undefined)
+        } else if self
+            .math_object
+            .is_some_and(|m| receiver == Value::Object(m))
+            && matches!(
+                method_name,
+                "abs"
+                    | "ceil"
+                    | "floor"
+                    | "round"
+                    | "trunc"
+                    | "sign"
+                    | "sqrt"
+                    | "cbrt"
+                    | "pow"
+                    | "max"
+                    | "min"
+                    | "hypot"
+                    | "log"
+                    | "log2"
+                    | "log10"
+                    | "exp"
+                    | "random"
+            )
+        {
+            // Math.*：原生方法（receiver 是 Math 单例）
+            let math_val = math_method(method_name, args);
+            Ok(math_val)
+        } else if matches!(method_name, "exec" | "test") && self.is_regexp_obj(receiver) {
+            // RegExp 原型方法：exec 返回结果数组（带 index/input/
+            // groups）或 null；test 返回布尔（g/y 语义驱动 lastIndex）
+            let subject = args
+                .first()
+                .map(|v| self.format_value(*v))
+                .unwrap_or_default();
+            let result = self.regexp_exec(receiver, &subject)?;
+            if method_name == "test" {
+                Ok(Value::Boolean(result.is_some()))
+            } else {
+                Ok(result.unwrap_or(Value::Null))
+            }
+        } else if method_name == "toString" && self.is_regexp_obj(receiver) {
+            // String(re)："/pat/flags"（format_value 同形态）
+            let s = self.format_value(receiver);
+            let s_ref = self.alloc_string(s);
+            Ok(Value::Object(s_ref))
+        } else if method_name == "next" && self.is_generator_obj(receiver) {
+            // 生成器迭代协议：gen.next(v) 驱动到下一个 YIELD/结束
+            let injected = args.first().copied().unwrap_or(Value::Undefined);
+            let gen_ref = match receiver.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("is_generator_obj 已确认 receiver 是对象"),
+            };
+            let result = self.drive_generator(gen_ref, Some(injected))?;
+            Ok(result)
+        } else if method_name == "next" && self.is_array_iterator(receiver) {
+            // 数组迭代协议（for...of）：产出 { value, done } 结果对象
+            let iter_ref = match receiver.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("is_array_iterator 已确认 receiver 是对象"),
+            };
+            let result = self.array_iterator_next(iter_ref)?;
+            Ok(result)
+        } else if method_name == "next" && self.is_string_iterator(receiver) {
+            let iter_ref = match receiver.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("is_string_iterator 已确认 receiver 是对象"),
+            };
+            let result = self.string_iterator_next(iter_ref)?;
+            Ok(result)
+        } else if method_name == "next" && self.is_map_iterator(receiver) {
+            let iter_ref = match receiver.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("is_map_iterator 已确认 receiver 是对象"),
+            };
+            let result = self.map_iterator_next(iter_ref)?;
+            Ok(result)
+        } else if method_name == "next" && self.is_set_iterator(receiver) {
+            let iter_ref = match receiver.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("is_set_iterator 已确认 receiver 是对象"),
+            };
+            let result = self.set_iterator_next(iter_ref)?;
+            Ok(result)
+        } else if self.is_symbol(receiver) && matches!(method_name, "toString" | "valueOf") {
+            let sym_ref = match receiver.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("is_symbol 已确认 receiver 是对象"),
+            };
+            match self.call_symbol_method(method_name, sym_ref) {
+                Some(Ok(v)) => Ok(v),
+                Some(Err(e)) => Err(e),
+                None => Ok(Value::Undefined),
+            }
+        } else if self.is_bigint_value(receiver) {
+            // BigInt 原型表面：toString/toLocaleString/valueOf
+            let text = match &receiver.case() {
+                ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::BigInt(t)) => t.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            match method_name {
+                "toString" => {
+                    // toString(radix)：2~36 进制（默认 10）
+                    let radix = args
+                        .first()
+                        .map(|v| crate::ops::to_number(*v))
+                        .unwrap_or(10.0);
+                    let out = if radix == 10.0 || radix.is_nan() {
+                        text
+                    } else {
+                        match text.parse::<i128>() {
+                            Ok(n) => format_radix(n, radix as u32),
+                            Err(_) => text,
+                        }
+                    };
+                    let s = self.alloc_string(out);
+                    Ok(Value::Object(s))
+                }
+                "toLocaleString" | "valueOf" => {
+                    let s = self.alloc_string(text);
+                    Ok(Value::Object(s))
+                }
+                _ => Ok(Value::Undefined),
+            }
+        } else if self.is_string_value(receiver) {
+            // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
+            let text = match &receiver.case() {
+                ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::String(t)) => t.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            match self.call_string_method(method_name, args, &text) {
+                Some(Ok(v)) => Ok(v),
+                Some(Err(e)) => Err(e),
+                None => {
+                    let msg = self.alloc_string(format!(
+                        "TypeError: {}.{} is not a function",
+                        text, method_name
+                    ));
+                    Err(VmError::Thrown(Value::Object(msg)))
+                }
+            }
+        } else if method_name == "isArray"
+            && self
+                .array_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Array.isArray(v)
+            let is_arr = args
+                .first()
+                .copied()
+                .map(|v| self.is_array_value(v))
+                .unwrap_or(false);
+            Ok(Value::Boolean(is_arr))
+        } else if method_name == "keys"
+            && self
+                .object_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Object.keys(obj)：自有可枚举键（数组为下标键；
+            // 字典序输出保证确定性；Proxy 经 ownKeys/get trap 派发）
+            let mut keys: Vec<String> = match args.first().map(|v| v.case()) {
+                Some(ValueCase::Object(r)) if self.proxy_parts(r).is_some() => {
+                    self.proxy_own_keys(r).unwrap_or_default()
+                }
+                Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::Ordinary { .. }) => self
+                        .own_entries(r.0 as usize)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .filter(|k| !crate::symbol::is_symbol_key(k))
+                        .collect(),
+                    Some(HeapObject::Array { elements, .. }) => {
+                        (0..elements.len()).map(|i| i.to_string()).collect()
+                    }
+                    Some(HeapObject::Closure {
+                        properties,
+                        getters,
+                        non_enum,
+                        ..
+                    }) => {
+                        // 函数对象自有面（express/body-parser 的
+                        // exports=fn + defineProperty 静态访问器；
+                        // prototype/不可枚举面过滤）
+                        let mut ks: Vec<String> = properties
+                            .keys()
+                            .filter(|k| !non_enum.contains(*k))
+                            .cloned()
+                            .collect();
+                        ks.extend(getters.keys().filter(|k| !non_enum.contains(*k)).cloned());
+                        ks
+                    }
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            keys.sort();
+            let elems: Vec<Value> = keys
+                .into_iter()
+                .map(|k| {
+                    let s = self.alloc_string(k);
+                    Value::Object(s)
+                })
+                .collect();
+            let arr = self.alloc_array(elems);
+            Ok(Value::Object(arr))
+        } else if method_name == "getOwnPropertyNames"
+            && self
+                .object_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Object.getOwnPropertyNames(obj)：自有全部字符串键
+            //（含不可枚举；符号键由 getOwnPropertySymbols 返回）
+            let keys: Vec<String> = match args.first().map(|v| v.case()) {
+                Some(ValueCase::Object(r)) if self.proxy_parts(r).is_some() => {
+                    self.proxy_own_keys(r).unwrap_or_default()
+                }
+                Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::Ordinary { .. }) => self
+                        .own_entries(r.0 as usize)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .filter(|k| !crate::symbol::is_symbol_key(k))
+                        .collect(),
+                    Some(HeapObject::Array { elements, .. }) => {
+                        let mut ks: Vec<String> =
+                            (0..elements.len()).map(|i| i.to_string()).collect();
+                        ks.extend(
+                            self.own_entries(r.0 as usize)
+                                .into_iter()
+                                .map(|(k, _)| k)
+                                .filter(|k| !crate::symbol::is_symbol_key(k)),
+                        );
+                        ks
+                    }
+                    Some(HeapObject::Closure {
+                        properties,
+                        getters,
+                        ..
+                    }) => {
+                        let mut ks: Vec<String> = properties.keys().cloned().collect();
+                        ks.extend(getters.keys().cloned());
+                        ks
+                    }
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            let elems: Vec<Value> = keys
+                .into_iter()
+                .map(|k| Value::Object(self.alloc_string(k)))
+                .collect();
+            let arr = self.alloc_array(elems);
+            Ok(Value::Object(arr))
+        } else if matches!(method_name, "for" | "keyFor") && self.is_symbol_ctor(receiver) {
+            // Symbol.for(key) / Symbol.keyFor(sym)
+            let out = if method_name == "for" {
+                self.symbol_for(args)?
+            } else {
+                self.symbol_key_for(args)?
+            };
+            Ok(out)
+        } else if method_name == "getOwnPropertySymbols"
+            && self
+                .object_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Object.getOwnPropertySymbols(obj)：符号键还原为符号值
+            let syms: Vec<Value> = match args.first().map(|v| v.case()) {
+                Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::Ordinary { .. }) => self
+                        .own_entries(r.0 as usize)
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .filter_map(|k| crate::symbol::parse_symbol_key(&k))
+                        .map(Value::Object)
+                        .collect(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            let arr = self.alloc_array(syms);
+            Ok(Value::Object(arr))
+        } else if method_name == "stringify" && self.is_json_object(receiver) {
+            // JSON.stringify(value)（成员调用形态）
+            let v = args.first().copied().unwrap_or(Value::Undefined);
+            let out = self.json_stringify(v)?;
+            Ok(out)
+        } else if method_name == "parse" && self.is_json_object(receiver) {
+            // JSON.parse(text)（成员调用形态）
+            let out = self.json_parse(args)?;
+            Ok(out)
+        } else if matches!(method_name, "readFileSync" | "writeFileSync" | "existsSync")
+            && self.fs_object.is_some_and(|f| receiver == Value::Object(f))
+        {
+            // fs 最小内置（M1）：同步读写文本文件
+            let path = args
+                .first()
+                .map(|v| self.format_value(*v))
+                .unwrap_or_default();
+            match method_name {
+                "existsSync" => Ok(Value::Boolean(std::path::Path::new(&path).exists())),
+                "readFileSync" => match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let s = self.alloc_string(content);
+                        Ok(Value::Object(s))
+                    }
+                    Err(e) => {
+                        let msg = self.alloc_string(format!("fs.readFileSync: {e}"));
+                        Err(VmError::Thrown(Value::Object(msg)))
+                    }
+                },
+                _ => {
+                    let data = args
+                        .get(1)
+                        .map(|v| self.format_value(*v))
+                        .unwrap_or_default();
+                    match std::fs::write(&path, data) {
+                        Ok(()) => Ok(Value::Undefined),
+                        Err(e) => {
+                            let msg = self.alloc_string(format!("fs.writeFileSync: {e}"));
+                            Err(VmError::Thrown(Value::Object(msg)))
+                        }
+                    }
+                }
+            }
+        } else if method_name == "nextTick" && {
+            let c1 = self
+                .process_object
+                .is_some_and(|p| receiver == Value::Object(p));
+            let c2 = matches!(receiver.case(), ValueCase::Object(rr)
+                    if matches!(
+                        self.heap.get(rr.0 as usize),
+                        Some(HeapObject::NativeFn { name, .. })
+                            if name == "nextTick"
+                    )
+            );
+            let _ = (c1, c2);
+            c1 || c2
+        } {
+            // process.nextTick(cb)：nextTick 优先微任务队列
+            let cb = args.first().copied().unwrap_or(Value::Undefined);
+            self.nexttick_queue.push_back(cb);
+            Ok(Value::Undefined)
+        } else if matches!(method_name, "then" | "catch" | "finally")
+            && matches!(receiver.case(), ValueCase::Object(rr)
+                    if matches!(
+                        self.heap.get(rr.0 as usize),
+                        Some(HeapObject::Promise { .. })
+                    )
+            )
+        {
+            // then(onF, onR) / catch(onR) / finally(cb)：创建新 promise P2，
+            // 登记反应（pending）或立即调度（已定型）——回调返回值采纳进
+            // P2，回调抛错拒绝 P2，finally 透传原定型值
+            let cb = args.first().copied().unwrap_or(Value::Undefined);
+            let on_rejected = if method_name == "then" {
+                args.get(1).copied().unwrap_or(Value::Undefined)
+            } else {
+                Value::Undefined
+            };
+            if let Some(rr) = receiver.as_object() {
+                let p2 = self.alloc_pending_promise();
+                let res2 = self.alloc_promise_resolver(p2, true);
+                let rej2 = self.alloc_promise_resolver(p2, false);
+                let (on_f, on_r) = match method_name {
+                    "then" => (cb, on_rejected),
+                    "catch" => (Value::Undefined, cb),
+                    _ => (cb, cb),
+                };
+                let is_finally = method_name == "finally";
+                let state = match self.heap.get(rr.0 as usize) {
+                    Some(HeapObject::Promise {
+                        pending,
+                        value,
+                        is_rejected,
+                        ..
+                    }) => Some((*pending, *value, *is_rejected)),
+                    _ => None,
+                };
+                match state {
+                    Some((true, _, _)) => {
+                        // pending：登记反应，定型时经 take_reactions 派发
+                        crate::builtins::promise::push_reaction(
+                            rr.0,
+                            crate::builtins::promise::Reaction {
+                                on_f,
+                                on_r,
+                                resolver: Value::Object(res2),
+                                reject_resolver: Value::Object(rej2),
+                            },
+                        );
+                    }
+                    Some((false, value, is_rejected)) => {
+                        // 已定型：立即调度反应
+                        if is_finally {
+                            self.microtask_queue
+                                .push_back(crate::builtins::Job::Reaction {
+                                    cb,
+                                    arg: value,
+                                    resolver: Value::Object(res2),
+                                    reject_resolver: Value::Object(rej2),
+                                    is_finally: true,
+                                });
+                        } else if is_rejected {
+                            if !matches!(on_r, Value::Undefined) {
+                                self.microtask_queue
+                                    .push_back(crate::builtins::Job::Reaction {
+                                        cb: on_r,
+                                        arg: value,
+                                        resolver: Value::Object(res2),
+                                        reject_resolver: Value::Object(rej2),
+                                        is_finally: false,
+                                    });
+                            } else {
+                                // 拒绝透传（onR 缺失）：两跳任务对齐 Go
+                                // oracle 的透传时序
+                                self.microtask_queue
+                                    .push_back(crate::builtins::Job::RejectLater {
+                                        resolver: Value::Object(rej2),
+                                        arg: value,
+                                    });
+                            }
+                        } else if !matches!(on_f, Value::Undefined) {
+                            self.microtask_queue
+                                .push_back(crate::builtins::Job::Reaction {
+                                    cb: on_f,
+                                    arg: value,
+                                    resolver: Value::Object(res2),
+                                    reject_resolver: Value::Object(rej2),
+                                    is_finally: false,
+                                });
+                        } else {
+                            // 兑现透传：两跳（与拒绝透传对称）
+                            self.microtask_queue
+                                .push_back(crate::builtins::Job::ResolveLater {
+                                    resolver: Value::Object(res2),
+                                    arg: value,
+                                });
+                        }
+                    }
+                    None => {}
+                }
+                Ok(Value::Object(p2))
+            } else {
+                Ok(receiver)
+            }
+        } else if matches!(method_name, "then" | "catch")
+            && matches!(receiver.case(), ValueCase::Object(rr)
+                    if matches!(
+                        self.heap.get(rr.0 as usize),
+                        Some(HeapObject::Promise { .. })
+                    )
+            )
+        {
+            // promise.then(onF)：登记处理器，返回自身；已完成时立即调度。
+            // promise.catch(onR)：pending 时登记（reject 简化同 fulfill——
+            // 本引擎无 reject 语义，fulfilled 完成不触发 catch）
+            if let Some(rr) = receiver.as_object() {
+                let cb = args.first().copied().unwrap_or(Value::Undefined);
+                // then(onF, onR) 的第二参数：rejected 处理器
+                let on_rejected = if method_name == "then" {
+                    args.get(1).copied().unwrap_or(Value::Undefined)
+                } else {
+                    Value::Undefined
+                };
+                let state = match self.heap.get(rr.0 as usize) {
+                    Some(HeapObject::Promise {
+                        pending,
+                        value,
+                        is_rejected,
+                        ..
+                    }) => Some((*pending, *value, *is_rejected)),
+                    _ => None,
+                };
+                if let Some((pending, value, is_rejected)) = state {
+                    if pending {
+                        let registered =
+                            if let Some(HeapObject::Promise {
+                                handlers, rejected, ..
+                            }) = self.heap.get_mut(rr.0 as usize)
+                            {
+                                if method_name == "then" {
+                                    handlers.push(cb);
+                                    if !matches!(on_rejected, Value::Undefined) {
+                                        rejected.push(on_rejected);
+                                    }
+                                } else {
+                                    // catch：只在 reject 时调度（fulfill 不触发）
+                                    rejected.push(cb);
+                                }
+                                true
+                            } else {
+                                false
+                            };
+                        if registered {
+                            // 写屏障：pending promise（容器）注册年轻回调
+                            self.gc_write_barrier(rr, cb);
+                        }
+                    } else if is_rejected {
+                        // 已拒绝：then 的 onR / catch 的 cb 立即调度
+                        let handler = if method_name == "catch" {
+                            cb
+                        } else {
+                            on_rejected
+                        };
+                        if !matches!(handler, Value::Undefined) {
+                            self.microtask_queue
+                                .push_back(crate::builtins::Job::Call(handler, value));
+                        }
+                    } else if method_name == "then" {
+                        // 已兑现：onF 立即调度
+                        self.microtask_queue
+                            .push_back(crate::builtins::Job::Call(cb, value));
+                    }
+                }
+            }
+            Ok(receiver)
+        } else if method_name == "resolve"
+            && self
+                .promise_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Promise.resolve(v)：直接完成
+            let value = args.first().copied().unwrap_or(Value::Undefined);
+            let p = self.alloc_fulfilled_promise(value);
+            Ok(Value::Object(p))
+        } else if method_name == "reject"
+            && self
+                .promise_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Promise.reject(reason)：直接拒绝
+            let reason = args.first().copied().unwrap_or(Value::Undefined);
+            let p = self.alloc_rejected_promise(reason);
+            Ok(Value::Object(p))
+        } else if matches!(method_name, "all" | "race" | "allSettled")
+            && self
+                .promise_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // 组合器：all/race/allSettled（any 在 Go 侧不存在，不实现）
+            let kind = match method_name {
+                "all" => crate::builtins::promise::CombinerKind::All,
+                "race" => crate::builtins::promise::CombinerKind::Race,
+                _ => crate::builtins::promise::CombinerKind::AllSettled,
+            };
+            let p = self.promise_combiner(kind, args)?;
+            Ok(p)
+        } else if method_name == "withResolvers"
+            && self
+                .promise_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Promise.withResolvers()：{ promise, resolve, reject }
+            let promise = self.alloc_pending_promise();
+            let resolve = self.alloc_promise_resolver(promise, true);
+            let reject = self.alloc_promise_resolver(promise, false);
+            let result = self.alloc_ordinary();
+            let _ = self.set_property(Value::Object(result), "promise", Value::Object(promise));
+            let _ = self.set_property(Value::Object(result), "resolve", Value::Object(resolve));
+            let _ = self.set_property(Value::Object(result), "reject", Value::Object(reject));
+            Ok(Value::Object(result))
+        } else if method_name == "fromAsync"
+            && self
+                .array_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Array.fromAsync(iterable)：同步数组直接收集；
+            // 生成器按 next() 同步驱动（async 生成器在语料中同步产值）
+            let iterable = args.first().copied().unwrap_or(Value::Undefined);
+            let mut elems: Vec<Value> = Vec::new();
+            if let Some(it) = iterable.as_object() {
+                match self.heap.get(it.0 as usize) {
+                    Some(HeapObject::Array { elements, .. }) => {
+                        elems.extend(elements.iter().copied());
+                    }
+                    Some(HeapObject::Generator) => {
+                        let mut done = false;
+                        let re = it;
+                        while !done {
+                            let result = self.drive_generator(re, None)?;
+                            let (val, is_done) = match result.case() {
+                                ValueCase::Object(res) => {
+                                    let v = self.get_property(Value::Object(res), "value")?;
+                                    let d = self.get_property(Value::Object(res), "done")?;
+                                    (v, matches!(d.case(), ValueCase::Boolean(true)))
+                                }
+                                _ => (Value::Undefined, true),
+                            };
+                            if is_done {
+                                done = true;
+                            } else {
+                                elems.push(val);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let arr = self.alloc_array(elems);
+            let p = self.alloc_fulfilled_promise(Value::Object(arr));
+            Ok(Value::Object(p))
+        } else if method_name == "groupBy"
+            && self
+                .object_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Object.groupBy(arr, cb)：分组到普通对象
+            let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+            let mut groups: std::collections::HashMap<String, Vec<Value>> =
+                std::collections::HashMap::new();
+            let elems: Vec<Value> = match args.first().copied().unwrap_or(Value::Undefined).case() {
+                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
+                    Some(HeapObject::Array { elements, .. }) => elements.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            for (i, elem) in elems.iter().enumerate() {
+                let key_val = self.invoke_array_cb(
+                    cb,
+                    Value::Undefined,
+                    &[*elem, Value::Number(i as f64), Value::Undefined],
+                )?;
+                let key = self.to_property_key(key_val);
+                groups.entry(key).or_default().push(*elem);
+            }
+            let result = self.alloc_ordinary();
+            for (key, items) in groups {
+                let arr = self.alloc_array(items);
+                let _ = self.set_property(Value::Object(result), &key, Value::Object(arr));
+            }
+            Ok(Value::Object(result))
+        } else if method_name == "groupBy"
+            && self.map_ctor.is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Map.groupBy(arr, cb)：分组到 Map（键保留原值 + SameValueZero
+            // 语义；首见顺序即插入序——Vec 保序，非字符串化分组）
+            let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+            let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
+            let elems: Vec<Value> = match args.first().copied().unwrap_or(Value::Undefined).case() {
+                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
+                    Some(HeapObject::Array { elements, .. }) => elements.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            for (i, elem) in elems.iter().enumerate() {
+                let key_val = self.invoke_array_cb(
+                    cb,
+                    Value::Undefined,
+                    &[*elem, Value::Number(i as f64), Value::Undefined],
+                )?;
+                if let Some(slot) = groups
+                    .iter_mut()
+                    .find(|(k, _)| self.values_same_zero(*k, key_val))
+                {
+                    slot.1.push(*elem);
+                } else {
+                    groups.push((key_val, vec![*elem]));
+                }
+            }
+            let mut map_entries: Vec<(Value, Value)> = Vec::new();
+            for (k, v) in groups {
+                let arr = self.alloc_array(v);
+                map_entries.push((k, Value::Object(arr)));
+            }
+            let map = self.alloc_map(map_entries);
+            Ok(Value::Object(map))
+        } else if matches!(
+            method_name,
+            "get"
+                | "set"
+                | "has"
+                | "delete"
+                | "clear"
+                | "add"
+                | "keys"
+                | "values"
+                | "entries"
+                | "forEach"
+        ) && matches!(receiver.case(), ValueCase::Object(rr)
+                if matches!(
+                    self.heap.get(rr.0 as usize),
+                    Some(HeapObject::Map { .. })
+                )
+        ) {
+            // Map/Set 实例方法（键保留原始 Value + SameValueZero 查找；
+            // Set 复用 Map 变体：key=value=元素原值）
+            let method = method_name;
+            let key = args.first().copied().unwrap_or(Value::Undefined);
+            let mut result = Value::Undefined;
+            // 迭代类方法（keys/values/entries/forEach）先取有序快照
+            // 再分配迭代器（避免与可变借用冲突）
+            let snapshot: Option<Vec<(Value, Value)>> = match method {
+                "keys" | "values" | "entries" | "forEach" => match receiver.case() {
+                    ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
+                        Some(HeapObject::Map { entries }) => Some(entries.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(entries) = snapshot {
+                let is_set = self.is_set_instance(receiver);
+                if let Some(rr) = receiver.as_object() {
+                    match method {
+                        "keys" => {
+                            if is_set {
+                                // Set.keys === Set.values（别名）
+                                let it = self.alloc_set_iterator(rr, "keys");
+                                result = it;
+                            } else {
+                                let it = self.alloc_map_iterator(rr, "keys");
+                                result = it;
+                            }
+                        }
+                        "values" => {
+                            if is_set {
+                                let it = self.alloc_set_iterator(rr, "values");
+                                result = it;
+                            } else {
+                                let it = self.alloc_map_iterator(rr, "values");
+                                result = it;
+                            }
+                        }
+                        "entries" => {
+                            if is_set {
+                                let it = self.alloc_set_iterator(rr, "entries");
+                                result = it;
+                            } else {
+                                let it = self.alloc_map_iterator(rr, "entries");
+                                result = it;
+                            }
+                        }
+                        "forEach" => {
+                            // Map: cb(value, key, map)；Set: cb(value, value, set)
+                            let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            let this_arg = args.get(1).copied().unwrap_or(Value::Undefined);
+                            if is_set {
+                                for (_, v) in entries {
+                                    self.invoke_callable(cb, this_arg, &[v, v, receiver])?;
+                                }
+                            } else {
+                                for (k, v) in entries {
+                                    // 键身份：直接回传原键 Value（对象键
+                                    // 必须 `seen === 原键`，不得重建字符串）
+                                    self.invoke_callable(cb, this_arg, &[v, k, receiver])?;
+                                }
+                            }
+                            result = Value::Undefined;
+                        }
+                        _ => {}
+                    }
+                }
+            } else if let Some(rr) = receiver.as_object() {
+                // SameValueZero 命中下标：先在**不可变**借用下求出，再进入
+                // 可变借用改写——比较需读堆判定字符串内容（本 VM 以堆对象
+                // 表示字符串，句柄不同但内容相同必须视为同键），若在
+                // `get_mut` 的闭包里比较会同时持有 &mut self.heap 与 &self。
+                let hit = match self.heap.get(rr.0 as usize) {
+                    Some(HeapObject::Map { entries }) => entries
+                        .iter()
+                        .position(|(k, _)| self.values_same_zero(*k, key)),
+                    _ => None,
+                };
+                if let Some(HeapObject::Map { entries }) = self.heap.get_mut(rr.0 as usize) {
+                    match method {
+                        "set" | "add" => {
+                            let value = match method {
+                                "set" => args.get(1).copied().unwrap_or(Value::Undefined),
+                                _ => args.first().copied().unwrap_or(Value::Undefined),
+                            };
+                            // 有序语义：既有键命中则原位更新（保插入位置），
+                            // 否则追加末尾（Node Map/Set 插入序）
+                            if let Some(i) = hit {
+                                entries[i].1 = value;
+                            } else {
+                                entries.push((key, value));
+                            }
+                            // 写屏障：Map/Set 容器（可能已升代）写入年轻引用
+                            // ——键与值都必须分别屏障（漏键屏障会让键对象在
+                            // minor 中被误回收）
+                            self.gc_write_barrier(rr, value);
+                            self.gc_write_barrier(rr, key);
+                            result = receiver;
+                        }
+                        "get" => {
+                            result = hit.map(|i| entries[i].1).unwrap_or(Value::Undefined);
+                        }
+                        "has" => {
+                            result = Value::Boolean(hit.is_some());
+                        }
+                        "delete" => {
+                            // SameValueZero 语义下至多命中一项
+                            result = Value::Boolean(match hit {
+                                Some(i) => {
+                                    entries.remove(i);
+                                    true
+                                }
+                                None => false,
+                            });
+                        }
+                        "clear" => {
+                            entries.clear();
+                            result = Value::Undefined;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(result)
+        } else if matches!(
+            method_name,
+            "on" | "once" | "off" | "removeListener" | "emit"
+        ) && matches!(receiver.case(), ValueCase::Object(rr)
+                if matches!(
+                    self.heap.get(rr.0 as usize),
+                    Some(HeapObject::EventEmitter { .. })
+                )
+        ) {
+            // EventEmitter：on/once 注册监听器，emit 触发，off/removeListener 移除
+            if let Some(rr) = receiver.as_object() {
+                match method_name {
+                    "on" | "once" => {
+                        let name = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
+                        let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                        let once = method_name == "once";
+                        if let Some(HeapObject::EventEmitter { listeners }) =
+                            self.heap.get_mut(rr.0 as usize)
+                        {
+                            listeners.entry(name).or_default().push((cb, once));
+                            self.gc_write_barrier(rr, cb);
+                        }
+                        Ok(receiver)
+                    }
+                    "emit" => {
+                        let name = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
+                        // 触发瞬间收集监听器：普通监听器保持并触发，
+                        // once 的触发前移除（只触发一次）
+                        let mut all: Vec<Value> = Vec::new();
+                        if let Some(HeapObject::EventEmitter { listeners }) =
+                            self.heap.get_mut(rr.0 as usize)
+                        {
+                            if let Some(list) = listeners.get_mut(&name) {
+                                let mut fired = Vec::new();
+                                let mut keep = Vec::with_capacity(list.len());
+                                for (cb, once) in std::mem::take(list) {
+                                    if once {
+                                        fired.push(cb);
+                                    } else {
+                                        keep.push((cb, once));
+                                        all.push(cb);
+                                    }
+                                }
+                                *list = keep;
+                                all.extend(fired);
+                            }
+                        }
+                        let emit_args: Vec<Value> = args.iter().skip(1).copied().collect();
+                        for cb in all {
+                            self.invoke_callable(cb, receiver, &emit_args)?;
+                        }
+                        Ok(Value::Boolean(!emit_args.is_empty()))
+                    }
+                    _ => {
+                        // off / removeListener：移除匹配的监听器
+                        let name = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
+                        let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                        if let Some(HeapObject::EventEmitter { listeners }) =
+                            self.heap.get_mut(rr.0 as usize)
+                        {
+                            if let Some(list) = listeners.get_mut(&name) {
+                                list.retain(|(c, _)| *c != cb);
+                            }
+                        }
+                        Ok(receiver)
+                    }
+                }
+            } else {
+                unreachable!("分支条件已确认 receiver 是对象");
+            }
+        } else if matches!(method_name, "push" | "next") && self.is_readable_obj(receiver) {
+            // 可读流：push 追加数据（null=结束）；next 消费（空读挂起等待）
+            match method_name {
+                "push" => {
+                    let v = args.first().copied().unwrap_or(Value::Undefined);
+                    let is_end = matches!(v, Value::Null);
+                    let waiting = if let Some(rr) = receiver.as_object() {
+                        if let Some(HeapObject::Readable {
+                            buffer,
+                            ended,
+                            waiting,
+                        }) = self.heap.get_mut(rr.0 as usize)
+                        {
+                            if is_end {
+                                *ended = true;
+                            } else if waiting.is_none() {
+                                // 无等待读取者：数据入缓冲；有等待者时
+                                // 数据直接交给等待的 next（避免双读）
+                                buffer.push_back(v);
+                                // 写屏障在 get_mut 借用结束后执行（下方）
+                            }
+                            waiting.take()
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    // 写屏障：老可读流缓冲/等待槽写入新值
+                    if let Some(rr2) = receiver.as_object() {
+                        self.gc_write_barrier(rr2, v);
+                    }
+                    // 有等待中的 promise：兑现为 {value, done} 结果对象
+                    if let Some(wp) = waiting {
+                        let res_obj = self.alloc_ordinary();
+                        let done = is_end;
+                        let val = if done { Value::Undefined } else { v };
+                        let _ = self.set_property(Value::Object(res_obj), "value", val);
+                        let _ =
+                            self.set_property(Value::Object(res_obj), "done", Value::Boolean(done));
+                        self.fulfill_promise(wp, Value::Object(res_obj))?;
+                    }
+                    Ok(Value::Boolean(true))
+                }
+                "next" => {
+                    // 先取动作：Some(值) / Done / NeedWait(等待 promise)
+                    enum NextAction {
+                        Data(Value),
+                        Done,
+                        NeedWait,
+                    }
+                    // 无条件先建 pending promise（NeedWait 时登记等待；
+                    // Data/Done 时弃用——堆对象无副作用）
+                    let pending_promise = self.alloc_pending_promise();
+                    let action = if let Some(rr) = receiver.as_object() {
+                        match self.heap.get_mut(rr.0 as usize) {
+                            Some(HeapObject::Readable {
+                                buffer,
+                                ended,
+                                waiting,
+                            }) => {
+                                if let Some(v) = buffer.pop_front() {
+                                    NextAction::Data(v)
+                                } else if *ended {
+                                    NextAction::Done
+                                } else {
+                                    // 空读未结束：登记等待 promise（挂起等待 push）
+                                    *waiting = Some(pending_promise);
+                                    if let Some(rr2) = receiver.as_object() {
+                                        self.gc_write_barrier(rr2, Value::Object(pending_promise));
+                                    }
+                                    NextAction::NeedWait
+                                }
+                            }
+                            _ => NextAction::Done,
+                        }
+                    } else {
+                        NextAction::Done
+                    };
+                    let result = match action {
+                        NextAction::Data(v) => {
+                            let res_obj = self.alloc_ordinary();
+                            let _ = self.set_property(Value::Object(res_obj), "value", v);
+                            let _ = self.set_property(
+                                Value::Object(res_obj),
+                                "done",
+                                Value::Boolean(false),
+                            );
+                            Some(res_obj)
+                        }
+                        NextAction::Done => {
+                            let res_obj = self.alloc_ordinary();
+                            let _ = self.set_property(
+                                Value::Object(res_obj),
+                                "value",
+                                Value::Undefined,
+                            );
+                            let _ = self.set_property(
+                                Value::Object(res_obj),
+                                "done",
+                                Value::Boolean(true),
+                            );
+                            Some(res_obj)
+                        }
+                        NextAction::NeedWait => None, // pending：等待 push 兑现
+                    };
+                    match result {
+                        Some(obj) => Ok(Value::Object(obj)),
+                        None => {
+                            // 空读未结束：next 返回等待 promise 本身
+                            // （与 waiting 登记同一句柄——push 兑现它来
+                            // 恢复 async 帧），AWAIT 挂起等待 push
+                            Ok(Value::Object(pending_promise))
+                        }
+                    }
+                }
+                _ => Ok(Value::Undefined),
+            }
+        } else if matches!(method_name, "platform" | "homedir" | "tmpdir")
+            && self.os_module.is_some_and(|m| receiver == Value::Object(m))
+        {
+            let result = match method_name {
+                "platform" => if cfg!(windows) { "win32" } else { "linux" }.to_owned(),
+                "homedir" => std::env::var("USERPROFILE")
+                    .or_else(|_| std::env::var("HOME"))
+                    .unwrap_or_default(),
+                _ => std::env::var("TEMP")
+                    .or_else(|_| std::env::var("TMPDIR"))
+                    .unwrap_or_else(|_| "/tmp".to_owned()),
+            };
+            let r = self.alloc_string(result);
+            Ok(Value::Object(r))
+        } else if matches!(
+            method_name,
+            "join" | "basename" | "dirname" | "extname" | "resolve" | "relative"
+        ) && self
+            .path_module
+            .is_some_and(|m| receiver == Value::Object(m))
+        {
+            // node:path 轻量内置（平台分隔符，对齐 Go `filepath` 语义）
+            let result = self.path_method(method_name, args);
+            let r = self.alloc_string(result);
+            Ok(Value::Object(r))
+        } else if matches!(method_name, "isWellFormed" | "toWellFormed")
+            && matches!(receiver.case(), ValueCase::Object(rr)
+                    if matches!(
+                        self.heap.get(rr.0 as usize),
+                        Some(HeapObject::String(_))
+                    )
+            )
+        {
+            // 字符串完整性（Rust String 恒为合法 UTF-8）
+            if method_name == "isWellFormed" {
+                Ok(Value::Boolean(true))
+            } else {
+                Ok(receiver)
+            }
+        } else if matches!(
+            method_name,
+            "toSorted" | "toReversed" | "toSpliced" | "with"
+        ) && matches!(receiver.case(), ValueCase::Object(rr)
+                if matches!(self.heap.get(rr.0 as usize), Some(HeapObject::Array { .. }))
+        ) {
+            // ES2023 不可变数组方法：返回新数组
+            let mut elems: Vec<Value> = if let Some(rr) = receiver.as_object() {
+                if let Some(HeapObject::Array { elements, .. }) = self.heap.get(rr.0 as usize) {
+                    elements.clone()
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+            match method_name {
+                "toSorted" => {
+                    let cmp = args.first().copied().unwrap_or(Value::Undefined);
+                    let this_val = receiver;
+                    if !matches!(cmp, Value::Undefined) {
+                        // 带比较器：数值比较器按数值序（`b-a` 负值序）
+                        elems.sort_by(|a, b| {
+                            let ord =
+                                self.invoke_array_cb(cmp, Value::Undefined, &[*a, *b, this_val]);
+                            match ord {
+                                Ok(v) => match self.to_number_value(v) {
+                                    x if x < 0.0 => std::cmp::Ordering::Less,
+                                    x if x > 0.0 => std::cmp::Ordering::Greater,
+                                    _ => std::cmp::Ordering::Equal,
+                                },
+                                Err(_) => std::cmp::Ordering::Equal,
+                            }
+                        });
+                    } else {
+                        elems.sort_by_key(|a| self.format_value(*a));
+                    }
+                }
+                "toReversed" => elems.reverse(),
+                "toSpliced" => {
+                    let start = args
+                        .first()
+                        .and_then(|v| match v.case() {
+                            ValueCase::Number(n) => Some(n as usize),
+                            _ => None,
+                        })
+                        .unwrap_or(0)
+                        .min(elems.len());
+                    let del = args
+                        .get(1)
+                        .and_then(|v| match v.case() {
+                            ValueCase::Number(n) => Some(n as usize),
+                            _ => None,
+                        })
+                        .unwrap_or(0)
+                        .min(elems.len() - start);
+                    elems.splice(start..start + del, args[2..].to_vec());
+                }
+                _ => {
+                    // with(idx, val)
+                    let idx = args
+                        .first()
+                        .and_then(|v| match v.case() {
+                            ValueCase::Number(n) => Some(n as usize),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let val = args.get(1).copied().unwrap_or(Value::Undefined);
+                    if idx < elems.len() {
+                        elems[idx] = val;
+                    }
+                }
+            }
+            let new_arr = self.alloc_array(elems);
+            Ok(Value::Object(new_arr))
+        } else if method_name == "hasOwn"
+            && self
+                .object_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Object.hasOwn(obj, key)：自有属性判定（不沿原型链）
+            let result = match (
+                args.first().copied().unwrap_or(Value::Undefined).case(),
+                args.get(1)
+                    .map(|v| self.to_property_key(*v))
+                    .unwrap_or_default(),
+            ) {
+                (ValueCase::Object(rr), key) => match self.heap.get(rr.0 as usize) {
+                    Some(HeapObject::Ordinary { .. }) => self.has_own_slot(rr.0 as usize, &key),
+                    Some(HeapObject::Array { properties, .. }) => {
+                        key == "length" || properties.contains_key(&key)
+                    }
+                    _ => false,
+                },
+                _ => false,
+            };
+            Ok(Value::Boolean(result))
+        } else if let Some(dispatched) =
+            crate::builtins::try_dispatch(self, receiver, method_name, args)
+        {
+            // 内置库注册表模块方法（querystring 等并行开发模块）
+            match dispatched {
+                Ok(v) => Ok(v),
+                Err(e) => Err(e),
+            }
+        } else if method_name == "call" {
+            // 通用调用协议：fn.call(thisArg, ...args)
+            let this_arg = args.first().copied().unwrap_or(Value::Undefined);
+            let rest: &[Value] = if args.is_empty() { &[] } else { &args[1..] };
+            let ret = self.invoke_callable(receiver, this_arg, rest)?;
+            Ok(ret)
+        } else if method_name == "apply" {
+            // 通用调用协议：fn.apply(thisArg, argsArray)
+            let this_arg = args.first().copied().unwrap_or(Value::Undefined);
+            let call_args = args
+                .get(1)
+                .copied()
+                .map(|a| self.to_array_values(a))
+                .unwrap_or_default();
+            let ret = self.invoke_callable(receiver, this_arg, &call_args)?;
+            Ok(ret)
+        } else if method_name == "create"
+            && self
+                .object_ctor
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // Object.create(proto)：以精确原型分配新对象（null → 无原型）
+            let proto_val = args.first().copied().unwrap_or(Value::Undefined);
+            let proto = match proto_val.case() {
+                ValueCase::Object(p) => Some(p),
+                _ => None,
+            };
+            let obj = self.alloc_ordinary_with_exact_proto(proto);
+            Ok(Value::Object(obj))
+        } else if let Some(ta_res) = self.typed_array_dispatch(receiver, method_name, args) {
+            // 类型化数组 / DataView / ArrayBuffer 实例方法
+            // （返回 None 表示非本体系对象，走既有路径）
+            let val = ta_res?;
+            Ok(val)
+        } else if let Some(st_res) = self.typed_array_statics(receiver, method_name, args) {
+            // TypedArray 构造器静态方法（from/of/isTypedArray）
+            let val = st_res?;
+            Ok(val)
+        } else if let Some(r) = receiver.as_object() {
+            let idx = r.0 as usize;
+            if idx < self.heap.len() && matches!(self.heap[idx], HeapObject::Array { .. }) {
+                match method_name {
+                    "push" => {
+                        for a in args {
+                            self.gc_write_barrier(r, *a);
+                        }
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            elements.extend(args);
+                            let len = elements.len() as f64;
+                            Ok(Value::Number(len))
+                        } else {
+                            Ok(Value::Undefined)
+                        }
+                    }
+                    "pop" => {
+                        // 删末元素并返回它（空数组 → undefined）
+                        // 此前本 match 缺该分支 → 落到通用路径返回
+                        // undefined 且**不改数组**（已登记分歧转为缺陷）
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            let out = elements.pop().unwrap_or(Value::Undefined);
+                            Ok(out)
+                        } else {
+                            Ok(Value::Undefined)
+                        }
+                    }
+                    "shift" => {
+                        // 删首元素并返回它、其余前移（空数组 → undefined）
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            let out = if elements.is_empty() {
+                                Value::Undefined
+                            } else {
+                                elements.remove(0)
+                            };
+                            Ok(out)
+                        } else {
+                            Ok(Value::Undefined)
+                        }
+                    }
+                    "unshift" => {
+                        // 前插全部实参并返回新长度（实参顺序保持）
+                        for a in args {
+                            self.gc_write_barrier(r, *a);
+                        }
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            for (i, a) in args.iter().enumerate() {
+                                elements.insert(i, *a);
+                            }
+                            let len = elements.len() as f64;
+                            Ok(Value::Number(len))
+                        } else {
+                            Ok(Value::Undefined)
+                        }
+                    }
+                    "map" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let mut new_elems = Vec::with_capacity(elems.len());
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let item_res = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            new_elems.push(item_res);
+                        }
+                        let new_arr = self.alloc_array(new_elems);
+                        Ok(Value::Object(new_arr))
+                    }
+                    "filter" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut kept = Vec::new();
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let keep = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if to_boolean(keep, &self.heap) {
+                                kept.push(*elem);
+                            }
+                        }
+                        let new_arr = self.alloc_array(kept);
+                        Ok(Value::Object(new_arr))
+                    }
+                    "find" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut found = Value::Undefined;
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let hit = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if to_boolean(hit, &self.heap) {
+                                found = *elem;
+                                break;
+                            }
+                        }
+                        Ok(found)
+                    }
+                    "some" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut any = false;
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let hit = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if to_boolean(hit, &self.heap) {
+                                any = true;
+                                break;
+                            }
+                        }
+                        Ok(Value::Boolean(any))
+                    }
+                    "forEach" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                        }
+                        Ok(Value::Undefined)
+                    }
+                    "reduce" => {
+                        let cb = args.first().copied().unwrap_or(Value::Undefined);
+                        let mut acc = args.get(1).copied().unwrap_or(Value::Undefined);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            acc = self.invoke_array_cb(
+                                cb,
+                                Value::Undefined,
+                                &[acc, *elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                        }
+                        Ok(acc)
+                    }
+                    "reduceRight" => {
+                        let cb = args.first().copied().unwrap_or(Value::Undefined);
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        // 无初始值：累加器取末元素，从倒数第二个起迭代
+                        let (mut acc, start) = match args.get(1) {
+                            Some(init) if !init.is_undefined() => (*init, elems.len()),
+                            _ => match elems.last() {
+                                Some(last) => (*last, elems.len() - 1),
+                                None if elems.is_empty() => {
+                                    let msg = self.alloc_string(
+                                        "Reduce of empty array with no initial value".to_owned(),
+                                    );
+                                    return Err(VmError::Thrown(Value::Object(msg)));
+                                }
+                                None => (Value::Undefined, elems.len()),
+                            },
+                        };
+                        for elem_idx in (0..start).rev() {
+                            let elem = elems[elem_idx];
+                            acc = self.invoke_array_cb(
+                                cb,
+                                Value::Undefined,
+                                &[acc, elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                        }
+                        Ok(acc)
+                    }
+                    "join" => {
+                        let sep = if let Some(sep_val) = args.first() {
+                            self.to_property_key(*sep_val)
+                        } else {
+                            ",".to_owned()
+                        };
+                        let parts: Vec<String> =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.iter().map(|e| self.format_value(*e)).collect()
+                            } else {
+                                Vec::new()
+                            };
+                        let joined = parts.join(&sep);
+                        let s_ref = self.alloc_string(joined);
+                        Ok(Value::Object(s_ref))
+                    }
+                    "slice" => {
+                        let elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        let len = elems.len() as i64;
+                        let start_raw = match args.first().map(|v| v.case()) {
+                            Some(ValueCase::Number(n)) => n as i64,
+                            _ => 0,
+                        };
+                        let start = if start_raw < 0 {
+                            (len + start_raw).max(0) as usize
+                        } else {
+                            start_raw.min(len) as usize
+                        };
+                        let end = if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
+                            let end_raw = n as i64;
+                            if end_raw < 0 {
+                                (len + end_raw).max(0) as usize
+                            } else {
+                                end_raw.min(len) as usize
+                            }
+                        } else {
+                            len as usize
+                        };
+                        let sliced = if start < end && start < elems.len() {
+                            elems[start..end.min(elems.len())].to_vec()
+                        } else {
+                            Vec::new()
+                        };
+                        let new_arr = self.alloc_array(sliced);
+                        Ok(Value::Object(new_arr))
+                    }
+                    "sort" => {
+                        // 无比较器排序：元素字符串化后按字典序原地排序（JS 默认语义）
+                        let mut elems =
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
+                                elements.clone()
+                            } else {
+                                Vec::new()
+                            };
+                        elems.sort_by_key(|a| self.format_value(*a));
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            *elements = elems;
+                        }
+                        Ok(receiver)
+                    }
+                    "at" => {
+                        // arr.at(i)：负下标从尾部计数（越界 → undefined）
+                        let elems = self.array_elements(idx);
+                        let len = elems.len() as f64;
+                        let n = args
+                            .first()
+                            .map(|v| crate::ops::to_number(*v))
+                            .unwrap_or(f64::NAN);
+                        let i = if n < 0.0 { len + n } else { n };
+                        let out = if i.is_nan() || i < 0.0 || i >= len {
+                            Value::Undefined
+                        } else {
+                            elems.get(i as usize).copied().unwrap_or(Value::Undefined)
+                        };
+                        Ok(out)
+                    }
+                    "concat" => {
+                        let mut elems = self.array_elements(idx);
+                        for a in args {
+                            if let Some(ar) = a.as_object() {
+                                if let Some(HeapObject::Array { elements, .. }) =
+                                    self.heap.get(ar.0 as usize)
+                                {
+                                    elems.extend(elements.iter().copied());
+                                    continue;
+                                }
+                            }
+                            elems.push(*a);
+                        }
+                        let new_arr = self.alloc_array(elems);
+                        Ok(Value::Object(new_arr))
+                    }
+                    "includes" => {
+                        let elems = self.array_elements(idx);
+                        let needle = args.first().copied().unwrap_or(Value::Undefined);
+                        let mut from = args
+                            .get(1)
+                            .and_then(|v| match v.case() {
+                                ValueCase::Number(n) => Some(n),
+                                _ => None,
+                            })
+                            .unwrap_or(0.0);
+                        if from < 0.0 {
+                            from += elems.len() as f64;
+                        }
+                        let from = from.max(0.0) as usize;
+                        let found = elems[from..]
+                            .iter()
+                            .any(|e| self.values_same_zero(*e, needle));
+                        Ok(Value::Boolean(found))
+                    }
+                    "indexOf" => {
+                        let elems = self.array_elements(idx);
+                        let needle = args.first().copied().unwrap_or(Value::Undefined);
+                        let mut from = args
+                            .get(1)
+                            .and_then(|v| match v.case() {
+                                ValueCase::Number(n) => Some(n),
+                                _ => None,
+                            })
+                            .unwrap_or(0.0);
+                        if from < 0.0 {
+                            from += elems.len() as f64;
+                        }
+                        let from = from.max(0.0) as usize;
+                        let pos = elems[from..]
+                            .iter()
+                            .position(|e| self.values_content_eq(*e, needle))
+                            .map(|p| p + from)
+                            .map(|p| p as f64)
+                            .unwrap_or(-1.0);
+                        Ok(Value::Number(pos))
+                    }
+                    "lastIndexOf" => {
+                        let elems = self.array_elements(idx);
+                        let needle = args.first().copied().unwrap_or(Value::Undefined);
+                        let pos = elems
+                            .iter()
+                            .rposition(|e| self.values_content_eq(*e, needle))
+                            .map(|p| p as f64)
+                            .unwrap_or(-1.0);
+                        Ok(Value::Number(pos))
+                    }
+                    "reverse" => {
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            elements.reverse();
+                        }
+                        Ok(receiver)
+                    }
+                    "every" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems = self.array_elements(idx);
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut all = true;
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let ok = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if !self.truthy(ok) {
+                                all = false;
+                                break;
+                            }
+                        }
+                        Ok(Value::Boolean(all))
+                    }
+                    "findIndex" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems = self.array_elements(idx);
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut found = -1.0;
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let ok = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if self.truthy(ok) {
+                                found = elem_idx as f64;
+                                break;
+                            }
+                        }
+                        Ok(Value::Number(found))
+                    }
+                    "findLast" | "findLastIndex" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems = self.array_elements(idx);
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut hit: Option<usize> = None;
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let ok = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if self.truthy(ok) {
+                                hit = Some(elem_idx);
+                            }
+                        }
+                        let out = match hit {
+                            Some(i) if method_name == "findLast" => elems[i],
+                            Some(i) => Value::Number(i as f64),
+                            None if method_name == "findLast" => Value::Undefined,
+                            None => Value::Number(-1.0),
+                        };
+                        Ok(out)
+                    }
+                    "fill" => {
+                        let fill = args.first().copied().unwrap_or(Value::Undefined);
+                        let elems = self.array_elements(idx);
+                        let len = elems.len();
+                        let (s, e) = normalize_slice_range(args, len);
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            for slot in elements.iter_mut().take(e).skip(s) {
+                                *slot = fill;
+                            }
+                        }
+                        Ok(receiver)
+                    }
+                    "copyWithin" => {
+                        let elems = self.array_elements(idx);
+                        let len = elems.len();
+                        let target =
+                            slice_index(args.first().map(|v| crate::ops::to_number(*v)), len);
+                        let start =
+                            slice_index(args.get(1).map(|v| crate::ops::to_number(*v)), len);
+                        let end = args.get(2).map(|v| crate::ops::to_number(*v));
+                        let end = match end {
+                            Some(n) => slice_index(Some(n), len),
+                            None => len,
+                        };
+                        let count = (end - start).min(len - target);
+                        if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
+                            elements[target..target + count]
+                                .copy_from_slice(&elems[start..start + count]);
+                        }
+                        Ok(receiver)
+                    }
+                    "flat" => {
+                        let depth = args
+                            .first()
+                            .map(|v| crate::ops::to_number(*v))
+                            .map(|n| if n.is_nan() { 1.0 } else { n })
+                            .unwrap_or(1.0);
+                        let elems = self.array_elements(idx);
+                        let flat = self.flat_array(elems, depth);
+                        let new_arr = self.alloc_array(flat);
+                        Ok(Value::Object(new_arr))
+                    }
+                    "flatMap" => {
+                        let (cb, this_arg) = self.array_cb_ctx(args);
+                        let elems = self.array_elements(idx);
+                        let arr_obj = Value::Object(ObjectRef(idx as u32));
+                        let mut out = Vec::with_capacity(elems.len());
+                        for (elem_idx, elem) in elems.iter().enumerate() {
+                            let mapped = self.invoke_array_cb(
+                                cb,
+                                this_arg,
+                                &[*elem, Value::Number(elem_idx as f64), arr_obj],
+                            )?;
+                            if let Some(ar) = mapped.as_object() {
+                                if let Some(HeapObject::Array { elements, .. }) =
+                                    self.heap.get(ar.0 as usize)
+                                {
+                                    out.extend(elements.iter().copied());
+                                    continue;
+                                }
+                            }
+                            out.push(mapped);
+                        }
+                        let new_arr = self.alloc_array(out);
+                        Ok(Value::Object(new_arr))
+                    }
+                    "splice" => {
+                        let elems = self.array_elements(idx);
+                        let len = elems.len();
+                        let start = args
+                            .first()
+                            .map(|v| crate::ops::to_number(*v))
+                            .map(|n| {
+                                if n.is_nan() {
+                                    0.0
+                                } else if n < 0.0 {
+                                    (len as f64 + n).max(0.0)
+                                } else {
+                                    n.min(len as f64)
+                                }
+                            })
+                            .unwrap_or(0.0) as usize;
+                        let del = match args.get(1) {
+                            Some(v) => {
+                                let n = crate::ops::to_number(*v);
+                                if n < 0.0 {
+                                    0
+                                } else {
+                                    (n as usize).min(len - start)
+                                }
+                            }
+                            None => len - start,
+                        };
+                        let mut removed = self.array_elements(idx);
+                        {
+                            let drained: Vec<Value> = removed
+                                .splice(start..start + del, args.get(2..).unwrap_or(&[]).to_vec())
+                                .collect();
+                            if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx)
+                            {
+                                *elements = removed.clone();
+                            }
+                            let removed_arr = self.alloc_array(drained);
+                            Ok(Value::Object(removed_arr))
+                        }
+                    }
+                    "keys" | "values" | "entries" => {
+                        let kind = match method_name {
+                            "keys" => "keys",
+                            "entries" => "entries",
+                            _ => "values",
+                        };
+                        let iter = self.alloc_array_iterator_kind(ObjectRef(idx as u32), kind);
+                        Ok(iter)
+                    }
+                    "toString" | "toLocaleString" => {
+                        let elems = self.array_elements(idx);
+                        let items: Vec<String> = elems
+                            .iter()
+                            .map(|e| match e {
+                                e if e.is_undefined() || e.is_null() => String::new(),
+                                v => self.format_value(*v),
+                            })
+                            .collect();
+                        let s = self.alloc_string(items.join(","));
+                        Ok(Value::Object(s))
+                    }
+                    _ => Ok(Value::Undefined),
+                }
+            } else {
+                // 普通对象方法调用（原型方法绑定 IC）
+                let method_val = self.get_method_ic(receiver, method_name, site)?;
+                if let Some(m_ref) = method_val.as_object() {
+                    // Promise resolver/rejecter（Promise.withResolvers 的
+                    // resolve/reject 属性）：按解析器标志兑现目标 promise
+                    let resolver = match self.heap.get(m_ref.0 as usize) {
+                        Some(HeapObject::PromiseResolver { promise, resolve }) => {
+                            Some((*promise, *resolve))
+                        }
+                        _ => None,
+                    };
+                    if let Some((promise, resolve)) = resolver {
+                        let value = args.first().copied().unwrap_or(Value::Undefined);
+                        if resolve {
+                            self.fulfill_promise(promise, value)?;
+                        } else {
+                            self.reject_promise(promise, value)?;
+                        }
+                        Ok(Value::Undefined)
+                    } else {
+                        // 原生函数方法（如 node:test spy）：保持 receiver 为 this，
+                        // 经注册表分派 spy 处理器
+                        let native = match self.heap.get(m_ref.0 as usize) {
+                            Some(HeapObject::NativeFn { name, .. }) => {
+                                crate::builtins::set_pending_native_name(name);
+                                crate::builtins::set_pending_callee(method_val);
+                                self.builtin_registry.lookup(name)
+                            }
+                            _ => None,
+                        };
+                        if let Some(handler) = native {
+                            crate::builtins::set_current_receiver(receiver);
+                            let ret = handler(self, args)?;
+                            Ok(ret)
+                        } else {
+                            let (f_idx, uvs) =
+                                if let Some(HeapObject::Closure {
+                                    func_idx, upvalues, ..
+                                }) = self.heap.get(m_ref.0 as usize)
+                                {
+                                    (Some(*func_idx), upvalues.clone())
+                                } else if (m_ref.0 as usize) < self.module_functions.len() {
+                                    (Some(m_ref.0 as usize), Vec::new())
+                                } else {
+                                    (None, Vec::new())
+                                };
+
+                            if let Some(fi) = f_idx {
+                                let ret = self.invoke_function(fi, receiver, args, uvs)?;
+                                Ok(ret)
+                            } else {
+                                // 方法值不可解析为函数：按 JS 语义抛
+                                // TypeError（此前静默 undefined 掩盖缺陷）
+                                let desc = self.format_value(method_val);
+                                let err =
+                                    self.alloc_error_instance(&format!("{desc} is not a function"));
+                                let name = self.alloc_string("TypeError".to_owned());
+                                let _ = self.set_property(
+                                    Value::Object(err),
+                                    "name",
+                                    Value::Object(name),
+                                );
+                                Err(VmError::Thrown(Value::Object(err)))
+                            }
+                        }
+                    }
+                } else {
+                    // 方法属性 undefined/非对象：同样抛 TypeError
+                    let err =
+                        self.alloc_error_instance(&format!("{method_name} is not a function"));
+                    let name = self.alloc_string("TypeError".to_owned());
+                    let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+                    Err(VmError::Thrown(Value::Object(err)))
+                }
+            }
+        } else {
+            // 原始值 receiver 的方法调用（JS 装箱语义）：数字/布尔
+            // 走 Number.prototype 面（toString(radix)/toFixed/...）。
+            // 字符串原始值是堆字符串由上面字符串链处理，此处仅
+            // Number/Boolean——缺省仍按 undefined 返回。
+            match receiver.case() {
+                ValueCase::Number(_) | ValueCase::Boolean(_) => {
+                    crate::builtins::set_current_receiver(receiver);
+                    let full = format!("Number.prototype.{method_name}");
+                    crate::builtins::set_pending_native_name(&full);
+                    let res = crate::builtins::surface::num_method_dispatch(self, args)?;
+                    Ok(res)
+                }
+                _ => Ok(Value::Undefined),
+            }
+        }
+    }
+
     fn exec_frame(&mut self, code: &[Instr], start_pc: usize) -> Result<Value, VmError> {
         let num_instrs = code.len();
         let mut pc = start_pc;
@@ -2012,2087 +3959,9 @@ impl Vm {
                     call_args.collect_from_stack(&mut self.stack, num_args)?;
                     let args = call_args.as_slice();
                     let receiver = self.pop()?;
-                    // 通用调用协议（优先于内置分派）：fn.call(thisArg, ...args) /
-                    // fn.apply(thisArg, argsArray)——Function.prototype 语义，
-                    // 不可被「模块名.方法名」拼接劫持。例外：解析出的方法值是
-                    // Reflect./Proxy. 前缀原生函数时（如 Reflect.apply 本身即
-                    // 规范静态方法），内置分派优先于通用协议
-                    // bind：同样必须走 Function.prototype 语义——NativeFn
-                    // receiver 的 try_dispatch 回退会错误地把 bind 分派到
-                    // 函数自身方法（如 AsyncResource.runInAsyncScope.bind 被
-                    // 劫持成 runInAsyncScope 调用，raw-body 依赖此形态）。
-                    // 守卫：仅函数对象（Closure/NativeFn/NativeCtor）的 bind
-                    // 才是 Function.prototype.bind；非函数 receiver 的 bind
-                    // 是真实实例方法（dgram.Socket.bind() 等），必须走常规
-                    // 方法分派——09-09 一刀切曾把 dgram bind 吞成绑定函数
-                    let receiver_is_fn = matches!(receiver.case(), ValueCase::Object(rb)
-                            if matches!(
-                                self.heap.get(rb.0 as usize),
-                                Some(HeapObject::Closure { .. })
-                                    | Some(HeapObject::NativeFn { .. })
-                                    | Some(HeapObject::NativeCtor { .. })
-                            )
-                    );
-                    if method_name.as_ref() == "bind" && receiver_is_fn {
-                        crate::builtins::set_current_receiver(receiver);
-                        crate::builtins::set_pending_native_name("Function.prototype.bind");
-                        let res = crate::builtins::surface::fn_proto_bind(self, args)?;
-                        self.stack.push(res);
-                        pc += 1;
-                        continue;
-                    }
-                    if matches!(method_name.as_ref(), "call" | "apply") {
-                        let method_val = self.get_property(receiver, &method_name)?;
-                        let is_reflect_like = match &method_val.case() {
-                            ValueCase::Object(mr) => match self.heap.get(mr.0 as usize) {
-                                Some(HeapObject::NativeFn { name, .. }) => {
-                                    name.starts_with("Reflect.") || name.starts_with("Proxy.")
-                                }
-                                _ => false,
-                            },
-                            _ => false,
-                        };
-                        if is_reflect_like {
-                            if let Some(res) =
-                                crate::builtins::try_dispatch(self, receiver, &method_name, args)
-                            {
-                                let val = res?;
-                                self.stack.push(val);
-                                pc += 1;
-                                continue;
-                            }
-                        }
-                        let this_arg = args.first().copied().unwrap_or(Value::Undefined);
-                        let call_args: Vec<Value> = if method_name.as_ref() == "call" {
-                            if args.is_empty() {
-                                Vec::new()
-                            } else {
-                                args[1..].to_vec()
-                            }
-                        } else {
-                            args.get(1)
-                                .copied()
-                                .map(|a| self.to_array_values(a))
-                                .unwrap_or_default()
-                        };
-                        let ret = self.invoke_callable(receiver, this_arg, &call_args)?;
-                        self.stack.push(ret);
-                        pc += 1;
-                        continue;
-                    }
-                    if let Some(r) = receiver.as_object() {
-                        let is_reflect_like = match self.heap.get(r.0 as usize) {
-                            Some(HeapObject::NativeFn { name, .. }) => {
-                                name.starts_with("Reflect.") || name.starts_with("Proxy.")
-                            }
-                            _ => false,
-                        };
-                        if is_reflect_like {
-                            if let Some(res) =
-                                crate::builtins::try_dispatch(self, receiver, &method_name, args)
-                            {
-                                let val = res?;
-                                self.stack.push(val);
-                                pc += 1;
-                                continue;
-                            }
-                        }
-                    }
-                    if let Some(res) =
-                        crate::builtins::try_dispatch(self, receiver, &method_name, args)
-                    {
-                        let val = res?;
-                        self.stack.push(val);
-                    } else if method_name == "log" {
-                        let line = args
-                            .iter()
-                            .map(|v| self.format_console_value(*v))
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        self.stdout_records.push(line);
-                        self.stack.push(Value::Undefined);
-                    } else if self
-                        .math_object
-                        .is_some_and(|m| receiver == Value::Object(m))
-                        && matches!(
-                            method_name.as_ref(),
-                            "abs"
-                                | "ceil"
-                                | "floor"
-                                | "round"
-                                | "trunc"
-                                | "sign"
-                                | "sqrt"
-                                | "cbrt"
-                                | "pow"
-                                | "max"
-                                | "min"
-                                | "hypot"
-                                | "log"
-                                | "log2"
-                                | "log10"
-                                | "exp"
-                                | "random"
-                        )
-                    {
-                        // Math.*：原生方法（receiver 是 Math 单例）
-                        let math_val = math_method(method_name.as_ref(), args);
-                        self.stack.push(math_val);
-                    } else if matches!(method_name.as_ref(), "exec" | "test")
-                        && self.is_regexp_obj(receiver)
-                    {
-                        // RegExp 原型方法：exec 返回结果数组（带 index/input/
-                        // groups）或 null；test 返回布尔（g/y 语义驱动 lastIndex）
-                        let subject = args
-                            .first()
-                            .map(|v| self.format_value(*v))
-                            .unwrap_or_default();
-                        let result = self.regexp_exec(receiver, &subject)?;
-                        if method_name == "test" {
-                            self.stack.push(Value::Boolean(result.is_some()));
-                        } else {
-                            self.stack.push(result.unwrap_or(Value::Null));
-                        }
-                    } else if method_name == "toString" && self.is_regexp_obj(receiver) {
-                        // String(re)："/pat/flags"（format_value 同形态）
-                        let s = self.format_value(receiver);
-                        let s_ref = self.alloc_string(s);
-                        self.stack.push(Value::Object(s_ref));
-                    } else if method_name == "next" && self.is_generator_obj(receiver) {
-                        // 生成器迭代协议：gen.next(v) 驱动到下一个 YIELD/结束
-                        let injected = args.first().copied().unwrap_or(Value::Undefined);
-                        let gen_ref = match receiver.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("is_generator_obj 已确认 receiver 是对象"),
-                        };
-                        let result = self.drive_generator(gen_ref, Some(injected))?;
-                        self.stack.push(result);
-                    } else if method_name == "next" && self.is_array_iterator(receiver) {
-                        // 数组迭代协议（for...of）：产出 { value, done } 结果对象
-                        let iter_ref = match receiver.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("is_array_iterator 已确认 receiver 是对象"),
-                        };
-                        let result = self.array_iterator_next(iter_ref)?;
-                        self.stack.push(result);
-                    } else if method_name == "next" && self.is_string_iterator(receiver) {
-                        let iter_ref = match receiver.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("is_string_iterator 已确认 receiver 是对象"),
-                        };
-                        let result = self.string_iterator_next(iter_ref)?;
-                        self.stack.push(result);
-                    } else if method_name == "next" && self.is_map_iterator(receiver) {
-                        let iter_ref = match receiver.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("is_map_iterator 已确认 receiver 是对象"),
-                        };
-                        let result = self.map_iterator_next(iter_ref)?;
-                        self.stack.push(result);
-                    } else if method_name == "next" && self.is_set_iterator(receiver) {
-                        let iter_ref = match receiver.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("is_set_iterator 已确认 receiver 是对象"),
-                        };
-                        let result = self.set_iterator_next(iter_ref)?;
-                        self.stack.push(result);
-                    } else if self.is_symbol(receiver)
-                        && matches!(method_name.as_ref(), "toString" | "valueOf")
-                    {
-                        let sym_ref = match receiver.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("is_symbol 已确认 receiver 是对象"),
-                        };
-                        match self.call_symbol_method(&method_name, sym_ref) {
-                            Some(Ok(v)) => self.stack.push(v),
-                            Some(Err(e)) => return Err(e),
-                            None => self.stack.push(Value::Undefined),
-                        }
-                    } else if self.is_bigint_value(receiver) {
-                        // BigInt 原型表面：toString/toLocaleString/valueOf
-                        let text = match &receiver.case() {
-                            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
-                                Some(HeapObject::BigInt(t)) => t.clone(),
-                                _ => String::new(),
-                            },
-                            _ => String::new(),
-                        };
-                        match method_name.as_ref() {
-                            "toString" => {
-                                // toString(radix)：2~36 进制（默认 10）
-                                let radix = args
-                                    .first()
-                                    .map(|v| crate::ops::to_number(*v))
-                                    .unwrap_or(10.0);
-                                let out = if radix == 10.0 || radix.is_nan() {
-                                    text
-                                } else {
-                                    match text.parse::<i128>() {
-                                        Ok(n) => format_radix(n, radix as u32),
-                                        Err(_) => text,
-                                    }
-                                };
-                                let s = self.alloc_string(out);
-                                self.stack.push(Value::Object(s));
-                            }
-                            "toLocaleString" | "valueOf" => {
-                                let s = self.alloc_string(text);
-                                self.stack.push(Value::Object(s));
-                            }
-                            _ => self.stack.push(Value::Undefined),
-                        }
-                    } else if self.is_string_value(receiver) {
-                        // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
-                        let text = match &receiver.case() {
-                            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
-                                Some(HeapObject::String(t)) => t.clone(),
-                                _ => String::new(),
-                            },
-                            _ => String::new(),
-                        };
-                        match self.call_string_method(&method_name, args, &text) {
-                            Some(Ok(v)) => self.stack.push(v),
-                            Some(Err(e)) => return Err(e),
-                            None => {
-                                let msg = self.alloc_string(format!(
-                                    "TypeError: {}.{} is not a function",
-                                    text, method_name
-                                ));
-                                return Err(VmError::Thrown(Value::Object(msg)));
-                            }
-                        }
-                    } else if method_name == "isArray"
-                        && self
-                            .array_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Array.isArray(v)
-                        let is_arr = args
-                            .first()
-                            .copied()
-                            .map(|v| self.is_array_value(v))
-                            .unwrap_or(false);
-                        self.stack.push(Value::Boolean(is_arr));
-                    } else if method_name == "keys"
-                        && self
-                            .object_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Object.keys(obj)：自有可枚举键（数组为下标键；
-                        // 字典序输出保证确定性；Proxy 经 ownKeys/get trap 派发）
-                        let mut keys: Vec<String> = match args.first().map(|v| v.case()) {
-                            Some(ValueCase::Object(r)) if self.proxy_parts(r).is_some() => {
-                                self.proxy_own_keys(r).unwrap_or_default()
-                            }
-                            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
-                                Some(HeapObject::Ordinary { .. }) => self
-                                    .own_entries(r.0 as usize)
-                                    .into_iter()
-                                    .map(|(k, _)| k)
-                                    .filter(|k| !crate::symbol::is_symbol_key(k))
-                                    .collect(),
-                                Some(HeapObject::Array { elements, .. }) => {
-                                    (0..elements.len()).map(|i| i.to_string()).collect()
-                                }
-                                Some(HeapObject::Closure {
-                                    properties,
-                                    getters,
-                                    non_enum,
-                                    ..
-                                }) => {
-                                    // 函数对象自有面（express/body-parser 的
-                                    // exports=fn + defineProperty 静态访问器；
-                                    // prototype/不可枚举面过滤）
-                                    let mut ks: Vec<String> = properties
-                                        .keys()
-                                        .filter(|k| !non_enum.contains(*k))
-                                        .cloned()
-                                        .collect();
-                                    ks.extend(
-                                        getters.keys().filter(|k| !non_enum.contains(*k)).cloned(),
-                                    );
-                                    ks
-                                }
-                                _ => Vec::new(),
-                            },
-                            _ => Vec::new(),
-                        };
-                        keys.sort();
-                        let elems: Vec<Value> = keys
-                            .into_iter()
-                            .map(|k| {
-                                let s = self.alloc_string(k);
-                                Value::Object(s)
-                            })
-                            .collect();
-                        let arr = self.alloc_array(elems);
-                        self.stack.push(Value::Object(arr));
-                    } else if method_name == "getOwnPropertyNames"
-                        && self
-                            .object_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Object.getOwnPropertyNames(obj)：自有全部字符串键
-                        //（含不可枚举；符号键由 getOwnPropertySymbols 返回）
-                        let keys: Vec<String> = match args.first().map(|v| v.case()) {
-                            Some(ValueCase::Object(r)) if self.proxy_parts(r).is_some() => {
-                                self.proxy_own_keys(r).unwrap_or_default()
-                            }
-                            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
-                                Some(HeapObject::Ordinary { .. }) => self
-                                    .own_entries(r.0 as usize)
-                                    .into_iter()
-                                    .map(|(k, _)| k)
-                                    .filter(|k| !crate::symbol::is_symbol_key(k))
-                                    .collect(),
-                                Some(HeapObject::Array { elements, .. }) => {
-                                    let mut ks: Vec<String> =
-                                        (0..elements.len()).map(|i| i.to_string()).collect();
-                                    ks.extend(
-                                        self.own_entries(r.0 as usize)
-                                            .into_iter()
-                                            .map(|(k, _)| k)
-                                            .filter(|k| !crate::symbol::is_symbol_key(k)),
-                                    );
-                                    ks
-                                }
-                                Some(HeapObject::Closure {
-                                    properties,
-                                    getters,
-                                    ..
-                                }) => {
-                                    let mut ks: Vec<String> = properties.keys().cloned().collect();
-                                    ks.extend(getters.keys().cloned());
-                                    ks
-                                }
-                                _ => Vec::new(),
-                            },
-                            _ => Vec::new(),
-                        };
-                        let elems: Vec<Value> = keys
-                            .into_iter()
-                            .map(|k| Value::Object(self.alloc_string(k)))
-                            .collect();
-                        let arr = self.alloc_array(elems);
-                        self.stack.push(Value::Object(arr));
-                    } else if matches!(method_name.as_ref(), "for" | "keyFor")
-                        && self.is_symbol_ctor(receiver)
-                    {
-                        // Symbol.for(key) / Symbol.keyFor(sym)
-                        let out = if method_name == "for" {
-                            self.symbol_for(args)?
-                        } else {
-                            self.symbol_key_for(args)?
-                        };
-                        self.stack.push(out);
-                    } else if method_name == "getOwnPropertySymbols"
-                        && self
-                            .object_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Object.getOwnPropertySymbols(obj)：符号键还原为符号值
-                        let syms: Vec<Value> = match args.first().map(|v| v.case()) {
-                            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
-                                Some(HeapObject::Ordinary { .. }) => self
-                                    .own_entries(r.0 as usize)
-                                    .into_iter()
-                                    .map(|(k, _)| k)
-                                    .filter_map(|k| crate::symbol::parse_symbol_key(&k))
-                                    .map(Value::Object)
-                                    .collect(),
-                                _ => Vec::new(),
-                            },
-                            _ => Vec::new(),
-                        };
-                        let arr = self.alloc_array(syms);
-                        self.stack.push(Value::Object(arr));
-                    } else if method_name == "stringify" && self.is_json_object(receiver) {
-                        // JSON.stringify(value)（成员调用形态）
-                        let v = args.first().copied().unwrap_or(Value::Undefined);
-                        let out = self.json_stringify(v)?;
-                        self.stack.push(out);
-                    } else if method_name == "parse" && self.is_json_object(receiver) {
-                        // JSON.parse(text)（成员调用形态）
-                        let out = self.json_parse(args)?;
-                        self.stack.push(out);
-                    } else if matches!(
-                        method_name.as_ref(),
-                        "readFileSync" | "writeFileSync" | "existsSync"
-                    ) && self.fs_object.is_some_and(|f| receiver == Value::Object(f))
-                    {
-                        // fs 最小内置（M1）：同步读写文本文件
-                        let path = args
-                            .first()
-                            .map(|v| self.format_value(*v))
-                            .unwrap_or_default();
-                        match method_name.as_ref() {
-                            "existsSync" => {
-                                self.stack
-                                    .push(Value::Boolean(std::path::Path::new(&path).exists()));
-                            }
-                            "readFileSync" => match std::fs::read_to_string(&path) {
-                                Ok(content) => {
-                                    let s = self.alloc_string(content);
-                                    self.stack.push(Value::Object(s));
-                                }
-                                Err(e) => {
-                                    let msg = self.alloc_string(format!("fs.readFileSync: {e}"));
-                                    return Err(VmError::Thrown(Value::Object(msg)));
-                                }
-                            },
-                            _ => {
-                                let data = args
-                                    .get(1)
-                                    .map(|v| self.format_value(*v))
-                                    .unwrap_or_default();
-                                match std::fs::write(&path, data) {
-                                    Ok(()) => self.stack.push(Value::Undefined),
-                                    Err(e) => {
-                                        let msg =
-                                            self.alloc_string(format!("fs.writeFileSync: {e}"));
-                                        return Err(VmError::Thrown(Value::Object(msg)));
-                                    }
-                                }
-                            }
-                        }
-                    } else if method_name == "nextTick" && {
-                        let c1 = self
-                            .process_object
-                            .is_some_and(|p| receiver == Value::Object(p));
-                        let c2 = matches!(receiver.case(), ValueCase::Object(rr)
-                                if matches!(
-                                    self.heap.get(rr.0 as usize),
-                                    Some(HeapObject::NativeFn { name, .. })
-                                        if name == "nextTick"
-                                )
-                        );
-                        let _ = (c1, c2);
-                        c1 || c2
-                    } {
-                        // process.nextTick(cb)：nextTick 优先微任务队列
-                        let cb = args.first().copied().unwrap_or(Value::Undefined);
-                        self.nexttick_queue.push_back(cb);
-                        self.stack.push(Value::Undefined);
-                    } else if matches!(method_name.as_ref(), "then" | "catch" | "finally")
-                        && matches!(receiver.case(), ValueCase::Object(rr)
-                                if matches!(
-                                    self.heap.get(rr.0 as usize),
-                                    Some(HeapObject::Promise { .. })
-                                )
-                        )
-                    {
-                        // then(onF, onR) / catch(onR) / finally(cb)：创建新 promise P2，
-                        // 登记反应（pending）或立即调度（已定型）——回调返回值采纳进
-                        // P2，回调抛错拒绝 P2，finally 透传原定型值
-                        let cb = args.first().copied().unwrap_or(Value::Undefined);
-                        let on_rejected = if method_name == "then" {
-                            args.get(1).copied().unwrap_or(Value::Undefined)
-                        } else {
-                            Value::Undefined
-                        };
-                        if let Some(rr) = receiver.as_object() {
-                            let p2 = self.alloc_pending_promise();
-                            let res2 = self.alloc_promise_resolver(p2, true);
-                            let rej2 = self.alloc_promise_resolver(p2, false);
-                            let (on_f, on_r) = match method_name.as_ref() {
-                                "then" => (cb, on_rejected),
-                                "catch" => (Value::Undefined, cb),
-                                _ => (cb, cb),
-                            };
-                            let is_finally = method_name == "finally";
-                            let state = match self.heap.get(rr.0 as usize) {
-                                Some(HeapObject::Promise {
-                                    pending,
-                                    value,
-                                    is_rejected,
-                                    ..
-                                }) => Some((*pending, *value, *is_rejected)),
-                                _ => None,
-                            };
-                            match state {
-                                Some((true, _, _)) => {
-                                    // pending：登记反应，定型时经 take_reactions 派发
-                                    crate::builtins::promise::push_reaction(
-                                        rr.0,
-                                        crate::builtins::promise::Reaction {
-                                            on_f,
-                                            on_r,
-                                            resolver: Value::Object(res2),
-                                            reject_resolver: Value::Object(rej2),
-                                        },
-                                    );
-                                }
-                                Some((false, value, is_rejected)) => {
-                                    // 已定型：立即调度反应
-                                    if is_finally {
-                                        self.microtask_queue.push_back(
-                                            crate::builtins::Job::Reaction {
-                                                cb,
-                                                arg: value,
-                                                resolver: Value::Object(res2),
-                                                reject_resolver: Value::Object(rej2),
-                                                is_finally: true,
-                                            },
-                                        );
-                                    } else if is_rejected {
-                                        if !matches!(on_r, Value::Undefined) {
-                                            self.microtask_queue.push_back(
-                                                crate::builtins::Job::Reaction {
-                                                    cb: on_r,
-                                                    arg: value,
-                                                    resolver: Value::Object(res2),
-                                                    reject_resolver: Value::Object(rej2),
-                                                    is_finally: false,
-                                                },
-                                            );
-                                        } else {
-                                            // 拒绝透传（onR 缺失）：两跳任务对齐 Go
-                                            // oracle 的透传时序
-                                            self.microtask_queue.push_back(
-                                                crate::builtins::Job::RejectLater {
-                                                    resolver: Value::Object(rej2),
-                                                    arg: value,
-                                                },
-                                            );
-                                        }
-                                    } else if !matches!(on_f, Value::Undefined) {
-                                        self.microtask_queue.push_back(
-                                            crate::builtins::Job::Reaction {
-                                                cb: on_f,
-                                                arg: value,
-                                                resolver: Value::Object(res2),
-                                                reject_resolver: Value::Object(rej2),
-                                                is_finally: false,
-                                            },
-                                        );
-                                    } else {
-                                        // 兑现透传：两跳（与拒绝透传对称）
-                                        self.microtask_queue.push_back(
-                                            crate::builtins::Job::ResolveLater {
-                                                resolver: Value::Object(res2),
-                                                arg: value,
-                                            },
-                                        );
-                                    }
-                                }
-                                None => {}
-                            }
-                            self.stack.push(Value::Object(p2));
-                        } else {
-                            self.stack.push(receiver);
-                        }
-                    } else if matches!(method_name.as_ref(), "then" | "catch")
-                        && matches!(receiver.case(), ValueCase::Object(rr)
-                                if matches!(
-                                    self.heap.get(rr.0 as usize),
-                                    Some(HeapObject::Promise { .. })
-                                )
-                        )
-                    {
-                        // promise.then(onF)：登记处理器，返回自身；已完成时立即调度。
-                        // promise.catch(onR)：pending 时登记（reject 简化同 fulfill——
-                        // 本引擎无 reject 语义，fulfilled 完成不触发 catch）
-                        if let Some(rr) = receiver.as_object() {
-                            let cb = args.first().copied().unwrap_or(Value::Undefined);
-                            // then(onF, onR) 的第二参数：rejected 处理器
-                            let on_rejected = if method_name == "then" {
-                                args.get(1).copied().unwrap_or(Value::Undefined)
-                            } else {
-                                Value::Undefined
-                            };
-                            let state = match self.heap.get(rr.0 as usize) {
-                                Some(HeapObject::Promise {
-                                    pending,
-                                    value,
-                                    is_rejected,
-                                    ..
-                                }) => Some((*pending, *value, *is_rejected)),
-                                _ => None,
-                            };
-                            if let Some((pending, value, is_rejected)) = state {
-                                if pending {
-                                    let registered = if let Some(HeapObject::Promise {
-                                        handlers,
-                                        rejected,
-                                        ..
-                                    }) = self.heap.get_mut(rr.0 as usize)
-                                    {
-                                        if method_name == "then" {
-                                            handlers.push(cb);
-                                            if !matches!(on_rejected, Value::Undefined) {
-                                                rejected.push(on_rejected);
-                                            }
-                                        } else {
-                                            // catch：只在 reject 时调度（fulfill 不触发）
-                                            rejected.push(cb);
-                                        }
-                                        true
-                                    } else {
-                                        false
-                                    };
-                                    if registered {
-                                        // 写屏障：pending promise（容器）注册年轻回调
-                                        self.gc_write_barrier(rr, cb);
-                                    }
-                                } else if is_rejected {
-                                    // 已拒绝：then 的 onR / catch 的 cb 立即调度
-                                    let handler = if method_name == "catch" {
-                                        cb
-                                    } else {
-                                        on_rejected
-                                    };
-                                    if !matches!(handler, Value::Undefined) {
-                                        self.microtask_queue
-                                            .push_back(crate::builtins::Job::Call(handler, value));
-                                    }
-                                } else if method_name == "then" {
-                                    // 已兑现：onF 立即调度
-                                    self.microtask_queue
-                                        .push_back(crate::builtins::Job::Call(cb, value));
-                                }
-                            }
-                        }
-                        self.stack.push(receiver);
-                    } else if method_name == "resolve"
-                        && self
-                            .promise_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Promise.resolve(v)：直接完成
-                        let value = args.first().copied().unwrap_or(Value::Undefined);
-                        let p = self.alloc_fulfilled_promise(value);
-                        self.stack.push(Value::Object(p));
-                    } else if method_name == "reject"
-                        && self
-                            .promise_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Promise.reject(reason)：直接拒绝
-                        let reason = args.first().copied().unwrap_or(Value::Undefined);
-                        let p = self.alloc_rejected_promise(reason);
-                        self.stack.push(Value::Object(p));
-                    } else if matches!(method_name.as_ref(), "all" | "race" | "allSettled")
-                        && self
-                            .promise_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // 组合器：all/race/allSettled（any 在 Go 侧不存在，不实现）
-                        let kind = match method_name.as_ref() {
-                            "all" => crate::builtins::promise::CombinerKind::All,
-                            "race" => crate::builtins::promise::CombinerKind::Race,
-                            _ => crate::builtins::promise::CombinerKind::AllSettled,
-                        };
-                        let p = self.promise_combiner(kind, args)?;
-                        self.stack.push(p);
-                    } else if method_name == "withResolvers"
-                        && self
-                            .promise_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Promise.withResolvers()：{ promise, resolve, reject }
-                        let promise = self.alloc_pending_promise();
-                        let resolve = self.alloc_promise_resolver(promise, true);
-                        let reject = self.alloc_promise_resolver(promise, false);
-                        let result = self.alloc_ordinary();
-                        let _ = self.set_property(
-                            Value::Object(result),
-                            "promise",
-                            Value::Object(promise),
-                        );
-                        let _ = self.set_property(
-                            Value::Object(result),
-                            "resolve",
-                            Value::Object(resolve),
-                        );
-                        let _ = self.set_property(
-                            Value::Object(result),
-                            "reject",
-                            Value::Object(reject),
-                        );
-                        self.stack.push(Value::Object(result));
-                    } else if method_name == "fromAsync"
-                        && self
-                            .array_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Array.fromAsync(iterable)：同步数组直接收集；
-                        // 生成器按 next() 同步驱动（async 生成器在语料中同步产值）
-                        let iterable = args.first().copied().unwrap_or(Value::Undefined);
-                        let mut elems: Vec<Value> = Vec::new();
-                        if let Some(it) = iterable.as_object() {
-                            match self.heap.get(it.0 as usize) {
-                                Some(HeapObject::Array { elements, .. }) => {
-                                    elems.extend(elements.iter().copied());
-                                }
-                                Some(HeapObject::Generator) => {
-                                    let mut done = false;
-                                    let re = it;
-                                    while !done {
-                                        let result = self.drive_generator(re, None)?;
-                                        let (val, is_done) = match result.case() {
-                                            ValueCase::Object(res) => {
-                                                let v =
-                                                    self.get_property(Value::Object(res), "value")?;
-                                                let d =
-                                                    self.get_property(Value::Object(res), "done")?;
-                                                (v, matches!(d.case(), ValueCase::Boolean(true)))
-                                            }
-                                            _ => (Value::Undefined, true),
-                                        };
-                                        if is_done {
-                                            done = true;
-                                        } else {
-                                            elems.push(val);
-                                        }
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        let arr = self.alloc_array(elems);
-                        let p = self.alloc_fulfilled_promise(Value::Object(arr));
-                        self.stack.push(Value::Object(p));
-                    } else if method_name == "groupBy"
-                        && self
-                            .object_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Object.groupBy(arr, cb)：分组到普通对象
-                        let cb = args.get(1).copied().unwrap_or(Value::Undefined);
-                        let mut groups: std::collections::HashMap<String, Vec<Value>> =
-                            std::collections::HashMap::new();
-                        let elems: Vec<Value> =
-                            match args.first().copied().unwrap_or(Value::Undefined).case() {
-                                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
-                                    Some(HeapObject::Array { elements, .. }) => elements.clone(),
-                                    _ => Vec::new(),
-                                },
-                                _ => Vec::new(),
-                            };
-                        for (i, elem) in elems.iter().enumerate() {
-                            let key_val = self.invoke_array_cb(
-                                cb,
-                                Value::Undefined,
-                                &[*elem, Value::Number(i as f64), Value::Undefined],
-                            )?;
-                            let key = self.to_property_key(key_val);
-                            groups.entry(key).or_default().push(*elem);
-                        }
-                        let result = self.alloc_ordinary();
-                        for (key, items) in groups {
-                            let arr = self.alloc_array(items);
-                            let _ =
-                                self.set_property(Value::Object(result), &key, Value::Object(arr));
-                        }
-                        self.stack.push(Value::Object(result));
-                    } else if method_name == "groupBy"
-                        && self.map_ctor.is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Map.groupBy(arr, cb)：分组到 Map（键保留原值 + SameValueZero
-                        // 语义；首见顺序即插入序——Vec 保序，非字符串化分组）
-                        let cb = args.get(1).copied().unwrap_or(Value::Undefined);
-                        let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
-                        let elems: Vec<Value> =
-                            match args.first().copied().unwrap_or(Value::Undefined).case() {
-                                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
-                                    Some(HeapObject::Array { elements, .. }) => elements.clone(),
-                                    _ => Vec::new(),
-                                },
-                                _ => Vec::new(),
-                            };
-                        for (i, elem) in elems.iter().enumerate() {
-                            let key_val = self.invoke_array_cb(
-                                cb,
-                                Value::Undefined,
-                                &[*elem, Value::Number(i as f64), Value::Undefined],
-                            )?;
-                            if let Some(slot) = groups
-                                .iter_mut()
-                                .find(|(k, _)| self.values_same_zero(*k, key_val))
-                            {
-                                slot.1.push(*elem);
-                            } else {
-                                groups.push((key_val, vec![*elem]));
-                            }
-                        }
-                        let mut map_entries: Vec<(Value, Value)> = Vec::new();
-                        for (k, v) in groups {
-                            let arr = self.alloc_array(v);
-                            map_entries.push((k, Value::Object(arr)));
-                        }
-                        let map = self.alloc_map(map_entries);
-                        self.stack.push(Value::Object(map));
-                    } else if matches!(
-                        method_name.as_ref(),
-                        "get"
-                            | "set"
-                            | "has"
-                            | "delete"
-                            | "clear"
-                            | "add"
-                            | "keys"
-                            | "values"
-                            | "entries"
-                            | "forEach"
-                    ) && matches!(receiver.case(), ValueCase::Object(rr)
-                            if matches!(
-                                self.heap.get(rr.0 as usize),
-                                Some(HeapObject::Map { .. })
-                            )
-                    ) {
-                        // Map/Set 实例方法（键保留原始 Value + SameValueZero 查找；
-                        // Set 复用 Map 变体：key=value=元素原值）
-                        let method = method_name.as_ref();
-                        let key = args.first().copied().unwrap_or(Value::Undefined);
-                        let mut result = Value::Undefined;
-                        // 迭代类方法（keys/values/entries/forEach）先取有序快照
-                        // 再分配迭代器（避免与可变借用冲突）
-                        let snapshot: Option<Vec<(Value, Value)>> = match method {
-                            "keys" | "values" | "entries" | "forEach" => match receiver.case() {
-                                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
-                                    Some(HeapObject::Map { entries }) => Some(entries.clone()),
-                                    _ => None,
-                                },
-                                _ => None,
-                            },
-                            _ => None,
-                        };
-                        if let Some(entries) = snapshot {
-                            let is_set = self.is_set_instance(receiver);
-                            if let Some(rr) = receiver.as_object() {
-                                match method {
-                                    "keys" => {
-                                        if is_set {
-                                            // Set.keys === Set.values（别名）
-                                            let it = self.alloc_set_iterator(rr, "keys");
-                                            result = it;
-                                        } else {
-                                            let it = self.alloc_map_iterator(rr, "keys");
-                                            result = it;
-                                        }
-                                    }
-                                    "values" => {
-                                        if is_set {
-                                            let it = self.alloc_set_iterator(rr, "values");
-                                            result = it;
-                                        } else {
-                                            let it = self.alloc_map_iterator(rr, "values");
-                                            result = it;
-                                        }
-                                    }
-                                    "entries" => {
-                                        if is_set {
-                                            let it = self.alloc_set_iterator(rr, "entries");
-                                            result = it;
-                                        } else {
-                                            let it = self.alloc_map_iterator(rr, "entries");
-                                            result = it;
-                                        }
-                                    }
-                                    "forEach" => {
-                                        // Map: cb(value, key, map)；Set: cb(value, value, set)
-                                        let cb = args.first().copied().unwrap_or(Value::Undefined);
-                                        let this_arg =
-                                            args.get(1).copied().unwrap_or(Value::Undefined);
-                                        if is_set {
-                                            for (_, v) in entries {
-                                                self.invoke_callable(
-                                                    cb,
-                                                    this_arg,
-                                                    &[v, v, receiver],
-                                                )?;
-                                            }
-                                        } else {
-                                            for (k, v) in entries {
-                                                // 键身份：直接回传原键 Value（对象键
-                                                // 必须 `seen === 原键`，不得重建字符串）
-                                                self.invoke_callable(
-                                                    cb,
-                                                    this_arg,
-                                                    &[v, k, receiver],
-                                                )?;
-                                            }
-                                        }
-                                        result = Value::Undefined;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        } else if let Some(rr) = receiver.as_object() {
-                            // SameValueZero 命中下标：先在**不可变**借用下求出，再进入
-                            // 可变借用改写——比较需读堆判定字符串内容（本 VM 以堆对象
-                            // 表示字符串，句柄不同但内容相同必须视为同键），若在
-                            // `get_mut` 的闭包里比较会同时持有 &mut self.heap 与 &self。
-                            let hit = match self.heap.get(rr.0 as usize) {
-                                Some(HeapObject::Map { entries }) => entries
-                                    .iter()
-                                    .position(|(k, _)| self.values_same_zero(*k, key)),
-                                _ => None,
-                            };
-                            if let Some(HeapObject::Map { entries }) =
-                                self.heap.get_mut(rr.0 as usize)
-                            {
-                                match method {
-                                    "set" | "add" => {
-                                        let value = match method {
-                                            "set" => {
-                                                args.get(1).copied().unwrap_or(Value::Undefined)
-                                            }
-                                            _ => args.first().copied().unwrap_or(Value::Undefined),
-                                        };
-                                        // 有序语义：既有键命中则原位更新（保插入位置），
-                                        // 否则追加末尾（Node Map/Set 插入序）
-                                        if let Some(i) = hit {
-                                            entries[i].1 = value;
-                                        } else {
-                                            entries.push((key, value));
-                                        }
-                                        // 写屏障：Map/Set 容器（可能已升代）写入年轻引用
-                                        // ——键与值都必须分别屏障（漏键屏障会让键对象在
-                                        // minor 中被误回收）
-                                        self.gc_write_barrier(rr, value);
-                                        self.gc_write_barrier(rr, key);
-                                        result = receiver;
-                                    }
-                                    "get" => {
-                                        result =
-                                            hit.map(|i| entries[i].1).unwrap_or(Value::Undefined);
-                                    }
-                                    "has" => {
-                                        result = Value::Boolean(hit.is_some());
-                                    }
-                                    "delete" => {
-                                        // SameValueZero 语义下至多命中一项
-                                        result = Value::Boolean(match hit {
-                                            Some(i) => {
-                                                entries.remove(i);
-                                                true
-                                            }
-                                            None => false,
-                                        });
-                                    }
-                                    "clear" => {
-                                        entries.clear();
-                                        result = Value::Undefined;
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        self.stack.push(result);
-                    } else if matches!(
-                        method_name.as_ref(),
-                        "on" | "once" | "off" | "removeListener" | "emit"
-                    ) && matches!(receiver.case(), ValueCase::Object(rr)
-                            if matches!(
-                                self.heap.get(rr.0 as usize),
-                                Some(HeapObject::EventEmitter { .. })
-                            )
-                    ) {
-                        // EventEmitter：on/once 注册监听器，emit 触发，off/removeListener 移除
-                        if let Some(rr) = receiver.as_object() {
-                            match method_name.as_ref() {
-                                "on" | "once" => {
-                                    let name = args
-                                        .first()
-                                        .map(|v| self.to_property_key(*v))
-                                        .unwrap_or_default();
-                                    let cb = args.get(1).copied().unwrap_or(Value::Undefined);
-                                    let once = method_name == "once";
-                                    if let Some(HeapObject::EventEmitter { listeners }) =
-                                        self.heap.get_mut(rr.0 as usize)
-                                    {
-                                        listeners.entry(name).or_default().push((cb, once));
-                                        self.gc_write_barrier(rr, cb);
-                                    }
-                                    self.stack.push(receiver);
-                                }
-                                "emit" => {
-                                    let name = args
-                                        .first()
-                                        .map(|v| self.to_property_key(*v))
-                                        .unwrap_or_default();
-                                    // 触发瞬间收集监听器：普通监听器保持并触发，
-                                    // once 的触发前移除（只触发一次）
-                                    let mut all: Vec<Value> = Vec::new();
-                                    if let Some(HeapObject::EventEmitter { listeners }) =
-                                        self.heap.get_mut(rr.0 as usize)
-                                    {
-                                        if let Some(list) = listeners.get_mut(&name) {
-                                            let mut fired = Vec::new();
-                                            let mut keep = Vec::with_capacity(list.len());
-                                            for (cb, once) in std::mem::take(list) {
-                                                if once {
-                                                    fired.push(cb);
-                                                } else {
-                                                    keep.push((cb, once));
-                                                    all.push(cb);
-                                                }
-                                            }
-                                            *list = keep;
-                                            all.extend(fired);
-                                        }
-                                    }
-                                    let emit_args: Vec<Value> =
-                                        args.iter().skip(1).copied().collect();
-                                    for cb in all {
-                                        self.invoke_callable(cb, receiver, &emit_args)?;
-                                    }
-                                    self.stack.push(Value::Boolean(!emit_args.is_empty()));
-                                }
-                                _ => {
-                                    // off / removeListener：移除匹配的监听器
-                                    let name = args
-                                        .first()
-                                        .map(|v| self.to_property_key(*v))
-                                        .unwrap_or_default();
-                                    let cb = args.get(1).copied().unwrap_or(Value::Undefined);
-                                    if let Some(HeapObject::EventEmitter { listeners }) =
-                                        self.heap.get_mut(rr.0 as usize)
-                                    {
-                                        if let Some(list) = listeners.get_mut(&name) {
-                                            list.retain(|(c, _)| *c != cb);
-                                        }
-                                    }
-                                    self.stack.push(receiver);
-                                }
-                            }
-                        }
-                    } else if matches!(method_name.as_ref(), "push" | "next")
-                        && self.is_readable_obj(receiver)
-                    {
-                        // 可读流：push 追加数据（null=结束）；next 消费（空读挂起等待）
-                        match method_name.as_ref() {
-                            "push" => {
-                                let v = args.first().copied().unwrap_or(Value::Undefined);
-                                let is_end = matches!(v, Value::Null);
-                                let waiting = if let Some(rr) = receiver.as_object() {
-                                    if let Some(HeapObject::Readable {
-                                        buffer,
-                                        ended,
-                                        waiting,
-                                    }) = self.heap.get_mut(rr.0 as usize)
-                                    {
-                                        if is_end {
-                                            *ended = true;
-                                        } else if waiting.is_none() {
-                                            // 无等待读取者：数据入缓冲；有等待者时
-                                            // 数据直接交给等待的 next（避免双读）
-                                            buffer.push_back(v);
-                                            // 写屏障在 get_mut 借用结束后执行（下方）
-                                        }
-                                        waiting.take()
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                };
-                                // 写屏障：老可读流缓冲/等待槽写入新值
-                                if let Some(rr2) = receiver.as_object() {
-                                    self.gc_write_barrier(rr2, v);
-                                }
-                                // 有等待中的 promise：兑现为 {value, done} 结果对象
-                                if let Some(wp) = waiting {
-                                    let res_obj = self.alloc_ordinary();
-                                    let done = is_end;
-                                    let val = if done { Value::Undefined } else { v };
-                                    let _ = self.set_property(Value::Object(res_obj), "value", val);
-                                    let _ = self.set_property(
-                                        Value::Object(res_obj),
-                                        "done",
-                                        Value::Boolean(done),
-                                    );
-                                    self.fulfill_promise(wp, Value::Object(res_obj))?;
-                                }
-                                self.stack.push(Value::Boolean(true));
-                            }
-                            "next" => {
-                                // 先取动作：Some(值) / Done / NeedWait(等待 promise)
-                                enum NextAction {
-                                    Data(Value),
-                                    Done,
-                                    NeedWait,
-                                }
-                                // 无条件先建 pending promise（NeedWait 时登记等待；
-                                // Data/Done 时弃用——堆对象无副作用）
-                                let pending_promise = self.alloc_pending_promise();
-                                let action = if let Some(rr) = receiver.as_object() {
-                                    match self.heap.get_mut(rr.0 as usize) {
-                                        Some(HeapObject::Readable {
-                                            buffer,
-                                            ended,
-                                            waiting,
-                                        }) => {
-                                            if let Some(v) = buffer.pop_front() {
-                                                NextAction::Data(v)
-                                            } else if *ended {
-                                                NextAction::Done
-                                            } else {
-                                                // 空读未结束：登记等待 promise（挂起等待 push）
-                                                *waiting = Some(pending_promise);
-                                                if let Some(rr2) = receiver.as_object() {
-                                                    self.gc_write_barrier(
-                                                        rr2,
-                                                        Value::Object(pending_promise),
-                                                    );
-                                                }
-                                                NextAction::NeedWait
-                                            }
-                                        }
-                                        _ => NextAction::Done,
-                                    }
-                                } else {
-                                    NextAction::Done
-                                };
-                                let result = match action {
-                                    NextAction::Data(v) => {
-                                        let res_obj = self.alloc_ordinary();
-                                        let _ =
-                                            self.set_property(Value::Object(res_obj), "value", v);
-                                        let _ = self.set_property(
-                                            Value::Object(res_obj),
-                                            "done",
-                                            Value::Boolean(false),
-                                        );
-                                        Some(res_obj)
-                                    }
-                                    NextAction::Done => {
-                                        let res_obj = self.alloc_ordinary();
-                                        let _ = self.set_property(
-                                            Value::Object(res_obj),
-                                            "value",
-                                            Value::Undefined,
-                                        );
-                                        let _ = self.set_property(
-                                            Value::Object(res_obj),
-                                            "done",
-                                            Value::Boolean(true),
-                                        );
-                                        Some(res_obj)
-                                    }
-                                    NextAction::NeedWait => None, // pending：等待 push 兑现
-                                };
-                                match result {
-                                    Some(obj) => self.stack.push(Value::Object(obj)),
-                                    None => {
-                                        // 空读未结束：next 返回等待 promise 本身
-                                        // （与 waiting 登记同一句柄——push 兑现它来
-                                        // 恢复 async 帧），AWAIT 挂起等待 push
-                                        self.stack.push(Value::Object(pending_promise));
-                                    }
-                                }
-                            }
-                            _ => self.stack.push(Value::Undefined),
-                        }
-                    } else if matches!(method_name.as_ref(), "platform" | "homedir" | "tmpdir")
-                        && self.os_module.is_some_and(|m| receiver == Value::Object(m))
-                    {
-                        let result = match method_name.as_ref() {
-                            "platform" => if cfg!(windows) { "win32" } else { "linux" }.to_owned(),
-                            "homedir" => std::env::var("USERPROFILE")
-                                .or_else(|_| std::env::var("HOME"))
-                                .unwrap_or_default(),
-                            _ => std::env::var("TEMP")
-                                .or_else(|_| std::env::var("TMPDIR"))
-                                .unwrap_or_else(|_| "/tmp".to_owned()),
-                        };
-                        let r = self.alloc_string(result);
-                        self.stack.push(Value::Object(r));
-                    } else if matches!(
-                        method_name.as_ref(),
-                        "join" | "basename" | "dirname" | "extname" | "resolve" | "relative"
-                    ) && self
-                        .path_module
-                        .is_some_and(|m| receiver == Value::Object(m))
-                    {
-                        // node:path 轻量内置（平台分隔符，对齐 Go `filepath` 语义）
-                        let result = self.path_method(method_name.as_ref(), args);
-                        let r = self.alloc_string(result);
-                        self.stack.push(Value::Object(r));
-                    } else if matches!(method_name.as_ref(), "isWellFormed" | "toWellFormed")
-                        && matches!(receiver.case(), ValueCase::Object(rr)
-                                if matches!(
-                                    self.heap.get(rr.0 as usize),
-                                    Some(HeapObject::String(_))
-                                )
-                        )
-                    {
-                        // 字符串完整性（Rust String 恒为合法 UTF-8）
-                        if method_name == "isWellFormed" {
-                            self.stack.push(Value::Boolean(true));
-                        } else {
-                            self.stack.push(receiver);
-                        }
-                    } else if matches!(
-                        method_name.as_ref(),
-                        "toSorted" | "toReversed" | "toSpliced" | "with"
-                    ) && matches!(receiver.case(), ValueCase::Object(rr)
-                            if matches!(self.heap.get(rr.0 as usize), Some(HeapObject::Array { .. }))
-                    ) {
-                        // ES2023 不可变数组方法：返回新数组
-                        let mut elems: Vec<Value> = if let Some(rr) = receiver.as_object() {
-                            if let Some(HeapObject::Array { elements, .. }) =
-                                self.heap.get(rr.0 as usize)
-                            {
-                                elements.clone()
-                            } else {
-                                Vec::new()
-                            }
-                        } else {
-                            Vec::new()
-                        };
-                        match method_name.as_ref() {
-                            "toSorted" => {
-                                let cmp = args.first().copied().unwrap_or(Value::Undefined);
-                                let this_val = receiver;
-                                if !matches!(cmp, Value::Undefined) {
-                                    // 带比较器：数值比较器按数值序（`b-a` 负值序）
-                                    elems.sort_by(|a, b| {
-                                        let ord = self.invoke_array_cb(
-                                            cmp,
-                                            Value::Undefined,
-                                            &[*a, *b, this_val],
-                                        );
-                                        match ord {
-                                            Ok(v) => match self.to_number_value(v) {
-                                                x if x < 0.0 => std::cmp::Ordering::Less,
-                                                x if x > 0.0 => std::cmp::Ordering::Greater,
-                                                _ => std::cmp::Ordering::Equal,
-                                            },
-                                            Err(_) => std::cmp::Ordering::Equal,
-                                        }
-                                    });
-                                } else {
-                                    elems.sort_by(|a, b| {
-                                        self.format_value(*a).cmp(&self.format_value(*b))
-                                    });
-                                }
-                            }
-                            "toReversed" => elems.reverse(),
-                            "toSpliced" => {
-                                let start = args
-                                    .first()
-                                    .and_then(|v| match v.case() {
-                                        ValueCase::Number(n) => Some(n as usize),
-                                        _ => None,
-                                    })
-                                    .unwrap_or(0)
-                                    .min(elems.len());
-                                let del = args
-                                    .get(1)
-                                    .and_then(|v| match v.case() {
-                                        ValueCase::Number(n) => Some(n as usize),
-                                        _ => None,
-                                    })
-                                    .unwrap_or(0)
-                                    .min(elems.len() - start);
-                                elems.splice(start..start + del, args[2..].to_vec());
-                            }
-                            _ => {
-                                // with(idx, val)
-                                let idx = args
-                                    .first()
-                                    .and_then(|v| match v.case() {
-                                        ValueCase::Number(n) => Some(n as usize),
-                                        _ => None,
-                                    })
-                                    .unwrap_or(0);
-                                let val = args.get(1).copied().unwrap_or(Value::Undefined);
-                                if idx < elems.len() {
-                                    elems[idx] = val;
-                                }
-                            }
-                        }
-                        let new_arr = self.alloc_array(elems);
-                        self.stack.push(Value::Object(new_arr));
-                    } else if method_name == "hasOwn"
-                        && self
-                            .object_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Object.hasOwn(obj, key)：自有属性判定（不沿原型链）
-                        let result = match (
-                            args.first().copied().unwrap_or(Value::Undefined).case(),
-                            args.get(1)
-                                .map(|v| self.to_property_key(*v))
-                                .unwrap_or_default(),
-                        ) {
-                            (ValueCase::Object(rr), key) => match self.heap.get(rr.0 as usize) {
-                                Some(HeapObject::Ordinary { .. }) => {
-                                    self.has_own_slot(rr.0 as usize, &key)
-                                }
-                                Some(HeapObject::Array { properties, .. }) => {
-                                    key == "length" || properties.contains_key(&key)
-                                }
-                                _ => false,
-                            },
-                            _ => false,
-                        };
-                        self.stack.push(Value::Boolean(result));
-                    } else if let Some(dispatched) =
-                        crate::builtins::try_dispatch(self, receiver, &method_name, args)
-                    {
-                        // 内置库注册表模块方法（querystring 等并行开发模块）
-                        match dispatched {
-                            Ok(v) => self.stack.push(v),
-                            Err(e) => return Err(e),
-                        }
-                    } else if method_name == "call" {
-                        // 通用调用协议：fn.call(thisArg, ...args)
-                        let this_arg = args.first().copied().unwrap_or(Value::Undefined);
-                        let rest: &[Value] = if args.is_empty() { &[] } else { &args[1..] };
-                        let ret = self.invoke_callable(receiver, this_arg, rest)?;
-                        self.stack.push(ret);
-                    } else if method_name == "apply" {
-                        // 通用调用协议：fn.apply(thisArg, argsArray)
-                        let this_arg = args.first().copied().unwrap_or(Value::Undefined);
-                        let call_args = args
-                            .get(1)
-                            .copied()
-                            .map(|a| self.to_array_values(a))
-                            .unwrap_or_default();
-                        let ret = self.invoke_callable(receiver, this_arg, &call_args)?;
-                        self.stack.push(ret);
-                    } else if method_name == "create"
-                        && self
-                            .object_ctor
-                            .is_some_and(|c| receiver == Value::Object(c))
-                    {
-                        // Object.create(proto)：以精确原型分配新对象（null → 无原型）
-                        let proto_val = args.first().copied().unwrap_or(Value::Undefined);
-                        let proto = match proto_val.case() {
-                            ValueCase::Object(p) => Some(p),
-                            _ => None,
-                        };
-                        let obj = self.alloc_ordinary_with_exact_proto(proto);
-                        self.stack.push(Value::Object(obj));
-                    } else if let Some(ta_res) =
-                        self.typed_array_dispatch(receiver, &method_name, args)
-                    {
-                        // 类型化数组 / DataView / ArrayBuffer 实例方法
-                        // （返回 None 表示非本体系对象，走既有路径）
-                        let val = ta_res?;
-                        self.stack.push(val);
-                    } else if let Some(st_res) =
-                        self.typed_array_statics(receiver, &method_name, args)
-                    {
-                        // TypedArray 构造器静态方法（from/of/isTypedArray）
-                        let val = st_res?;
-                        self.stack.push(val);
-                    } else if let Some(r) = receiver.as_object() {
-                        let idx = r.0 as usize;
-                        if idx < self.heap.len()
-                            && matches!(self.heap[idx], HeapObject::Array { .. })
-                        {
-                            match method_name.as_ref() {
-                                "push" => {
-                                    for a in args {
-                                        self.gc_write_barrier(r, *a);
-                                    }
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        elements.extend(args);
-                                        let len = elements.len() as f64;
-                                        self.stack.push(Value::Number(len));
-                                    } else {
-                                        self.stack.push(Value::Undefined);
-                                    }
-                                }
-                                "pop" => {
-                                    // 删末元素并返回它（空数组 → undefined）
-                                    // 此前本 match 缺该分支 → 落到通用路径返回
-                                    // undefined 且**不改数组**（已登记分歧转为缺陷）
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        let out = elements.pop().unwrap_or(Value::Undefined);
-                                        self.stack.push(out);
-                                    } else {
-                                        self.stack.push(Value::Undefined);
-                                    }
-                                }
-                                "shift" => {
-                                    // 删首元素并返回它、其余前移（空数组 → undefined）
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        let out = if elements.is_empty() {
-                                            Value::Undefined
-                                        } else {
-                                            elements.remove(0)
-                                        };
-                                        self.stack.push(out);
-                                    } else {
-                                        self.stack.push(Value::Undefined);
-                                    }
-                                }
-                                "unshift" => {
-                                    // 前插全部实参并返回新长度（实参顺序保持）
-                                    for a in args {
-                                        self.gc_write_barrier(r, *a);
-                                    }
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        for (i, a) in args.iter().enumerate() {
-                                            elements.insert(i, *a);
-                                        }
-                                        let len = elements.len() as f64;
-                                        self.stack.push(Value::Number(len));
-                                    } else {
-                                        self.stack.push(Value::Undefined);
-                                    }
-                                }
-                                "map" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let mut new_elems = Vec::with_capacity(elems.len());
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let item_res = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        new_elems.push(item_res);
-                                    }
-                                    let new_arr = self.alloc_array(new_elems);
-                                    self.stack.push(Value::Object(new_arr));
-                                }
-                                "filter" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut kept = Vec::new();
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let keep = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if to_boolean(keep, &self.heap) {
-                                            kept.push(*elem);
-                                        }
-                                    }
-                                    let new_arr = self.alloc_array(kept);
-                                    self.stack.push(Value::Object(new_arr));
-                                }
-                                "find" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut found = Value::Undefined;
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let hit = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if to_boolean(hit, &self.heap) {
-                                            found = *elem;
-                                            break;
-                                        }
-                                    }
-                                    self.stack.push(found);
-                                }
-                                "some" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut any = false;
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let hit = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if to_boolean(hit, &self.heap) {
-                                            any = true;
-                                            break;
-                                        }
-                                    }
-                                    self.stack.push(Value::Boolean(any));
-                                }
-                                "forEach" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                    }
-                                    self.stack.push(Value::Undefined);
-                                }
-                                "reduce" => {
-                                    let cb = args.first().copied().unwrap_or(Value::Undefined);
-                                    let mut acc = args.get(1).copied().unwrap_or(Value::Undefined);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        acc = self.invoke_array_cb(
-                                            cb,
-                                            Value::Undefined,
-                                            &[acc, *elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                    }
-                                    self.stack.push(acc);
-                                }
-                                "reduceRight" => {
-                                    let cb = args.first().copied().unwrap_or(Value::Undefined);
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    // 无初始值：累加器取末元素，从倒数第二个起迭代
-                                    let (mut acc, start) = match args.get(1) {
-                                        Some(init) if !init.is_undefined() => (*init, elems.len()),
-                                        _ => match elems.last() {
-                                            Some(last) => (*last, elems.len() - 1),
-                                            None if elems.is_empty() => {
-                                                let msg = self.alloc_string(
-                                                    "Reduce of empty array with no initial value"
-                                                        .to_owned(),
-                                                );
-                                                return Err(VmError::Thrown(Value::Object(msg)));
-                                            }
-                                            None => (Value::Undefined, elems.len()),
-                                        },
-                                    };
-                                    for elem_idx in (0..start).rev() {
-                                        let elem = elems[elem_idx];
-                                        acc = self.invoke_array_cb(
-                                            cb,
-                                            Value::Undefined,
-                                            &[acc, elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                    }
-                                    self.stack.push(acc);
-                                }
-                                "join" => {
-                                    let sep = if let Some(sep_val) = args.first() {
-                                        self.to_property_key(*sep_val)
-                                    } else {
-                                        ",".to_owned()
-                                    };
-                                    let parts: Vec<String> =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.iter().map(|e| self.format_value(*e)).collect()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let joined = parts.join(&sep);
-                                    let s_ref = self.alloc_string(joined);
-                                    self.stack.push(Value::Object(s_ref));
-                                }
-                                "slice" => {
-                                    let elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    let len = elems.len() as i64;
-                                    let start_raw = match args.first().map(|v| v.case()) {
-                                        Some(ValueCase::Number(n)) => n as i64,
-                                        _ => 0,
-                                    };
-                                    let start = if start_raw < 0 {
-                                        (len + start_raw).max(0) as usize
-                                    } else {
-                                        start_raw.min(len) as usize
-                                    };
-                                    let end =
-                                        if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
-                                            let end_raw = n as i64;
-                                            if end_raw < 0 {
-                                                (len + end_raw).max(0) as usize
-                                            } else {
-                                                end_raw.min(len) as usize
-                                            }
-                                        } else {
-                                            len as usize
-                                        };
-                                    let sliced = if start < end && start < elems.len() {
-                                        elems[start..end.min(elems.len())].to_vec()
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    let new_arr = self.alloc_array(sliced);
-                                    self.stack.push(Value::Object(new_arr));
-                                }
-                                "sort" => {
-                                    // 无比较器排序：元素字符串化后按字典序原地排序（JS 默认语义）
-                                    let mut elems =
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get(idx)
-                                        {
-                                            elements.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                    elems.sort_by(|a, b| {
-                                        self.format_value(*a).cmp(&self.format_value(*b))
-                                    });
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        *elements = elems;
-                                    }
-                                    self.stack.push(receiver);
-                                }
-                                "at" => {
-                                    // arr.at(i)：负下标从尾部计数（越界 → undefined）
-                                    let elems = self.array_elements(idx);
-                                    let len = elems.len() as f64;
-                                    let n = args
-                                        .first()
-                                        .map(|v| crate::ops::to_number(*v))
-                                        .unwrap_or(f64::NAN);
-                                    let i = if n < 0.0 { len + n } else { n };
-                                    let out = if i.is_nan() || i < 0.0 || i >= len {
-                                        Value::Undefined
-                                    } else {
-                                        elems.get(i as usize).copied().unwrap_or(Value::Undefined)
-                                    };
-                                    self.stack.push(out);
-                                }
-                                "concat" => {
-                                    let mut elems = self.array_elements(idx);
-                                    for a in args {
-                                        if let Some(ar) = a.as_object() {
-                                            if let Some(HeapObject::Array { elements, .. }) =
-                                                self.heap.get(ar.0 as usize)
-                                            {
-                                                elems.extend(elements.iter().copied());
-                                                continue;
-                                            }
-                                        }
-                                        elems.push(*a);
-                                    }
-                                    let new_arr = self.alloc_array(elems);
-                                    self.stack.push(Value::Object(new_arr));
-                                }
-                                "includes" => {
-                                    let elems = self.array_elements(idx);
-                                    let needle = args.first().copied().unwrap_or(Value::Undefined);
-                                    let mut from = args
-                                        .get(1)
-                                        .and_then(|v| match v.case() {
-                                            ValueCase::Number(n) => Some(n),
-                                            _ => None,
-                                        })
-                                        .unwrap_or(0.0);
-                                    if from < 0.0 {
-                                        from += elems.len() as f64;
-                                    }
-                                    let from = from.max(0.0) as usize;
-                                    let found = elems[from..]
-                                        .iter()
-                                        .any(|e| self.values_same_zero(*e, needle));
-                                    self.stack.push(Value::Boolean(found));
-                                }
-                                "indexOf" => {
-                                    let elems = self.array_elements(idx);
-                                    let needle = args.first().copied().unwrap_or(Value::Undefined);
-                                    let mut from = args
-                                        .get(1)
-                                        .and_then(|v| match v.case() {
-                                            ValueCase::Number(n) => Some(n),
-                                            _ => None,
-                                        })
-                                        .unwrap_or(0.0);
-                                    if from < 0.0 {
-                                        from += elems.len() as f64;
-                                    }
-                                    let from = from.max(0.0) as usize;
-                                    let pos = elems[from..]
-                                        .iter()
-                                        .position(|e| self.values_content_eq(*e, needle))
-                                        .map(|p| p + from)
-                                        .map(|p| p as f64)
-                                        .unwrap_or(-1.0);
-                                    self.stack.push(Value::Number(pos));
-                                }
-                                "lastIndexOf" => {
-                                    let elems = self.array_elements(idx);
-                                    let needle = args.first().copied().unwrap_or(Value::Undefined);
-                                    let pos = elems
-                                        .iter()
-                                        .rposition(|e| self.values_content_eq(*e, needle))
-                                        .map(|p| p as f64)
-                                        .unwrap_or(-1.0);
-                                    self.stack.push(Value::Number(pos));
-                                }
-                                "reverse" => {
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        elements.reverse();
-                                    }
-                                    self.stack.push(receiver);
-                                }
-                                "every" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems = self.array_elements(idx);
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut all = true;
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let ok = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if !self.truthy(ok) {
-                                            all = false;
-                                            break;
-                                        }
-                                    }
-                                    self.stack.push(Value::Boolean(all));
-                                }
-                                "findIndex" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems = self.array_elements(idx);
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut found = -1.0;
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let ok = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if self.truthy(ok) {
-                                            found = elem_idx as f64;
-                                            break;
-                                        }
-                                    }
-                                    self.stack.push(Value::Number(found));
-                                }
-                                "findLast" | "findLastIndex" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems = self.array_elements(idx);
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut hit: Option<usize> = None;
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let ok = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if self.truthy(ok) {
-                                            hit = Some(elem_idx);
-                                        }
-                                    }
-                                    let out = match hit {
-                                        Some(i) if method_name.as_ref() == "findLast" => elems[i],
-                                        Some(i) => Value::Number(i as f64),
-                                        None if method_name.as_ref() == "findLast" => {
-                                            Value::Undefined
-                                        }
-                                        None => Value::Number(-1.0),
-                                    };
-                                    self.stack.push(out);
-                                }
-                                "fill" => {
-                                    let fill = args.first().copied().unwrap_or(Value::Undefined);
-                                    let elems = self.array_elements(idx);
-                                    let len = elems.len();
-                                    let (s, e) = normalize_slice_range(args, len);
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        for slot in elements.iter_mut().take(e).skip(s) {
-                                            *slot = fill;
-                                        }
-                                    }
-                                    self.stack.push(receiver);
-                                }
-                                "copyWithin" => {
-                                    let elems = self.array_elements(idx);
-                                    let len = elems.len();
-                                    let target = slice_index(
-                                        args.first().map(|v| crate::ops::to_number(*v)),
-                                        len,
-                                    );
-                                    let start = slice_index(
-                                        args.get(1).map(|v| crate::ops::to_number(*v)),
-                                        len,
-                                    );
-                                    let end = args.get(2).map(|v| crate::ops::to_number(*v));
-                                    let end = match end {
-                                        Some(n) => slice_index(Some(n), len),
-                                        None => len,
-                                    };
-                                    let count = (end - start).min(len - target);
-                                    if let Some(HeapObject::Array { elements, .. }) =
-                                        self.heap.get_mut(idx)
-                                    {
-                                        elements[target..target + count]
-                                            .copy_from_slice(&elems[start..start + count]);
-                                    }
-                                    self.stack.push(receiver);
-                                }
-                                "flat" => {
-                                    let depth = args
-                                        .first()
-                                        .map(|v| crate::ops::to_number(*v))
-                                        .map(|n| if n.is_nan() { 1.0 } else { n })
-                                        .unwrap_or(1.0);
-                                    let elems = self.array_elements(idx);
-                                    let flat = self.flat_array(elems, depth);
-                                    let new_arr = self.alloc_array(flat);
-                                    self.stack.push(Value::Object(new_arr));
-                                }
-                                "flatMap" => {
-                                    let (cb, this_arg) = self.array_cb_ctx(args);
-                                    let elems = self.array_elements(idx);
-                                    let arr_obj = Value::Object(ObjectRef(idx as u32));
-                                    let mut out = Vec::with_capacity(elems.len());
-                                    for (elem_idx, elem) in elems.iter().enumerate() {
-                                        let mapped = self.invoke_array_cb(
-                                            cb,
-                                            this_arg,
-                                            &[*elem, Value::Number(elem_idx as f64), arr_obj],
-                                        )?;
-                                        if let Some(ar) = mapped.as_object() {
-                                            if let Some(HeapObject::Array { elements, .. }) =
-                                                self.heap.get(ar.0 as usize)
-                                            {
-                                                out.extend(elements.iter().copied());
-                                                continue;
-                                            }
-                                        }
-                                        out.push(mapped);
-                                    }
-                                    let new_arr = self.alloc_array(out);
-                                    self.stack.push(Value::Object(new_arr));
-                                }
-                                "splice" => {
-                                    let elems = self.array_elements(idx);
-                                    let len = elems.len();
-                                    let start = args
-                                        .first()
-                                        .map(|v| crate::ops::to_number(*v))
-                                        .map(|n| {
-                                            if n.is_nan() {
-                                                0.0
-                                            } else if n < 0.0 {
-                                                (len as f64 + n).max(0.0)
-                                            } else {
-                                                n.min(len as f64)
-                                            }
-                                        })
-                                        .unwrap_or(0.0)
-                                        as usize;
-                                    let del = match args.get(1) {
-                                        Some(v) => {
-                                            let n = crate::ops::to_number(*v);
-                                            if n < 0.0 {
-                                                0
-                                            } else {
-                                                (n as usize).min(len - start)
-                                            }
-                                        }
-                                        None => len - start,
-                                    };
-                                    let mut removed = self.array_elements(idx);
-                                    {
-                                        let drained: Vec<Value> = removed
-                                            .splice(
-                                                start..start + del,
-                                                args.get(2..).unwrap_or(&[]).to_vec(),
-                                            )
-                                            .collect();
-                                        if let Some(HeapObject::Array { elements, .. }) =
-                                            self.heap.get_mut(idx)
-                                        {
-                                            *elements = removed.clone();
-                                        }
-                                        let removed_arr = self.alloc_array(drained);
-                                        self.stack.push(Value::Object(removed_arr));
-                                    }
-                                }
-                                "keys" | "values" | "entries" => {
-                                    let kind = match method_name.as_ref() {
-                                        "keys" => "keys",
-                                        "entries" => "entries",
-                                        _ => "values",
-                                    };
-                                    let iter =
-                                        self.alloc_array_iterator_kind(ObjectRef(idx as u32), kind);
-                                    self.stack.push(iter);
-                                }
-                                "toString" | "toLocaleString" => {
-                                    let elems = self.array_elements(idx);
-                                    let items: Vec<String> = elems
-                                        .iter()
-                                        .map(|e| match e {
-                                            e if e.is_undefined() || e.is_null() => String::new(),
-                                            v => self.format_value(*v),
-                                        })
-                                        .collect();
-                                    let s = self.alloc_string(items.join(","));
-                                    self.stack.push(Value::Object(s));
-                                }
-                                _ => self.stack.push(Value::Undefined),
-                            }
-                        } else {
-                            // 普通对象方法调用（原型方法绑定 IC）
-                            let m_site = self.pic_site(pc);
-                            let method_val = self.get_method_ic(receiver, &method_name, m_site)?;
-                            if let Some(m_ref) = method_val.as_object() {
-                                // Promise resolver/rejecter（Promise.withResolvers 的
-                                // resolve/reject 属性）：按解析器标志兑现目标 promise
-                                let resolver = match self.heap.get(m_ref.0 as usize) {
-                                    Some(HeapObject::PromiseResolver { promise, resolve }) => {
-                                        Some((*promise, *resolve))
-                                    }
-                                    _ => None,
-                                };
-                                if let Some((promise, resolve)) = resolver {
-                                    let value = args.first().copied().unwrap_or(Value::Undefined);
-                                    if resolve {
-                                        self.fulfill_promise(promise, value)?;
-                                    } else {
-                                        self.reject_promise(promise, value)?;
-                                    }
-                                    self.stack.push(Value::Undefined);
-                                } else {
-                                    // 原生函数方法（如 node:test spy）：保持 receiver 为 this，
-                                    // 经注册表分派 spy 处理器
-                                    let native = match self.heap.get(m_ref.0 as usize) {
-                                        Some(HeapObject::NativeFn { name, .. }) => {
-                                            crate::builtins::set_pending_native_name(name);
-                                            crate::builtins::set_pending_callee(method_val);
-                                            self.builtin_registry.lookup(name)
-                                        }
-                                        _ => None,
-                                    };
-                                    if let Some(handler) = native {
-                                        crate::builtins::set_current_receiver(receiver);
-                                        let ret = handler(self, args)?;
-                                        self.stack.push(ret);
-                                    } else {
-                                        let (f_idx, uvs) = if let Some(HeapObject::Closure {
-                                            func_idx,
-                                            upvalues,
-                                            ..
-                                        }) = self.heap.get(m_ref.0 as usize)
-                                        {
-                                            (Some(*func_idx), upvalues.clone())
-                                        } else if (m_ref.0 as usize) < self.module_functions.len() {
-                                            (Some(m_ref.0 as usize), Vec::new())
-                                        } else {
-                                            (None, Vec::new())
-                                        };
-
-                                        if let Some(fi) = f_idx {
-                                            let ret =
-                                                self.invoke_function(fi, receiver, args, uvs)?;
-                                            self.stack.push(ret);
-                                        } else {
-                                            // 方法值不可解析为函数：按 JS 语义抛
-                                            // TypeError（此前静默 undefined 掩盖缺陷）
-                                            let desc = self.format_value(method_val);
-                                            let err = self.alloc_error_instance(&format!(
-                                                "{desc} is not a function"
-                                            ));
-                                            let name = self.alloc_string("TypeError".to_owned());
-                                            let _ = self.set_property(
-                                                Value::Object(err),
-                                                "name",
-                                                Value::Object(name),
-                                            );
-                                            return Err(VmError::Thrown(Value::Object(err)));
-                                        }
-                                    }
-                                }
-                            } else {
-                                // 方法属性 undefined/非对象：同样抛 TypeError
-                                let err = self.alloc_error_instance(&format!(
-                                    "{method_name} is not a function"
-                                ));
-                                let name = self.alloc_string("TypeError".to_owned());
-                                let _ = self.set_property(
-                                    Value::Object(err),
-                                    "name",
-                                    Value::Object(name),
-                                );
-                                return Err(VmError::Thrown(Value::Object(err)));
-                            }
-                        }
-                    } else {
-                        // 原始值 receiver 的方法调用（JS 装箱语义）：数字/布尔
-                        // 走 Number.prototype 面（toString(radix)/toFixed/...）。
-                        // 字符串原始值是堆字符串由上面字符串链处理，此处仅
-                        // Number/Boolean——缺省仍按 undefined 返回。
-                        match receiver.case() {
-                            ValueCase::Number(_) | ValueCase::Boolean(_) => {
-                                crate::builtins::set_current_receiver(receiver);
-                                let full = format!("Number.prototype.{method_name}");
-                                crate::builtins::set_pending_native_name(&full);
-                                let res =
-                                    crate::builtins::surface::num_method_dispatch(self, args)?;
-                                self.stack.push(res);
-                            }
-                            _ => self.stack.push(Value::Undefined),
-                        }
-                    }
+                    let site = self.pic_site(pc);
+                    let ret = self.call_method_dispatch(receiver, &method_name, args, site)?;
+                    self.stack.push(ret);
                 }
                 Op::Call => {
                     let num_args = instr.operand as usize;
