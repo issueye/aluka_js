@@ -6,7 +6,8 @@
 use aluka_bytecode::{BytecodeModule, Op};
 use aluka_compiler::{compile, compile_module};
 use aluka_parser::{
-    ClassMethodDef, Expr, FunctionDef, ObjectProp, Program, PropKey, PropValue, Stmt, ast::VarKind,
+    ClassMethodDef, Expr, FunctionDef, ObjectProp, Program, PropKey, PropValue, Stmt,
+    ast::{SpannedStmt, VarKind},
     parse,
 };
 
@@ -33,7 +34,7 @@ fn test_compile_arithmetic_and_verify_and_execute() {
     };
 
     let program = Program {
-        body: vec![Stmt::Expr(expr)],
+        body: vec![SpannedStmt::new(Stmt::Expr(expr), 0)],
     };
 
     let unit = compile(&program);
@@ -78,7 +79,7 @@ fn test_compile_bitwise_and_unary_and_execute() {
     };
 
     let program = Program {
-        body: vec![Stmt::Expr(expr)],
+        body: vec![SpannedStmt::new(Stmt::Expr(expr), 0)],
     };
 
     let unit = compile(&program);
@@ -110,7 +111,7 @@ fn test_compile_comparison_and_execute() {
     };
 
     let program = Program {
-        body: vec![Stmt::Expr(expr)],
+        body: vec![SpannedStmt::new(Stmt::Expr(expr), 0)],
     };
 
     let unit = compile(&program);
@@ -138,29 +139,41 @@ fn test_compile_variable_declaration_and_scoping() {
     // 预期求值: (10 + 20) * 2 = 60
     let program = Program {
         body: vec![
-            Stmt::VarDecl {
-                name: "a".to_owned(),
-                init: Some(Expr::Number(10.0)),
-                kind: VarKind::Var,
-            },
-            Stmt::VarDecl {
-                name: "b".to_owned(),
-                init: Some(Expr::Number(20.0)),
-                kind: VarKind::Var,
-            },
-            Stmt::Expr(Expr::Assign {
-                name: "a".to_owned(),
-                value: Box::new(Expr::Binary {
-                    op: "+".to_owned(),
-                    left: Box::new(Expr::Ident("a".to_owned())),
-                    right: Box::new(Expr::Ident("b".to_owned())),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "a".to_owned(),
+                    init: Some(Expr::Number(10.0)),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "b".to_owned(),
+                    init: Some(Expr::Number(20.0)),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Expr(Expr::Assign {
+                    name: "a".to_owned(),
+                    value: Box::new(Expr::Binary {
+                        op: "+".to_owned(),
+                        left: Box::new(Expr::Ident("a".to_owned())),
+                        right: Box::new(Expr::Ident("b".to_owned())),
+                    }),
                 }),
-            }),
-            Stmt::Expr(Expr::Binary {
-                op: "*".to_owned(),
-                left: Box::new(Expr::Ident("a".to_owned())),
-                right: Box::new(Expr::Number(2.0)),
-            }),
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Expr(Expr::Binary {
+                    op: "*".to_owned(),
+                    left: Box::new(Expr::Ident("a".to_owned())),
+                    right: Box::new(Expr::Number(2.0)),
+                }),
+                0,
+            ),
         ],
     };
 
@@ -198,61 +211,88 @@ fn test_compile_control_flow_if_while_and_execute() {
     // 预期求值: (1+..+10 = 55) > 50 => 55 * 2 = 110
     let program = Program {
         body: vec![
-            Stmt::VarDecl {
-                name: "sum".to_owned(),
-                init: Some(Expr::Number(0.0)),
-                kind: VarKind::Var,
-            },
-            Stmt::VarDecl {
-                name: "i".to_owned(),
-                init: Some(Expr::Number(1.0)),
-                kind: VarKind::Var,
-            },
-            Stmt::While {
-                cond: Expr::Binary {
-                    op: "<=".to_owned(),
-                    left: Box::new(Expr::Ident("i".to_owned())),
-                    right: Box::new(Expr::Number(10.0)),
-                },
-                body: Box::new(Stmt::Block(vec![
-                    Stmt::Expr(Expr::Assign {
-                        name: "sum".to_owned(),
-                        value: Box::new(Expr::Binary {
-                            op: "+".to_owned(),
-                            left: Box::new(Expr::Ident("sum".to_owned())),
-                            right: Box::new(Expr::Ident("i".to_owned())),
-                        }),
-                    }),
-                    Stmt::Expr(Expr::Assign {
-                        name: "i".to_owned(),
-                        value: Box::new(Expr::Binary {
-                            op: "+".to_owned(),
-                            left: Box::new(Expr::Ident("i".to_owned())),
-                            right: Box::new(Expr::Number(1.0)),
-                        }),
-                    }),
-                ])),
-            },
-            Stmt::If {
-                cond: Expr::Binary {
-                    op: ">".to_owned(),
-                    left: Box::new(Expr::Ident("sum".to_owned())),
-                    right: Box::new(Expr::Number(50.0)),
-                },
-                then_branch: Box::new(Stmt::Expr(Expr::Assign {
+            SpannedStmt::new(
+                Stmt::VarDecl {
                     name: "sum".to_owned(),
-                    value: Box::new(Expr::Binary {
-                        op: "*".to_owned(),
+                    init: Some(Expr::Number(0.0)),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "i".to_owned(),
+                    init: Some(Expr::Number(1.0)),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::While {
+                    cond: Expr::Binary {
+                        op: "<=".to_owned(),
+                        left: Box::new(Expr::Ident("i".to_owned())),
+                        right: Box::new(Expr::Number(10.0)),
+                    },
+                    body: Box::new(SpannedStmt::new(
+                        Stmt::Block(vec![
+                            SpannedStmt::new(
+                                Stmt::Expr(Expr::Assign {
+                                    name: "sum".to_owned(),
+                                    value: Box::new(Expr::Binary {
+                                        op: "+".to_owned(),
+                                        left: Box::new(Expr::Ident("sum".to_owned())),
+                                        right: Box::new(Expr::Ident("i".to_owned())),
+                                    }),
+                                }),
+                                0,
+                            ),
+                            SpannedStmt::new(
+                                Stmt::Expr(Expr::Assign {
+                                    name: "i".to_owned(),
+                                    value: Box::new(Expr::Binary {
+                                        op: "+".to_owned(),
+                                        left: Box::new(Expr::Ident("i".to_owned())),
+                                        right: Box::new(Expr::Number(1.0)),
+                                    }),
+                                }),
+                                0,
+                            ),
+                        ]),
+                        0,
+                    )),
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::If {
+                    cond: Expr::Binary {
+                        op: ">".to_owned(),
                         left: Box::new(Expr::Ident("sum".to_owned())),
-                        right: Box::new(Expr::Number(2.0)),
-                    }),
-                })),
-                else_branch: Some(Box::new(Stmt::Expr(Expr::Assign {
-                    name: "sum".to_owned(),
-                    value: Box::new(Expr::Number(0.0)),
-                }))),
-            },
-            Stmt::Expr(Expr::Ident("sum".to_owned())),
+                        right: Box::new(Expr::Number(50.0)),
+                    },
+                    then_branch: Box::new(SpannedStmt::new(
+                        Stmt::Expr(Expr::Assign {
+                            name: "sum".to_owned(),
+                            value: Box::new(Expr::Binary {
+                                op: "*".to_owned(),
+                                left: Box::new(Expr::Ident("sum".to_owned())),
+                                right: Box::new(Expr::Number(2.0)),
+                            }),
+                        }),
+                        0,
+                    )),
+                    else_branch: Some(Box::new(SpannedStmt::new(
+                        Stmt::Expr(Expr::Assign {
+                            name: "sum".to_owned(),
+                            value: Box::new(Expr::Number(0.0)),
+                        }),
+                        0,
+                    ))),
+                },
+                0,
+            ),
+            SpannedStmt::new(Stmt::Expr(Expr::Ident("sum".to_owned())), 0),
         ],
     };
 
@@ -279,53 +319,62 @@ fn test_compile_object_array_and_member_access() {
     // arr[0] + arr[1] + arr[2]; // 10 + 20 + 30 = 60
     let program = Program {
         body: vec![
-            Stmt::VarDecl {
-                name: "obj".to_owned(),
-                init: Some(Expr::Object(vec![
-                    ObjectProp {
-                        key: PropKey::Literal("x".to_owned()),
-                        value: PropValue::Expr(Expr::Number(10.0)),
-                    },
-                    ObjectProp {
-                        key: PropKey::Literal("y".to_owned()),
-                        value: PropValue::Expr(Expr::Number(20.0)),
-                    },
-                ])),
-                kind: VarKind::Var,
-            },
-            Stmt::VarDecl {
-                name: "arr".to_owned(),
-                init: Some(Expr::Array(vec![
-                    Expr::Member {
-                        obj: Box::new(Expr::Ident("obj".to_owned())),
-                        prop: "x".to_owned(),
-                    },
-                    Expr::Member {
-                        obj: Box::new(Expr::Ident("obj".to_owned())),
-                        prop: "y".to_owned(),
-                    },
-                    Expr::Number(30.0),
-                ])),
-                kind: VarKind::Var,
-            },
-            Stmt::Expr(Expr::Binary {
-                op: "+".to_owned(),
-                left: Box::new(Expr::Binary {
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "obj".to_owned(),
+                    init: Some(Expr::Object(vec![
+                        ObjectProp {
+                            key: PropKey::Literal("x".to_owned()),
+                            value: PropValue::Expr(Expr::Number(10.0)),
+                        },
+                        ObjectProp {
+                            key: PropKey::Literal("y".to_owned()),
+                            value: PropValue::Expr(Expr::Number(20.0)),
+                        },
+                    ])),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "arr".to_owned(),
+                    init: Some(Expr::Array(vec![
+                        Expr::Member {
+                            obj: Box::new(Expr::Ident("obj".to_owned())),
+                            prop: "x".to_owned(),
+                        },
+                        Expr::Member {
+                            obj: Box::new(Expr::Ident("obj".to_owned())),
+                            prop: "y".to_owned(),
+                        },
+                        Expr::Number(30.0),
+                    ])),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Expr(Expr::Binary {
                     op: "+".to_owned(),
-                    left: Box::new(Expr::Index {
-                        obj: Box::new(Expr::Ident("arr".to_owned())),
-                        index: Box::new(Expr::Number(0.0)),
+                    left: Box::new(Expr::Binary {
+                        op: "+".to_owned(),
+                        left: Box::new(Expr::Index {
+                            obj: Box::new(Expr::Ident("arr".to_owned())),
+                            index: Box::new(Expr::Number(0.0)),
+                        }),
+                        right: Box::new(Expr::Index {
+                            obj: Box::new(Expr::Ident("arr".to_owned())),
+                            index: Box::new(Expr::Number(1.0)),
+                        }),
                     }),
                     right: Box::new(Expr::Index {
                         obj: Box::new(Expr::Ident("arr".to_owned())),
-                        index: Box::new(Expr::Number(1.0)),
+                        index: Box::new(Expr::Number(2.0)),
                     }),
                 }),
-                right: Box::new(Expr::Index {
-                    obj: Box::new(Expr::Ident("arr".to_owned())),
-                    index: Box::new(Expr::Number(2.0)),
-                }),
-            }),
+                0,
+            ),
         ],
     };
 
@@ -356,39 +405,55 @@ fn test_compile_call_and_method_call_and_new_and_verify() {
     // return 42;
     let program = Program {
         body: vec![
-            Stmt::VarDecl {
-                name: "fn_val".to_owned(),
-                init: Some(Expr::Object(vec![])),
-                kind: VarKind::Var,
-            },
-            Stmt::VarDecl {
-                name: "obj".to_owned(),
-                init: Some(Expr::Object(vec![])),
-                kind: VarKind::Var,
-            },
-            Stmt::VarDecl {
-                name: "ctor".to_owned(),
-                init: Some(Expr::Object(vec![])),
-                kind: VarKind::Var,
-            },
-            // 普通函数调用语句：fn_val(1, 2)
-            Stmt::Expr(Expr::Call {
-                callee: Box::new(Expr::Ident("fn_val".to_owned())),
-                args: vec![Expr::Number(1.0), Expr::Number(2.0)],
-            }),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "fn_val".to_owned(),
+                    init: Some(Expr::Object(vec![])),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "obj".to_owned(),
+                    init: Some(Expr::Object(vec![])),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "ctor".to_owned(),
+                    init: Some(Expr::Object(vec![])),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Expr(Expr::Call {
+                    callee: Box::new(Expr::Ident("fn_val".to_owned())),
+                    args: vec![Expr::Number(1.0), Expr::Number(2.0)],
+                }),
+                0,
+            ),
             // 方法调用语句：obj.compute(3, 4)
-            Stmt::Expr(Expr::MethodCall {
-                receiver: Box::new(Expr::Ident("obj".to_owned())),
-                method: "compute".to_owned(),
-                args: vec![Expr::Number(3.0), Expr::Number(4.0)],
-            }),
-            // 构造对象表达式：new ctor(5)
-            Stmt::Expr(Expr::New {
-                callee: Box::new(Expr::Ident("ctor".to_owned())),
-                args: vec![Expr::Number(5.0)],
-            }),
+            SpannedStmt::new(
+                Stmt::Expr(Expr::MethodCall {
+                    receiver: Box::new(Expr::Ident("obj".to_owned())),
+                    method: "compute".to_owned(),
+                    args: vec![Expr::Number(3.0), Expr::Number(4.0)],
+                }),
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Expr(Expr::New {
+                    callee: Box::new(Expr::Ident("ctor".to_owned())),
+                    args: vec![Expr::Number(5.0)],
+                }),
+                0,
+            ),
             // 显式返回语句：return 42
-            Stmt::Return(Some(Expr::Number(42.0))),
+            SpannedStmt::new(Stmt::Return(Some(Expr::Number(42.0))), 0),
         ],
     };
 
@@ -427,52 +492,73 @@ fn test_compile_optional_chaining_and_try_catch_finally_and_verify() {
     // }
     let program = Program {
         body: vec![
-            Stmt::VarDecl {
-                name: "obj".to_owned(),
-                init: Some(Expr::Object(vec![ObjectProp {
-                    key: PropKey::Literal("a".to_owned()),
-                    value: PropValue::Expr(Expr::Number(1.0)),
-                }])),
-                kind: VarKind::Var,
-            },
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "obj".to_owned(),
+                    init: Some(Expr::Object(vec![ObjectProp {
+                        key: PropKey::Literal("a".to_owned()),
+                        value: PropValue::Expr(Expr::Number(1.0)),
+                    }])),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
             // 可选链属性访问: obj?.a
-            Stmt::VarDecl {
-                name: "val1".to_owned(),
-                init: Some(Expr::OptionalMember {
-                    obj: Box::new(Expr::Ident("obj".to_owned())),
-                    prop: "a".to_owned(),
-                }),
-                kind: VarKind::Var,
-            },
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "val1".to_owned(),
+                    init: Some(Expr::OptionalMember {
+                        obj: Box::new(Expr::Ident("obj".to_owned())),
+                        prop: "a".to_owned(),
+                    }),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
             // 可选链下标访问: obj?.["a"]
-            Stmt::VarDecl {
-                name: "val2".to_owned(),
-                init: Some(Expr::OptionalIndex {
-                    obj: Box::new(Expr::Ident("obj".to_owned())),
-                    index: Box::new(Expr::String("a".to_owned())),
-                }),
-                kind: VarKind::Var,
-            },
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "val2".to_owned(),
+                    init: Some(Expr::OptionalIndex {
+                        obj: Box::new(Expr::Ident("obj".to_owned())),
+                        index: Box::new(Expr::String("a".to_owned())),
+                    }),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
             // Try-Catch-Finally 结构
-            Stmt::Try {
-                body: Box::new(Stmt::VarDecl {
-                    name: "x".to_owned(),
-                    init: Some(Expr::Number(10.0)),
-                    kind: VarKind::Var,
-                }),
-                catch_param: Some("e".to_owned()),
-                catch_body: Some(Box::new(Stmt::VarDecl {
-                    name: "y".to_owned(),
-                    init: Some(Expr::Number(20.0)),
-                    kind: VarKind::Var,
-                })),
-                finally_body: Some(Box::new(Stmt::VarDecl {
-                    name: "z".to_owned(),
-                    init: Some(Expr::Number(30.0)),
-                    kind: VarKind::Var,
-                })),
-            },
-            Stmt::Return(Some(Expr::Number(100.0))),
+            SpannedStmt::new(
+                Stmt::Try {
+                    body: Box::new(SpannedStmt::new(
+                        Stmt::VarDecl {
+                            name: "x".to_owned(),
+                            init: Some(Expr::Number(10.0)),
+                            kind: VarKind::Var,
+                        },
+                        0,
+                    )),
+                    catch_param: Some("e".to_owned()),
+                    catch_body: Some(Box::new(SpannedStmt::new(
+                        Stmt::VarDecl {
+                            name: "y".to_owned(),
+                            init: Some(Expr::Number(20.0)),
+                            kind: VarKind::Var,
+                        },
+                        0,
+                    ))),
+                    finally_body: Some(Box::new(SpannedStmt::new(
+                        Stmt::VarDecl {
+                            name: "z".to_owned(),
+                            init: Some(Expr::Number(30.0)),
+                            kind: VarKind::Var,
+                        },
+                        0,
+                    ))),
+                },
+                0,
+            ),
+            SpannedStmt::new(Stmt::Return(Some(Expr::Number(100.0))), 0),
         ],
     };
 
@@ -520,46 +606,58 @@ fn test_compile_module_with_classes_and_functions_and_verify() {
     // function helper(x) { return x; }
     let program = Program {
         body: vec![
-            Stmt::Class {
-                name: "Base".to_owned(),
-                super_class: None,
-                constructor: Some(FunctionDef::new(
-                    "Base_constructor".to_owned(),
-                    vec!["name".to_owned()],
+            SpannedStmt::new(
+                Stmt::Class {
+                    name: "Base".to_owned(),
+                    super_class: None,
+                    constructor: Some(FunctionDef::new(
+                        "Base_constructor".to_owned(),
+                        vec!["name".to_owned()],
+                        false,
+                        vec![SpannedStmt::new(Stmt::Return(Some(Expr::Number(0.0))), 0)],
+                    )),
+                    methods: vec![ClassMethodDef {
+                        name: "greet".to_owned(),
+                        params: Vec::new(),
+                        body: vec![SpannedStmt::new(Stmt::Return(Some(Expr::Number(1.0))), 0)],
+                        is_static: false,
+                        kind: 0,
+                    }],
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Class {
+                    name: "Derived".to_owned(),
+                    super_class: Some(Expr::Ident("Base".to_owned())),
+                    constructor: Some(FunctionDef::new(
+                        "Derived_constructor".to_owned(),
+                        vec!["name".to_owned()],
+                        false,
+                        vec![SpannedStmt::new(Stmt::Return(Some(Expr::Number(0.0))), 0)],
+                    )),
+                    methods: vec![ClassMethodDef {
+                        name: "calc".to_owned(),
+                        params: Vec::new(),
+                        body: vec![SpannedStmt::new(Stmt::Return(Some(Expr::Number(2.0))), 0)],
+                        is_static: false,
+                        kind: 0,
+                    }],
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Function(FunctionDef::new(
+                    "helper".to_owned(),
+                    vec!["x".to_owned()],
                     false,
-                    vec![Stmt::Return(Some(Expr::Number(0.0)))],
+                    vec![SpannedStmt::new(
+                        Stmt::Return(Some(Expr::Ident("x".to_owned()))),
+                        0,
+                    )],
                 )),
-                methods: vec![ClassMethodDef {
-                    name: "greet".to_owned(),
-                    params: Vec::new(),
-                    body: vec![Stmt::Return(Some(Expr::Number(1.0)))],
-                    is_static: false,
-                    kind: 0,
-                }],
-            },
-            Stmt::Class {
-                name: "Derived".to_owned(),
-                super_class: Some(Expr::Ident("Base".to_owned())),
-                constructor: Some(FunctionDef::new(
-                    "Derived_constructor".to_owned(),
-                    vec!["name".to_owned()],
-                    false,
-                    vec![Stmt::Return(Some(Expr::Number(0.0)))],
-                )),
-                methods: vec![ClassMethodDef {
-                    name: "calc".to_owned(),
-                    params: Vec::new(),
-                    body: vec![Stmt::Return(Some(Expr::Number(2.0)))],
-                    is_static: false,
-                    kind: 0,
-                }],
-            },
-            Stmt::Function(FunctionDef::new(
-                "helper".to_owned(),
-                vec!["x".to_owned()],
-                false,
-                vec![Stmt::Return(Some(Expr::Ident("x".to_owned())))],
-            )),
+                0,
+            ),
         ],
     };
 
@@ -599,29 +697,44 @@ fn test_compile_nested_closure_upvalue_capture_and_verify() {
     // }
     let program = Program {
         body: vec![
-            Stmt::VarDecl {
-                name: "factor".to_owned(),
-                init: Some(Expr::Number(10.0)),
-                kind: VarKind::Var,
-            },
-            Stmt::Function(FunctionDef::new(
-                "makeMultiplier".to_owned(),
-                vec!["base".to_owned()],
-                false,
-                vec![
-                    Stmt::Function(FunctionDef::new(
-                        "multiplier".to_owned(),
-                        vec!["val".to_owned()],
-                        false,
-                        vec![Stmt::Return(Some(Expr::Binary {
-                            op: "*".to_owned(),
-                            left: Box::new(Expr::Ident("val".to_owned())),
-                            right: Box::new(Expr::Ident("base".to_owned())),
-                        }))],
-                    )),
-                    Stmt::Return(Some(Expr::Ident("multiplier".to_owned()))),
-                ],
-            )),
+            SpannedStmt::new(
+                Stmt::VarDecl {
+                    name: "factor".to_owned(),
+                    init: Some(Expr::Number(10.0)),
+                    kind: VarKind::Var,
+                },
+                0,
+            ),
+            SpannedStmt::new(
+                Stmt::Function(FunctionDef::new(
+                    "makeMultiplier".to_owned(),
+                    vec!["base".to_owned()],
+                    false,
+                    vec![
+                        SpannedStmt::new(
+                            Stmt::Function(FunctionDef::new(
+                                "multiplier".to_owned(),
+                                vec!["val".to_owned()],
+                                false,
+                                vec![SpannedStmt::new(
+                                    Stmt::Return(Some(Expr::Binary {
+                                        op: "*".to_owned(),
+                                        left: Box::new(Expr::Ident("val".to_owned())),
+                                        right: Box::new(Expr::Ident("base".to_owned())),
+                                    })),
+                                    0,
+                                )],
+                            )),
+                            0,
+                        ),
+                        SpannedStmt::new(
+                            Stmt::Return(Some(Expr::Ident("multiplier".to_owned()))),
+                            0,
+                        ),
+                    ],
+                )),
+                0,
+            ),
         ],
     };
 

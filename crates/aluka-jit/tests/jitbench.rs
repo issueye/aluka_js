@@ -70,6 +70,7 @@ fn hot_loop(iterations: f64) -> FuncTemplate {
         constants: consts,
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     }
 }
 
@@ -217,6 +218,7 @@ fn prop_sum(iterations: f64) -> FuncTemplate {
         constants: consts,
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     }
 }
 
@@ -342,6 +344,7 @@ fn closure_call_loop(iterations: f64) -> (FuncTemplate, FuncTemplate) {
         constants: consts,
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     };
     let callee = FuncTemplate {
         name: "callee".to_owned(),
@@ -362,6 +365,7 @@ fn closure_call_loop(iterations: f64) -> (FuncTemplate, FuncTemplate) {
         constants: vec![Constant::Number(1.0)],
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     };
     (caller, callee)
 }

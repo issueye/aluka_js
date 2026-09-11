@@ -2,7 +2,7 @@
 
 use crate::scope::CompiledUnit;
 use aluka_bytecode::Op;
-use aluka_parser::ast::{Expr, Program, PropKey, PropValue, Stmt};
+use aluka_parser::ast::{Expr, Program, PropKey, PropValue, SpannedStmt, Stmt};
 
 /// 对语法树执行 AST 级静态优化（常量折叠与不可达代码消除）。
 pub fn optimize_ast(program: &mut Program) {
@@ -12,7 +12,8 @@ pub fn optimize_ast(program: &mut Program) {
 }
 
 /// 递归优化语句
-pub fn optimize_stmt(stmt: &mut Stmt) {
+pub fn optimize_stmt(s: &mut SpannedStmt) {
+    let stmt = &mut s.stmt;
     match stmt {
         Stmt::Expr(expr) => {
             optimize_expr(expr);
@@ -45,15 +46,17 @@ pub fn optimize_stmt(stmt: &mut Stmt) {
             // 死代码消除：常数已知条件分支消解
             match cond {
                 Expr::Boolean(true) => {
-                    let taken = std::mem::replace(then_branch.as_mut(), Stmt::Block(Vec::new()));
-                    *stmt = taken;
+                    let taken =
+                        std::mem::replace(then_branch.as_mut(), SpannedStmt::unreachable_block());
+                    *s = taken;
                 }
                 Expr::Boolean(false) => {
                     if let Some(eb) = else_branch {
-                        let taken = std::mem::replace(eb.as_mut(), Stmt::Block(Vec::new()));
-                        *stmt = taken;
+                        let taken =
+                            std::mem::replace(eb.as_mut(), SpannedStmt::unreachable_block());
+                        *s = taken;
                     } else {
-                        *stmt = Stmt::Block(Vec::new());
+                        *s = SpannedStmt::unreachable_block();
                     }
                 }
                 _ => {}
@@ -64,7 +67,7 @@ pub fn optimize_stmt(stmt: &mut Stmt) {
             optimize_stmt(body);
             // 死代码消除：while (false) 不发射
             if let Expr::Boolean(false) = cond {
-                *stmt = Stmt::Block(Vec::new());
+                *s = SpannedStmt::unreachable_block();
             }
         }
         Stmt::For {
@@ -291,24 +294,36 @@ mod tests {
     #[test]
     fn test_dead_code_elimination() {
         // if (false) { x = 1; } else { x = 2; }
-        let mut stmt = Stmt::If {
-            cond: Expr::Boolean(false),
-            then_branch: Box::new(Stmt::Expr(Expr::Assign {
-                name: "x".to_owned(),
-                value: Box::new(Expr::Number(1.0)),
-            })),
-            else_branch: Some(Box::new(Stmt::Expr(Expr::Assign {
-                name: "x".to_owned(),
-                value: Box::new(Expr::Number(2.0)),
-            }))),
-        };
+        let mut stmt = SpannedStmt::new(
+            Stmt::If {
+                cond: Expr::Boolean(false),
+                then_branch: Box::new(SpannedStmt::new(
+                    Stmt::Expr(Expr::Assign {
+                        name: "x".to_owned(),
+                        value: Box::new(Expr::Number(1.0)),
+                    }),
+                    0,
+                )),
+                else_branch: Some(Box::new(SpannedStmt::new(
+                    Stmt::Expr(Expr::Assign {
+                        name: "x".to_owned(),
+                        value: Box::new(Expr::Number(2.0)),
+                    }),
+                    0,
+                ))),
+            },
+            0,
+        );
         optimize_stmt(&mut stmt);
         assert_eq!(
             stmt,
-            Stmt::Expr(Expr::Assign {
-                name: "x".to_owned(),
-                value: Box::new(Expr::Number(2.0)),
-            })
+            SpannedStmt::new(
+                Stmt::Expr(Expr::Assign {
+                    name: "x".to_owned(),
+                    value: Box::new(Expr::Number(2.0)),
+                }),
+                0,
+            ),
         );
     }
 }

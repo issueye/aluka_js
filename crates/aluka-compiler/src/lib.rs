@@ -25,7 +25,9 @@ pub use codegen::{backpatch_jump, compile, emit_jump};
 pub use dsl::{DslCompiler, compile_dsl_source};
 pub use error::CompileError;
 pub use max_stack::compute_max_stack;
-pub use module::{ModuleCompiler, compile_esm_module, compile_module};
+pub use module::{
+    ModuleCompiler, compile_esm_module, compile_module, compile_module_with_coverage,
+};
 pub use opt::{optimize_ast, optimize_jumps};
 pub use scope::{CompiledUnit, ResolvedSymbol, Scope, ScopeKind, ScopeTree};
 pub use source_unit::{compile_source_unit, parse_json_to_expr};

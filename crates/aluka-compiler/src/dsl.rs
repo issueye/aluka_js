@@ -302,6 +302,7 @@ impl DslCompiler {
             constants: top_unit.constants,
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
 
         let mut all_functions = vec![main_func];
@@ -658,6 +659,7 @@ impl DslCompiler {
             constants: sub_unit.constants,
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
 
         let fn_idx = self.functions.len() + 1; // +1 因为 0 保留给 main

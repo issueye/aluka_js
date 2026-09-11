@@ -7,13 +7,23 @@ use aluka_bytecode::{
     Op, UpvalueCapture,
 };
 use aluka_parser::ast::{
-    ClassMethodDef, Expr, FunctionDef, Program, PropKey, PropValue, Stmt, VarKind, VarPattern,
+    ClassMethodDef, Expr, FunctionDef, Program, PropKey, PropValue, SpannedStmt, Stmt, VarKind,
+    VarPattern,
 };
 
 /// 编译整个 AST 语法树模块，生成包含函数模板与类模板的完整字节码模块。
 #[must_use]
 pub fn compile_module(program: &Program) -> BytecodeModule {
     let mut compiler = ModuleCompiler::new();
+    compiler.compile(program)
+}
+
+/// 行覆盖编译：语句起始 `(pc, line)` 登记进函数模板 `line_table`
+/// （LCOV 覆盖率专用；`aluka test --test-reporter=lcov` 使用）。
+#[must_use]
+pub fn compile_module_with_coverage(program: &Program) -> BytecodeModule {
+    let mut compiler = ModuleCompiler::new();
+    compiler.line_coverage = true;
     compiler.compile(program)
 }
 
@@ -43,6 +53,9 @@ pub struct ModuleCompiler {
     pub implicit_globals: bool,
     /// ESM import 声明计数（合成命名空间绑定名的唯一性）
     pub esm_import_counter: usize,
+    /// LCOV 行覆盖：语句起始 (pc, line) 登记进各函数模板的 line_table
+    /// （默认关；`aluka test --test-reporter=lcov` 开启）。行表不参与序列化。
+    pub line_coverage: bool,
 }
 
 fn collect_ident_uses_in_expr(expr: &Expr, uses: &mut Vec<String>) {
@@ -158,7 +171,8 @@ fn stmt_declares(stmt: &Stmt, name: &str) -> bool {
     }
 }
 
-pub(crate) fn collect_ident_uses(stmt: &Stmt, uses: &mut Vec<String>) {
+pub(crate) fn collect_ident_uses(s: &SpannedStmt, uses: &mut Vec<String>) {
+    let stmt = &s.stmt;
     match stmt {
         Stmt::Expr(expr) => collect_ident_uses_in_expr(expr, uses),
         // 嵌套函数声明体递归收集（与函数表达式/访问器路径对齐）：孙级函数
@@ -309,10 +323,12 @@ impl ModuleCompiler {
             constants: Vec::new(),
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         });
 
         let mut top_unit = CompiledUnit {
             implicit_globals: self.implicit_globals,
+            line_coverage: self.line_coverage,
             ..Default::default()
         };
 
@@ -323,11 +339,11 @@ impl ModuleCompiler {
         // 声明的变量的 upvalue 捕获会静默丢失。
         // 递归收集（含块内声明）：块内 `function` 声明同样提升到本作用域
         // （Node 实测：块内可调用、块外可访问），故收集必须进入块语句。
-        let mut hoisted: Vec<&aluka_parser::ast::Stmt> = Vec::new();
-        let mut ordered: Vec<&aluka_parser::ast::Stmt> = Vec::new();
+        let mut hoisted: Vec<&SpannedStmt> = Vec::new();
+        let mut ordered: Vec<&SpannedStmt> = Vec::new();
         collect_scope_functions(&optimized_program.body, &mut hoisted);
         for stmt in optimized_program.body.iter() {
-            if !matches!(stmt, Stmt::Function(_)) {
+            if !matches!(&stmt.stmt, Stmt::Function(_)) {
                 ordered.push(stmt);
             }
         }
@@ -335,7 +351,7 @@ impl ModuleCompiler {
             // 隐式全局模式（eval）：var/function 顶层绑定落全局表，
             // 不预注册局部槽位（let/const/解构保持局部语义）
             if top_unit.implicit_globals {
-                match stmt {
+                match &stmt.stmt {
                     Stmt::Function(func_def) => {
                         let s = top_unit.locals;
                         top_unit.locals += 1;
@@ -358,7 +374,7 @@ impl ModuleCompiler {
                 }
                 continue;
             }
-            match stmt {
+            match &stmt.stmt {
                 Stmt::Function(func_def) => {
                     ensure_slot(&mut top_unit, &func_def.name);
                 }
@@ -384,12 +400,12 @@ impl ModuleCompiler {
         // （否则块内函数体内的 upvalue 捕获会静默丢失）。`ensure_slot` 幂等，
         // 顶层函数名会被重复注册一次，无副作用。
         for stmt in &hoisted {
-            if let Stmt::Function(func_def) = stmt {
+            if let Stmt::Function(func_def) = &stmt.stmt {
                 ensure_slot(&mut top_unit, &func_def.name);
             }
         }
         for f in &hoisted {
-            if let aluka_parser::ast::Stmt::Function(func_def) = f {
+            if let aluka_parser::ast::Stmt::Function(func_def) = &f.stmt {
                 let slot = if let Some(&s) = top_unit.symbol_map.get(&func_def.name) {
                     s
                 } else {
@@ -426,7 +442,7 @@ impl ModuleCompiler {
         let n = ordered.len();
         for (i, stmt) in ordered.iter().enumerate() {
             let is_last = i == n - 1;
-            match stmt {
+            match &stmt.stmt {
                 Stmt::Function(func_def) => {
                     let slot = if let Some(&s) = top_unit.symbol_map.get(&func_def.name) {
                         s
@@ -529,7 +545,10 @@ impl ModuleCompiler {
                     aluka_parser::ast::ExportDecl::Named {
                         decl: Some(inner), ..
                     } => match inner.as_ref() {
-                        Stmt::Function(func_def) => {
+                        SpannedStmt {
+                            stmt: Stmt::Function(func_def),
+                            ..
+                        } => {
                             let parent_info = ParentScopeInfo::new(
                                 top_unit.symbol_map.clone(),
                                 top_unit.upvalue_map.clone(),
@@ -563,8 +582,8 @@ impl ModuleCompiler {
                     }
                     _ => {}
                 },
-                other => {
-                    compile_stmt(other, &mut top_unit, is_last);
+                _ => {
+                    compile_stmt(stmt, &mut top_unit, is_last);
                 }
             }
         }
@@ -592,7 +611,13 @@ impl ModuleCompiler {
             // eval 动态求值需要脚本完成值：末语句为表达式语句时以
             // `Return` 收口（值已在栈顶）；其余维持 `ReturnUndef`
             let ends_with_expr = self.preserve_completion_value
-                && matches!(optimized_program.body.last(), Some(Stmt::Expr(_)));
+                && matches!(
+                    optimized_program.body.last(),
+                    Some(SpannedStmt {
+                        stmt: Stmt::Expr(_),
+                        ..
+                    })
+                );
             top_unit.code.push(Instr::new(
                 if ends_with_expr {
                     Op::Return
@@ -662,6 +687,7 @@ impl ModuleCompiler {
             constants: Vec::new(),
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         });
         self.header_extras.push(FuncHeaderExtras {
             arguments_slot: -1,
@@ -675,6 +701,7 @@ impl ModuleCompiler {
         let mut unit = CompiledUnit {
             locals: 1,
             num_params: 7,
+            line_coverage: self.line_coverage,
             ..Default::default()
         };
         for name in [
@@ -769,7 +796,8 @@ impl ModuleCompiler {
     }
 
     /// ESM 语句编译：`export` 绑定到 `exports` 槽，其余走普通语句编译。
-    fn compile_esm_stmt(&mut self, stmt: &Stmt, unit: &mut CompiledUnit, exports_slot: usize) {
+    fn compile_esm_stmt(&mut self, s: &SpannedStmt, unit: &mut CompiledUnit, exports_slot: usize) {
+        let stmt = &s.stmt;
         use aluka_parser::ast::ExportDecl;
         match stmt {
             Stmt::Export(ExportDecl::Named {
@@ -779,7 +807,10 @@ impl ModuleCompiler {
             }) => {
                 // 内嵌声明（var/let/const/function/class）先声明到局部，再挂 exports
                 match inner.as_ref() {
-                    Stmt::Function(func_def) => {
+                    SpannedStmt {
+                        stmt: Stmt::Function(func_def),
+                        ..
+                    } => {
                         let parent_info =
                             ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
                         let fn_idx =
@@ -798,9 +829,13 @@ impl ModuleCompiler {
                     }
                     other => {
                         compile_stmt(other, unit, false);
-                        if let Stmt::VarDecl { name, .. } = other {
-                            if let Some(&slot) = unit.symbol_map.get(name) {
-                                self.emit_export_prop(unit, exports_slot, slot, name);
+                        if let SpannedStmt {
+                            stmt: Stmt::VarDecl { name, .. },
+                            ..
+                        } = other
+                        {
+                            if let Some(slot) = unit.symbol_map.get(name) {
+                                self.emit_export_prop(unit, exports_slot, *slot, name);
                             }
                         }
                     }
@@ -845,14 +880,17 @@ impl ModuleCompiler {
                 // 由 promise resume 链在依赖完成后继续（DAG 涌现于事件循环）
                 let ns = format!("__aluka_ns_{}", self.esm_import_counter);
                 self.esm_import_counter += 1;
-                let ns_decl = Stmt::VarDecl {
-                    name: ns.clone(),
-                    init: Some(Expr::Await(Box::new(Expr::Call {
-                        callee: Box::new(Expr::Ident("__aluka_import__".to_owned())),
-                        args: vec![Expr::String(decl.source.clone())],
-                    }))),
-                    kind: VarKind::Var,
-                };
+                let ns_decl = SpannedStmt::new(
+                    Stmt::VarDecl {
+                        name: ns.clone(),
+                        init: Some(Expr::Await(Box::new(Expr::Call {
+                            callee: Box::new(Expr::Ident("__aluka_import__".to_owned())),
+                            args: vec![Expr::String(decl.source.clone())],
+                        }))),
+                        kind: VarKind::Var,
+                    },
+                    0,
+                );
                 compile_stmt(&ns_decl, unit, false);
                 for spec in &decl.specifiers {
                     let (local, imported) = match spec {
@@ -864,28 +902,34 @@ impl ModuleCompiler {
                         }
                         aluka_parser::ast::ImportSpecifier::Namespace(name) => {
                             // 整包导入：ns 即命名空间对象
-                            let bind = Stmt::VarDecl {
-                                name: name.clone(),
-                                init: Some(Expr::Ident(ns.clone())),
-                                kind: VarKind::Var,
-                            };
+                            let bind = SpannedStmt::new(
+                                Stmt::VarDecl {
+                                    name: name.clone(),
+                                    init: Some(Expr::Ident(ns.clone())),
+                                    kind: VarKind::Var,
+                                },
+                                0,
+                            );
                             compile_stmt(&bind, unit, false);
                             continue;
                         }
                     };
-                    let bind = Stmt::VarDecl {
-                        name: local,
-                        init: Some(Expr::Member {
-                            obj: Box::new(Expr::Ident(ns.clone())),
-                            prop: imported,
-                        }),
-                        kind: VarKind::Var,
-                    };
+                    let bind = SpannedStmt::new(
+                        Stmt::VarDecl {
+                            name: local,
+                            init: Some(Expr::Member {
+                                obj: Box::new(Expr::Ident(ns.clone())),
+                                prop: imported,
+                            }),
+                            kind: VarKind::Var,
+                        },
+                        0,
+                    );
                     compile_stmt(&bind, unit, false);
                 }
             }
-            other => {
-                compile_stmt(other, unit, false);
+            _ => {
+                compile_stmt(s, unit, false);
             }
         }
     }
@@ -938,6 +982,7 @@ impl ModuleCompiler {
             num_params,
             is_var_args: def.is_var_args,
             class_id,
+            line_coverage: self.line_coverage,
             ..Default::default()
         };
         for param in &def.params {
@@ -979,7 +1024,7 @@ impl ModuleCompiler {
             }
             let references = uses.iter().any(|n| n == "arguments");
             let shadowed = def.params.iter().any(|p| p == "arguments")
-                || def.body.iter().any(|s| stmt_declares(s, "arguments"));
+                || def.body.iter().any(|s| stmt_declares(&s.stmt, "arguments"));
             if references && !shadowed && !def.is_arrow {
                 let s = unit.locals;
                 unit.locals += 1;
@@ -992,7 +1037,7 @@ impl ModuleCompiler {
 
         // 预注册函数体内顶层绑定槽位（var/let/const/解构/class/嵌套函数）
         for stmt in def.body.iter() {
-            match stmt {
+            match &stmt.stmt {
                 Stmt::Function(func_def) => {
                     ensure_slot(&mut unit, &func_def.name);
                 }
@@ -1016,10 +1061,10 @@ impl ModuleCompiler {
         // 块内函数声明（递归收集）同样提升到本函数作用域：先预注册槽位，使下面的
         // 上值捕获识别（`parent_scope` 快照）与提升编译都能看到这些名字。
         {
-            let mut block_fns: Vec<&Stmt> = Vec::new();
+            let mut block_fns: Vec<&SpannedStmt> = Vec::new();
             collect_scope_functions(&def.body, &mut block_fns);
             for stmt in &block_fns {
-                if let Stmt::Function(func_def) = stmt {
+                if let Stmt::Function(func_def) = &stmt.stmt {
                     ensure_slot(&mut unit, &func_def.name);
                 }
             }
@@ -1059,16 +1104,16 @@ impl ModuleCompiler {
         // 函数体：嵌套 function 声明提升（先绑定闭包，再编译其余语句）。
         // 收集为**递归**（含 `if`/`for`/普通块内的声明）——块内函数同样提升到本
         // 函数作用域（Node 实测：块内可调用、块外可访问），故必须进入块语句。
-        let mut hoisted_fns: Vec<&Stmt> = Vec::new();
-        let mut ordered_stmts: Vec<&Stmt> = Vec::new();
+        let mut hoisted_fns: Vec<&SpannedStmt> = Vec::new();
+        let mut ordered_stmts: Vec<&SpannedStmt> = Vec::new();
         collect_scope_functions(&def.body, &mut hoisted_fns);
         for stmt in def.body.iter() {
-            if !matches!(stmt, Stmt::Function(_)) {
+            if !matches!(&stmt.stmt, Stmt::Function(_)) {
                 ordered_stmts.push(stmt);
             }
         }
         for stmt in &hoisted_fns {
-            if let Stmt::Function(child_def) = stmt {
+            if let Stmt::Function(child_def) = &stmt.stmt {
                 let parent_info =
                     ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
                 let child_idx = self.compile_function_with_parent(child_def, Some(&parent_info));
@@ -1088,7 +1133,7 @@ impl ModuleCompiler {
 
         for (i, stmt) in ordered_stmts.iter().enumerate() {
             let is_last = i == ordered_stmts.len() - 1;
-            match stmt {
+            match &stmt.stmt {
                 Stmt::Function(child_def) => {
                     let parent_info =
                         ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
@@ -1167,8 +1212,8 @@ impl ModuleCompiler {
                     };
                     unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
                 }
-                other => {
-                    compile_stmt(other, &mut unit, is_last);
+                _ => {
+                    compile_stmt(stmt, &mut unit, is_last);
                 }
             }
         }
@@ -1261,10 +1306,13 @@ impl ModuleCompiler {
                 name: format!("{name}_constructor"),
                 params: vec!["__args__".to_owned()],
                 is_var_args: true,
-                body: vec![Stmt::Expr(Expr::Call {
-                    callee: Box::new(Expr::Super),
-                    args: vec![Expr::Spread(Box::new(Expr::Ident("__args__".to_owned())))],
-                })],
+                body: vec![SpannedStmt::new(
+                    Stmt::Expr(Expr::Call {
+                        callee: Box::new(Expr::Super),
+                        args: vec![Expr::Spread(Box::new(Expr::Ident("__args__".to_owned())))],
+                    }),
+                    0,
+                )],
                 is_async: false,
                 is_generator: false,
                 is_arrow: false,
@@ -1329,16 +1377,17 @@ impl ModuleCompiler {
 /// * **不进入**嵌套函数的函数体——那属于子函数自己的提升域（子函数编译时会各自调用
 ///   本函数收集）；
 /// * 表达式内部的函数是**函数表达式**而非声明，故不进入表达式。
-fn collect_scope_functions<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Stmt>) {
+fn collect_scope_functions<'a>(stmts: &'a [SpannedStmt], out: &mut Vec<&'a SpannedStmt>) {
     for stmt in stmts {
         collect_scope_functions_in_stmt(stmt, out);
     }
 }
 
 /// [`collect_scope_functions`] 的单语句递归分支。
-fn collect_scope_functions_in_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Stmt>) {
+fn collect_scope_functions_in_stmt<'a>(s: &'a SpannedStmt, out: &mut Vec<&'a SpannedStmt>) {
+    let stmt = &s.stmt;
     match stmt {
-        Stmt::Function(_) => out.push(stmt),
+        Stmt::Function(_) => out.push(s),
         Stmt::Block(body) => collect_scope_functions(body, out),
         Stmt::If {
             then_branch,

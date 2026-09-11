@@ -309,6 +309,7 @@ mod tests {
             constants: vec![Constant::Number(2.0), Constant::Number(1.0)],
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         }
     }
 
@@ -328,6 +329,7 @@ mod tests {
             constants: Vec::new(),
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         }
     }
 
@@ -471,6 +473,7 @@ mod call_chain_tests {
             constants: vec![Constant::String("cb".to_owned()), Constant::Number(3.0)],
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
         let callee = FuncTemplate {
             name: "cb".to_owned(),
@@ -491,6 +494,7 @@ mod call_chain_tests {
             constants: vec![Constant::Number(2.0)],
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
         let module = BytecodeModule {
             header_extras: Vec::new(),

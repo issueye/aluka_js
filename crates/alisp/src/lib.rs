@@ -531,6 +531,7 @@ impl Compiler {
             constants: pool.to_vec(),
             upvalues: Vec::new(),
             try_table: Vec::<TryEntry>::new(),
+            line_table: Vec::new(),
         }
     }
 }

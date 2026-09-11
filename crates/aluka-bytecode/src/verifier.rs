@@ -97,6 +97,10 @@ pub struct FuncTemplate {
     pub upvalues: Vec<UpvalueCapture>,
     /// 异常处理表
     pub try_table: Vec<TryEntry>,
+    /// LCOV 行覆盖表：(指令索引, 源码行号)。仅进程内编译且启用覆盖时非空；
+    /// **不参与序列化**——`.bc` 分发形态无覆盖信息（登记：`aluka test` 进程内
+    /// 编译路径才可用行覆盖）。
+    pub line_table: Vec<(u32, u32)>,
 }
 
 /// 类方法定义。
@@ -610,6 +614,7 @@ impl BytecodeModule {
                 constants,
                 upvalues,
                 try_table,
+                line_table: Vec::new(),
             });
             header_extras.push(crate::extras::FuncHeaderExtras {
                 arguments_slot,

@@ -1,7 +1,9 @@
 use crate::module::collect_ident_uses;
 use crate::scope::{CompiledUnit, LoopScope, ParentScopeInfo};
 use aluka_bytecode::{Constant, Instr, Op, TryEntry};
-use aluka_parser::ast::{Expr, Program, PropKey, PropValue, Stmt, VarKind, VarPattern};
+use aluka_parser::ast::{
+    Expr, Program, PropKey, PropValue, SpannedStmt, Stmt, VarKind, VarPattern,
+};
 
 /// `PushInt` 立即值能表示的上界（24 位操作数）。超过它的数值走常量池。
 const MAX_IMMEDIATE: f64 = ((1u32 << 24) - 1) as f64;
@@ -98,7 +100,32 @@ fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut Compil
     }
 }
 
-pub(crate) fn compile_stmt(stmt: &Stmt, unit: &mut CompiledUnit, is_last: bool) {
+/// 循环回边行表补登记：cond/update 指令物理位于 body 之后，
+/// 不补记会把回边执行错误归属到 body 内的最后一条语句（实测
+/// else 体被多计一次）。
+fn record_loop_line(unit: &mut CompiledUnit, line: u32) {
+    if unit.line_coverage {
+        let pc = unit.code.len() as u32;
+        if !matches!(unit.line_table.last(), Some((_, l)) if *l == line) {
+            unit.line_table.push((pc, line));
+        }
+    }
+}
+
+pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bool) {
+    // LCOV 行覆盖：语句起始（pc, line）登记进当前函数行表（覆盖模式才记录，
+    // 保证默认编译产物与关闭态逐字节一致）。Block 包装语句不登记——它自身
+    // 零宽（无指令），内部语句自会登记；否则零宽项会吞掉迁移计数并产生
+    // 指向 `}`/`else` 行的假 DA 条目。
+    if unit.line_coverage && !matches!(s.stmt, Stmt::Block(_)) {
+        // 连续同行条目合并（for-init/for 头、else 包装等零宽重复）——
+        // 重复条目会让迁移计数把同一语句执行计成多次
+        let dup_last = matches!(unit.line_table.last(), Some((_, l)) if *l == s.line);
+        if !dup_last {
+            unit.line_table.push((unit.code.len() as u32, s.line));
+        }
+    }
+    let stmt = &s.stmt;
     match stmt {
         Stmt::Expr(expr) => {
             compile_expr(expr, unit);
@@ -302,7 +329,7 @@ pub(crate) fn compile_stmt(stmt: &Stmt, unit: &mut CompiledUnit, is_last: bool) 
             body,
         } => {
             let let_var = match init {
-                Some(b) => match &**b {
+                Some(b) => match &b.stmt {
                     Stmt::VarDecl { name, .. } => Some(name.clone()),
                     _ => None,
                 },
@@ -401,6 +428,7 @@ pub(crate) fn compile_stmt(stmt: &Stmt, unit: &mut CompiledUnit, is_last: bool) 
                     backpatch_jump(unit, c_jmp, update_start);
                 }
 
+                record_loop_line(unit, s.line);
                 if let Some(update_expr) = update {
                     compile_expr(update_expr, unit);
                     unit.code.push(Instr::new(Op::Pop, 0));
@@ -1475,7 +1503,8 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
 }
 
 /// 静态分析：检查语句及其子树中的闭包是否引用了指定的局部变量名
-fn stmt_has_closure_capturing(stmt: &Stmt, target_name: &str) -> bool {
+fn stmt_has_closure_capturing(s: &SpannedStmt, target_name: &str) -> bool {
+    let stmt = &s.stmt;
     match stmt {
         Stmt::Expr(expr) => expr_has_closure_capturing(expr, target_name),
         Stmt::VarDecl {
@@ -1665,7 +1694,7 @@ mod tests {
     #[test]
     fn compiles_number_literal_then_returns() {
         let program = Program {
-            body: vec![Stmt::Expr(Expr::Number(7.0))],
+            body: vec![SpannedStmt::new(Stmt::Expr(Expr::Number(7.0)), 0)],
         };
         let unit = compile(&program);
         assert_eq!(
@@ -1677,11 +1706,14 @@ mod tests {
     #[test]
     fn compiles_addition_in_evaluation_order() {
         let program = Program {
-            body: vec![Stmt::Expr(Expr::Binary {
-                op: "+".to_owned(),
-                left: Box::new(Expr::Number(1.0)),
-                right: Box::new(Expr::Number(2.0)),
-            })],
+            body: vec![SpannedStmt::new(
+                Stmt::Expr(Expr::Binary {
+                    op: "+".to_owned(),
+                    left: Box::new(Expr::Number(1.0)),
+                    right: Box::new(Expr::Number(2.0)),
+                }),
+                0,
+            )],
         };
         let unit = compile(&program);
         assert_eq!(
@@ -1699,7 +1731,7 @@ mod tests {
     fn oversized_literal_falls_back_off_the_immediate_path() {
         let big = f64::from(u32::MAX);
         let program = Program {
-            body: vec![Stmt::Expr(Expr::Number(big))],
+            body: vec![SpannedStmt::new(Stmt::Expr(Expr::Number(big)), 0)],
         };
         let unit = compile(&program);
         assert_eq!(unit.code[0], Instr::new(Op::PushConst, 0));

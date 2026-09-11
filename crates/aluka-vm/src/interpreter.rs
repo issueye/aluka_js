@@ -160,6 +160,9 @@ pub struct Vm {
     pub last_pc: usize,
     /// 当前执行函数索引（错误定位用；-1 表示无）
     pub current_func_idx: i64,
+    /// LCOV 行覆盖计数（`aluka test --test-reporter=lcov` 才挂载；默认 None
+    /// ——主循环每指令一次 Option 判定，关闭态近零成本）
+    pub coverage: Option<crate::coverage::Coverage>,
     /// nextTick 优先微任务队列（回调函数）
     pub(crate) nexttick_queue: std::collections::VecDeque<Value>,
     /// Promise 微任务队列（Job：回调或帧恢复）
@@ -339,6 +342,7 @@ impl Vm {
             yield_pc: 0,
             last_pc: 0,
             current_func_idx: -1,
+            coverage: None,
             nexttick_queue: std::collections::VecDeque::new(),
             microtask_queue: std::collections::VecDeque::new(),
             macro_tasks: std::collections::VecDeque::new(),
@@ -1665,6 +1669,11 @@ impl Vm {
         while pc < num_instrs {
             self.last_pc = pc;
             let instr = code[pc];
+            if self.coverage.is_some() {
+                if let Some(cov) = self.coverage.as_mut() {
+                    cov.on_instruction(pc);
+                }
+            }
 
             match instr.op {
                 // 1. 标量字面量与常量加载
@@ -5257,6 +5266,7 @@ mod tests {
             constants: Vec::new(),
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
         let caller = FuncTemplate {
             name: "caller".to_owned(),
@@ -5284,6 +5294,7 @@ mod tests {
             constants: vec![Constant::String("sum8".to_owned())],
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
         let module = aluka_bytecode::BytecodeModule {
             header_extras: Vec::new(),
@@ -5356,6 +5367,7 @@ mod tests {
             constants: Vec::new(),
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         };
         let module = aluka_bytecode::BytecodeModule {
             header_extras: Vec::new(),

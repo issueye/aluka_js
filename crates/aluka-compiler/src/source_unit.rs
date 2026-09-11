@@ -3,7 +3,7 @@
 use crate::error::CompileError;
 use crate::module::{compile_esm_module, compile_module};
 use aluka_bytecode::BytecodeModule;
-use aluka_parser::ast::{Expr, ObjectProp, Program, PropKey, PropValue, Stmt};
+use aluka_parser::ast::{Expr, ObjectProp, Program, PropKey, PropValue, SpannedStmt, Stmt};
 use aluka_parser::source_unit::{
     ModuleKind, STAGE_BYTECODE_COMPILED, STAGE_PARSED, SourceKind, SourceUnit,
 };
@@ -31,7 +31,7 @@ pub fn compile_source_unit(unit: &mut SourceUnit) -> Result<BytecodeModule, Comp
         SourceKind::Json => {
             let expr = parse_json_to_expr(&unit.source)?;
             let program = Program {
-                body: vec![Stmt::Return(Some(expr))],
+                body: vec![SpannedStmt::new(Stmt::Return(Some(expr)), 0)],
             };
             let module = compile_module(&program);
             unit.mark_stage(STAGE_BYTECODE_COMPILED)?;

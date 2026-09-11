@@ -56,6 +56,7 @@ pub fn empty_eval_module() -> BytecodeModule {
             constants: Vec::new(),
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         }],
         classes: Vec::new(),
         header_extras: Vec::new(),

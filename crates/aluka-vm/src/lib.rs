@@ -6,6 +6,7 @@ pub(crate) mod bigdec;
 pub mod builtins;
 pub mod call;
 pub mod class;
+pub mod coverage;
 pub mod eval;
 pub mod exception;
 pub mod gc;

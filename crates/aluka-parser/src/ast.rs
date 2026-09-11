@@ -201,6 +201,31 @@ pub enum VarKind {
     Const,
 }
 
+/// 带源码行号的语句（LCOV 行覆盖：解析期记录语句起始行）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedStmt {
+    /// 语句本体
+    pub stmt: Stmt,
+    /// 语句起始行号（1 起）
+    pub line: u32,
+}
+
+impl SpannedStmt {
+    /// 构造辅助。
+    pub fn new(stmt: Stmt, line: u32) -> Self {
+        Self { stmt, line }
+    }
+
+    /// 合成占位块（死代码消除把不可达分支替换为此形态；行号沿用外层语句，
+    /// 无独立可执行语义）。
+    pub fn unreachable_block() -> Self {
+        Self {
+            stmt: Stmt::Block(Vec::new()),
+            line: 0,
+        }
+    }
+}
+
 /// 语句。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Stmt {
@@ -230,27 +255,27 @@ pub enum Stmt {
         init: Expr,
     },
     /// 代码块：`{ stmts... }`
-    Block(Vec<Stmt>),
+    Block(Vec<SpannedStmt>),
     /// 条件分支语句：`if (cond) then_branch else else_branch`
     If {
         /// 条件表达式
         cond: Expr,
         /// 条件为真执行的语句
-        then_branch: Box<Stmt>,
+        then_branch: Box<SpannedStmt>,
         /// 条件为假执行的语句（可选）
-        else_branch: Option<Box<Stmt>>,
+        else_branch: Option<Box<SpannedStmt>>,
     },
     /// While 循环语句：`while (cond) body`
     While {
         /// 循环条件表达式
         cond: Expr,
         /// 循环体语句
-        body: Box<Stmt>,
+        body: Box<SpannedStmt>,
     },
     /// Do-While 循环语句：`do body while (cond)`
     DoWhile {
         /// 循环体语句
-        body: Box<Stmt>,
+        body: Box<SpannedStmt>,
         /// 循环条件表达式
         cond: Expr,
     },
@@ -259,13 +284,13 @@ pub enum Stmt {
     /// For 循环：`for (init; cond; update) body`
     For {
         /// 初始化
-        init: Option<Box<Stmt>>,
+        init: Option<Box<SpannedStmt>>,
         /// 条件
         cond: Option<Expr>,
         /// 步进更新
         update: Option<Expr>,
         /// 循环体
-        body: Box<Stmt>,
+        body: Box<SpannedStmt>,
     },
     /// For-In 循环：`for (const/let/var k in expr) body`
     ForIn {
@@ -274,7 +299,7 @@ pub enum Stmt {
         /// 遍历对象
         right: Expr,
         /// 循环体
-        body: Box<Stmt>,
+        body: Box<SpannedStmt>,
     },
     /// For-Of 循环：`for [await] (const/let/var v of expr) body`
     ForOf {
@@ -285,7 +310,7 @@ pub enum Stmt {
         /// 遍历可迭代对象
         right: Expr,
         /// 循环体
-        body: Box<Stmt>,
+        body: Box<SpannedStmt>,
     },
     /// Break 语句
     Break,
@@ -296,13 +321,13 @@ pub enum Stmt {
     /// 异常捕获语句：`try { body } catch (e) { catch_body } finally { finally_body }`
     Try {
         /// 保护代码块
-        body: Box<Stmt>,
+        body: Box<SpannedStmt>,
         /// Catch 块形参名（可选，ES2019 支持省略）
         catch_param: Option<String>,
         /// Catch 处理块（可选）
-        catch_body: Option<Box<Stmt>>,
+        catch_body: Option<Box<SpannedStmt>>,
         /// Finally 块（可选）
-        finally_body: Option<Box<Stmt>>,
+        finally_body: Option<Box<SpannedStmt>>,
     },
     /// 函数声明：`function name(params) { body }`
     Function(FunctionDef),
@@ -336,7 +361,7 @@ pub struct SwitchCase {
     /// 匹配条件表达式（为 None 时表示 default 分支）
     pub test: Option<Expr>,
     /// 分支执行体语句列表
-    pub consequent: Vec<Stmt>,
+    pub consequent: Vec<SpannedStmt>,
 }
 
 /// 函数定义结构体
@@ -349,7 +374,7 @@ pub struct FunctionDef {
     /// 是否为变长/Rest 参数
     pub is_var_args: bool,
     /// 函数体语句
-    pub body: Vec<Stmt>,
+    pub body: Vec<SpannedStmt>,
     /// 是否为异步函数
     pub is_async: bool,
     /// 是否为生成器函数
@@ -360,7 +385,12 @@ pub struct FunctionDef {
 
 impl FunctionDef {
     /// 创建普通函数定义辅助方法
-    pub fn new(name: String, params: Vec<String>, is_var_args: bool, body: Vec<Stmt>) -> Self {
+    pub fn new(
+        name: String,
+        params: Vec<String>,
+        is_var_args: bool,
+        body: Vec<SpannedStmt>,
+    ) -> Self {
         Self {
             name,
             params,
@@ -381,7 +411,7 @@ pub struct ClassMethodDef {
     /// 形参列表
     pub params: Vec<String>,
     /// 方法体语句
-    pub body: Vec<Stmt>,
+    pub body: Vec<SpannedStmt>,
     /// 是否为静态方法
     pub is_static: bool,
     /// 方法类型（0=普通方法, 1=Getter, 2=Setter）
@@ -456,7 +486,7 @@ pub enum VarPattern {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Program {
     /// 顶层语句序列
-    pub body: Vec<Stmt>,
+    pub body: Vec<SpannedStmt>,
 }
 
 /// ESM 导入声明
@@ -490,7 +520,7 @@ pub enum ExportDecl {
     /// 命名导出：`export const x = 1` 或 `export { a, b as c } [from 'mod']`
     Named {
         /// 内嵌声明语句（如 `const x = 1`）
-        decl: Option<Box<Stmt>>,
+        decl: Option<Box<SpannedStmt>>,
         /// 导出符号列表
         specifiers: Vec<ExportSpecifier>,
         /// 重导出来源模块路径（可选）

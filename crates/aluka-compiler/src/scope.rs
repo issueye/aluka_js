@@ -166,6 +166,10 @@ pub struct CompiledUnit {
     /// 隐式全局模式（eval 全局作用域求值用）：main 层未声明赋值与
     /// var/function 声明直接落全局表，而非 main 局部槽
     pub implicit_globals: bool,
+    /// LCOV 行覆盖表：(指令索引, 源码行号)。语句起始登记；空 = 无覆盖信息。
+    pub line_table: Vec<(u32, u32)>,
+    /// 行覆盖登记开关（ModuleCompiler.line_coverage 转发；默认关）
+    pub line_coverage: bool,
 }
 
 impl CompiledUnit {
@@ -192,6 +196,7 @@ impl CompiledUnit {
             constants: self.constants,
             upvalues: self.upvalues,
             try_table: self.try_table,
+            line_table: self.line_table,
         }
     }
 }

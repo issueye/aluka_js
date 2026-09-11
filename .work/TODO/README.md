@@ -57,7 +57,7 @@
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
-| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1 ✅ 已结项（`postMessageToThread` 真线程通路 + eval worker 于 20260911 关闭）；M5.2 主体达成余 RR 调度决策；M5.3 ✅ 已闭环；M5.4 切片一 + 切片二均已落地，余 LCOV 覆盖率与真 `stream.Transform` 报告器，见 §M5） |
+| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]` → **M5 全部子项达成（20260912 结项）**：M5.1 ✅ / M5.2 ✅（RR 调度按架构级偏离结项）/ M5.3 ✅ / M5.4 ✅（LCOV + 真 Transform 报告器闭环）；登记偏离见 §M5 各行与 20260912/README.md |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
@@ -348,9 +348,11 @@
     偏离点），primary 置 `ead=true` 后回同帧 ack（Node `{ack: seq}` 的无 seq
     近似），worker 收到才收尾 `process.disconnect()`；上报失败立即收尾、挂起中
     重复调用 no-op、对端 EOF 挂起失效。第 3 例 e2e 逐字对拍。
-    **遗留**：RR 调度（架构级，判定「需 unsafe FFI + 换 IPC 介质 + 新直连依赖」，
-    与仓库 `unsafe_code=deny` 冲突 → §11.5 决策记录，替代方案待决策）；
-    `Object.keys` 键序（字典序 vs 插入序）为独立
+    ✅ **RR 调度决策已正式化（20260912，维持偏离结项）**：`SCHED_RR` 需 unsafe FFI
+    与仓库 `unsafe_code=deny` 冲突；fd 传递介质在 Windows 不可用且违反零依赖分发；
+    SO_REUSEPORT 内核分发的可观测差异仅限连接粘性（21-m5 差分全绿）。详见
+    [20260912/README.md §3](./20260912/README.md)。
+    遗留：`Object.keys` 键序（字典序 vs 插入序）为独立
     全仓专项（详见 [20260911/README.md §9](./20260911/README.md)）。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
@@ -368,7 +370,7 @@
     Node 22.23.1 **逐字一致**）+ 既有 4 用例断言更新；裸名 `require('sqlite')`
     可用（剥前缀折衷已登记）。**遗留**：ctor options、真预编译句柄语义、
     wrapper 事务的 isTransaction 同步。
-- [~] **M5.4 `node:test` 进阶测试套件**（切片一（模块形态 / 函数属性 / CLI 运行器）与切片二（Timer Mock）均已落地，20260910；✅ 真 `stream.Transform` 报告器已闭环（20260911 待办 32，`run().compose(reporter).pipe(dest)` 可用，见 [20260911/README.md §16](./20260911/README.md)）；余 LCOV 覆盖率）
+- [x] **M5.4 `node:test` 进阶测试套件**（切片一（模块形态 / 函数属性 / CLI 运行器）+ 切片二（Timer Mock）+ ✅ 真 `stream.Transform` 报告器（`run().compose(reporter).pipe(dest)`）+ ✅ **LCOV 行覆盖**（`aluka test --test-reporter=lcov`：SpannedStmt 行号 → 编译期行表 → VM 逐行计数 → tracefile 生成四层闭环）——20260912 结项，证据见 [20260912/README.md](./20260912/README.md)）
   - ✅ **切片一（20260910，证据见 `20260910/README.md` 待办 24 + `crates/aluka-cli/tests/test_runner_cli_test.rs` 6 例）**：
     `it`/`test`/`describe`/`suite` 的 `skip`/`todo`/`only` **函数属性形态**；
     **`require('node:test')` 的导出值改为可调用的 `test` 函数**（Node 22 实测口径：
@@ -402,11 +404,7 @@
 ---
 
 ### M6 · 生产级 GC 与高性能引擎
-- [ ] **M6.1 生产级分代 GC 闭环**
-  - 将 ADR-0002 选型的分代标记-清除 GC 正式合入虚拟机主循环；
-  - 接入基于卡表（Card Table）的跨代写屏障（Write Barrier）；
-  - 动态堆伸缩策略（基于内存压力自适应触发 Minor / Major 收集）；
-  - 验收：`gcPressure` 内存基准指标全面对标 Node.js 22 (V8) 2~3x 以内。
+- [x] **M6.1 生产级分代 GC 闭环**（✅ 卡表写屏障 + 自适应堆伸缩 + 生产双代 + GC 压力模式已合入主循环（commits 5f7289f / 59a13e4）；✅ 验收：`gcPressure` 内存基准 **1.35x**（对标 Node.js 22 (V8) 峰值内存，远优于 2~3x 验收线）——20260912 核验补登记，证据 `crates/aluka-cli/examples/gcpressure.rs` 与 `.work/TODO/20260912/README.md`）
 - [ ] **M6.2 8 字节 NaN-boxing `Value` 切换**
   - 将 `Value` 内部表示从 16 字节 Tagged Enum 切换为 8 字节 NaN-boxing 机器字；
   - 降低 50% 栈空间与常量池常驻占用，大幅提升 CPU 缓存命中率；

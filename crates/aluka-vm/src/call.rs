@@ -567,6 +567,12 @@ impl Vm {
         CALL_CHAIN.with(|c| c.borrow_mut().push((func_idx, tmpl.name.clone())));
         let _frame_guard = FrameGuard;
         let old_func_idx = std::mem::replace(&mut self.current_func_idx, func_idx as i64);
+        let old_coverage_func = self.coverage.as_mut().map(|c| {
+            (
+                std::mem::replace(&mut c.cur_func, func_idx as i64),
+                c.last_hit.take(),
+            )
+        });
         let old_constants = std::mem::replace(
             &mut self.current_constants,
             self.module_constants[func_idx].clone(),
@@ -625,6 +631,14 @@ impl Vm {
                 self.current_constants = old_constants.clone();
                 self.current_try_table = old_try_table;
                 self.current_func_idx = old_func_idx;
+                if let (Some(cov), Some((of, oh))) = (self.coverage.as_mut(), old_coverage_func) {
+                    cov.cur_func = of;
+                    cov.last_hit = oh;
+                }
+                if let (Some(cov), Some((of, oh))) = (self.coverage.as_mut(), old_coverage_func) {
+                    cov.cur_func = of;
+                    cov.last_hit = oh;
+                }
                 self.locals = saved_frame.locals;
                 self.current_upvalues = saved_frame.upvalues;
                 self.open_upvalues = saved_frame.open_upvalues.into_iter().collect();
@@ -668,6 +682,10 @@ impl Vm {
         self.try_stack = saved_frame.try_stack;
         self.current_try_table = old_try_table;
         self.current_func_idx = old_func_idx;
+        if let (Some(cov), Some((of, oh))) = (self.coverage.as_mut(), old_coverage_func) {
+            cov.cur_func = of;
+            cov.last_hit = oh;
+        }
         if std::env::var("ALUKA_ERR_TRACE").is_ok() {
             if let Err(VmError::Thrown(_)) = &ret {
                 eprintln!(

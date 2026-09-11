@@ -23,6 +23,7 @@ fn create_valid_func(code: Vec<Instr>, num_locals: u32, max_stack: u32) -> FuncT
         constants: Vec::new(),
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     }
 }
 

@@ -368,3 +368,19 @@ pub fn assert_e2e_matches_node_with_module(
 pub fn assert_e2e_matches_go(work: &Path, entry: &str) -> String {
     rust_pipeline_run(work, entry)
 }
+
+/// `aluka test --test-reporter=lcov <entry>` 直跑（进程内编译，行覆盖可用），
+/// 返回 stdout（LCOV tracefile 文本 + 测试输出）。
+pub fn run_lcov_test(work: &Path, entry: &str) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_aluka"))
+        .args(["test", "--test-reporter=lcov", entry])
+        .current_dir(work)
+        .output()
+        .expect("aluka test 运行失败");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() && stderr.is_empty() {
+        panic!("aluka test 退码非零且无 stderr");
+    }
+    stdout
+}

@@ -50,6 +50,7 @@ fn func(
         constants: consts,
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     }
 }
 

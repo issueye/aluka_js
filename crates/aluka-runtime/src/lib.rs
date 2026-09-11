@@ -70,6 +70,10 @@ pub struct Runtime {
     uncaught_formatted: Option<String>,
     /// 测试运行器报告器（`enable_test_runner` 启用；None = 不自动跑用例）。
     test_reporter: Option<ReporterKind>,
+    /// LCOV 覆盖率报告文本（`enable_test_runner(Lcov)` 时由 execute 收尾生成）
+    lcov_report: Option<String>,
+    /// 行覆盖编译开关（与 lcov 报告器联动；编译器把语句起始登记进函数行表）
+    coverage_compile: bool,
     /// 最近一次执行收尾的测试汇总（未启用/无用例/已显式 run() 时为 None）。
     test_summary: Option<ReportCounts>,
     /// 最近一次执行的 `process.exit(code)` 退出码（None = 未调用）。
@@ -88,6 +92,8 @@ impl Runtime {
             stdout_records: Vec::new(),
             uncaught_formatted: None,
             test_reporter: None,
+            lcov_report: None,
+            coverage_compile: false,
             test_summary: None,
             exit_code: None,
         }
@@ -99,7 +105,16 @@ impl Runtime {
     /// `aluka_vm::builtins::test::auto_run`：把报告行按序追加到 stdout 记录
     /// （与 `console.log` 同一输出通道），并记录汇总计数供退码判定。
     pub fn enable_test_runner(&mut self, kind: ReporterKind) {
+        // 测试运行一律挂载覆盖计数（每指令一次 Option 判定，开销近零）；
+        // `run().compose(reporters.lcov)` 因此在任何报告器模式下都有数据
+        self.coverage_compile = true;
         self.test_reporter = Some(kind);
+    }
+
+    /// 最近一次执行的 LCOV 覆盖率报告（仅 `Lcov` 报告器挂载后产生）。
+    #[must_use]
+    pub fn lcov_report(&self) -> Option<&str> {
+        self.lcov_report.as_deref()
     }
 
     /// 最近一次执行收尾的测试汇总计数（未启用运行器、注册表为空、脚本已
@@ -164,8 +179,12 @@ impl Runtime {
             }
         }
 
-        let module =
-            compile_source_unit(&mut unit).map_err(|e| RuntimeError::Compile(e.to_string()))?;
+        let module = if self.coverage_compile {
+            let program = unit.program.take().expect("coverage 编译需要保留 program");
+            aluka_compiler::compile_module_with_coverage(&program)
+        } else {
+            compile_source_unit(&mut unit).map_err(|e| RuntimeError::Compile(e.to_string()))?
+        };
 
         module
             .verify()
@@ -177,6 +196,22 @@ impl Runtime {
         inject_process_argv(&mut vm, path, args);
         vm.setup_cjs(path);
 
+        // LCOV 行覆盖（`aluka test --test-reporter=lcov`）：挂载计数器
+        let lcov_module = if self.coverage_compile {
+            if std::env::var("ALUKA_LCOV_DEBUG").is_ok() {
+                for (i, f) in module.functions.iter().enumerate() {
+                    eprintln!("[lcov] func[{i}] {} table={:?}", f.name, f.line_table);
+                }
+            }
+            // 覆盖模式关闭 JIT：热点机器码不经过解释器 tick（否则计数停摆）；
+            // 覆盖率运行以诊断为目的，性能让位（登记：Node 覆盖率运行同样减速）
+            vm.set_jit_enabled(false);
+            vm.coverage = Some(aluka_vm::coverage::Coverage::from_module(&module));
+            Some(module.clone())
+        } else {
+            None
+        };
+
         let run_res = vm.run_module(&module);
         // 测试运行器（`aluka test`）收尾：脚本无未捕获异常时才自动跑用例
         // （文件级失败已足以判定退码，避免半程注册表产出误导性报告）。
@@ -186,6 +221,10 @@ impl Runtime {
             None
         };
         self.stdout_records = vm.stdout_records.clone();
+        // LCOV 报告生成（执行结束时的计数快照）
+        if let (Some(cov), Some(module)) = (vm.coverage.take(), lcov_module) {
+            self.lcov_report = Some(cov.generate_lcov(&module, "", Some(&path_str)));
+        }
         if let Err(VmError::Thrown(exc)) = &run_res {
             self.uncaught_formatted = Some(format_uncaught_with_vm(&mut vm, *exc, path));
         } else {
@@ -628,16 +667,19 @@ fn inject_process_argv(vm: &mut Vm, input: &Path, cli_args: &[String]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aluka_parser::ast::{Expr, Stmt};
+    use aluka_parser::ast::{Expr, SpannedStmt, Stmt};
 
     #[test]
     fn evaluates_an_addition_end_to_end() {
         let program = Program {
-            body: vec![Stmt::Expr(Expr::Binary {
-                op: "+".to_owned(),
-                left: Box::new(Expr::Number(20.0)),
-                right: Box::new(Expr::Number(22.0)),
-            })],
+            body: vec![SpannedStmt::new(
+                Stmt::Expr(Expr::Binary {
+                    op: "+".to_owned(),
+                    left: Box::new(Expr::Number(20.0)),
+                    right: Box::new(Expr::Number(22.0)),
+                }),
+                0,
+            )],
         };
         let mut runtime = Runtime::new();
         match runtime.evaluate(&program) {

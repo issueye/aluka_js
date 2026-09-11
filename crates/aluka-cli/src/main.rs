@@ -111,7 +111,7 @@ fn print_usage() {
     println!("  aluka <脚本文件> [参数...] [--no-opt]");
     println!("  aluka build <脚本文件> [-o 输出目录] [--no-opt]");
     println!("  aluka npm <install|uninstall|run|ls|init|view> [参数...]");
-    println!("  aluka test [--test-reporter=<spec|tap|dot>] [<文件|目录>...]");
+    println!("  aluka test [--test-reporter=<spec|tap|dot|lcov>] [<文件|目录>...]");
     println!("  aluka --capabilities");
     println!("  aluka -v, --version");
     println!("  aluka -h, --help");
@@ -123,7 +123,7 @@ fn print_usage() {
     println!("  npm ...         包管理器（npm 功能复刻，等价 aluka-npm）");
     println!("  test [目标...]  运行 node:test 用例（无目标时从 cwd 发现）；");
     println!("                  任一用例失败即退出码 1");
-    println!("  --test-reporter=<spec|tap|dot>  test 报告器（默认 spec）");
+    println!("  --test-reporter=<spec|tap|dot|lcov>  test 报告器（默认 spec）");
     println!("  --no-opt        关闭编译期静态优化 Pass");
     println!("  --capabilities  查看当前引擎已装配能力域与内置模块迁移进度");
     println!("  -v, --version   打印版本信息");
@@ -356,7 +356,10 @@ fn parse_reporter(name: &str) -> Result<ReporterKind, String> {
         "spec" => Ok(ReporterKind::Spec),
         "tap" => Ok(ReporterKind::Tap),
         "dot" => Ok(ReporterKind::Dot),
-        other => Err(format!("未知报告器: {other}（可用: spec / tap / dot）")),
+        "lcov" => Ok(ReporterKind::Lcov),
+        other => Err(format!(
+            "未知报告器: {other}（可用: spec / tap / dot / lcov）"
+        )),
     }
 }
 
@@ -383,6 +386,12 @@ fn test_command(targets: &[PathBuf], reporter: ReporterKind, optimize: bool) -> 
             Ok(_) => {
                 for line in runtime.stdout_records() {
                     println!("{line}");
+                }
+                // lcov：覆盖率报告直出（LCOV tracefile 文本）
+                if reporter == ReporterKind::Lcov
+                    && let Some(report) = runtime.lcov_report()
+                {
+                    print!("{report}");
                 }
                 // 测试文件内显式 `process.exit(code)`：非零即视为失败
                 if runtime.exit_code().is_some_and(|code| code != 0) {

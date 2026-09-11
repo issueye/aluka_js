@@ -4,8 +4,8 @@
 
 use crate::ast::{
     ArrayPatternElem, ClassMethodDef, ExportDecl, ExportSpecifier, Expr, FunctionDef, ImportDecl,
-    ImportSpecifier, ObjectPatternProp, ObjectProp, Program, PropKey, PropValue, Stmt, SwitchCase,
-    VarKind, VarPattern,
+    ImportSpecifier, ObjectPatternProp, ObjectProp, Program, PropKey, PropValue, SpannedStmt, Stmt,
+    SwitchCase, VarKind, VarPattern,
 };
 use crate::lexer::{Lexer, Token, TokenKind};
 
@@ -14,6 +14,9 @@ pub struct Parser<'src> {
     tokens: Vec<Token>,
     pos: usize,
     _src: &'src str,
+    /// 行号游标：已统计到 `line_pos` 字节处，对应 `line_no` 行（LCOV 行覆盖）。
+    line_pos: usize,
+    line_no: u32,
     /// 语法错误收集。`parse` 维持容错（错误不阻断、AST 尽力而为，兼容
     /// 既有调用方）；`parse_strict`/`take_errors` 供 alukac 等需要拒绝
     /// 非法源码的入口使用。
@@ -64,8 +67,29 @@ impl<'src> Parser<'src> {
             tokens,
             pos: 0,
             _src: src,
+            line_pos: 0,
+            line_no: 1,
             errors: Vec::new(),
         }
+    }
+
+    /// 当前 token 的源码行号（自游标增量统计换行，均摊 O(n)）。
+    fn cur_line(&mut self) -> u32 {
+        let start = self.peek().start;
+        if start >= self.line_pos {
+            let nl = self._src[self.line_pos..start]
+                .bytes()
+                .filter(|b| *b == 0x0A)
+                .count() as u32;
+            self.line_no += nl;
+            self.line_pos = start;
+        }
+        self.line_no
+    }
+
+    /// 以语句起始行号包装为 [`SpannedStmt`]。
+    fn at(line: u32, stmt: Stmt) -> SpannedStmt {
+        SpannedStmt::new(stmt, line)
     }
 
     /// 记录一条语法错误（容错解析继续，strict 入口据此拒绝）。
@@ -266,19 +290,20 @@ impl<'src> Parser<'src> {
     }
 
     /// 解析语句
-    pub fn parse_stmt(&mut self) -> Stmt {
+    pub fn parse_stmt(&mut self) -> SpannedStmt {
+        let line = self.cur_line();
         if (self.peek().kind == TokenKind::Keyword("import".to_owned())
             || self.peek().kind == TokenKind::Ident("import".to_owned()))
             && !self.peek_ahead(1).is_punct("(")
             && !self.peek_ahead(1).is_punct(".")
         {
-            return self.parse_import_stmt();
+            return Self::at(line, self.parse_import_stmt());
         }
 
         if self.peek().kind == TokenKind::Keyword("export".to_owned())
             || self.peek().kind == TokenKind::Ident("export".to_owned())
         {
-            return self.parse_export_stmt();
+            return Self::at(line, self.parse_export_stmt());
         }
 
         if self.match_punct("{") {
@@ -287,7 +312,7 @@ impl<'src> Parser<'src> {
                 stmts.push(self.parse_stmt());
             }
             let _ = self.expect_punct("}");
-            return Stmt::Block(stmts);
+            return Self::at(line, Stmt::Block(stmts));
         }
 
         if self.match_keyword("if") {
@@ -300,11 +325,14 @@ impl<'src> Parser<'src> {
             } else {
                 None
             };
-            return Stmt::If {
-                cond,
-                then_branch,
-                else_branch,
-            };
+            return Self::at(
+                line,
+                Stmt::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                },
+            );
         }
 
         if self.match_keyword("while") {
@@ -312,7 +340,7 @@ impl<'src> Parser<'src> {
             let cond = self.parse_expr();
             let _ = self.expect_punct(")");
             let body = Box::new(self.parse_stmt());
-            return Stmt::While { cond, body };
+            return Self::at(line, Stmt::While { cond, body });
         }
 
         if self.match_keyword("do") {
@@ -322,7 +350,7 @@ impl<'src> Parser<'src> {
             let cond = self.parse_expr();
             let _ = self.expect_punct(")");
             self.eat_semi();
-            return Stmt::DoWhile { body, cond };
+            return Self::at(line, Stmt::DoWhile { body, cond });
         }
 
         if self.match_keyword("for") {
@@ -350,11 +378,14 @@ impl<'src> Parser<'src> {
                     let right = self.parse_expr();
                     let _ = self.expect_punct(")");
                     let body = Box::new(self.parse_stmt());
-                    return Stmt::ForIn {
-                        pattern,
-                        right,
-                        body,
-                    };
+                    return Self::at(
+                        line,
+                        Stmt::ForIn {
+                            pattern,
+                            right,
+                            body,
+                        },
+                    );
                 } else {
                     if self.peek().kind == TokenKind::Keyword("of".to_owned())
                         || self.peek().kind == TokenKind::Ident("of".to_owned())
@@ -364,12 +395,15 @@ impl<'src> Parser<'src> {
                     let right = self.parse_expr();
                     let _ = self.expect_punct(")");
                     let body = Box::new(self.parse_stmt());
-                    return Stmt::ForOf {
-                        is_await,
-                        pattern,
-                        right,
-                        body,
-                    };
+                    return Self::at(
+                        line,
+                        Stmt::ForOf {
+                            is_await,
+                            pattern,
+                            right,
+                            body,
+                        },
+                    );
                 }
             }
 
@@ -379,11 +413,11 @@ impl<'src> Parser<'src> {
                 || self.peek().kind == TokenKind::Keyword("var".to_owned())
                 || self.peek().kind == TokenKind::Keyword("const".to_owned())
             {
-                Some(Box::new(self.parse_var_decl()))
+                Some(Box::new(Self::at(line, self.parse_var_decl())))
             } else {
                 let expr = self.parse_expr_sequence();
                 let _ = self.expect_punct(";");
-                Some(Box::new(Stmt::Expr(expr)))
+                Some(Box::new(Self::at(line, Stmt::Expr(expr))))
             };
 
             let cond = if self.check_punct(";") {
@@ -402,28 +436,31 @@ impl<'src> Parser<'src> {
             };
             let _ = self.expect_punct(")");
             let body = Box::new(self.parse_stmt());
-            return Stmt::For {
-                init,
-                cond,
-                update,
-                body,
-            };
+            return Self::at(
+                line,
+                Stmt::For {
+                    init,
+                    cond,
+                    update,
+                    body,
+                },
+            );
         }
 
         if self.match_keyword("break") {
             self.eat_semi();
-            return Stmt::Break;
+            return Self::at(line, Stmt::Break);
         }
 
         if self.match_keyword("continue") {
             self.eat_semi();
-            return Stmt::Continue;
+            return Self::at(line, Stmt::Continue);
         }
 
         if self.match_keyword("throw") {
             let expr = self.parse_expr();
             self.eat_semi();
-            return Stmt::Throw(expr);
+            return Self::at(line, Stmt::Throw(expr));
         }
 
         if self.match_keyword("return") {
@@ -443,7 +480,7 @@ impl<'src> Parser<'src> {
                 Some(self.parse_expr())
             };
             self.eat_semi();
-            return Stmt::Return(expr);
+            return Self::at(line, Stmt::Return(expr));
         }
 
         if self.match_keyword("try") {
@@ -466,19 +503,22 @@ impl<'src> Parser<'src> {
             } else {
                 None
             };
-            return Stmt::Try {
-                body,
-                catch_param,
-                catch_body,
-                finally_body,
-            };
+            return Self::at(
+                line,
+                Stmt::Try {
+                    body,
+                    catch_param,
+                    catch_body,
+                    finally_body,
+                },
+            );
         }
 
         if self.peek().kind == TokenKind::Keyword("let".to_owned())
             || self.peek().kind == TokenKind::Keyword("const".to_owned())
             || self.peek().kind == TokenKind::Keyword("var".to_owned())
         {
-            return self.parse_var_decl();
+            return Self::at(line, self.parse_var_decl());
         }
 
         if self.match_keyword("async") {
@@ -487,7 +527,7 @@ impl<'src> Parser<'src> {
                 let mut def = self.parse_function_def();
                 def.is_async = true;
                 def.is_generator = is_generator;
-                return Stmt::Function(def);
+                return Self::at(line, Stmt::Function(def));
             }
             self.pos -= 1;
         }
@@ -496,11 +536,11 @@ impl<'src> Parser<'src> {
             let is_generator = self.match_punct("*");
             let mut def = self.parse_function_def();
             def.is_generator = is_generator;
-            return Stmt::Function(def);
+            return Self::at(line, Stmt::Function(def));
         }
 
         if self.match_keyword("class") {
-            return self.parse_class_stmt();
+            return Self::at(line, self.parse_class_stmt());
         }
 
         if self.match_keyword("switch") {
@@ -544,16 +584,19 @@ impl<'src> Parser<'src> {
                 }
             }
             let _ = self.expect_punct("}");
-            return Stmt::Switch {
-                discriminant,
-                cases,
-            };
+            return Self::at(
+                line,
+                Stmt::Switch {
+                    discriminant,
+                    cases,
+                },
+            );
         }
 
         // 默认作为表达式语句
         let expr = self.parse_expr();
         self.eat_semi();
-        Stmt::Expr(expr)
+        Self::at(line, Stmt::Expr(expr))
     }
 
     fn parse_var_pattern(&mut self) -> VarPattern {
@@ -716,10 +759,14 @@ impl<'src> Parser<'src> {
                 let pattern = self.parse_var_pattern();
                 let param_name = format!("__param_{}__", params.len());
                 params.push(param_name.clone());
-                prologue_stmts.push(Stmt::DestructureDecl {
-                    pattern,
-                    init: Expr::Ident(param_name),
-                });
+                let dline = self.cur_line();
+                prologue_stmts.push(Self::at(
+                    dline,
+                    Stmt::DestructureDecl {
+                        pattern,
+                        init: Expr::Ident(param_name),
+                    },
+                ));
                 self.skip_type_annotation();
             } else if let TokenKind::Ident(param_name) = self.advance().kind {
                 params.push(param_name.clone());
@@ -728,18 +775,22 @@ impl<'src> Parser<'src> {
                 //（对齐 Go 前端：函数体 prologue 注入条件赋值）
                 if self.match_punct("=") {
                     let default_expr = self.parse_expr();
-                    prologue_stmts.push(Stmt::Expr(Expr::Assign {
-                        name: param_name.clone(),
-                        value: Box::new(Expr::Conditional {
-                            cond: Box::new(Expr::Binary {
-                                op: "===".to_owned(),
-                                left: Box::new(Expr::Ident(param_name.clone())),
-                                right: Box::new(Expr::Undefined),
+                    let pline = self.cur_line();
+                    prologue_stmts.push(Self::at(
+                        pline,
+                        Stmt::Expr(Expr::Assign {
+                            name: param_name.clone(),
+                            value: Box::new(Expr::Conditional {
+                                cond: Box::new(Expr::Binary {
+                                    op: "===".to_owned(),
+                                    left: Box::new(Expr::Ident(param_name.clone())),
+                                    right: Box::new(Expr::Undefined),
+                                }),
+                                then_expr: Box::new(default_expr),
+                                else_expr: Box::new(Expr::Ident(param_name)),
                             }),
-                            then_expr: Box::new(default_expr),
-                            else_expr: Box::new(Expr::Ident(param_name)),
                         }),
-                    }));
+                    ));
                 }
             }
             if !self.match_punct(",") {
@@ -750,7 +801,10 @@ impl<'src> Parser<'src> {
         self.skip_type_annotation(); // 函数返回值类型
         let body_stmt = self.parse_stmt();
         let mut body = match body_stmt {
-            Stmt::Block(stmts) => stmts,
+            SpannedStmt {
+                stmt: Stmt::Block(stmts),
+                ..
+            } => stmts,
             other => vec![other],
         };
         if !prologue_stmts.is_empty() {
@@ -811,7 +865,10 @@ impl<'src> Parser<'src> {
             self.skip_type_annotation();
             let body_stmt = self.parse_stmt();
             let body = match body_stmt {
-                Stmt::Block(stmts) => stmts,
+                SpannedStmt {
+                    stmt: Stmt::Block(stmts),
+                    ..
+                } => stmts,
                 other => vec![other],
             };
 
@@ -1524,7 +1581,10 @@ impl<'src> Parser<'src> {
                             let _ = self.expect_punct(")");
                             let body_stmt = self.parse_stmt();
                             let body = match body_stmt {
-                                Stmt::Block(stmts) => stmts,
+                                SpannedStmt {
+                                    stmt: Stmt::Block(stmts),
+                                    ..
+                                } => stmts,
                                 other => vec![other],
                             };
                             props.push(ObjectProp {
@@ -1560,7 +1620,10 @@ impl<'src> Parser<'src> {
                             let _ = self.expect_punct(")");
                             let body_stmt = self.parse_stmt();
                             let body = match body_stmt {
-                                Stmt::Block(stmts) => stmts,
+                                SpannedStmt {
+                                    stmt: Stmt::Block(stmts),
+                                    ..
+                                } => stmts,
                                 other => vec![other],
                             };
                             props.push(ObjectProp {
@@ -1607,7 +1670,10 @@ impl<'src> Parser<'src> {
                         self.skip_type_annotation();
                         let body_stmt = self.parse_stmt();
                         let body = match body_stmt {
-                            Stmt::Block(stmts) => stmts,
+                            SpannedStmt {
+                                stmt: Stmt::Block(stmts),
+                                ..
+                            } => stmts,
                             other => vec![other],
                         };
                         let m_name = match &key {
@@ -1797,16 +1863,20 @@ impl<'src> Parser<'src> {
         false
     }
 
-    fn parse_arrow_body(&mut self) -> Vec<Stmt> {
+    fn parse_arrow_body(&mut self) -> Vec<SpannedStmt> {
         if self.check_punct("{") {
             let stmt = self.parse_stmt();
             match stmt {
-                Stmt::Block(stmts) => stmts,
+                SpannedStmt {
+                    stmt: Stmt::Block(stmts),
+                    ..
+                } => stmts,
                 other => vec![other],
             }
         } else {
             let expr = self.parse_assignment();
-            vec![Stmt::Return(Some(expr))]
+            let line = self.cur_line();
+            vec![Self::at(line, Stmt::Return(Some(expr)))]
         }
     }
 
@@ -1814,7 +1884,7 @@ impl<'src> Parser<'src> {
         self.advance(); // 消耗 (
         let mut params = Vec::new();
         let mut is_var_args = false;
-        let mut prologue_stmts: Vec<Stmt> = Vec::new();
+        let mut prologue_stmts: Vec<SpannedStmt> = Vec::new();
         while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
             if self.match_punct("...") {
                 is_var_args = true;
@@ -1826,18 +1896,22 @@ impl<'src> Parser<'src> {
                 // prologue 条件赋值（undefined 时取默认值）
                 if self.match_punct("=") {
                     let default_expr = self.parse_expr();
-                    prologue_stmts.push(Stmt::Expr(Expr::Assign {
-                        name: p_name.clone(),
-                        value: Box::new(Expr::Conditional {
-                            cond: Box::new(Expr::Binary {
-                                op: "===".to_owned(),
-                                left: Box::new(Expr::Ident(p_name.clone())),
-                                right: Box::new(Expr::Undefined),
+                    let pline = self.cur_line();
+                    prologue_stmts.push(Self::at(
+                        pline,
+                        Stmt::Expr(Expr::Assign {
+                            name: p_name.clone(),
+                            value: Box::new(Expr::Conditional {
+                                cond: Box::new(Expr::Binary {
+                                    op: "===".to_owned(),
+                                    left: Box::new(Expr::Ident(p_name.clone())),
+                                    right: Box::new(Expr::Undefined),
+                                }),
+                                then_expr: Box::new(default_expr),
+                                else_expr: Box::new(Expr::Ident(p_name)),
                             }),
-                            then_expr: Box::new(default_expr),
-                            else_expr: Box::new(Expr::Ident(p_name)),
                         }),
-                    }));
+                    ));
                 }
             }
             if !self.match_punct(",") {
@@ -1850,7 +1924,11 @@ impl<'src> Parser<'src> {
         let mut body = self.parse_arrow_body();
         // prologue 注入到块体首部（表达式体的默认参罕见，未覆盖）
         if !prologue_stmts.is_empty() {
-            if let Some(Stmt::Block(stmts)) = body.last_mut() {
+            if let Some(SpannedStmt {
+                stmt: Stmt::Block(stmts),
+                ..
+            }) = body.last_mut()
+            {
                 let mut all = prologue_stmts;
                 all.append(stmts);
                 *stmts = all;
@@ -2072,13 +2150,13 @@ mod tests {
         "#;
         let prog = parse(code);
         assert_eq!(prog.body.len(), 7);
-        assert!(matches!(prog.body[0], Stmt::Import(..)));
-        assert!(matches!(prog.body[1], Stmt::Import(..)));
-        assert!(matches!(prog.body[2], Stmt::Import(..)));
-        assert!(matches!(prog.body[3], Stmt::Export(..)));
-        assert!(matches!(prog.body[4], Stmt::Export(..)));
-        assert!(matches!(prog.body[5], Stmt::Export(..)));
-        assert!(matches!(prog.body[6], Stmt::Export(..)));
+        assert!(matches!(&prog.body[0].stmt, Stmt::Import(..)));
+        assert!(matches!(&prog.body[1].stmt, Stmt::Import(..)));
+        assert!(matches!(&prog.body[2].stmt, Stmt::Import(..)));
+        assert!(matches!(&prog.body[3].stmt, Stmt::Export(..)));
+        assert!(matches!(&prog.body[4].stmt, Stmt::Export(..)));
+        assert!(matches!(&prog.body[5].stmt, Stmt::Export(..)));
+        assert!(matches!(&prog.body[6].stmt, Stmt::Export(..)));
     }
 
     #[test]
@@ -2095,8 +2173,12 @@ mod tests {
         assert_eq!(prog.body.len(), 4);
 
         // 1. 模板字符串
-        if let Stmt::VarDecl {
-            init: Some(Expr::TemplateLiteral { quasis, exprs }),
+        if let SpannedStmt {
+            stmt:
+                Stmt::VarDecl {
+                    init: Some(Expr::TemplateLiteral { quasis, exprs }),
+                    ..
+                },
             ..
         } = &prog.body[0]
         {
@@ -2110,8 +2192,12 @@ mod tests {
         }
 
         // 2. 对象解构与默认值
-        if let Stmt::DestructureDecl {
-            pattern: VarPattern::Object(props),
+        if let SpannedStmt {
+            stmt:
+                Stmt::DestructureDecl {
+                    pattern: VarPattern::Object(props),
+                    ..
+                },
             ..
         } = &prog.body[1]
         {
@@ -2125,8 +2211,12 @@ mod tests {
         }
 
         // 3. 数组解构与默认值
-        if let Stmt::DestructureDecl {
-            pattern: VarPattern::Array(elems),
+        if let SpannedStmt {
+            stmt:
+                Stmt::DestructureDecl {
+                    pattern: VarPattern::Array(elems),
+                    ..
+                },
             ..
         } = &prog.body[2]
         {
@@ -2139,12 +2229,22 @@ mod tests {
         }
 
         // 4. 函数形参解构降级
-        if let Stmt::Function(func_def) = &prog.body[3] {
+        if let SpannedStmt {
+            stmt: Stmt::Function(func_def),
+            ..
+        } = &prog.body[3]
+        {
             assert_eq!(func_def.params.len(), 2);
             assert_eq!(func_def.params[0], "__param_0__");
             assert_eq!(func_def.params[1], "__param_1__");
-            assert!(matches!(func_def.body[0], Stmt::DestructureDecl { .. }));
-            assert!(matches!(func_def.body[1], Stmt::DestructureDecl { .. }));
+            assert!(matches!(
+                &func_def.body[0].stmt,
+                Stmt::DestructureDecl { .. }
+            ));
+            assert!(matches!(
+                &func_def.body[1].stmt,
+                Stmt::DestructureDecl { .. }
+            ));
         } else {
             panic!("期望解析出形参降级函数");
         }
@@ -2161,8 +2261,12 @@ mod tests {
         let prog = parse(code);
         assert_eq!(prog.body.len(), 4);
 
-        if let Stmt::VarDecl {
-            init: Some(Expr::Function(def)),
+        if let SpannedStmt {
+            stmt:
+                Stmt::VarDecl {
+                    init: Some(Expr::Function(def)),
+                    ..
+                },
             ..
         } = &prog.body[0]
         {
@@ -2173,8 +2277,12 @@ mod tests {
             panic!("期望解析出 async 箭头函数 f1");
         }
 
-        if let Stmt::VarDecl {
-            init: Some(Expr::Function(def)),
+        if let SpannedStmt {
+            stmt:
+                Stmt::VarDecl {
+                    init: Some(Expr::Function(def)),
+                    ..
+                },
             ..
         } = &prog.body[1]
         {
@@ -2185,8 +2293,12 @@ mod tests {
             panic!("期望解析出 async 箭头函数 f2");
         }
 
-        if let Stmt::VarDecl {
-            init: Some(Expr::Function(def)),
+        if let SpannedStmt {
+            stmt:
+                Stmt::VarDecl {
+                    init: Some(Expr::Function(def)),
+                    ..
+                },
             ..
         } = &prog.body[2]
         {

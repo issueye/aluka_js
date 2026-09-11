@@ -41,6 +41,7 @@ fn write_module(
             constants,
             upvalues: Vec::new(),
             try_table: Vec::new(),
+            line_table: Vec::new(),
         }],
         classes: Vec::new(),
     };

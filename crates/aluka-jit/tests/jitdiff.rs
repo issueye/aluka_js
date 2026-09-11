@@ -120,6 +120,7 @@ fn generate_props(rng: &mut Rng, id: usize) -> FuncTemplate {
         constants: consts,
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     }
 }
 
@@ -241,6 +242,7 @@ fn generate(rng: &mut Rng, id: usize) -> FuncTemplate {
         constants: consts,
         upvalues: Vec::new(),
         try_table: Vec::new(),
+        line_table: Vec::new(),
     }
 }
 

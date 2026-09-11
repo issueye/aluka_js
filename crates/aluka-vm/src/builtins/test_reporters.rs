@@ -48,6 +48,9 @@ pub enum ReporterKind {
     Tap,
     /// dot：`.``X` 逐用例标记 + 失败清单块。
     Dot,
+    /// lcov：LCOV tracefile 覆盖率报告（行覆盖 + 函数覆盖；BRDA 不支持——
+    /// 引擎无分支级插桩，登记偏离）。
+    Lcov,
 }
 
 /// 单用例的报告输入（与 VM 解耦：CLI 只依赖展示面数据，不依赖解释器类型）。
@@ -84,6 +87,8 @@ pub fn format_report_lines(cases: &[ReportCase], kind: ReporterKind) -> Vec<Stri
                 ReportStatus::NotOk => "X".to_owned(),
             })
             .collect(),
+        // lcov：覆盖率报告走 `Coverage::generate_lcov` 专用通道，无逐用例行
+        ReporterKind::Lcov => Vec::new(),
     }
 }
 
@@ -97,6 +102,8 @@ pub fn format_summary(counts: &ReportCounts, failed: &[String], kind: ReporterKi
         ReporterKind::Spec => format_spec_summary(counts),
         ReporterKind::Tap => format_tap_summary(counts),
         ReporterKind::Dot => format_dot_failed(failed),
+        // lcov：同上，专用通道
+        ReporterKind::Lcov => String::new(),
     }
 }
 
@@ -518,6 +525,8 @@ fn reporter_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                         "tap" => out = format_tap_summary(&st.counts),
                         "spec" => out = format_spec_summary(&st.counts),
                         "dot" => out = format_dot_failed(&st.failed),
+                        // lcov：compose 管道暂不输出（覆盖率数据通道为
+                        // `aluka test --test-reporter=lcov`；登记偏离）
                         _ => {}
                     }
                 }
