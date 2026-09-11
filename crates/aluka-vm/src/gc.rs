@@ -783,6 +783,7 @@ fn static_roots(out: &mut GcRoots) {
     crate::builtins::test::store_roots(out);
     crate::builtins::vm::store_roots(out);
     crate::builtins::module::store_roots(out);
+    crate::builtins::cluster::store_roots(out);
 }
 
 #[cfg(test)]

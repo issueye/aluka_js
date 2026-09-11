@@ -13,7 +13,7 @@
 //!   泵内非阻塞 accept/读写 socket，解析完整报文后派发 JS 回调。
 
 mod client;
-mod server;
+pub(crate) mod server;
 pub(crate) mod state;
 pub(crate) mod wire;
 

@@ -308,6 +308,54 @@ fn server_close(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(receiver)
 }
 
+/// 关闭本线程 Vm 内**全部监听中的** HTTP/HTTPS `Server`（cluster 断连路径复用）。
+///
+/// 用途：对齐 Node.js 22 LTS 在 `cluster.worker.disconnect()` 与 primary
+/// `cluster.disconnect()` 时关闭 worker 内 server 的行为（Node
+/// `internal/cluster/child.js::_disconnect` 遍历 `handles` 逐个 `close()`），供
+/// cluster 断连清理批量调用。http 的监听 socket 存于本模块的 `state::SERVERS`
+/// （**不在** net 的 `NET_SHARED.servers`），故由本函数负责这一半。
+///
+/// 逐实例语义与 [`server_close`] 一致（不经 receiver、不传回调）：立即
+/// `listening = false`、`listener = None`（drop 关闭监听器）、`conns.clear()`，
+/// 并同步把实例的 `listening` 属性置 `false`；**额外**入队 `'close'` 待发射事件
+/// （Node 的 server 关停会派发 `'close'`，`cluster.worker.disconnect()` 后
+/// `server.on('close')` 必须被观测到）。显式 `server.close()` 路径的 `'close'`
+/// 派发不属本函数范围，行为不变。入队后激活 `http` 事件源，由泵在下一轮顶部
+/// 派发 `'close'`，随后泵按需自行停用。
+///
+/// 幂等：未监听实例（`listening = false` 且 `listener = None`）整体跳过，重复
+/// 调用不会重复派发 `'close'`，也不产生额外观测。
+///
+/// 线程/Vm 纪律：`state::SERVERS` 是 thread_local（堆句柄仅本线程 Vm 有效），
+/// 本函数只关**当前线程即当前 Vm** 的 server。
+pub(crate) fn close_all_servers(vm: &mut Vm) {
+    let objs = with_servers(|servers| {
+        let mut objs: Vec<u32> = Vec::new();
+        for s in servers.iter_mut() {
+            if !s.listening && s.listener.is_none() {
+                continue; // 幂等：未监听实例跳过（与 server_close 的 was_listening 同）
+            }
+            s.listening = false;
+            s.listener = None;
+            s.conns.clear();
+            objs.push(s.obj);
+        }
+        objs
+    });
+    if objs.is_empty() {
+        return;
+    }
+    for obj in objs {
+        let target = Value::Object(ObjectRef(obj));
+        let _ = vm.set_property(target, "listening", Value::Boolean(false));
+        state::push_pending_event(target, "close");
+    }
+    // 此处**不能**调用 `sync_event_source`：server 已全部停监听，它会立刻停泵，
+    // 令刚入队的 `'close'` 永久搁浅。激活后由泵在轮末自行按需停用。
+    vm.activate_event_source("http", super::pump);
+}
+
 /// `server.address()`：未监听返回 `null`，否则 `{address, family, port}`。
 fn server_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();

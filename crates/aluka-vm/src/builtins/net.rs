@@ -1145,6 +1145,57 @@ fn net_server_close(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Object(r))
 }
 
+/// 关闭本线程 Vm 内**全部监听中的** `net.Server`（cluster 断连路径复用）。
+///
+/// 用途：对齐 Node.js 22 LTS 在 `cluster.worker.disconnect()` 与 primary
+/// `cluster.disconnect()` 时「关闭 worker 内已监听 server 并逐个触发
+/// `'close'`」的观测行为（Node `internal/cluster/child.js::_disconnect` 遍历
+/// `handles` 逐个 `close()`），供 cluster 断连清理批量调用。
+///
+/// 逐实例语义与 [`net_server_close`] 完全一致（不经 receiver、不传回调）：
+/// `closed = true`、`listener = None`（drop 关闭监听器、accept 轮询随之终结）、
+/// 已注册的 `'close'` 监听器快照后按创建序（`NET_SHARED.servers` 的存入顺序）
+/// 先序入队 `EmitWith` 动作；条目照旧保留（`bound_addr` 供 close 后
+/// `address()` 使用）。入队了动作时末尾激活 `net` 事件源，让排队的 `'close'`
+/// 被 `net_pump` 派发。
+///
+/// 幂等：`closed` 已为 `true` 的实例整体跳过，重复调用不会重复派发 `'close'`
+/// （也不会再入队任何动作，故不再激活事件源）。
+///
+/// 线程/Vm 纪律：`NET_SHARED` 是 thread_local（堆句柄仅本线程 Vm 有效），本函数
+/// 只关**当前线程即当前 Vm** 的 server，不触碰其它线程或其它 Vm 的状态。
+pub(crate) fn close_all_servers(vm: &mut Vm) {
+    let actions = with_net(|n| {
+        let mut actions: Vec<NetAction> = Vec::new();
+        for (_, state) in n.servers.iter_mut() {
+            if state.closed {
+                continue; // 幂等：已 close 的实例跳过（与 net_server_close 同）
+            }
+            state.closed = true;
+            state.listener = None; // drop 关闭监听器，accept 轮询随之终结；
+            // 保留条目（bound_addr 供 close 后 address() 使用）
+            // close 监听器先行快照进动作（与 net_server_close 同）。
+            let listeners: Vec<Value> = state
+                .listeners
+                .remove("close")
+                .map(|list| list.into_iter().map(|l| l.cb).collect())
+                .unwrap_or_default();
+            actions.push(NetAction::EmitWith {
+                target: state.obj,
+                event: "close".to_owned(),
+                args: Vec::new(),
+                listeners,
+            });
+        }
+        actions
+    });
+    if actions.is_empty() {
+        return;
+    }
+    with_net(|n| n.pending.extend(actions));
+    vm.activate_event_source("net", net_pump);
+}
+
 /// `server.address()`：`{address, port, family}`（未监听时 null，对齐 Go）。
 fn net_server_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();

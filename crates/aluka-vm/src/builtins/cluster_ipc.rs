@@ -16,7 +16,11 @@
 //! - **帧格式**：一行一个 JSON 对象（与 Node 默认 `serialization: 'json'`
 //!   的载荷语义一致，见 `lib/internal/child_process/serialization.js`）：
 //!   `{"t":"m","v":<消息>}` / `{"t":"o"}`（online）/ `{"t":"l",...}`（listening）/
-//!   `{"t":"d"}`（primary 发起的 disconnect）/ `{"t":"e"}`（exitedAfterDisconnect ack）；
+//!   `{"t":"d"}`（**primary → worker**：Node `{act:'disconnect'}`，worker 侧走
+//!   `_disconnect(true)`）/ `{"t":"e"}`（**worker → primary**：Node
+//!   `{act:'exitedAfterDisconnect'}` 的先行上报，primary 侧据此置
+//!   `exitedAfterDisconnect = true`；Node 的 primary → worker **ack 回程本运行时
+//!   未实现**——worker 上报后即本地断连，登记见 cluster 模块文档）；
 //! - **跨线程边界只传字符串**：VM 堆句柄不可跨线程，inbox 条目一律是
 //!   已解析前的原始行文本，由属主线程（发起 fork/连接的 VM 线程）在泵中
 //!   解析为堆值（与 `proc_common` 的 proc 事件泵同一纪律）；

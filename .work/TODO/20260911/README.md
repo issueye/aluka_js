@@ -1094,6 +1094,117 @@ $ git commit -F -   # feat(m5.2): worker 侧 process.channel 对象面（ref/unr
 > `net`/`http` 批量关闭实现草稿（99 行）已存档于会话 scratch 并 `git checkout` 回退，
 > 以保证本轮树绿（避免 `dead_code` 与 `-D warnings` 冲突）。
 
-**M5.2 剩余缺口（本轮后）**：项 1/2 断连切片（§11.6 已备全条件）、
-`process.channel` 的 `fd` 值与 `Control` 类名/EventEmitter 面（§11.4 偏离）、
-真 RR 调度（§11.5 判定不落地，待 owner 决策替代方案）。
+---
+
+## 12. 断连切片落地（项 1/2 续做）与新发现的引擎级缺陷
+
+### 12.1 落地结果（提交见 §12.4）
+
+§11.6 登记的「下一轮可直接开工」在本轮完成：
+
+| 改动 | 内容 |
+|---|---|
+| `builtins/cluster.rs` | primary 侧：`intercom`（`once`/`emit` 语义）+ `remove_worker`（表空即 `emit`）+ primary `Worker.prototype.disconnect`（置 `ead=true` → 发 `{"t":"d"}` 帧 → 立即出表 → 返回 `this`）+ `cluster.disconnect(cb)` 重写（不再 `destroy` 杀进程；workers 为空走 `nextTick`）+ worker 侧 `cluster.worker.disconnect()`（返回自身、同步置 `'disconnecting'`/`ead=true`、关本进程 server、再 `process.disconnect()`）+ `{"t":"d"}`/`{"t":"e"}` 帧处理 |
+| `builtins/cluster_ipc.rs` | 帧协议文档补齐（`d` = primary→worker 断连；`e` = worker→primary 先行上报；Node 的 primary→worker ack 回程未实现，已登记） |
+| `builtins/net.rs` / `builtins/http/{mod,server}.rs` | 新增 `pub(crate)` 批量关闭函数（断连时关闭 worker 内**全部监听中的 server**，对齐 Node：`cluster.worker.disconnect()` 会同步关闭 worker 内 server，否则 worker 无法优雅退出） |
+| `gc.rs` | `cluster::store_roots`（`intercom` 待发回调的 GC 根） |
+| `tests/m52_disconnect_test.rs`（新增） | 2 例 `assert_e2e_matches_node` 真对拍 |
+
+**对拍证据（逐字节）**：探针 p7（primary `cluster.disconnect`）与 p8（worker
+`cluster.worker.disconnect`）在 Node v22.23.1 连跑 3 次、aluka 连跑 3 次，**两侧输出
+完全一致**（`IDENTICAL=True`）：
+
+```text
+[p7] W listening id=1 listening=true / W close id=1 / P online id=1 state=online /
+     P before-disconnect workers=1 / P disconnect-ret=undefined workers-after=0 /
+     P w-disconnect id=1 argc=0 state=disconnected ead=true workers=0 /
+     P c-disconnect id=1 argc=1 / P cb argc=0 workers=0 /
+     P w-exit id=1 code=0 signal=null state=dead workers=0
+[p8] W before state=listening ead=undefined listening=true /
+     W ret-is-self=true ret-type=object /
+     W after state=disconnecting ead=true listening=false / W close /
+     P online state=online /
+     P w-disconnect argc=0 state=disconnected ead=true workers=1 /
+     P c-disconnect id=1 argc=1 / P w-exit code=0 signal=null state=dead workers=0
+```
+
+**回归**：`m52_worker_msg_test`(6) / `m52_cluster_events_test`(4) / `m52_settings_test`(7) /
+`m52_http_cluster_test`(3) / `builtins_phase6_proc_test`(11，含 `w.kill()` + `cluster.disconnect(cb)`
+的 `disconnected cb` 断言) / `builtins_phase9_m4_test`(1) / `express_e2e_test`(1) 全绿；
+M5 差分门禁 `5/5 PASS, 0 invalid`；`fmt` / `clippy -D warnings` 均 0。
+
+**本轮新登记的偏离**：`{"t":"e"}` 的 primary→worker **ack 回程**未实现（worker 上报后
+即本地断连；Node 会等 ack 再 `process.disconnect()`）；`intercom` 为最小实现
+（仅 `once`/`emit` 两个用途，非完整 EventEmitter）。
+
+### 12.2 新发现的引擎级缺陷（⚠️ 独立专项，本轮只登记不修）
+
+**现象**：**块内函数声明**在 aluka 侧**完全不可见**（块内 `typeof` 也是 `undefined`）。
+
+```js
+if (true) { function inner() { return 'inner-ok'; } console.log(typeof inner); }
+// Node  v22.23.1: "function"     （块内可调用）
+// aluka          : "undefined"    ← 缺陷
+```
+
+| 形态 | Node 实测 | aluka 实测 |
+|---|---|---|
+| `if` 块内 `function` 声明的块内可见性 | `function`（可调用） | **`undefined`** |
+| 普通块（`{ … }`）内 | `function` | **`undefined`** |
+| 块外（sloppy 模式） | `undefined`（两边一致） | `undefined` |
+| 函数**表达式**赋值（`const f = function () {}`） | `function` | `function`（正常） |
+
+**来源**：本轮实现断连切片时，探针首版把 `start` 写成 `if (cluster.isPrimary) { function
+start() {…} … }`——Node 侧正常、aluka 侧 `w.on('message')` 内调 `start()` 抛
+`TypeError: undefined is not a function`（primary 直接崩，输出仅剩 worker 首行）。用
+「每个处理器独立 try/catch + 逐步打印」的探针定位到精确抛点后，再用最小复现
+（`p9.js`）确认是**作用域绑定**问题而非本次改动引入。
+
+**影响面（重要）**：所有把辅助函数声明写在 `if`/`for`/普通块内的真实 JS 代码在 aluka
+上会失败（真实包中常见）。属**解析/编译期作用域绑定**专项，跨 M5 范围。
+
+**处置**：① 探针纪律新增第 5 条——跨引擎探针一律用函数表达式（已写入
+`m52_disconnect_test.rs` 文件头与 `20260911/README.md` §11.2 纪律）；② 最小复现用例
+已放入门禁**隔离区** `tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0001.cjs`
+（该目录结构性不参与门禁，见既有 `DEVIATIONS.md`）；③ 缺陷本体**本轮不修**（需改
+parser/compiler 的块级函数声明绑定，属独立专项），已在 TODO 总表登记。
+
+### 12.3 四项缺口最终状态
+
+| # | 项 | 状态 |
+|---|---|---|
+| 1 | worker 侧 `cluster.worker.disconnect()` | ✅ 已闭环（§12.1） |
+| 2 | primary `cluster.disconnect()` 的 `{"t":"d"}` 帧路径 | ✅ 已闭环（§12.1） |
+| 3 | `process.channel`（`ref`/`unref`/`hasRef`/`fd`） | ✅ 已闭环（§11.4；`fd` 值、`Control` 类名为登记偏离） |
+| 4 | 真 RR 调度 | ⛔ 判定「需 unsafe FFI + 换 IPC 介质 + 新直连依赖」，与仓库 `unsafe_code=deny` 策略冲突 → 登记为**架构级偏离**（§11.5），替代方案待 owner 决策 |
+
+**另**：RR 相关的 `schedulingPolicy` 目前是普通数据属性（可写可读、无调度效果）。若要求
+「设置后不静默失效 / 与 Node 一致的访问器行为」，需先取 Node 该行为的 oracle（本轮未做）。
+
+### 12.4 提交证据
+### 12.5 门禁三连（真实输出）
+
+```text
+# 1. 格式化门禁
+$ cargo fmt --all --check                                          FMT_CHECK_EXIT=0
+
+# 2. 严格 Clippy 门禁（零警告允许）
+$ cargo clippy --all-targets --all-features -- -D warnings         CLIPPY_EXIT=0
+
+# 3. 全工作区全量测试门禁（NODE=<v22.23.1>，CARGO_INCREMENTAL=0）
+$ cargo test --workspace --all-features -j 4                       TEST_EXIT=0（墙钟 190.3s）
+聚合：suites=90 passed=632 failed=0 ignored=1
+      grep -c '^test result: FAILED' = 0 ；grep -c '^error' = 0 ；
+      grep -c '[SKIP node-e2e]' = 0（新增/存量对拍用例全部真跑）
+```
+
+- 与上一轮基线（§11.7：89 suites / 630 passed / 0 failed / 1 ignored）对照：
+  **+1 套件、+2 用例**，恰好等于本轮新增的 `m52_disconnect_test.rs`（2 例）；
+  `1 ignored` 为既有 doc-test，非本轮引入。
+- **工程隐患（本轮新增）**：首次以默认并发跑全量测试时 `link.exe` 报
+  `exit code 1171`（Windows 链接器资源不足/句柄压力，非代码问题），`-j 4` 重跑即过。
+  建议门禁在 Windows 上固定并发上限（`-j 4`）或串行链接。
+
+### 12.4 提交证据
+
+（提交后回填）

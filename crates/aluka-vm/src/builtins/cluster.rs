@@ -53,7 +53,14 @@
 //!   （**1 实参**），此刻 worker 仍在 `workers` 表中；
 //!   进程退出置 `'dead'` 并从 `workers` 移除，随后
 //!   `cluster.emit('exit', worker, code, signal)`；
-//! - `disconnect([callback])`：对所有 worker 调 `destroy` 后调用回调；
+//! - **`disconnect([callback])`（M5.2）**：对每个 `isConnected()` 的 worker 走 primary
+//!   侧 `Worker.prototype.disconnect()`（置 `exitedAfterDisconnect = true` → 发
+//!   `{"t":"d"}` 帧 → **立即**把该 worker 移出 `workers` 表）；调用时表已空则走
+//!   `process.nextTick(() => intercom.emit('disconnect'))`；`callback` 经
+//!   `intercom.once('disconnect', cb)` **在 worker 循环之后**注册（Node 同序，故循环内
+//!   `removeWorker` 的那次 emit 不被该 cb 消费），cb 在「`removeWorker` 令表变空」时
+//!   以 **0 实参**同步触发（primary 发起断连的实际触发点在 worker 的 `'exit'` 转接内，
+//!   故落在 `'disconnect'` 之后、`'exit'` 之前）；函数**无 return**（→ `undefined`）；
 //!   `Worker` 构造器返回普通对象（供 instanceof 表面）。
 //!
 //! 如实登记的缺口（Node 22 行为未覆盖）：
@@ -64,9 +71,16 @@
 //!   「通道连通即保活」实现（与 Node 实测的默认行为等价），故
 //!   `process.channel.ref()`/`unref()` 显式接口、`process.on('message')` 的
 //!   计数式 ref 语义均未接线（含 `process.listeners` 之外的计数差异）；
-//! - **primary 发起的 `cluster.disconnect()` 仍走 `destroy`（杀进程）路径**：
-//!   Node 下发 `{act:'disconnect'}` 帧、worker 侧走 `_disconnect(true)` 再以
-//!   `exitedAfterDisconnect = true` 退出（worker 侧收该帧的语义见 `process_disconnect`）；
+//! - **worker 自发起断连的 `{"t":"e"}` ack 回程未实现**：Node 的 worker 侧
+//!   `_disconnect(false)` 先 `send({act:'exitedAfterDisconnect'})`，**等 primary
+//!   的 ack** 后才 `process.disconnect()`；本运行时 worker 写 `{"t":"e"}` 帧后
+//!   立即本地断连（primary 侧仍按 `exitedAfterDisconnect(worker, message)` 置
+//!   `ead = true`，只是不回 ack）。同一 TCP 流有序（写 `e` 帧后才 shutdown 写端），
+//!   primary 必先读到 `e` 帧再读到 EOF，故 `ead=true` 与事件序观测等价（登记偏离）；
+//! - **断连时关闭 worker 内 server**：`cluster.worker.disconnect()` 与收到的
+//!   `{"t":"d"}` 帧都会关闭本进程内**全部监听中的** server（net 与 http 各自的
+//!   线程局部表都要扫）并派发其 `'close'`（Node `_disconnect` 遍历 `handles`
+//!   逐个 `close()`）；不清理则 worker 的事件循环不会排空、无法优雅退出；
 //! - **worker 被杀时其 `console.log` 缓冲不落盘**：本运行时 `console.log` 走
 //!   行模型（`vm.stdout_records`，由 CLI 在运行结束后统一输出），子进程被
 //!   `kill()`/TerminateProcess 时缓冲丢失（Node 的继承 stdio 为逐写直落）。
@@ -74,13 +88,10 @@
 //! - **primary 侧 `disconnect` 的触发源**：本运行时的「IPC 读线程」与「子进程
 //!   退出事件源」是两条独立通路，退出转接处先**等本 worker 通道 EOF**（上限
 //!   300ms 兜底）并排空在途帧，再按 Node 次序发 `'disconnect'` → `'exit'`；
-//!   因此 worker **自行退出**的场景与 Node 逐字段一致。主进程发起的
-//!   `cluster.disconnect()` 走既有 `destroy`（杀进程）路径，其
-//!   `exitedAfterDisconnect` 仍为 `false`（Node 为 `true`，登记偏离）；
-//! - **worker 侧 `cluster.worker.disconnect()` / `isDisconnected` 不实现**——
-//!   前者需额外 `{"t":"d"}` 帧与 primary 侧 ack 回程（worker 内已可用
-//!   `process.disconnect()` 达成同一语义）；后者在 Node 中仅经 `deprecate()`
-//!   定义、并非自有属性；`'disconnecting'` 中间态同样不实现（Node 仅由前者写入）；
+//!   因此 worker 自行退出与 primary 发起断连的场景都与 Node 逐字段一致；
+//! - **worker 侧 `cluster.worker.isDisconnected` 不实现**：Node 中仅经
+//!   `deprecate()` 定义、并非自有属性；`'disconnecting'` 中间态由
+//!   `cluster.worker.disconnect()` 同步写入（已接线）；
 //! - **worker 侧 `cluster.worker.isDead()` 恒 `false`**：Node 取
 //!   `process.exitCode != null || process.signalCode != null`，本运行时 worker 侧
 //!   未接线二者（进程存活时二者恒为假值，故等价）；
@@ -224,6 +235,15 @@ fn phase_dead(phase: Option<WorkerPhase>) -> bool {
 /// IPC 帧：worker 通道建立后上报 `'online'`（Node 子进程 setupChannel 阶段）。
 const FRAME_ONLINE: &str = "{\"t\":\"o\"}";
 
+/// primary → worker 的断连帧（Node `{act:'disconnect'}`）：worker 侧收到后走
+/// `_disconnect(true)`（关本进程内 server → `process.disconnect()`）。
+const FRAME_DISCONNECT: &str = "{\"t\":\"d\"}";
+
+/// worker → primary 的「自发起断连」上报帧（Node `{act:'exitedAfterDisconnect'}`）：
+/// primary 侧据此置 `exitedAfterDisconnect = true`（Node 还回 ack，本运行时未实现
+/// ack 回程，见模块文档的登记）。
+const FRAME_EXITED_AFTER_DISCONNECT: &str = "{\"t\":\"e\"}";
+
 /// worker → primary 的消息帧（`t: m`，载荷经 JSON 序列化，对齐 Node 默认
 /// `serialization: 'json'`）。
 fn frame_message(vm: &mut Vm, msg: Value) -> Result<String, VmError> {
@@ -285,6 +305,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "cluster:worker-self",
             &[
                 "send",
+                "disconnect",
                 "on",
                 "addListener",
                 "once",
@@ -344,6 +365,14 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // 故在此模块（必定构建）登记。
     register_handler(registry, "process", "send", process_send);
     register_handler(registry, "process", "disconnect", process_disconnect);
+    // `cluster.disconnect()` 在 `workers` 为空时的 nextTick 载体
+    // （Node `process.nextTick(() => intercom.emit('disconnect'))`）。
+    register_handler(
+        registry,
+        "cluster",
+        "__intercomDisconnectNT",
+        intercom_disconnect_nt,
+    );
     // `process.disconnect()` 的 nextTick 载体（Node：`'disconnect'` 异步派发）。
     register_handler(
         registry,
@@ -353,6 +382,14 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     );
     // worker 进程内 `cluster.worker.send`（同名空间只挂 send）与 Worker 方法面。
     register_handler(registry, "cluster:worker-self", "send", process_send);
+    // worker 侧 `cluster.worker.disconnect()`（Node `child.js` 的
+    // `Worker.prototype.disconnect`：置 `'disconnecting'` → `_disconnect()`）。
+    register_handler(
+        registry,
+        "cluster:worker-self",
+        "disconnect",
+        worker_self_disconnect,
+    );
     register_handler(
         registry,
         "cluster:worker-self",
@@ -408,6 +445,9 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         worker_is_connected,
     );
     register_handler(registry, "cluster:worker", "isDead", worker_is_dead);
+    // primary 侧 `worker.disconnect()`（Node `primary.js` 的
+    // `Worker.prototype.disconnect`：发 `d` 帧 + 出表 + `return this`）。
+    register_handler(registry, "cluster:worker", "disconnect", worker_disconnect);
     Ok(obj)
 }
 
@@ -491,6 +531,7 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             "send",
             "kill",
             "destroy",
+            "disconnect",
             "isConnected",
             "isDead",
         ],
@@ -614,13 +655,14 @@ fn worker_exit_wrapper(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         cluster_ipc::wait_channel_eof(worker_id, std::time::Duration::from_millis(300));
     }
     drain_ipc_inbox(vm)?;
-    // Node：通道已断（`!worker.isConnected()`）才移除——未断的场景（如 `silent`
-    // 无 ipc 通道）保留在表中。实测 oracle 的常规路径已断，故等价于「总是移除」。
+    // Node `worker.process.once('exit')`：`if (!worker.isConnected()) removeWorker(worker)`
+    // ——本运行时此处通道已断（上一行刚派发过 `'disconnect'`，`isConnected()` 为
+    // false），且子进程既已退出就不可能再持有活通道，故等价地**总是**移除：
+    // 出表 + （表空时）`intercom.emit('disconnect')`——primary 发起的
+    // `cluster.disconnect(cb)` 的 cb 正由此触发（落在 `'disconnect'` 之后、
+    // `'exit'` 之前）。
     emit_disconnect(vm, worker_ref)?;
-    let workers_val = vm.get_property(module_val, "workers")?;
-    if let Value::Object(_) = workers_val {
-        vm.delete_property(workers_val, &worker_id.to_string());
-    }
+    remove_worker(vm, worker_ref)?;
     // child 'exit'(code, signal)：code 缺失（信号终止等）时按 Node 的 null 语义
     // 传 null；signal 本运行时无法区分，恒 null。
     let code = args.first().copied().unwrap_or(Value::Null);
@@ -646,13 +688,19 @@ fn emit_disconnect(vm: &mut Vm, worker_ref: u32) -> Result<(), VmError> {
         _ => {}
     }
     set_phase(vm, worker_ref, WorkerPhase::Disconnected);
-    // Node 在 disconnect/exit 两处都做 `= !!值` 归一：初值 undefined → false。
-    let _ = vm.set_property(
-        Value::Object(ObjectRef(worker_ref)),
-        "exitedAfterDisconnect",
-        Value::Boolean(false),
-    );
     let worker_val = Value::Object(ObjectRef(worker_ref));
+    // Node 在 disconnect / exit 两处都做 `= !!值` 归一：初值 `undefined` → `false`；
+    // primary 侧 `Worker.prototype.disconnect()` 先置的 `true` 必须保持
+    // （实测 p7：primary 发起断连后 `'disconnect'` 处 `ead=true`）。
+    let expected = matches!(
+        vm.get_property(worker_val, "exitedAfterDisconnect"),
+        Ok(Value::Boolean(true))
+    );
+    let _ = vm.set_property(
+        worker_val,
+        "exitedAfterDisconnect",
+        Value::Boolean(expected),
+    );
     ns_emit(vm, worker_val, "disconnect", &[])?;
     if let Some(module_ref) = vm.builtin_registry.module("cluster") {
         ns_emit(vm, Value::Object(module_ref), "disconnect", &[worker_val])?;
@@ -666,6 +714,94 @@ fn workers_count(vm: &mut Vm, module_val: Value) -> usize {
         return 0;
     };
     vm.own_properties(workers_val).len()
+}
+
+// ---------------------------------------------------------------------------
+// primary 侧：intercom（`internal/cluster/primary.js` 的 intercom EventEmitter）、
+// `removeWorker` 与 primary `Worker.prototype.disconnect()`
+// ---------------------------------------------------------------------------
+
+// `intercom.once('disconnect', cb)` 的待发回调（`cluster.disconnect(cb)` 注册）。
+// 线程局部：堆值仅本线程 Vm 有效（GC 根见本模块 `store_roots`）。
+thread_local! {
+    static INTERCOM_ONCE: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) };
+}
+
+/// 注册 `intercom.once('disconnect', cb)`。
+fn intercom_once_disconnect(cb: Value) {
+    INTERCOM_ONCE.with(|g| g.borrow_mut().get_or_insert_with(Vec::new).push(cb));
+}
+
+/// `intercom.emit('disconnect')`：取走全部 once 监听器后以 **0 实参**逐个调用
+/// （Node EventEmitter 无实参发射 → cb 的 `arguments.length === 0`，实测 p7）。
+///
+/// **先取后调**：既是 `once` 语义（Node 在调用前摘除），也保证回调内再次
+/// `cluster.disconnect(cb)` 注册的新监听器不会被本次 emit 消费。
+fn emit_intercom_disconnect(vm: &mut Vm) -> Result<(), VmError> {
+    let cbs = INTERCOM_ONCE
+        .with(|g| std::mem::take(&mut *g.borrow_mut()))
+        .unwrap_or_default();
+    for cb in cbs {
+        vm.invoke_callable(cb, Value::Undefined, &[])?;
+    }
+    Ok(())
+}
+
+/// `cluster.disconnect()` 在 `workers` 为空时的 nextTick 载体
+/// （Node `process.nextTick(() => intercom.emit('disconnect'))`）。
+fn intercom_disconnect_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    emit_intercom_disconnect(vm)?;
+    Ok(Value::Undefined)
+}
+
+/// Node `internal/cluster/primary.js:142-150` 的 `removeWorker`：
+/// `delete cluster.workers[worker.id]`，**表空**时 `intercom.emit('disconnect')`
+/// ——这正是 `cluster.disconnect(cb)` 的 cb 触发点（实测 p7：cb 在 `'disconnect'`
+/// 之后、`'exit'` 之前以 0 实参触发，且此刻 `workers` 已为 0）。
+///
+/// `handles` 为空故 Node 的 `assert(handles.size === 0)` 无需对应实现（本运行时
+/// 无句柄传递）。
+fn remove_worker(vm: &mut Vm, worker_ref: u32) -> Result<(), VmError> {
+    let Some(module_ref) = vm.builtin_registry.module("cluster") else {
+        return Ok(());
+    };
+    let module_val = Value::Object(module_ref);
+    if let Ok(id) = vm.get_property(Value::Object(ObjectRef(worker_ref)), "id") {
+        let key = vm.format_value(id);
+        let workers_val = vm.get_property(module_val, "workers")?;
+        if matches!(workers_val, Value::Object(_)) {
+            vm.delete_property(workers_val, &key);
+        }
+    }
+    if workers_count(vm, module_val) == 0 {
+        emit_intercom_disconnect(vm)?;
+    }
+    Ok(())
+}
+
+/// primary 侧 `Worker.prototype.disconnect()`（Node `primary.js:360-366`）：
+/// `exitedAfterDisconnect = true` → 发 `{"t":"d"}` 帧 → `removeHandlesForWorker`
+/// （本运行时无句柄传递，无对应动作）→ `removeWorker`（**立即**出表）→ `return this`。
+///
+/// worker 侧收到 `d` 帧后走 `_disconnect(true)`：关闭本进程内监听中的 server →
+/// `process.disconnect()`（通道 EOF 后 primary 派发 `'disconnect'`）。
+fn primary_worker_disconnect(vm: &mut Vm, worker_ref: u32) -> Result<Value, VmError> {
+    let worker_val = Value::Object(ObjectRef(worker_ref));
+    let _ = vm.set_property(worker_val, "exitedAfterDisconnect", Value::Boolean(true));
+    if let Ok(id_val) = vm.get_property(worker_val, "id") {
+        let worker_id = crate::ops::to_number(id_val) as u64;
+        let _ = cluster_ipc::send_to_worker(worker_id, &format!("{FRAME_DISCONNECT}\n"));
+    }
+    remove_worker(vm, worker_ref)?;
+    Ok(worker_val)
+}
+
+/// primary 侧 `worker.disconnect()` 的方法面（`this` = Worker 包装对象）。
+fn worker_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    match current_receiver() {
+        Value::Object(r) => primary_worker_disconnect(vm, r.0),
+        other => Ok(other),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +1038,28 @@ fn invalid_arg_type_throw(vm: &mut Vm, msg: &str) -> VmError {
     VmError::Thrown(recv)
 }
 
-/// `cluster.disconnect([callback])`：逐 worker destroy 后调用回调。
+/// `cluster.disconnect([callback])`（Node `internal/cluster/primary.js:223-238`）：
+///
+/// ```text
+/// const workers = ObjectValues(cluster.workers);
+/// if (workers.length === 0) {
+///   process.nextTick(() => intercom.emit('disconnect'));
+/// } else {
+///   for (const worker of workers) {
+///     if (worker.isConnected()) worker.disconnect();   // 发 d 帧 + 立即出表
+///   }
+/// }
+/// if (typeof cb === 'function') intercom.once('disconnect', cb);   // 循环之后
+/// ```
+///
+/// 要点（实测基线 v22.23.1，探针 p7）：
+/// ① 每个 `isConnected()` 的 worker 走 primary `Worker.prototype.disconnect()`，
+///    **同步**清空 `workers` 表并返回 `undefined`（`workers-after=0`）；
+/// ② `cb` 在循环**之后**才注册，故循环内 `removeWorker` 的那次
+///    `intercom.emit('disconnect')` 不被该 cb 消费——cb 实际由**退出转接**里的
+///    `removeWorker`（表已空）触发，落在 `'disconnect'` 之后、`'exit'` 之前；
+/// ③ 表本来就空时走 `process.nextTick(...)` 异步触发（Node 同序）；
+/// ④ 函数**无 return**（→ `undefined`）。
 fn cluster_disconnect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let self_val = current_receiver();
     let workers_val = vm.get_property(self_val, "workers")?;
@@ -911,14 +1068,24 @@ fn cluster_disconnect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .into_iter()
         .map(|(_, v)| v)
         .collect();
-    for w in worker_vals {
-        if let Ok(destroy_fn) = vm.get_property(w, "destroy") {
-            vm.invoke_callable(destroy_fn, w, &[])?;
+    if worker_vals.is_empty() {
+        // Node：`process.nextTick(() => intercom.emit('disconnect'))`。
+        let nt = vm.alloc_native_fn("cluster.__intercomDisconnectNT");
+        vm.nexttick_queue.push_back(Value::Object(nt));
+    } else {
+        for w in worker_vals {
+            let Value::Object(r) = w else {
+                continue;
+            };
+            // `worker.isConnected()`：Node 为 `this.process.connected`（通道连通性）。
+            if phase_connected(phase_of(r.0)) {
+                primary_worker_disconnect(vm, r.0)?;
+            }
         }
     }
     if let Some(cb) = args.first().copied() {
         if is_callable(vm, cb) {
-            vm.invoke_callable(cb, Value::Undefined, &[])?;
+            intercom_once_disconnect(cb);
         }
     }
     Ok(Value::Undefined)
@@ -1153,6 +1320,73 @@ fn worker_self_is_dead(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
     Ok(Value::Boolean(false))
 }
 
+/// worker 侧 `cluster.worker.disconnect()`（Node `internal/cluster/child.js:287-294`）：
+/// `state` 不是 `'disconnecting'`/`'destroying'` 时**同步**置 `state = 'disconnecting'`
+/// 并执行 `_disconnect()`；**返回 `this`**（实测 p8：`ret-is-self=true`、
+/// `ret-type=object`，且返回时 `state=disconnecting`、`ead=true`、`listening=false`）。
+///
+/// 重复调用（已在 `'disconnecting'`）按 Node 语义为 no-op，仍返回 `this`。
+fn worker_self_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    if !matches!(receiver, Value::Object(_)) {
+        return Ok(receiver);
+    }
+    let state = vm
+        .get_property(receiver, "state")
+        .unwrap_or(Value::Undefined);
+    let name = vm.format_value(state);
+    if name == "disconnecting" || name == "destroying" {
+        return Ok(receiver);
+    }
+    let disconnecting = vm.alloc_string("disconnecting".to_owned());
+    let _ = vm.set_property(receiver, "state", Value::Object(disconnecting));
+    worker_self_disconnect_impl(vm, false)?;
+    Ok(receiver)
+}
+
+/// Node `internal/cluster/child.js:253-284` 的 `_disconnect(primaryInitiated)`：
+///
+/// ```text
+/// this.exitedAfterDisconnect = true;            // ① 同步
+/// for (const handle of handles.values()) …close(cb);   // ② 关本进程内 server 句柄
+/// // ③ 全部关完后：
+/// if (primaryInitiated) process.disconnect();
+/// else send({act: 'exitedAfterDisconnect'}, () => process.disconnect());
+/// ```
+///
+/// ① 与 p8 的 `W after … ead=true` 对应（同一调用栈内可见）；
+/// ② 本运行时按 net / http 两张线程局部表批量关闭并派发 `'close'`；
+/// ③ `primaryInitiated` 时直接断连；worker 自发起时先上报 `{"t":"e"}` 帧再断连
+///    （Node 等 primary 的 ack 回程，本运行时无 ack——同一 TCP 流有序，primary 必
+///    先读到 `e` 帧再读到 EOF，故 primary 侧 `ead=true` 与事件序观测等价，登记见
+///    模块文档）。
+///
+/// 非 worker 进程（无 `cluster.worker`）调用时只关 server 并断连——与 Node 的
+/// bootstrap 语义一致（Worker 对象始终存在，此处仅防御性处理）。
+fn worker_self_disconnect_impl(vm: &mut Vm, primary_initiated: bool) -> Result<(), VmError> {
+    if let Some(worker) = worker_self_value() {
+        let _ = vm.set_property(worker, "exitedAfterDisconnect", Value::Boolean(true));
+    }
+    close_worker_servers(vm);
+    if !primary_initiated {
+        let _ = cluster_ipc::child_send_line(&format!("{FRAME_EXITED_AFTER_DISCONNECT}\n"));
+    }
+    // 收尾 `process.disconnect()`：关闭通道并由 nextTick 载体异步派发
+    // `'disconnect'`（`exitedAfterDisconnect` 已为真 → 桥接不强制退出，worker
+    // 由事件循环排空自然以 code 0 退出）。
+    process_disconnect(vm, &[])?;
+    Ok(())
+}
+
+/// 关闭本 worker 进程内**全部监听中的** server（Node `_disconnect` 遍历 `handles`）。
+///
+/// net 与 http 各有一张线程局部服务器表（http 的监听 socket **不在**
+/// `NET_SHARED.servers`），故两张表都要扫；各自的批量关闭函数负责派发 `'close'`。
+fn close_worker_servers(vm: &mut Vm) {
+    crate::builtins::net::close_all_servers(vm);
+    crate::builtins::http::server::close_all_servers(vm);
+}
+
 // ---------------------------------------------------------------------------
 // `process.channel`（worker 侧；M5.2）
 // ---------------------------------------------------------------------------
@@ -1245,15 +1479,24 @@ fn emit_self_disconnect(vm: &mut Vm) -> Result<Value, VmError> {
 
 /// worker 侧收到 primary 下发的帧（`key == 0`）。
 ///
-/// 仅 `m`（message）有 worker 侧语义：Node `internal/cluster/child.js` 把非
-/// 内部协议帧直接 `process.emit('message', message, handle)`（本运行时无句柄
-/// 传递，`handle` 恒 `undefined`）；`cluster.worker` 的 `'message'` 由桥接转发。
+/// * `m`（message）：Node `internal/cluster/child.js` 把非内部协议帧直接
+///   `process.emit('message', message, handle)`（本运行时无句柄传递，`handle` 恒
+///   `undefined`）；`cluster.worker` 的 `'message'` 由桥接转发；
+/// * `d`（disconnect，primary 发起）：Node `child.js` 的 `onmessage` 对
+///   `{act:'disconnect'}` 调 `_disconnect(worker, true)`——**不**改
+///   `cluster.worker.state`（`'disconnecting'` 只由 worker 自发起时写入），
+///   置 `exitedAfterDisconnect = true`、关本进程内 server 后直接 `process.disconnect()`。
 fn dispatch_self_frame(vm: &mut Vm, text: &str) -> Result<(), VmError> {
     let Some((kind, frame)) = parse_frame(vm, text)? else {
         return Ok(());
     };
-    if kind != "m" {
-        return Ok(());
+    match kind.as_str() {
+        "d" => {
+            worker_self_disconnect_impl(vm, true)?;
+            return Ok(());
+        }
+        "m" => {}
+        _ => return Ok(()),
     }
     let Ok(msg) = vm.get_property(frame, "v") else {
         return Ok(());
@@ -1463,7 +1706,8 @@ fn worker_ref_by_id(worker_id: u64) -> Option<u32> {
 /// 派发一条 worker 帧。
 ///
 /// 帧类型（见 `cluster_ipc` 模块文档）：`o` = online、`m` = message、
-/// `l` = listening；`e`（exitedAfterDisconnect ack）本模块未实现，丢弃。
+/// `l` = listening、`e` = worker 自发起断连的先行上报（Node
+/// `{act:'exitedAfterDisconnect'}`）。`{"t":"d"}` 是 primary → worker 方向，不在此列。
 fn dispatch_worker_frame(vm: &mut Vm, worker_id: u64, text: &str) -> Result<(), VmError> {
     let Some((kind, frame)) = parse_frame(vm, text)? else {
         return Ok(());
@@ -1517,6 +1761,14 @@ fn dispatch_worker_frame(vm: &mut Vm, worker_id: u64, text: &str) -> Result<(), 
                 &[worker_val, msg, Value::Undefined],
             )?;
         }
+        // Node `primary.js` 的 `exitedAfterDisconnect(worker, message)`：worker 自发起
+        // 断连时先上报本帧，primary 置 `exitedAfterDisconnect = true`（Node 随后回
+        // `{ack: message.seq}` 令 worker 收尾断连；本运行时无 ack 回程——worker 已自行
+        // 断连，登记见模块文档）。仅有此帧先于 EOF 到达，`'disconnect'` 处才观测到
+        // `ead=true`（实测 p8）。
+        "e" => {
+            let _ = vm.set_property(worker_val, "exitedAfterDisconnect", Value::Boolean(true));
+        }
         _ => {}
     }
     Ok(())
@@ -1547,5 +1799,17 @@ fn register_worker_id(worker_id: u64, worker_ref: u32) {
         g.borrow_mut()
             .get_or_insert_with(HashMap::new)
             .insert(worker_id, worker_ref);
+    });
+}
+
+/// GC 根：`intercom.once('disconnect', cb)` 的待发回调（静态表持有堆值，
+/// 漏登记即悬垂——见 `gc.rs::static_roots` 的纪律）。
+pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
+    INTERCOM_ONCE.with(|g| {
+        if let Some(cbs) = g.borrow().as_ref() {
+            for cb in cbs {
+                out.push(*cb);
+            }
+        }
     });
 }
