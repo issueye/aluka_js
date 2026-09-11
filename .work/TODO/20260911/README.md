@@ -1227,3 +1227,104 @@ primary 侧 `start` 崩溃曾怀疑为实现缺陷，实测为**块内函数声�
 **文档工具链教训（本轮）**：本文件的一次「用 PowerShell `Set-Content` 做全文替换」
 导致编码/行数被破坏（1211 行 → 864 行）——已用 `git checkout` 恢复并改用编辑工具重做。
 **口径**：本仓中文文档一律用编辑工具（Edit/Write）修改，不用 shell 文本替换。
+
+---
+
+## 13. 引擎缺陷修复：块内函数声明提升（§12.2 的处置）
+
+### 13.1 根因与修法
+
+**根因（两处叠加）**：
+1. `codegen.rs` 的 `Stmt::Function(_) => { … }` 是**空实现**（只保证栈平衡，注释写
+   「在 compile_module 中提取」）；
+2. `module.rs` 的「提升收集」只遍历**直接子语句**（`for stmt in def.body.iter()` /
+   `optimized_program.body.iter()`）——`if`／`for`／普通块内的 `Stmt::Function` 既不被
+   提取，也不被绑定 → `typeof` 恒为 `undefined`。
+
+**修法**（`crates/aluka-compiler/src/module.rs`，3 处改动）：
+1. 新增 **递归收集** `collect_scope_functions` / `collect_scope_functions_in_stmt`：
+   进入 `Block`／`if`／`while`／`do-while`／`for`／`for-in`／`for-of`／`try`／`switch`／
+   `export`，**不进入**嵌套函数的函数体（那是子函数自己的提升域），不进入表达式
+   （函数表达式非声明）；
+2. 模块顶层与函数体的提升收集改为调用该递归收集；`ordered`（非提升语句序列）保持
+   只含直接子语句（块语句本身仍在原位编译）；
+3. 顶层与函数体的**绑定预注册**各补一段：对递归收集到的函数名 `ensure_slot`，
+   保证提升编译时的 `ParentScopeInfo` 快照与上值捕获识别都能看到这些名字。
+
+模块文档同步（`collect_scope_functions` 的 doc comment 写明语义依据、递归边界与
+Node 实测形态）。
+
+### 13.2 验证（red → green）
+
+**最小复现对比**（`p9.js`，两侧同源）：
+
+| 断言 | 修复前 aluka | Node v22.23.1 | 修复后 aluka |
+|---|---|---|---|
+| `if` 块内 `typeof f` | `undefined` | `function` | ✅ `function` |
+| `if` 块内调用 `f()` | 抛 TypeError | `inner-ok` | ✅ `inner-ok` |
+| 普通块内 `typeof f` | `undefined` | `function` | ✅ `function` |
+| 块外 `typeof f`（块执行后） | `undefined` | `function` | ✅ `function` |
+| 块**执行前** `typeof f` | `undefined` | `undefined` | ⚠️ `function`（余差异，见 §13.3） |
+
+**回归保护用例**（新增，**在门禁内**与 Node 逐字节对拍）：
+`tests/conformance/node22/cases/gen/gen-block-fn-decl-0002.cjs` —— 覆盖普通块（含块内
+**声明之前**调用）、`if` 块、`for` 块、`try` 块、函数体内块、以及「块内函数捕获外层
+变量」的上值路径（`upvalue=3`）。两侧输出**逐字节一致**：
+
+```text
+plain-block-in=function call=inner-ok / plain-block-after=function
+if-block-in=function call=if-ok       / if-block-after=function
+loop-in=function call=loop-ok         / try-in=function call=try-ok
+fn-body-blocks=function,function      / upvalue=3
+```
+
+门禁过滤验证：`ALUKA_CONF_FILTER=block-fn-decl` → `PASS gen/gen-block-fn-decl-0002.cjs`、
+`Result: 1/1 passed, 0 invalid`。
+
+**影响面评估（本轮修复的价值）**：修复前该缺陷会让任何「把辅助函数声明写在 `if`/`for`/
+普通块内」的真实代码直接抛 `TypeError`（本轮 M5.2 断连探针首版即因此崩溃、并一度被
+误判为功能实现缺陷）。修复后该类代码可用。
+
+### 13.3 余差异（如实登记，不静默）
+
+| 项 | Node | 本运行时 | 影响 |
+|---|---|---|---|
+| 块内函数声明在**块执行前**的值 | `undefined`（绑定在函数入口初始化为 undefined，块执行时才赋值） | `function`（提升编译在函数入口即 `MakeClosure` + `StoreLocal`） | 仅「块执行前引用该名字」可见（如函数入口特性探测）；方向为**更宽松**，不崩溃 |
+
+**已隔离**：`tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0001.cjs`
+（该目录结构性不参与门禁）。
+
+**精确对齐的修法（已勘察，未实施）**：把绑定动作从函数入口**下移到块入口**——块内
+函数模板在编译期预编译后入队（按收集序），`codegen.rs` 的 `Stmt::Block` 分支在编译
+子语句前取出对应模板并 `MakeClosure` + `StoreLocal`。需保证「块编译序 == 收集序」
+（当前两者同为先序），属编译期绑定时机专项，风险中等，建议独立一轮施行并配
+deviations 用例回填。
+
+### 13.4 门禁（修复后）
+
+```text
+# 1. 格式化门禁
+$ cargo fmt --all --check                                    FMT_CHECK_EXIT=0
+
+# 2. 严格 Clippy 门禁（零警告允许）
+$ cargo clippy --all-targets --all-features -- -D warnings   CLIPPY_EXIT=0
+
+# 3. 全工作区全量测试门禁（NODE=<v22.23.1>，CARGO_INCREMENTAL=0）
+$ cargo test --workspace --all-features -j 4                 TEST_EXIT=0（墙钟 194.6s）
+聚合：suites=90 passed=632 failed=0 ignored=1 ；SKIP=0
+
+# 4. conformance 定向（新回归保护用例）
+$env:ALUKA_CONF_FILTER="block-fn-decl"; cargo test -p aluka-cli --all-features \
+    --test conformance_node22_test -- --nocapture
+PASS gen/gen-block-fn-decl-0002.cjs
+Result: 1/1 passed, 0 invalid
+```
+
+- 与本轮修复前的基线（§12.5：90 suites / 632 passed / 0 failed / 1 ignored）对照：
+  **用例计数持平**——新增的 conformance 用例聚合在 `conformance_node22_test` 的单个
+  `#[test]` 内（harness 逐例打印 PASS，故 passed 计数不变），属既有语料结构。
+- 修复只动编译器（`aluka-compiler`），全工作区 632 例无一回归。
+
+### 13.5 提交证据
+
+（提交后回填）

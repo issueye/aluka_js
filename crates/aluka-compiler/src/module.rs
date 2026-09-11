@@ -321,12 +321,13 @@ impl ModuleCompiler {
         // 提升编译前先**预注册**全部顶层绑定名（var/解构/function/类），
         // 使提升函数的 ParentScopeInfo 快照包含完整符号表——否则后续
         // 声明的变量的 upvalue 捕获会静默丢失。
+        // 递归收集（含块内声明）：块内 `function` 声明同样提升到本作用域
+        // （Node 实测：块内可调用、块外可访问），故收集必须进入块语句。
         let mut hoisted: Vec<&aluka_parser::ast::Stmt> = Vec::new();
         let mut ordered: Vec<&aluka_parser::ast::Stmt> = Vec::new();
+        collect_scope_functions(&optimized_program.body, &mut hoisted);
         for stmt in optimized_program.body.iter() {
-            if matches!(stmt, Stmt::Function(_)) {
-                hoisted.push(stmt);
-            } else {
+            if !matches!(stmt, Stmt::Function(_)) {
                 ordered.push(stmt);
             }
         }
@@ -376,6 +377,15 @@ impl ModuleCompiler {
                     ensure_slot(&mut top_unit, name);
                 }
                 _ => {}
+            }
+        }
+        // 块内函数声明（已随递归收集进入 `hoisted`）同样提升到本作用域：为其
+        // 预注册槽位，保证下面提升编译时的 ParentScopeInfo 快照包含这些名字
+        // （否则块内函数体内的 upvalue 捕获会静默丢失）。`ensure_slot` 幂等，
+        // 顶层函数名会被重复注册一次，无副作用。
+        for stmt in &hoisted {
+            if let Stmt::Function(func_def) = stmt {
+                ensure_slot(&mut top_unit, &func_def.name);
             }
         }
         for f in &hoisted {
@@ -1003,6 +1013,17 @@ impl ModuleCompiler {
                 _ => {}
             }
         }
+        // 块内函数声明（递归收集）同样提升到本函数作用域：先预注册槽位，使下面的
+        // 上值捕获识别（`parent_scope` 快照）与提升编译都能看到这些名字。
+        {
+            let mut block_fns: Vec<&Stmt> = Vec::new();
+            collect_scope_functions(&def.body, &mut block_fns);
+            for stmt in &block_fns {
+                if let Stmt::Function(func_def) = stmt {
+                    ensure_slot(&mut unit, &func_def.name);
+                }
+            }
+        }
 
         // 若存在父级符号表，预先识别并建立闭包上值捕获（Upvalues，包括直接局部变量与跨层上值继承）
         if let Some(parent_info) = parent_scope {
@@ -1035,13 +1056,14 @@ impl ModuleCompiler {
             }
         }
 
-        // 函数体顶层：嵌套 function 声明提升（先绑定闭包，再编译其余语句）
+        // 函数体：嵌套 function 声明提升（先绑定闭包，再编译其余语句）。
+        // 收集为**递归**（含 `if`/`for`/普通块内的声明）——块内函数同样提升到本
+        // 函数作用域（Node 实测：块内可调用、块外可访问），故必须进入块语句。
         let mut hoisted_fns: Vec<&Stmt> = Vec::new();
         let mut ordered_stmts: Vec<&Stmt> = Vec::new();
+        collect_scope_functions(&def.body, &mut hoisted_fns);
         for stmt in def.body.iter() {
-            if matches!(stmt, Stmt::Function(_)) {
-                hoisted_fns.push(stmt);
-            } else {
+            if !matches!(stmt, Stmt::Function(_)) {
                 ordered_stmts.push(stmt);
             }
         }
@@ -1286,6 +1308,83 @@ impl ModuleCompiler {
     }
 }
 
+/// 递归收集「当前函数作用域内」的函数声明（**含嵌套块内的声明**），先序。
+///
+/// 语义依据（Node.js 22 LTS 实测）：块内 `function` 声明在 sloppy 模式下被提升到
+/// 最近的**函数作用域**——块内可调用，块外亦可访问：
+///
+/// ```js
+/// if (true) { function f() {} }
+/// typeof f   // Node: "function"（非 undefined）
+/// ```
+///
+/// 而提升收集此前只遍历**直接子语句**（`if`/`for`/普通块内的声明被漏掉），且
+/// `compile_stmt` 对 `Stmt::Function` 是空实现（只保证栈平衡），于是块内函数
+/// 「既不绑定名字也不可用」——`typeof f` 为 `undefined`（引擎级缺陷，见
+/// `.work/TODO/20260911/README.md` §12.2）。
+///
+/// 递归边界：
+/// * **进入**块语句（`Block`）与可含语句块的语句（`if`/`while`/`do-while`/`for`/
+///   `for-in`/`for-of`/`try`/`switch`/`export`）；
+/// * **不进入**嵌套函数的函数体——那属于子函数自己的提升域（子函数编译时会各自调用
+///   本函数收集）；
+/// * 表达式内部的函数是**函数表达式**而非声明，故不进入表达式。
+fn collect_scope_functions<'a>(stmts: &'a [Stmt], out: &mut Vec<&'a Stmt>) {
+    for stmt in stmts {
+        collect_scope_functions_in_stmt(stmt, out);
+    }
+}
+
+/// [`collect_scope_functions`] 的单语句递归分支。
+fn collect_scope_functions_in_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Stmt>) {
+    match stmt {
+        Stmt::Function(_) => out.push(stmt),
+        Stmt::Block(body) => collect_scope_functions(body, out),
+        Stmt::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_scope_functions_in_stmt(then_branch, out);
+            if let Some(else_stmt) = else_branch {
+                collect_scope_functions_in_stmt(else_stmt, out);
+            }
+        }
+        Stmt::While { body, .. }
+        | Stmt::DoWhile { body, .. }
+        | Stmt::ForIn { body, .. }
+        | Stmt::ForOf { body, .. } => collect_scope_functions_in_stmt(body, out),
+        Stmt::For { init, body, .. } => {
+            if let Some(init_stmt) = init {
+                collect_scope_functions_in_stmt(init_stmt, out);
+            }
+            collect_scope_functions_in_stmt(body, out);
+        }
+        Stmt::Try {
+            body,
+            catch_body,
+            finally_body,
+            ..
+        } => {
+            collect_scope_functions_in_stmt(body, out);
+            if let Some(catch_stmt) = catch_body {
+                collect_scope_functions_in_stmt(catch_stmt, out);
+            }
+            if let Some(finally_stmt) = finally_body {
+                collect_scope_functions_in_stmt(finally_stmt, out);
+            }
+        }
+        Stmt::Switch { cases, .. } => {
+            for case in cases {
+                collect_scope_functions(&case.consequent, out);
+            }
+        }
+        Stmt::Export(aluka_parser::ast::ExportDecl::Named {
+            decl: Some(inner), ..
+        }) => collect_scope_functions_in_stmt(inner, out),
+        _ => {}
+    }
+}
 /// 预注册符号槽位（已存在则复用）。
 fn ensure_slot(unit: &mut CompiledUnit, name: &str) {
     if name.is_empty() {
