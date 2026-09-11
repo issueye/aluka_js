@@ -94,6 +94,13 @@ impl Vm {
         let spec = self.format_value(specifier);
         // 内置模块优先（fs/path/process 等不经文件系统）
         if let Some(m) = self.builtin_module(&spec) {
+            // worker 进程内首次 `require('cluster')`：按 Node `_setupWorker` 语义
+            // 挂接 process ↔ cluster.worker 桥接（详见
+            // `builtins::cluster::on_cluster_required`）。
+            crate::builtins::cluster::on_cluster_required(
+                self,
+                spec.strip_prefix("node:").unwrap_or(&spec),
+            );
             return Ok(m);
         }
         let resolved = self

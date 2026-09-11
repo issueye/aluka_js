@@ -28,6 +28,10 @@
 //! - **关闭标记的生效时机**：读行循环只在「本轮无数据可读」（读超时）时才
 //!   响应 `is_closed`，内核缓冲区中已到达的帧一律先读净——否则父进程侧抢先
 //!   `close_channel` 会丢掉子进程退出前写出的最后一帧（listening）。
+//! - **子进程侧关闭（M5.2）**：对端 EOF 或本侧 `process.disconnect()`
+//!   （`child_close_channel`，发 FIN 半关闭写端）都会翻转 `connected` 并投递
+//!   `Incoming::Closed`（key 0），worker 侧据此派发 `'disconnect'` 并解除事件源
+//!   保活（对齐 Node child_process 的 channel 'close'）。
 //!
 //! 未实现（如实登记）：句柄（socket/server handle）传递（`sendHandle`）、
 //! `serialization: 'advanced'`、以及 Node 的 `NODE_HANDLE` ack 协议。
@@ -400,6 +404,11 @@ pub(crate) fn child_connect() -> bool {
         .spawn(move || {
             let mut reader = BufReader::new(stream);
             read_lines(&mut reader, CHILD_CHANNEL_KEY, owner);
+            // 对端 EOF / 本地关闭（读线程退出）：翻转连通标记并向属主线程投递
+            // 关闭通知——worker 侧据此派发 `'disconnect'` 并解除事件源保活
+            // （对齐 Node child_process 的 channel 'close'）。
+            child_mark_closed();
+            push_incoming(owner, CHILD_CHANNEL_KEY, Incoming::Closed);
         });
     CHILD_IPC.with(|c| {
         *c.borrow_mut() = Some(ChildIpc {
@@ -440,4 +449,35 @@ pub(crate) fn child_send_line(line: &str) -> bool {
 /// 子进程侧通道是否连通。
 pub(crate) fn child_is_connected() -> bool {
     CHILD_IPC.with(|c| c.borrow().as_ref().is_some_and(|s| s.connected))
+}
+
+/// 子进程侧通道翻转「未连通」并登记本地关闭标记。
+///
+/// 两个触发源：① 对端 EOF（读线程退出）；② 本侧 `process.disconnect()`
+/// （`child_close_channel`）。标记一旦置位，`child_send_line` 一律返回 false，
+/// 读线程也会在下一轮读超时后退出。
+fn child_mark_closed() {
+    mark_closed(CHILD_CHANNEL_KEY);
+    CHILD_IPC.with(|c| {
+        if let Some(state) = c.borrow_mut().as_mut() {
+            state.connected = false;
+        }
+    });
+}
+
+/// `process.disconnect()`（worker 侧）：向对端发 FIN（半关闭写端，对端读到 EOF
+/// 后按 Node 语义派发 `'disconnect'`）并本地登记未连通。已断开返回 false。
+pub(crate) fn child_close_channel() -> bool {
+    if !child_is_connected() {
+        return false;
+    }
+    CHILD_IPC.with(|c| {
+        if let Some(state) = c.borrow().as_ref() {
+            if let Ok(stream) = state.writer.lock() {
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        }
+    });
+    child_mark_closed();
+    true
 }

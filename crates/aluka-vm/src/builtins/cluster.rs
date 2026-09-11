@@ -20,10 +20,26 @@
 //!   （Go 用 `os.Args[1]` 作脚本路径），并包一层 Worker 对象：child 的
 //!   `'exit'` 事件转接到 Worker 与 cluster（携带**真实退出码**）；
 //! - **IPC 面（M5.2）**：`cluster_ipc` 承载 Node 的 ipc 管道语义（见该模块
-//!   文档）——worker 侧 `process.send` / `process.connected` / `cluster.worker.send`
-//!   （Node bootstrap 阶段建立通道，与是否 require 本模块无关），primary 侧
-//!   `worker.send`（写端真实可写性）、`'online'`（worker 通道建立后上报）、
-//!   `'message'`（`(worker, message, handle)` 实参序）；
+//!   文档）——worker 侧 `process.send` / `process.connected` / `process.disconnect`
+//!   （Node bootstrap 阶段建立通道，与是否 require 本模块无关）、
+//!   `process.on('message')`（**2 实参**：`(message, handle)`，无句柄传递故
+//!   `handle` 恒 `undefined`）、`cluster.worker.send` 与其事件面
+//!   （`'message'`/`'disconnect'` 由 process 侧单向桥接，Node `Worker` ctor 语义）；
+//!   primary 侧 `worker.send`（写端真实可写性）、`'online'`（worker 通道建立后
+//!   上报）、`'message'`（`(worker, message, handle)` 实参序）；
+//! - **worker 侧 `require('cluster')` 的桥接（M5.2）**：进程内首次 require 时按
+//!   Node `internal/cluster/child.js::_setupWorker` 挂接
+//!   `process.on('message', (m,h) => worker.emit('message', m, h))` 与
+//!   `process.once('disconnect', …)`（后者在 `exitedAfterDisconnect` 为假值时
+//!   立即 `process.exit(0)`），故 `process.listenerCount('message')` 在用户注册前
+//!   为 1（与 Node 实测一致）；
+//! - **IPC 通道保活语义（M5.2 实测口径）**：Node 中 fork 出的子进程 IPC 通道
+//!   **默认保活**（脚本跑完不退出，实测 14s 后仍 `connected=true`；
+//!   `process.channel.unref()` 才立即释放），故 worker 侧在通道建立即激活
+//!   `cluster_ipc` 事件源；`process.disconnect()` / 对端 EOF 后由泵注销；
+//! - **`process.disconnect()`（worker 侧）**：返回 `undefined`、`process.connected`
+//!   **同步**翻 `false`、二次调用抛 `ERR_IPC_DISCONNECTED`；`'disconnect'` 事件经
+//!   nextTick **异步**派发（实测：返回后调用栈内后续语句仍会执行）；
 //! - **primary 侧生命周期事件（M5.2）**：`worker.state` 全生命周期可观测
 //!   （`'none'` → `'online'` → `'listening'` → `'disconnected'` → `'dead'`，
 //!   Node `internal/cluster/primary.js` + `worker.js`）——
@@ -43,21 +59,31 @@
 //! 如实登记的缺口（Node 22 行为未覆盖）：
 //! - **`NODE_UNIQUE_ID`：不实现**——实测 Node 22 的 cluster worker 内
 //!   `process.env.NODE_UNIQUE_ID` 为 `undefined`（旧评审把它列为缺失项是误判）；
-//! - worker 侧不激活 IPC 事件源：Node 子进程 channel 不阻止进程退出（本
-//!   运行时的事件源无 unref 语义，激活会让 worker 无法自行退出），因此
-//!   worker 侧收 primary 消息（`process.on('message')` 目前亦为空实现）与
-//!   primary 侧 `disconnect()` 后 worker 内 `process.connected` 翻转均未落地；
+//! - **worker 侧事件源保活粒度**：Node 的 channel ref 由「监听器计数」驱动
+//!   （`refCounted`/`unrefCounted`）**且**子进程通道默认即保活；本运行时以
+//!   「通道连通即保活」实现（与 Node 实测的默认行为等价），故
+//!   `process.channel.ref()`/`unref()` 显式接口、`process.on('message')` 的
+//!   计数式 ref 语义均未接线（含 `process.listeners` 之外的计数差异）；
+//! - **primary 发起的 `cluster.disconnect()` 仍走 `destroy`（杀进程）路径**：
+//!   Node 下发 `{act:'disconnect'}` 帧、worker 侧走 `_disconnect(true)` 再以
+//!   `exitedAfterDisconnect = true` 退出（worker 侧收该帧的语义见 `process_disconnect`）；
+//! - **worker 被杀时其 `console.log` 缓冲不落盘**：本运行时 `console.log` 走
+//!   行模型（`vm.stdout_records`，由 CLI 在运行结束后统一输出），子进程被
+//!   `kill()`/TerminateProcess 时缓冲丢失（Node 的继承 stdio 为逐写直落）。
+//!   属引擎级既有行为，非本轮引入；探针须避免在「将被杀」的 worker 内打印；
 //! - **primary 侧 `disconnect` 的触发源**：本运行时的「IPC 读线程」与「子进程
 //!   退出事件源」是两条独立通路，退出转接处先**等本 worker 通道 EOF**（上限
 //!   300ms 兜底）并排空在途帧，再按 Node 次序发 `'disconnect'` → `'exit'`；
 //!   因此 worker **自行退出**的场景与 Node 逐字段一致。主进程发起的
 //!   `cluster.disconnect()` 走既有 `destroy`（杀进程）路径，其
 //!   `exitedAfterDisconnect` 仍为 `false`（Node 为 `true`，登记偏离）；
-//! - **worker 侧 `cluster.worker.state` 的 `'disconnecting'` 中间态不实现**
-//!   （Node 仅由 `Worker.prototype.disconnect` 写入；见下条）；
-//! - worker 侧 `Worker.prototype.disconnect` / `isDisconnected` 不实现——
-//!   前者需额外 `{"t":"d"}` 帧与 primary 侧 ack 回程；后者在 Node 中仅经
-//!   `deprecate()` 定义、并非自有属性；
+//! - **worker 侧 `cluster.worker.disconnect()` / `isDisconnected` 不实现**——
+//!   前者需额外 `{"t":"d"}` 帧与 primary 侧 ack 回程（worker 内已可用
+//!   `process.disconnect()` 达成同一语义）；后者在 Node 中仅经 `deprecate()`
+//!   定义、并非自有属性；`'disconnecting'` 中间态同样不实现（Node 仅由前者写入）；
+//! - **worker 侧 `cluster.worker.isDead()` 恒 `false`**：Node 取
+//!   `process.exitCode != null || process.signalCode != null`，本运行时 worker 侧
+//!   未接线二者（进程存活时二者恒为假值，故等价）；
 //! - `listening` 帧的 `info.address`：Node 取 `dns.lookup` **解析后**的地址，
 //!   本运行时原样回传请求的 host 串（显式 IP 完全一致；`'localhost'` 等
 //!   别名不做解析，登记偏离）；未给 host 时两侧同为 `null`、`addressType` 4；
@@ -250,7 +276,27 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "exitedAfterDisconnect",
             Value::Undefined,
         );
-        ns_attach(vm, worker_obj, "cluster:worker-self", &["send"]);
+        // worker 自身事件面（Node `Worker` 继承 EventEmitter）：`send` 之外挂
+        // emitter 方法；`'message'`/`'disconnect'` 由 process 侧桥接派发（见
+        // `on_cluster_required` 与 `dispatch_self_frame`）。
+        ns_attach(
+            vm,
+            worker_obj,
+            "cluster:worker-self",
+            &[
+                "send",
+                "on",
+                "addListener",
+                "once",
+                "off",
+                "removeListener",
+                "removeAllListeners",
+                "emit",
+                "listenerCount",
+            ],
+        );
+        register_ns_emitter_handlers(registry, "cluster:worker-self");
+        set_worker_self(worker_obj.0);
         let _ = vm.set_property(Value::Object(obj), "worker", Value::Object(worker_obj));
     }
     // workers 表 / settings / schedulingPolicy 表面。
@@ -297,8 +343,43 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // 名经 NativeFn 全名 "process.send" 命中分派表，与是否 require cluster 无关，
     // 故在此模块（必定构建）登记。
     register_handler(registry, "process", "send", process_send);
-    // worker 进程内 `cluster.worker.send`（同名空间只挂 send）。
+    register_handler(registry, "process", "disconnect", process_disconnect);
+    // `process.disconnect()` 的 nextTick 载体（Node：`'disconnect'` 异步派发）。
+    register_handler(
+        registry,
+        "cluster",
+        "__selfDisconnectNT",
+        self_disconnect_nt,
+    );
+    // worker 进程内 `cluster.worker.send`（同名空间只挂 send）与 Worker 方法面。
     register_handler(registry, "cluster:worker-self", "send", process_send);
+    register_handler(
+        registry,
+        "cluster:worker-self",
+        "isConnected",
+        worker_self_is_connected,
+    );
+    register_handler(
+        registry,
+        "cluster:worker-self",
+        "isDead",
+        worker_self_is_dead,
+    );
+    // worker 侧 process ↔ cluster.worker 桥接（Node `internal/cluster/worker.js`
+    // 的 Worker ctor 与 `child.js` 的 `_setupWorker`）：经 require('cluster')
+    // 挂接监听器（`on_cluster_required`），故处理器在此登记。
+    register_handler(
+        registry,
+        "cluster",
+        "__workerBridgeMessage",
+        worker_bridge_message,
+    );
+    register_handler(
+        registry,
+        "cluster",
+        "__workerBridgeDisconnect",
+        worker_bridge_disconnect,
+    );
     // Worker 实例方法命名空间。
     register_ns_emitter_handlers(registry, "cluster:worker");
     register_handler(registry, "cluster:worker", "send", worker_send);
@@ -899,22 +980,201 @@ fn current_worker_phase() -> Option<WorkerPhase> {
 // process 面（worker 进程内：process.send / process.connected）
 // ---------------------------------------------------------------------------
 
-/// worker 进程启动时建立 IPC 通道并上报 `'online'`；无通道环境变量/连接失败
-/// 返回 false（Node 中 `process.send` 不存在，与 `silent`/无 ipc 的子进程一致）。
+/// worker 进程启动时建立 IPC 通道、**激活 IPC 事件源**并上报 `'online'`；
+/// 无通道环境变量/连接失败返回 false（Node 中 `process.send` 不存在，与
+/// `silent`/无 ipc 的子进程一致）。
 ///
 /// Node 在 bootstrap 阶段建立通道，与是否 `require('cluster')` 无关——故调用点
 /// 在解释器构建 process 对象处（见 `interpreter.rs`）。
-pub(crate) fn worker_setup_channel() -> bool {
+///
+/// **保活语义（M5.2 实测口径）**：Node 中 fork 出的子进程 IPC 通道**默认保活**
+/// （脚本跑完不退出，实测 14s 后仍 `connected=true`；`process.channel.unref()`
+/// 才立即释放）。故本运行时在通道建立即激活 `cluster_ipc` 事件源；通道关闭
+/// （对端 EOF 或 `process.disconnect()`）后由泵自行注销（见 `cluster_ipc_busy`）。
+pub(crate) fn worker_setup_channel(vm: &mut Vm) -> bool {
     if !cluster_ipc::child_connect() {
         return false;
     }
     let _ = cluster_ipc::child_send_line(&format!("{FRAME_ONLINE}\n"));
+    vm.activate_event_source("cluster_ipc", cluster_ipc_pump);
     true
 }
 
 /// worker 进程的 IPC 通道是否连通（`process.connected` 初值）。
 pub(crate) fn worker_channel_connected() -> bool {
     cluster_ipc::child_is_connected()
+}
+
+// worker 自身对象句柄（`cluster.worker`；仅 worker 进程内有值）。
+thread_local! {
+    static WORKER_SELF: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// 记录 worker 自身对象句柄（`build` 在 worker 进程内调用）。
+fn set_worker_self(id: u32) {
+    WORKER_SELF.with(|c| c.set(Some(id)));
+}
+
+/// worker 自身对象的值（无 `cluster.worker` 时 `None`）。
+fn worker_self_value() -> Option<Value> {
+    WORKER_SELF
+        .with(|c| c.get())
+        .map(|id| Value::Object(ObjectRef(id)))
+}
+
+/// worker 进程内 `process` 单例句柄（事件派发目标与监听器存储键）。
+fn process_value(vm: &Vm) -> Option<Value> {
+    vm.process_object.map(Value::Object)
+}
+
+/// 当前进程是否为 cluster worker（`ALUKA_WORKER_ID` 由 `fork` 注入）。
+fn is_worker_process() -> bool {
+    std::env::var_os("ALUKA_WORKER_ID").is_some()
+}
+
+// ---------------------------------------------------------------------------
+// worker 侧：process ↔ cluster.worker 桥接、`process.disconnect()` 与帧派发
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// worker 侧桥接是否已挂接（Node：`require('cluster')` 时一次性挂接）。
+    static BRIDGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// worker 侧 `'disconnect'` 是否已派发（Node `process.once('disconnect')` 幂等）。
+    static SELF_DISCONNECTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 首次 `require('cluster')`（worker 进程内）时挂接 process → cluster.worker 桥接。
+///
+/// Node 语义（`internal/cluster/child.js::_setupWorker` + `worker.js` 的 Worker
+/// ctor）：
+/// * `process.on('message', (m, h) => worker.emit('message', m, h))` —— 单向桥接；
+/// * `process.once('disconnect', () => { worker.emit('disconnect');
+///   if (!worker.exitedAfterDisconnect) process.exit(0); })` —— 非预期断连即退出。
+///
+/// 本运行时的 cluster 模块在 `Vm` 初始化阶段统一构建（无「首次 require」时点），
+/// 故桥接在 `require('cluster')` 处按需挂接（调用点见 `modules.rs`）：这使
+/// `process.listenerCount('message')` 的可见值与 Node 一致（require 后为 1）。
+pub(crate) fn on_cluster_required(vm: &mut Vm, name: &str) {
+    if name != "cluster" || !is_worker_process() || BRIDGED.with(|c| c.get()) {
+        return;
+    }
+    let Some(proc) = vm.process_object else {
+        return;
+    };
+    BRIDGED.with(|c| c.set(true));
+    let bridge = vm.alloc_native_fn("cluster.__workerBridgeMessage");
+    ns_push_listener(proc.0, "message", Value::Object(bridge));
+    let disc = vm.alloc_native_fn("cluster.__workerBridgeDisconnect");
+    ns_push_listener(proc.0, "disconnect", Value::Object(disc));
+}
+
+/// 桥接载体：把 process 的 `'message'` 转发给 `cluster.worker`（Node Worker ctor）。
+fn worker_bridge_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    if let Some(worker) = worker_self_value() {
+        let emit_args: Vec<Value> = args.to_vec();
+        ns_emit(vm, worker, "message", &emit_args)?;
+    }
+    Ok(Value::Undefined)
+}
+
+/// 桥接载体：`'disconnect'` 转发给 `cluster.worker`，非预期断连按 Node 立即退出
+/// （`process.exit(0)`；`exitedAfterDisconnect` 为假值即视为非预期）。
+fn worker_bridge_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    if let Some(worker) = worker_self_value() {
+        ns_emit(vm, worker, "disconnect", &[])?;
+        let expected = matches!(
+            vm.get_property(worker, "exitedAfterDisconnect"),
+            Ok(Value::Boolean(true))
+        );
+        if !expected {
+            return crate::builtins::require_aliases::process_exit(vm, &[Value::Number(0.0)]);
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+/// `process.disconnect()`（worker 侧）：关闭 IPC 通道并（**异步**）派发 `'disconnect'`。
+///
+/// Node 语义（实测 v22.23.1）：返回 `undefined`；`process.connected` **同步**翻
+/// `false`；再次调用抛 `ERR_IPC_DISCONNECTED`（文本
+/// `IPC channel is already disconnected`）。`'disconnect'` 事件经 `nextTick`
+/// 派发——实测 `process.disconnect()` 返回后调用栈内的后续语句**先**执行完
+/// （Node 侧也仍能打出其后的 console.log），故不能在调用栈内同步发射。
+fn process_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    if !cluster_ipc::child_close_channel() {
+        let err = vm.alloc_error_instance("IPC channel is already disconnected");
+        let err_val = Value::Object(err);
+        let code = Value::Object(vm.alloc_string("ERR_IPC_DISCONNECTED".to_owned()));
+        let _ = vm.set_property(err_val, "code", code);
+        return Err(VmError::Thrown(err_val));
+    }
+    set_process_connected(vm, false);
+    let nt = vm.alloc_native_fn("cluster.__selfDisconnectNT");
+    vm.nexttick_queue.push_back(Value::Object(nt));
+    Ok(Value::Undefined)
+}
+
+/// `process.disconnect()` 的 nextTick 载体（`this === undefined`，故无需实参）。
+fn self_disconnect_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    emit_self_disconnect(vm)
+}
+
+/// worker 进程内 `cluster.worker.isConnected()`：通道连通性（Node `Worker`
+/// 的 `this.process.connected`）。
+fn worker_self_is_connected(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    if let Some(proc) = process_value(vm) {
+        if let Ok(Value::Boolean(b)) = vm.get_property(proc, "connected") {
+            return Ok(Value::Boolean(b));
+        }
+    }
+    Ok(Value::Boolean(cluster_ipc::child_is_connected()))
+}
+
+/// worker 进程内 `cluster.worker.isDead()`：Node 为
+/// `this.process.exitCode != null || this.process.signalCode != null`——
+/// 本运行时未接线 worker 侧 `exitCode`/`signalCode`，运行期恒 `false`（登记偏离）。
+fn worker_self_is_dead(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    Ok(Value::Boolean(false))
+}
+
+/// worker 侧派发 `'disconnect'`（幂等）：先置 `process.connected = false`，再在
+/// `process` 上派发（桥接随后转发给 `cluster.worker` 并按 Node 退出）。
+fn emit_self_disconnect(vm: &mut Vm) -> Result<Value, VmError> {
+    if SELF_DISCONNECTED.with(|c| c.replace(true)) {
+        return Ok(Value::Undefined);
+    }
+    set_process_connected(vm, false);
+    if let Some(proc) = process_value(vm) {
+        ns_emit(vm, proc, "disconnect", &[])?;
+    }
+    Ok(Value::Undefined)
+}
+
+/// worker 侧收到 primary 下发的帧（`key == 0`）。
+///
+/// 仅 `m`（message）有 worker 侧语义：Node `internal/cluster/child.js` 把非
+/// 内部协议帧直接 `process.emit('message', message, handle)`（本运行时无句柄
+/// 传递，`handle` 恒 `undefined`）；`cluster.worker` 的 `'message'` 由桥接转发。
+fn dispatch_self_frame(vm: &mut Vm, text: &str) -> Result<(), VmError> {
+    let Some((kind, frame)) = parse_frame(vm, text)? else {
+        return Ok(());
+    };
+    if kind != "m" {
+        return Ok(());
+    }
+    let Ok(msg) = vm.get_property(frame, "v") else {
+        return Ok(());
+    };
+    if let Some(proc) = process_value(vm) {
+        ns_emit(vm, proc, "message", &[msg, Value::Undefined])?;
+    }
+    Ok(())
+}
+
+/// worker 侧通道关闭（对端 EOF 或本地 `process.disconnect()`）：派发 `'disconnect'`。
+fn worker_channel_closed(vm: &mut Vm) -> Result<(), VmError> {
+    emit_self_disconnect(vm)?;
+    Ok(())
 }
 
 /// 服务端 `listen` 成功后（worker 进程内）上报 `listening` 帧，并置 worker 侧
@@ -1044,8 +1304,8 @@ fn set_process_connected(vm: &mut Vm, connected: bool) {
 // IPC 事件源（primary 侧：worker 帧 → 'online'/'message' 事件）
 // ---------------------------------------------------------------------------
 
-/// IPC 事件源泵：排空 inbox 中的帧并派发事件；无存活 worker 且队列为空时注销
-/// 事件源（否则事件循环会被闲置通道一直挂住）。
+/// IPC 事件源泵：排空 inbox 中的帧并派发事件；不再需要保活时注销事件源
+/// （否则事件循环会被闲置通道一直挂住）。
 fn cluster_ipc_pump(vm: &mut Vm) -> Result<bool, VmError> {
     let progressed = drain_ipc_inbox(vm)?;
     if !cluster_ipc_busy() {
@@ -1055,15 +1315,18 @@ fn cluster_ipc_pump(vm: &mut Vm) -> Result<bool, VmError> {
 }
 
 /// 排空 inbox 并派发全部在途帧（事件源泵与 child `'exit'` 转接共用）。
+///
+/// 帧按通道 key 分派：`0` = 子进程自身通道（worker 侧收 primary 消息），
+/// 其余 = 某 worker 的通道（primary 侧）。
 fn drain_ipc_inbox(vm: &mut Vm) -> Result<bool, VmError> {
     let mut progressed = false;
     while let Some((key, item)) = cluster_ipc::take_incoming() {
         progressed = true;
         match item {
-            // key 0 = 子进程自身通道（worker 侧）：worker 不激活本事件源（见模块
-            // 文档缺口说明），此处仅丢弃。
-            cluster_ipc::Incoming::Line(_) if key == 0 => {}
+            cluster_ipc::Incoming::Line(text) if key == 0 => dispatch_self_frame(vm, &text)?,
             cluster_ipc::Incoming::Line(text) => dispatch_worker_frame(vm, key, &text)?,
+            // 子进程自身通道关闭 = worker 与 primary 断开（Node `'disconnect'`）。
+            cluster_ipc::Incoming::Closed if key == 0 => worker_channel_closed(vm)?,
             // 通道关闭 = worker 断开（Node 'disconnect'：进程未退出仍非 dead）。
             cluster_ipc::Incoming::Closed => mark_disconnected(vm, key)?,
         }
@@ -1071,13 +1334,22 @@ fn drain_ipc_inbox(vm: &mut Vm) -> Result<bool, VmError> {
     Ok(progressed)
 }
 
-/// 事件源活性：还有非 Dead 的 worker，或 inbox 尚有未派发条目。
+/// 事件源活性。
+///
+/// * **worker 进程**：通道连通即保活（Node 实测：fork 出的子进程 IPC 通道默认
+///   保活，脚本跑完不退出）；通道关闭后不再保活，事件循环可自然结束。
+/// * **primary 进程**：还有非 Dead 的 worker。
+/// * 两态都叠加「inbox 尚有未派发条目」，避免在途帧被搁浅。
 fn cluster_ipc_busy() -> bool {
-    let alive = WORKER_PHASE.with(|g| {
-        g.borrow()
-            .as_ref()
-            .is_some_and(|m| m.values().any(|p| !matches!(p, WorkerPhase::Dead)))
-    });
+    let alive = if is_worker_process() {
+        cluster_ipc::child_is_connected()
+    } else {
+        WORKER_PHASE.with(|g| {
+            g.borrow()
+                .as_ref()
+                .is_some_and(|m| m.values().any(|p| !matches!(p, WorkerPhase::Dead)))
+        })
+    };
     alive || cluster_ipc::inbox_pending()
 }
 

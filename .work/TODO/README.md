@@ -264,7 +264,7 @@
     worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
     与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
     已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** + **primary 侧生命周期事件（`listening`/`disconnect`/`state`/异步 `fork`）** 达成——余 RR 调度，20260911）
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** + **primary 侧生命周期事件（`listening`/`disconnect`/`state`/异步 `fork`）** + **worker 侧 IPC 面（`process.on('message')` 接收 / `process.disconnect()` / `process` 真实事件器 / `cluster.worker` 事件面与桥接 / 通道默认保活）** 达成——余 RR 调度，20260911）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
     OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——
@@ -291,7 +291,17 @@
     `isConnected()` 改为通道连通性语义；四形态 listen payload（显式 IP／
     `0.0.0.0`／`::1`／未指定 host → `address=null`）逐字节对拍一致。**顺带修复
     `cluster_ipc` 握手读超时误判导致的偶发 IPC 面静默失效（约 1.5% 复现率 →
-    0/250）**。遗留：RR 调度；`Object.keys` 键序（字典序 vs 插入序）为独立
+    0/250）**。✅ **worker 侧 IPC 面已闭环**（20260911 §10）：`process` 事件面由空实
+    现改为真实事件器（`on`/`addListener`/`once`/`off`/`removeListener`/
+    `removeAllListeners`/`emit`/`listenerCount`/`listeners`，别名同一函数对象）；
+    primary → worker 消息投递（2 实参、`handle` 恒 `undefined`）；`process.disconnect()`
+    （返回 `undefined`、`connected` 同步翻转、二次调用 `ERR_IPC_DISCONNECTED`、
+    `'disconnect'` 经 `nextTick` 异步派发）；worker 侧 `cluster.worker.on('message')`/
+    `send`/`isConnected`/`isDead` 与 `require('cluster')` 时的 process→worker 桥接；
+    **IPC 通道默认保活**（Node 实测口径：fork 出的子进程脚本跑完不退出）——
+    5 例探针与 Node v22.23.1 逐字节一致（详见
+    [20260911/README.md §10](./20260911/README.md)）。遗留：RR 调度（架构级，
+    §10.6 已登记处置建议）；`Object.keys` 键序（字典序 vs 插入序）为独立
     全仓专项（详见 [20260911/README.md §9](./20260911/README.md)）。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译

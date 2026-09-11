@@ -709,3 +709,171 @@ Node 语义修正）/ `.work/TODO/README.md` / `.work/TODO/20260911/README.md` /
 **提交后剩余 M5.2 缺口**：真 round-robin 调度（`schedulingPolicy` 恒
 `SCHED_NONE`）；worker 侧 `process.on('message')` 接收面（worker 不激活 IPC
 事件源，见模块文档缺口段）。
+
+## 10. 待办 28 · M5.2 剩余项④：worker 侧 `process.on('message')` / `process.disconnect()`
+
+> 触发指令：「继续M5」。本项 = §9.8「提交后剩余 M5.2 缺口」中的**项 2**（worker 侧
+> `process.on('message')` 接收面）。项 1（真 RR 调度）登记为架构级缺口，见 §10.6。
+
+### 10.1 开工前登记（目标 + 验收标准）
+
+| # | 目标 | 验收标准 | 证据 |
+|---|---|---|---|
+| 1 | worker 侧 `process` 真实事件器 | `on`/`addListener`/`once`/`off`/`removeListener`/`removeAllListeners`/`emit`/`listenerCount`/`listeners` 按 Node 语义（`on` 返回 `process` 自身；`emit` 返回是否有监听器；`once` 触发即自删） | §10.5 用例 1/2/3 + 逐字对拍 |
+| 2 | primary → worker 消息投递 | `worker.send(v)` → worker 内 `process.on('message', (message, handle))`：2 实参、`handle === undefined`、载荷 JSON 往返逐字一致 | §10.5 用例 1 |
+| 3 | worker 侧通道保活（Node channel ref 语义） | worker 内 IPC 通道建立即保活（脚本跑完不退出），与 Node 实测一致；`process.disconnect()` / 通道关闭后解除保活 | §10.5 用例 1/2 |
+| 4 | worker 侧 `cluster.worker` 事件面 | `cluster.worker.on('message', …)` 收到与 `process.on('message')` 同一载荷（Node `Worker` ctor 的 process→worker 桥接）、`cluster.worker.send` 回送、`listenerCount('message')` 初值 0 | §10.5 用例 3 |
+| 5 | `process.disconnect()`（worker 侧） | 返回 `undefined`、`process.connected` **同步**翻 `false`、二次调用抛 `ERR_IPC_DISCONNECTED`（文本 `IPC channel is already disconnected`） | §10.5 用例 2 |
+| 6 | primary 侧 `'disconnect'`/`'exit'` 序列 | `worker 'disconnect'`（0 实参）→ `cluster 'disconnect'`（1 实参）→ `'exit'`（`state='dead'`、已出 `workers` 表、`code=0`） | §10.5 用例 2 |
+| 7 | 既有 M5 用例不回归 | `m52_cluster_events_test` / `m52_settings_test` / `m52_http_cluster_test` / `builtins_phase6_proc_test` + M5 差分门禁 5/5 + 门禁三连全绿 | §10.5 |
+
+**开工前事实**：`cluster.rs` 模块文档缺口段自述「worker 侧不激活 IPC 事件源」，
+`drain_ipc_inbox` 对 `key == 0`（worker 自身通道）的帧**直接丢弃**；`process.on` 的
+处理器为 `require_aliases::process_noop_event`（空实现）。
+
+### 10.2 Oracle 取证（先取权威语义，再动代码）
+
+**方法**：Node v22.23.1 官方实现（`lib/internal/child_process.js` 的 `Control`
+类 + `_forkChild`）+ 本机实测探针（4 次连跑逐字节稳定）。
+
+关键源码事实（决定性）：
+
+```js
+// lib/internal/child_process.js（v22.22.2 原文）
+refCounted() { if (++this.#refs === 1 && !this.#refExplicitlySet) this.#channel.ref(); },
+unrefCounted() { if (--this.#refs === 0 && !this.#refExplicitlySet) this.#channel.unref(); }
+// _forkChild：p.unref(); setupChannel(process, p, mode);
+//   process.on('newListener',      n => (n==='message'||n==='disconnect') && control.refCounted());
+//   process.on('removeListener',   n => (n==='message'||n==='disconnect') && control.unrefCounted());
+// internal/cluster/worker.js：Worker ctor → this.process.on('message', (m,h) => this.emit('message', m, h))
+// internal/cluster/child.js  ：process.once('disconnect', …) + cluster.worker = new Worker({process})
+```
+
+**两处非显然结论（必须实测，仅凭记忆不可能得出）**：
+1. **fork 出的子进程 IPC 通道「默认保活」**：worker 脚本跑完仍不退出（实测 14s 后
+   仍 `connected=true`），必须显式 `process.channel.unref()` 才释放（探针 E：
+   子进程内 `process.channel.unref()` 后**立即**以 0 退出）。故「worker 无监听器即可
+   自然退出」在 Node 上**不成立**；
+2. **`require('cluster')` 会在 worker 的 `process` 上留下内部监听器**：
+   `process.listenerCount('message')` 在用户注册前已为 **1**（桥接），注册后为 2。
+
+**固化 oracle（探针 p1/p2/p3，4/4 逐字节稳定，存会话 scratch）**：
+
+```text
+[p1 消息投递] W listeners0=1 on=function / W listeners1=2 /
+  W msg={"n":1,"s":"str","arr":[1,"2",null,true],"o":{"k":"v"}} argc=2 handle=undefined connected=true listeners=2 /
+  W msg="plain" / W msg=42 / W msg={"fin":true} /
+  P online id=1 state=online / P send1=true / P msg={…} argc=2 handle=undefined / … / P exit code=0 signal=null state=dead
+[p2 process.disconnect] W disconnect-type=function connected=true /
+  W ret=undefined connected-now=false / W second code=ERR_IPC_DISCONNECTED msg=IPC channel is already disconnected /
+  P online state=online / P send-go=true /
+  P worker-disconnect state=disconnected argc=0 connected=false dead=false exitedAfterDisconnect=false /
+  P cluster-disconnect id=1 argc=1 / P exit code=0 signal=null state=dead dead=true workers=0
+[p3 worker 事件面] W worker-state=online listeners=0 / W listeners-after=1 /
+  W worker.on msg={"ping":1} argc=2 handle=undefined connected=true / W send-ret=true /
+  W worker.on msg={"bye":true} … / P online state=online connected=true / P send-ping=true /
+  P msg={"pong":1} argc=2 handle=undefined / P send-bye=true / P exit code=0 state=dead
+```
+
+**探针纪律（本轮新增，均来自实测踩坑）**：
+1. **一切「primary 先发」必须以 worker 的 `ready` 上报为门**：`'online'` 事件到达
+   primary 的时刻**可能早于** worker 脚本注册 `process.on('message')`，此时先发的
+   消息被丢弃（探针首版靠 400ms 定时器规避，不稳定）；
+2. **primary 侧全部打印收拢进 `'exit'` 处理器**：跨进程 stdout 交错无时序保证；
+   收拢后 primary 的输出必然晚于 worker 全部输出（worker 退出前已同步落盘）；
+3. **worker 退出前不得留有在途帧**：末次交互由 primary 的显式消息驱动、且该消息
+   不回送（否则 `'exit'` 与帧投递竞态，输出会偶发少一行）。
+
+### 10.3 实现要点
+
+**6 个源码文件（+ 1 个新增 e2e 文件）**：
+
+| 文件 | 改动 |
+|---|---|
+| `builtins/child_process/proc_common.rs` | 实例事件器抽出**按实例句柄**的原语（`emitter_add`/`emitter_remove`/`emitter_remove_all`/`emitter_snapshot`），`inst_on/inst_once/inst_off/inst_remove_all` 改为其薄包装（单一实现源，GC 根不变） |
+| `builtins/require_aliases.rs` | `process` 事件面由**空实现**改为真实事件器：`on`/`addListener`/`once`/`off`/`removeListener`/`removeAllListeners`/`emit`/`listenerCount`/`listeners`；监听器以 `process` 单例句柄为键（方法经 NativeFn 名分派，`current_receiver()` 是方法函数不是实例）；别名共用同一函数对象（Node `off === removeListener`） |
+| `builtins/cluster_ipc.rs` | 子进程侧：读线程退出（对端 EOF）翻转 `connected` 并投递 `Incoming::Closed`（key 0）；新增 `child_close_channel()`（`process.disconnect()` 用：`shutdown(Write)` 发 FIN + 本地标记未连通） |
+| `builtins/cluster.rs` | worker 侧全套：`worker_setup_channel(vm)` 在通道建立即激活 IPC 事件源（Node 默认保活口径）；`on_cluster_required()`（首次 `require('cluster')` 挂接 process→`cluster.worker` 桥接）；`dispatch_self_frame()`（`{"t":"m"}` → `process 'message'`）与 `worker_channel_closed()`（`'disconnect'`）；`process.disconnect()`（`ERR_IPC_DISCONNECTED` + `'disconnect'` 经 nextTick 异步派发）；`cluster.worker` 的 emitter/`isConnected`/`isDead` 表面；`cluster_ipc_busy()` 分 worker/primary 两态 |
+| `interpreter.rs` | `worker_setup_channel(&mut vm)`（激活事件源）+ worker 内 `process.disconnect` 属性 + `process` 事件方法清单补 `addListener`/`off` |
+| `modules.rs` | `require()` 命中内置模块后调 `cluster::on_cluster_required`（worker 内首次 require cluster 的桥接时点） |
+| `tests/m52_worker_msg_test.rs`（新增） | 5 例 `assert_e2e_matches_node` 真对拍 + 逐字段期望串 |
+
+**关键实现口径（均由实测决定，非推断）**：
+1. **保活**：worker 侧通道建立即激活事件源（对齐 Node「fork 子进程通道默认保活」实测）；
+   通道关闭（对端 EOF 或 `process.disconnect()`）后由泵自行注销；
+2. **桥接按 require 挂接**：本运行时 cluster 模块在 `Vm` 初始化阶段统一构建（无「首次
+   require」时点），故桥接移到 `require('cluster')` 处按需挂接——这样
+   `process.listenerCount('message')` 的可见值与 Node 一致（require 后为 1）；
+3. **`'disconnect'` 异步派发**：`process.disconnect()` 内只同步翻 `connected` 并
+   `nextTick` 排队派发（实测 Node 下调用栈内后续语句仍会执行，同步发射会吞掉它们）；
+4. **桥接的退出规则**：`'disconnect'` 转发给 `cluster.worker` 后，若
+   `exitedAfterDisconnect` 为假值则 `process.exit(0)`（`internal/cluster/child.js` 语义）。
+
+### 10.4 对拍证据（aluka vs Node 22.23.1，逐字节）
+
+**固化 oracle**：5 个探针（`p1`…`p5`）在 Node v22.23.1 连跑 **4 次输出逐字节一致**，
+aluka 侧连跑 **3 次输出逐字节一致且与 Node 完全一致**（`IDENTICAL=True`）：
+
+| 探针 | 覆盖面 | 结论 |
+|---|---|---|
+| `p1` | primary → worker 消息投递（载荷/argc/handle/connected/listenerCount 含内部桥接） | IDENTICAL |
+| `p2` | worker `process.disconnect()`（返回值/`connected` 同步翻转/`ERR_IPC_DISCONNECTED`）+ primary 侧 disconnect→exit 序列 | IDENTICAL |
+| `p3` | worker 侧 `cluster.worker.on('message')`/`send`/`listenerCount`/`isConnected`/`isDead` | IDENTICAL |
+| `p4` | `process` 事件器值语义（14 条断言：返回值/别名同一性/once 自删/listeners 副本） | IDENTICAL |
+| `p5` | worker 通道保活（300ms 处 `connected=true`、`state=online`） | IDENTICAL |
+
+**门禁 e2e**：`cargo test -p aluka-cli --all-features --test m52_worker_msg_test` →
+`5 passed; 0 failed`，`--nocapture` 确认**无 `[SKIP node-e2e]`**（真对拍）。
+
+**既有 M5 用例回归**：`m52_cluster_events_test`(4) / `m52_settings_test`(7) /
+`m52_http_cluster_test`(3) / `builtins_phase6_proc_test`(11) / `m5_semantics_test`(8) /
+`builtins_phase9_m4_test`(1) / `express_e2e_test`(1) 全绿；
+M5 差分门禁 `ALUKA_CONF_FILTER=m5` → **5/5 PASS, 0 invalid**。
+
+### 10.5 门禁三连（真实输出）与交付摘要
+
+```text
+# 1. 格式化门禁
+$ cargo fmt --all --check                      FMT_CHECK_EXIT=0
+
+# 2. 严格 Clippy 门禁（零警告允许）
+$ cargo clippy --all-targets --all-features -- -D warnings   CLIPPY_EXIT=0
+
+# 3. 全工作区全量测试门禁（NODE=<v22.23.1>，CARGO_INCREMENTAL=0）
+$ cargo test --workspace --all-features        TEST_EXIT=0   （墙钟 229.9s）
+聚合：suites=89 passed=629 failed=0 ignored=1
+      grep -c '^test result: FAILED' = 0 ；grep -c '^error' = 0 ；
+      grep -c '[SKIP node-e2e]' = 0（新增用例全部真对拍）
+```
+
+- 与上一轮基线（§9.6：88 suites / 624 passed / 0 failed / 1 ignored）对照：
+  **+1 套件、+5 用例**，恰好等于本轮新增的 `m52_worker_msg_test.rs`；
+  `1 ignored` 为既有 doc-test（`builtins::builtin_module`），非本轮引入。
+- 本轮 Clippy 首跑命中 `clippy::iter_over_slice`（`args.iter().copied().collect()`）
+  → 改 `args.to_vec()` 后零告警（记录以便复用）。
+
+**本轮新登记的偏离（诚实登记，不静默）**：
+
+| 项 | Node | 本运行时 | 影响 |
+|---|---|---|---|
+| channel ref 粒度 | `refCounted`/`unrefCounted` 按 `'message'`/`'disconnect'` 监听器**计数** ref，`process.channel.ref()/unref()` 可显式干预 | 以「通道连通即保活」等价实现 | 显式 `process.channel.ref/unref`、计数式 unref 未接线（可观测面：Node 在移除全部监听器后仍保活，本运行时行为等价于默认保活） |
+| worker 侧 `cluster.worker.disconnect()` / `isDisconnected` | `Worker.prototype.disconnect` 置 `'disconnecting'` 并发 `{act:'disconnect'}` 帧 | 不实现（worker 内可用 `process.disconnect()` 达成同一语义） | 该方法缺失 |
+| primary 发起的 `cluster.disconnect()` | 下发 `{act:'disconnect'}` 帧，worker 走 `_disconnect(true)` 并以 `exitedAfterDisconnect=true` 退出 | 仍走既有 `destroy`（杀进程）路径 | 沿用 §9.7 登记（`exitedAfterDisconnect` 恒 false） |
+| worker 侧 `cluster.worker.isDead()` | `process.exitCode/SignalCode != null` | 恒 `false`（二者未接线；进程存活时二者恒假值，故等价） | 仅退出路径不可观测 |
+| 被杀子进程的 `console.log` 缓冲 | 继承 stdio 逐写直落，被杀前的输出仍可见 | `console.log` 走行模型缓冲（`vm.stdout_records`，CLI 运行结束后统一输出），被 `kill()` 时缓冲丢失 | **引擎级既有行为**（非本轮引入）；探针纪律新增第 4 条 |
+| worker 内未 `require('cluster')` 时的 `listenerCount('message')` | 0（桥接仅在 require 时挂接；但通道仍默认保活） | 本运行时桥接同样按 require 挂接 → 0 ✔（保活由通道连通承担） | 无（已对齐） |
+
+**未处理项（本轮不擅自扩张）**：`process.channel`（`ref`/`unref`/`hasRef`/`fd`）对象面、
+`process.on('internalMessage')`、`process.on('newListener')`/`'removeListener'` 元事件。
+
+### 10.6 项 1（真 RR 调度）的处置（登记，未实施）
+
+`cluster.schedulingPolicy` 恒 `SCHED_NONE`、端口由内核（`SO_REUSEADDR`/`REUSEPORT`）
+分发。Node 的 `SCHED_RR` 需要 **primary 自己 accept 连接后把 server 句柄经 IPC 传给
+被选中的 worker**（`round_robin_handle.js` + `sendHelper(..., handle)`）：这要求
+1）primary `listen` 并 accept；2）句柄（socket）跨进程传递；3）primary 侧轮询选 worker。
+本运行时的 IPC 通道为**回环 TCP 行协议**（无句柄传递，`cluster_ipc` 文档已登记
+「句柄传递未实现」），且端口共享策略本身是内核分发——改造属架构级变更（影响
+`net.rs`/`http/server.rs` 的 listen 路径与 Windows 无 REUSEPORT 的回退分支），
+超出 M5.2 收口范围。**建议**：单独立项评估（与 `process.channel`/句柄传递面一并），
+本轮仅保留登记，不放宽任何断言。

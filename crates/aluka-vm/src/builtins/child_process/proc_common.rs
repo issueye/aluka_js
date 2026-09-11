@@ -97,15 +97,7 @@ fn inst_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(receiver);
     }
     let event = vm.to_property_key(args[0]);
-    let cb = args[1];
-    if let Value::Object(_) = cb {
-        with_ns_state(r.0, |s| {
-            s.listeners.entry(event).or_default().push(NsListener {
-                callback: cb,
-                once: false,
-            });
-        });
-    }
+    emitter_add(r.0, &event, args[1], false);
     Ok(receiver)
 }
 
@@ -119,15 +111,7 @@ fn inst_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(receiver);
     }
     let event = vm.to_property_key(args[0]);
-    let cb = args[1];
-    if let Value::Object(_) = cb {
-        with_ns_state(r.0, |s| {
-            s.listeners.entry(event).or_default().push(NsListener {
-                callback: cb,
-                once: true,
-            });
-        });
-    }
+    emitter_add(r.0, &event, args[1], true);
     Ok(receiver)
 }
 
@@ -141,14 +125,7 @@ fn inst_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(receiver);
     }
     let event = vm.to_property_key(args[0]);
-    let cb = args[1];
-    with_ns_state(r.0, |s| {
-        if let Some(list) = s.listeners.get_mut(&event) {
-            if let Some(pos) = list.iter().position(|l| same_object(l.callback, cb)) {
-                list.remove(pos);
-            }
-        }
-    });
+    emitter_remove(r.0, &event, args[1]);
     Ok(receiver)
 }
 
@@ -157,21 +134,70 @@ fn same_object(a: Value, b: Value) -> bool {
     matches!((a, b), (Value::Object(x), Value::Object(y)) if x == y)
 }
 
+// ---------------------------------------------------------------------------
+// 实例事件器「按实例句柄」原语（M5.2）：
+// `process` 全局单例的事件方法经 `NativeFn` 名（`"process.on"`）分派，
+// `current_receiver()` 拿到的是**方法函数**而非实例，故不能走上面的 `inst_*`
+// （它们以 `current_receiver()` 的句柄为键）。调用方直接给出实例句柄。
+// ---------------------------------------------------------------------------
+
+/// 给实例句柄 `id` 追加一个监听器（非对象回调按 Go 侧事件器语义忽略）。
+pub(crate) fn emitter_add(id: u32, event: &str, cb: Value, once: bool) {
+    if !matches!(cb, Value::Object(_)) {
+        return;
+    }
+    with_ns_state(id, |s| {
+        s.listeners
+            .entry(event.to_owned())
+            .or_default()
+            .push(NsListener { callback: cb, once });
+    });
+}
+
+/// 按回调同一性移除实例句柄 `id` 上首个匹配的监听器。
+pub(crate) fn emitter_remove(id: u32, event: &str, cb: Value) {
+    with_ns_state(id, |s| {
+        if let Some(list) = s.listeners.get_mut(event) {
+            if let Some(pos) = list.iter().position(|l| same_object(l.callback, cb)) {
+                list.remove(pos);
+            }
+        }
+    });
+}
+
+/// 移除实例句柄 `id` 上的监听器；`event` 为 `None` 时清空全部事件。
+pub(crate) fn emitter_remove_all(id: u32, event: Option<&str>) {
+    match event {
+        Some(event) => with_ns_state(id, |s| {
+            s.listeners.remove(event);
+        }),
+        None => with_ns_state(id, |s| s.listeners.clear()),
+    }
+}
+
+/// 实例句柄 `id` 上某事件的监听器快照（Node `listeners(event)` 的数组副本语义）。
+pub(crate) fn emitter_snapshot(id: u32, event: &str) -> Vec<Value> {
+    NS_EMITTERS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&id))
+            .and_then(|s| s.listeners.get(event))
+            .map(|list| list.iter().map(|l| l.callback).collect())
+            .unwrap_or_default()
+    })
+}
+
 /// `inst.removeAllListeners([event])`。
 fn inst_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let Value::Object(r) = receiver else {
         return Ok(receiver);
     };
-    match args.first() {
-        Some(v) if !matches!(v, Value::Undefined) => {
-            let event = vm.to_property_key(*v);
-            with_ns_state(r.0, |s| {
-                s.listeners.remove(&event);
-            });
-        }
-        _ => with_ns_state(r.0, |s| s.listeners.clear()),
-    }
+    let event = match args.first() {
+        Some(v) if !matches!(v, Value::Undefined) => Some(vm.to_property_key(*v)),
+        _ => None,
+    };
+    emitter_remove_all(r.0, event.as_deref());
     Ok(receiver)
 }
 

@@ -457,7 +457,9 @@ impl Vm {
             "listenerCount",
             "listeners",
             "on",
+            "addListener",
             "once",
+            "off",
             "removeListener",
             "removeAllListeners",
             "emit",
@@ -466,11 +468,14 @@ impl Vm {
             let _ = vm.set_property(Value::Object(process_obj), method, Value::Object(f));
         }
         // cluster worker / fork 子进程的 IPC 面（M5.2）：Node 在 bootstrap 阶段
-        // 建立通道（与是否 require('cluster') 无关），此后 `process.send` 存在、
-        // `process.connected` 为 true；primary 无通道，二者均为 undefined。
-        if crate::builtins::cluster::worker_setup_channel() {
+        // 建立通道（与是否 require('cluster') 无关），此后 `process.send` /
+        // `process.disconnect` 存在、`process.connected` 为 true，并由本调用点
+        // 激活 IPC 事件源（通道保活语义）；primary 无通道，三者均为 undefined。
+        if crate::builtins::cluster::worker_setup_channel(&mut vm) {
             let f = vm.alloc_native_fn("process.send");
             let _ = vm.set_property(Value::Object(process_obj), "send", Value::Object(f));
+            let d = vm.alloc_native_fn("process.disconnect");
+            let _ = vm.set_property(Value::Object(process_obj), "disconnect", Value::Object(d));
             let connected = Value::Boolean(crate::builtins::cluster::worker_channel_connected());
             let _ = vm.set_property(Value::Object(process_obj), "connected", connected);
         }
