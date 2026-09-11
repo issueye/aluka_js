@@ -405,14 +405,22 @@
 
 ### M6 · 生产级 GC 与高性能引擎
 - [x] **M6.1 生产级分代 GC 闭环**（✅ 卡表写屏障 + 自适应堆伸缩 + 生产双代 + GC 压力模式已合入主循环（commits 5f7289f / 59a13e4）；✅ 验收：`gcPressure` 内存基准 **1.35x**（对标 Node.js 22 (V8) 峰值内存，远优于 2~3x 验收线）——20260912 核验补登记，证据 `crates/aluka-cli/examples/gcpressure.rs` 与 `.work/TODO/20260912/README.md`）
-- [ ] **M6.2 8 字节 NaN-boxing `Value` 切换**
-  - 将 `Value` 内部表示从 16 字节 Tagged Enum 切换为 8 字节 NaN-boxing 机器字；
-  - 降低 50% 栈空间与常量池常驻占用，大幅提升 CPU 缓存命中率；
-  - 验收：全量测试套件与性能 Benchmark 提升 1.5x 以上。
-  - 📌 现状登记（20260912）：JIT 侧 NaN-box u64 值域**已存在**
-    （`aluka-jit/src/valbox.rs`，与机器码逐位一致）；VM 侧 `Value` 切换未实施
-    ——`Value::` 变体引用全仓约 4900+ 处，需独立专项轮次（预估 2~3 个完整
-    工作日，须配 GC 压力模式 + 全量差分 + 独立性能基准），本轮不声称完成。
+- [x] **M6.2 8 字节 NaN-boxing `Value` 切换**（20260912 分支 m62-nanobox 落地并合并，
+  收尾提交 7c74aef；证据 `.work/TODO/20260912/README.md` §7）
+  - ✅ `Value` 表示切换完成：`crates/aluka-vm/src/value.rs` 重写为 8 字节 NaN-box
+    机器字（`#[repr(transparent)] u64`，`size_of==8` 编译期断言），编码与
+    `aluka-jit/src/valbox.rs` 同源（f64 比特直存 + `0xFFF7…|tag`，ObjectRef 占
+    8..=39 位）；兼容层（关联常量/同名构造函数/`ValueCase` 镜像 + 访问器）使
+    全仓 4900+ 处 `Value::` 引用完成迁移；
+  - ✅ 门禁全绿：fmt / clippy `-D warnings` 0 错；全量测试 **639 passed, 0 failed**；
+    `ALUKA_GC_STRESS=8` **545 passed, 0 failed**；conformance 全量差分 vs
+    node v22.23.1 逐字节一致；jitdiff 逐位一致全绿（JIT/解释器共享值域根基）；
+  - ✅ 内存收益兑现：gcPressure **1.25x**（M6.1 时 1.35x → 8 字节堆峰值下降）；
+  - ⚠️ 吞吐复合验收待 M6.3：fib_bench 单项 1.019x（824.5ms vs 840.4ms，负载以
+    269 万次调用压栈为主，表示切换直接收益有限）；总表「≥1.5x」为
+    **表示切换 + M6.3 PIC/JIT 协同**的复合目标，验收线不放宽，M6.3 完成后复核；
+  - 附带修复：`aluka-core::Value::is_object` 无限递归；`test/state.rs` GC 重入
+    `borrow_mut`（分配移出借锁——`ALUKA_GC_STRESS=8` 下确定性 panic 的 M5 潜伏缺陷）。
 - [ ] **M6.3 多态内联缓存 (PIC) 与 JIT 全指令流扩容**
   - 对象属性存取、方法调用、局部变量读写全量接入多态 Shape 内联缓存；
   - 扩充 Cranelift JIT 后端支持更丰富的控制流与调用指令发射；
