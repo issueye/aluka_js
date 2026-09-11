@@ -430,11 +430,16 @@
     （hot_loop/prop_sum PIC/closure_call——保守门禁「JIT 不慢于解释器」已固化）。
   - ✅ 切片一（20260912，715dd43）：**解释器属性读取 IC 落地**——4096 槽
     direct-mapped 站点缓存（`pic.rs`，GetProp/GetPropLocal），6 条命中守卫 +
-    魔法键写回资格，语义与慢路径逐条对齐；7 项单测 + 全仓 644 测试 +
-    GC 压力全绿；fib_bench 824.5→812.9ms（M6.2 以来累计 1.034x）。
-    剩余：写路径/方法调用 IC + 多态桩（≈1 天）；JIT 扩容至调用/闭包/
-    生成器/Try 全指令流（≈2~3 天，涉及调用约定与 GC 栈映射协同）——
-    后续专项轮次继续。
+    魔法键写回资格，语义与慢路径逐条对齐；fib_bench 824.5→812.9ms。
+  - ✅ 切片二（20260912，11dbee5）：**写路径 IC + 方法调用 IC 落地**——
+    `set_property_ic`（SetProp 三变体，覆盖/追加皆缓存）+ `get_method_ic`
+    （CallMethod/CallMethodArgs，receiver shape → 直接原型方法槽位绑定，
+    方法值现读防原型覆写过期）。过程中 test262 门禁捕获 Proxy set trap
+    被吞（错误传播缺失）当场修复，154/154 恢复全绿；648 测试 + GC 压力
+    454 + conformance 差分 + jitbench 3/3 全绿；fib_bench 812.9→793.5ms
+    （**M6.2 以来累计 1.059x**）。
+    剩余：多态桩（2~4 shape 计数数组）；JIT 扩容至调用/闭包/生成器/Try
+    全指令流（≈2~3 天，涉及调用约定与 GC 栈映射协同）——后续专项轮次继续。
 
 ---
 
