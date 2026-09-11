@@ -82,6 +82,41 @@ end_of_record
 倍增），无法在本轮内以「真实证据闭环」标准完成；本轮先完成 M5 收口与 M6.1
 核验同步，M6.2/M6.3 按上表登记为后续专项，不在未实施状态下声称完成。
 
-## 5. 门禁
+## 5. 门禁（真实输出）
 
-（见 §6 收尾统一回填）
+```text
+$ cargo fmt --all --check                → 通过
+$ cargo clippy --all-targets --all-features -- -D warnings
+    → 0 error
+$ cargo test --workspace --all-features
+    → passed: 639, failed: 0（638 基线 + 新增 m54_lcov_test 1 例）
+$ ALUKA_CONF_FILTER=m5 …conformance_node22_test
+    → 8/8 passed, 0 invalid
+```
+
+提交：`98c5aad` feat(coverage): M5.4 LCOV 行覆盖四层闭环（32 files, +1369/−495）。
+
+## 6. M6.2 / M6.3 精确现状与剩余工作量（如实登记，不声称完成）
+
+### M6.2 8 字节 NaN-boxing `Value` 切换 —— ❌ 未实施
+- 现状：`crates/aluka-vm/src/value.rs` 的 `Value` 仍为 16 字节 Tagged Enum
+  （f64 变体 8 字节 + 判别式对齐）。**JIT 侧已存在 NaN-box u64 值域**
+  （`crates/aluka-jit/src/valbox.rs`，JSC 风格 tag 编码，机器码与解释器
+  逐位一致）——M6.2 的实质是把该表示下沉为 VM 侧 `Value` 本体。
+- 工作量：`Value::` 变体引用全仓约 **4900+ 处**（构造器可 sed、
+  模式匹配需逐处改写为访问器/kind 判定）；涉及 parser/compiler/vm/
+  runtime/webapi 全部 crate + GC 根扫描 + 序列化。
+- 风险：任何一处编解码错误即静默错值；必须配 `ALUKA_GC_STRESS` +
+  全量差分 + golden 套件守护，且性能验收（≥1.5x）需要独立基准轮。
+- **结论：独立专项轮次（预估 2~3 个完整工作日），本轮不实施、不声称完成。**
+
+### M6.3 PIC 与 JIT 全指令流扩容 —— ❌ 未完全实施（基础已在）
+- 已有：Cranelift 后端（J2 数值子集：算术/比较/跳转/局部变量）+
+  `PicCell` 形状内联缓存结构 + `jit_hot` 热点分层；
+  `jitbench` 3/3 PASS（hot_loop JIT ≥ 解释器、prop_sum **PIC vs 解释器**、
+  closure_call JIT vs 解释器——保守门禁「不慢于」已固化）。
+- 剩余：① 解释器侧属性存取/方法调用 PIC 快速路径**全量接入**
+  （现覆盖 shape+slots 快存取，缺多态桩的计数与桩内直跳）；
+  ② JIT 扩容至调用/闭包/生成器/Try 等**全指令流**（现子集外编译期拒绝）。
+- 工作量：①≈1 天 + 基准；②≈2~3 天（涉及调用约定与 GC/栈映射协同）。
+- **结论：独立专项轮次，本轮不实施、不声称完成。**
