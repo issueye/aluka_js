@@ -162,6 +162,8 @@ pub struct Vm {
     pub(crate) prop_ic: Vec<crate::pic::PropIcEntry>,
     /// IC 命中计数（诊断/测试观测面）
     pub pic_hits: u64,
+    /// 方法调用 IC（直接原型绑定，见 `pic.rs`）
+    pub(crate) method_ic: Vec<crate::pic::MethodIcEntry>,
     /// 当前执行函数索引（错误定位用；-1 表示无）
     pub current_func_idx: i64,
     /// LCOV 行覆盖计数（`aluka test --test-reporter=lcov` 才挂载；默认 None
@@ -347,6 +349,7 @@ impl Vm {
             last_pc: 0,
             prop_ic: crate::pic::pic_table_new(),
             pic_hits: 0,
+            method_ic: crate::pic::method_ic_table_new(),
             current_func_idx: -1,
             coverage: None,
             nexttick_queue: std::collections::VecDeque::new(),
@@ -3989,8 +3992,9 @@ impl Vm {
                                 _ => self.stack.push(Value::Undefined),
                             }
                         } else {
-                            // 普通对象方法调用
-                            let method_val = self.get_property(receiver, &method_name)?;
+                            // 普通对象方法调用（原型方法绑定 IC）
+                            let m_site = self.pic_site(pc);
+                            let method_val = self.get_method_ic(receiver, &method_name, m_site)?;
                             if let Some(m_ref) = method_val.as_object() {
                                 // Promise resolver/rejecter（Promise.withResolvers 的
                                 // resolve/reject 属性）：按解析器标志兑现目标 promise
@@ -4387,20 +4391,23 @@ impl Vm {
                     let key = constant_string(&constants, instr.operand as usize);
                     let val = self.pop()?;
                     let obj = self.pop()?;
-                    self.set_property(obj, &key, val)?;
+                    let site = self.pic_site(pc);
+                    self.set_property_ic(obj, &key, val, site)?;
                     self.stack.push(val);
                 }
                 Op::SetPropObj => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let val = self.pop()?;
                     let obj = self.peek()?;
-                    self.set_property(obj, &key, val)?;
+                    let site = self.pic_site(pc);
+                    self.set_property_ic(obj, &key, val, site)?;
                 }
                 Op::SetPropTop => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let obj = self.pop()?;
                     let val = self.pop()?;
-                    self.set_property(obj, &key, val)?;
+                    let site = self.pic_site(pc);
+                    self.set_property_ic(obj, &key, val, site)?;
                 }
                 Op::SetPropComputedObj => {
                     let val = self.pop()?;
@@ -4737,7 +4744,8 @@ impl Vm {
                     let args_arr = self.pop()?;
                     let receiver = self.pop()?;
                     let args = self.to_array_values(args_arr);
-                    let method = self.get_property(receiver, &name)?;
+                    let m_site = self.pic_site(pc);
+                    let method = self.get_method_ic(receiver, &name, m_site)?;
                     let ret = self.invoke_callable(method, receiver, &args)?;
                     self.stack.push(ret);
                 }

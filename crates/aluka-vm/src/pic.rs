@@ -24,7 +24,7 @@
 use crate::VmError;
 use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::Vm;
-use crate::jit_helpers::to_vm_value;
+use crate::jit_helpers::{from_vm_value, to_vm_value};
 use crate::value::Value;
 
 /// 直接映射槽位数（2 的幂）。同下标站点互挤时整体逐出——多态热点表现为
@@ -70,6 +70,43 @@ pub(crate) fn pic_table_new() -> Vec<PropIcEntry> {
             slot: 0,
         };
         PIC_SLOTS
+    ]
+}
+
+/// 方法调用 IC 表槽数（站点数远少于属性读写，取 1/4 容量）。
+const METHOD_IC_SLOTS: usize = 1 << 10;
+
+/// 方法调用 IC 实体：绑定「receiver 隐藏类 → 直接原型上的方法槽位」。
+///
+/// 方法值**每次命中现读**（不缓存值本身）——原型同槽覆写新函数时无需失效
+/// 即自动生效；其余原型变异（删除→字典化、defineProperty 访问器）经
+/// `proto_shape` 比对与 `deleted_gen`/`has_accessors` 守卫拦截。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MethodIcEntry {
+    /// 站点键（0 = 空），与 [`PropIcEntry::site`] 同构
+    pub site: u64,
+    /// receiver 隐藏类 id（要求 receiver 自身**不含**该键——同 shape 键集一致）
+    pub shape: u32,
+    /// 直接原型的 ObjectRef（`set_prototype_of` 不改 shape，须显式比对）
+    pub proto: u32,
+    /// 原型隐藏类 id
+    pub proto_shape: u32,
+    /// 方法在原型槽位中的下标
+    pub slot: u32,
+}
+
+/// 全零方法 IC 表（`Vm::new` 初始化）。
+#[must_use]
+pub(crate) fn method_ic_table_new() -> Vec<MethodIcEntry> {
+    vec![
+        MethodIcEntry {
+            site: 0,
+            shape: 0,
+            proto: 0,
+            proto_shape: 0,
+            slot: 0,
+        };
+        METHOD_IC_SLOTS
     ]
 }
 
@@ -163,6 +200,166 @@ impl Vm {
             return false;
         };
         !s.names().any(|n| n == "_isStream" || n == "_isGlobalThis")
+    }
+
+    /// `Op::SetProp` 家族的 IC 接入点：命中即槽位直写（覆盖既有槽），
+    /// 否则走完整 `set_property` 并按资格写回（覆盖与追加路径皆可缓存——
+    /// 追加完成后 shape 已含键，后续同 shape 写入即覆盖语义）。
+    #[inline]
+    pub(crate) fn set_property_ic(
+        &mut self,
+        obj: Value,
+        key: &str,
+        val: Value,
+        site: u64,
+    ) -> Result<(), VmError> {
+        let idx = site as usize & (PIC_SLOTS - 1);
+        let entry = self.prop_ic[idx];
+        if entry.site == site
+            && let Some(r) = obj.as_object()
+            && let Some(HeapObject::Ordinary {
+                props: OrdinaryProps::Shape { shape, slots, .. },
+                deleted_gen,
+                has_accessors,
+                ..
+            }) = self.heap.get_mut(r.index())
+            && shape.0 == entry.shape
+            && *deleted_gen == 0
+            && *has_accessors == 0
+            && let Some(b) = slots.get_mut(entry.slot as usize)
+        {
+            *b = from_vm_value(val);
+            return Ok(());
+        }
+        self.set_property(obj, key, val)?;
+        self.pic_writeback(obj, key, site, idx);
+        Ok(())
+    }
+
+    /// `Op::CallMethod` 的方法解析 IC：绑定「receiver 隐藏类 → 直接原型上的
+    /// 方法槽位」，命中时现读原型槽位值（语义与慢路径的原型链查找一致）。
+    ///
+    /// 仅缓存**深度 1 原型**解析（方法挂直接原型的主导形态）；receiver 自身
+    /// 不得含同名自有键（同 shape 键集一致保证），多级原型链回退慢路径。
+    #[inline]
+    pub(crate) fn get_method_ic(
+        &mut self,
+        receiver: Value,
+        key: &str,
+        site: u64,
+    ) -> Result<Value, VmError> {
+        let idx = site as usize & (METHOD_IC_SLOTS - 1);
+        let entry = self.method_ic[idx];
+        if entry.site == site
+            && let Some(r) = receiver.as_object()
+            && let Some(HeapObject::Ordinary {
+                props: OrdinaryProps::Shape { shape, .. },
+                proto,
+                deleted_gen,
+                has_accessors,
+                ..
+            }) = self.heap.get(r.index())
+            && shape.0 == entry.shape
+            && *deleted_gen == 0
+            && *has_accessors == 0
+            && let Some(p) = proto
+            && p.0 == entry.proto
+            && let Some(HeapObject::Ordinary {
+                props:
+                    OrdinaryProps::Shape {
+                        shape: p_shape,
+                        slots,
+                    },
+                deleted_gen: p_deleted,
+                has_accessors: p_accessors,
+                ..
+            }) = self.heap.get(p.0 as usize)
+            && p_shape.0 == entry.proto_shape
+            && *p_deleted == 0
+            && *p_accessors == 0
+            && let Some(&b) = slots.get(entry.slot as usize)
+        {
+            self.pic_hits = self.pic_hits.wrapping_add(1);
+            return Ok(to_vm_value(b));
+        }
+        let val = self.get_property(receiver, key)?;
+        self.method_ic_writeback(receiver, key, site, idx);
+        Ok(val)
+    }
+
+    /// 方法 IC 写回：receiver 自身不含键且键落在**直接原型**槽位时才缓存。
+    fn method_ic_writeback(&mut self, receiver: Value, key: &str, site: u64, idx: usize) {
+        if MAGIC_KEYS.contains(&key) {
+            return;
+        }
+        let (shape, proto_ref) = {
+            let Some(r) = receiver.as_object() else {
+                return;
+            };
+            let Some(HeapObject::Ordinary {
+                props: OrdinaryProps::Shape { shape, .. },
+                proto,
+                deleted_gen,
+                has_accessors,
+                ..
+            }) = self.heap.get(r.index())
+            else {
+                return;
+            };
+            if *deleted_gen != 0 || *has_accessors != 0 {
+                return;
+            }
+            let Some(s) = self.shape_table.shape(*shape) else {
+                return;
+            };
+            if s.names().any(|n| n == "_isStream" || n == "_isGlobalThis") {
+                return;
+            }
+            (*shape, *proto)
+        };
+        let Some(p_ref) = proto_ref else {
+            return;
+        };
+        let Some(HeapObject::Ordinary {
+            props:
+                OrdinaryProps::Shape {
+                    shape: p_shape,
+                    slots,
+                },
+            deleted_gen: p_deleted,
+            has_accessors: p_accessors,
+            ..
+        }) = self.heap.get(p_ref.0 as usize)
+        else {
+            return;
+        };
+        if *p_deleted != 0 || *p_accessors != 0 {
+            return;
+        }
+        let Some(p_shape_data) = self.shape_table.shape(*p_shape) else {
+            return;
+        };
+        // receiver 自身不得含键（含键时解析走自有槽，不是原型绑定）
+        if self
+            .shape_table
+            .shape(shape)
+            .and_then(|s| s.lookup(key))
+            .is_some()
+        {
+            return;
+        }
+        if let Some(slot) = p_shape_data.lookup(key)
+            && slot <= u32::MAX as usize
+            && slot < slots.len()
+        {
+            self.method_ic[idx] = MethodIcEntry {
+                site,
+                shape: shape.0,
+                proto: p_ref.0,
+                proto_shape: p_shape.0,
+                slot: slot as u32,
+            };
+        }
     }
 }
 
@@ -264,5 +461,111 @@ mod tests {
         let site = vm.pic_site(11);
         let v = vm.get_property_ic(Value::Object(child), "p", site).unwrap();
         assert_eq!(v.as_number(), Some(42.0));
+    }
+}
+
+#[cfg(test)]
+mod slice2_tests {
+    use super::*;
+    use crate::interpreter::Vm;
+
+    /// 写 IC：同站点覆盖写命中槽位直写，读取面一致。
+    #[test]
+    fn write_ic_overwrite_keeps_visibility() {
+        let mut vm = Vm::new(0);
+        let o = vm.alloc_ordinary();
+        let _ = vm.set_property(Value::Object(o), "w", Value::Number(1.0));
+        let site = vm.pic_site(21);
+        vm.set_property_ic(Value::Object(o), "w", Value::Number(2.0), site)
+            .unwrap();
+        vm.set_property_ic(Value::Object(o), "w", Value::Number(3.0), site)
+            .unwrap();
+        let v = vm.get_property(Value::Object(o), "w").unwrap();
+        assert_eq!(v.as_number(), Some(3.0), "两次 IC 写后读面一致");
+        // 追加路径：首次走慢路径建立 shape，二次起命中
+        let o2 = vm.alloc_ordinary();
+        vm.set_property_ic(Value::Object(o2), "w", Value::Number(7.0), site)
+            .unwrap();
+        vm.set_property_ic(Value::Object(o2), "w", Value::Number(8.0), site)
+            .unwrap();
+        let v2 = vm.get_property(Value::Object(o2), "w").unwrap();
+        assert_eq!(v2.as_number(), Some(8.0), "追加后同 shape 写入走 IC");
+    }
+
+    /// 写 IC：setter 粘性拦截——缓存后 defineProperty 注册 setter，
+    /// 写入必须触发 setter 语义（不得直写数据槽）。
+    #[test]
+    fn write_ic_setter_beats_cached_slot() {
+        let mut vm = Vm::new(0);
+        let o = vm.alloc_ordinary();
+        let _ = vm.set_property(Value::Object(o), "s", Value::Number(1.0));
+        let site = vm.pic_site(22);
+        vm.set_property_ic(Value::Object(o), "s", Value::Number(2.0), site)
+            .unwrap();
+        // 注册 setter（has_accessors 置 1，shape 不变）
+        let setter = Value::Object(vm.alloc_native_fn("t.setter"));
+        if let Some(HeapObject::Ordinary {
+            setters,
+            has_accessors,
+            ..
+        }) = vm.heap.get_mut(o.index())
+        {
+            setters.insert("s".to_owned(), setter);
+            *has_accessors = 1;
+        }
+        // 慢路径真实触发 setter（未注册原生 setter 被调用即抛错）——
+        // 写入返回 Err 即证明走了访问器语义而非 IC 直写槽位
+        let r = vm.set_property_ic(Value::Object(o), "s", Value::Number(9.0), site);
+        assert!(r.is_err(), "setter 触发应产生错误而非静默直写");
+        let v = vm.get_property(Value::Object(o), "s").unwrap();
+        assert_ne!(v.as_number(), Some(9.0), "IC 写不得跳过 setter 语义");
+    }
+
+    /// 方法 IC：原型方法绑定命中 + 原型槽位覆写后现读新值。
+    #[test]
+    fn method_ic_binds_proto_and_reads_fresh() {
+        let mut vm = Vm::new(0);
+        let proto_ref = vm.alloc_ordinary();
+        let proto = Value::Object(proto_ref);
+        let m1 = Value::Object(vm.alloc_native_fn("m.one"));
+        let _ = vm.set_property(proto, "run", m1);
+        let child = vm.alloc_ordinary();
+        vm.set_prototype_of(Value::Object(child), Some(proto_ref));
+        let site = vm.pic_site(23);
+        let v1 = vm.get_method_ic(Value::Object(child), "run", site).unwrap();
+        assert_eq!(v1, m1, "首次冷解析绑定原型方法");
+        let v2 = vm.get_method_ic(Value::Object(child), "run", site).unwrap();
+        assert_eq!(v2, m1, "第二次命中 IC");
+        // 原型同槽覆写：shape 不变，方法值现读必须拿到新函数
+        let m2 = Value::Object(vm.alloc_native_fn("m.two"));
+        let _ = vm.set_property(proto, "run", m2);
+        let v3 = vm.get_method_ic(Value::Object(child), "run", site).unwrap();
+        assert_eq!(v3, m2, "原型覆写后现读新方法值");
+    }
+
+    /// 方法 IC：自有属性遮蔽（own key）不得绑定原型槽；多态站点互挤正确。
+    #[test]
+    fn method_ic_own_shadow_and_polymorphism() {
+        let mut vm = Vm::new(0);
+        let proto_ref = vm.alloc_ordinary();
+        let proto = Value::Object(proto_ref);
+        let pm = Value::Object(vm.alloc_native_fn("p.m"));
+        let _ = vm.set_property(proto, "go", pm);
+        // a：无自有 go（走原型）
+        let a = vm.alloc_ordinary();
+        vm.set_prototype_of(Value::Object(a), Some(proto_ref));
+        // b：自有 go 遮蔽（不走原型）
+        let b = vm.alloc_ordinary();
+        vm.set_prototype_of(Value::Object(b), Some(proto_ref));
+        let own_m = Value::Object(vm.alloc_native_fn("b.own"));
+        let _ = vm.set_property(Value::Object(b), "go", own_m);
+        let site = vm.pic_site(24);
+        let va = vm.get_method_ic(Value::Object(a), "go", site).unwrap();
+        let vb = vm.get_method_ic(Value::Object(b), "go", site).unwrap();
+        assert_eq!(va, pm, "a 经原型解析");
+        assert_eq!(vb, own_m, "b 走自有槽（遮蔽原型）");
+        // 互挤后再读：值仍各自正确
+        let va2 = vm.get_method_ic(Value::Object(a), "go", site).unwrap();
+        assert_eq!(va2, pm);
     }
 }

@@ -200,3 +200,40 @@ $ cargo run --release -p aluka-cli --example fib_bench
 - 多态桩（2~4 shape 计数数组）与超多态回退（现直接映射互挤已保证正确性）；
 - JIT 全指令流扩容（调用/闭包/生成器/Try）——表示切换与解释器 IC 就位后，
   复核 M6.2「≥1.5x」吞吐复合验收。
+
+## 9. M6.3 切片二：写路径 IC + 方法调用 IC（20260912 续）
+
+### 9.1 实现（`pic.rs` 扩展）
+
+| 项 | 内容 |
+|---|---|
+| 写路径 IC | `set_property_ic`（Op::SetProp/SetPropObj/SetPropTop）：命中守卫同读取 IC（Ordinary Shape 模式 + shape 相等 + `deleted_gen`/`has_accessors` 零），命中即 `slots[slot]` 直写；写回资格沿用魔法键/标记属性排除——**覆盖与追加路径皆可缓存**（追加完成后 shape 已含键，后续同 shape 写入即覆盖语义） |
+| 方法调用 IC | `get_method_ic`（Op::CallMethod 通用解析点 + Op::CallMethodArgs）：独立 1024 槽表，绑定「receiver 隐藏类 → **直接原型**上的方法槽位」；**方法值每次命中现读**（原型同槽覆写新函数无需失效即生效）；原型变异经 `proto` 指针比对（`set_prototype_of` 不改 shape）+ 原型 `proto_shape`/`deleted_gen`/`has_accessors` 守卫拦截；仅缓存深度 1 原型解析，receiver 自身不得含同名键（多级原型链回退慢路径） |
+
+### 9.2 实测缺陷（切片二引入即被门禁捕获、当场修复）
+
+**Proxy set trap 失效**：`set_property_ic` 丢弃了慢路径 `set_property` 的 `Result`——
+`Proxy { set: () => false }` 严格写入应抛 TypeError 被静默吞掉，
+test262 子集 3 例（m1-proxy-007/022/028，`assert.throws: no exception thrown`）
+当场失败。修复：错误传播（`?`）+ 调用点传播；**test262 154/154 恢复全绿**。
+（教训：IC 快路径所有回退必须完整保留慢路径的错误语义——这正是差分门禁的价值。）
+
+### 9.3 门禁证据（真实输出）
+
+```text
+$ cargo fmt --all --check / clippy -D warnings        → 通过 / 0 error
+$ cargo test --workspace --all-features               → 648 passed, 0 failed
+$ cargo test -p aluka-cli --test test262_subset_test  → 154/154 全绿
+$ cargo test -p aluka-cli --test conformance_node22_test → 1 passed（全量差分，23.27s）
+$ ALUKA_GC_STRESS=8（vm 212 + cli 242）               → 454 passed, 0 failed
+$ cargo test -p aluka-jit --release --test jitbench   → 3/3
+$ cargo run --release -p aluka-cli --example fib_bench
+    → 793.4831ms（min-of-5）——master 840.4 → M6.2 824.5 → 切片一 812.9
+      → 切片二 793.5，**累计 1.059x**；输出校验 832040
+```
+
+### 9.4 剩余（如实登记）
+
+多态桩（2~4 shape 计数数组，现直接映射互挤已保证正确性仅损多态站点吞吐）；
+JIT 全指令流扩容（调用/闭包/生成器/Try——调用约定与 GC 栈映射协同），
+完成后复核 M6.2「≥1.5x」吞吐复合验收。
