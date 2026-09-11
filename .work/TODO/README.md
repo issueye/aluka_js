@@ -342,9 +342,15 @@
     **同步**关闭本进程内 server）；配套新增 `net`/`http` 的 `pub(crate)` 批量关闭
     （断连关闭 worker 内全部监听 server 并派发 `'close'`，否则 worker 无法优雅退出）。
     两例 e2e（`m52_disconnect_test.rs`）与 Node v22.23.1 逐字节一致。
+    ✅ **`{"t":"e"}` ack 回程已闭环**（20260911 待办 31，证据见
+    [20260911/README.md §15](./20260911/README.md)）：worker 上报后**挂起**
+    （`process.connected` 同步段保持 `true`——Node 实测口径，修复前为 false 即
+    偏离点），primary 置 `ead=true` 后回同帧 ack（Node `{ack: seq}` 的无 seq
+    近似），worker 收到才收尾 `process.disconnect()`；上报失败立即收尾、挂起中
+    重复调用 no-op、对端 EOF 挂起失效。第 3 例 e2e 逐字对拍。
     **遗留**：RR 调度（架构级，判定「需 unsafe FFI + 换 IPC 介质 + 新直连依赖」，
-    与仓库 `unsafe_code=deny` 冲突 → §11.5 决策记录，替代方案待决策）；`{"t":"e"}` 的
-    primary→worker ack 回程未实现；`Object.keys` 键序（字典序 vs 插入序）为独立
+    与仓库 `unsafe_code=deny` 冲突 → §11.5 决策记录，替代方案待决策）；
+    `Object.keys` 键序（字典序 vs 插入序）为独立
     全仓专项（详见 [20260911/README.md §9](./20260911/README.md)）。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译

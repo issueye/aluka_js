@@ -1632,6 +1632,9 @@ aluka 修复前唯一差异点：`worker:connected-sync:false`（旧实现上报
 `connected-sync=true` + 收 ack 后 `proc-disc connected=false`；primary 侧
 `ead=true` + `exit code=0`，两侧与 Node 逐字节对拍）。
 
+**提交**：`5af4d57`（fix(cluster) 4 files, +186/−25；总表 M5.2 行同步随下一
+docs 提交入库）。
+
 **既有 m52 回归**：`m52_disconnect_test`(2→**3**) / `m52_worker_msg_test`(6) /
 `m52_cluster_events_test`(4) / `m52_settings_test`(7) / `m52_http_cluster_test`(3) /
 `builtins_phase6_proc_test`(11) 全绿。
