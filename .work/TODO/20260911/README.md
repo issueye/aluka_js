@@ -1207,4 +1207,23 @@ $ cargo test --workspace --all-features -j 4                       TEST_EXIT=0�
 
 ### 12.4 提交证据
 
-（提交后回填）
+```text
+$ git commit -F -   # feat(m5.2): cluster 断连闭环——primary {act:'disconnect'} 帧路径 + worker cluster.worker.disconnect()
+[master 7012ce0] 9 files changed, 816 insertions(+), 39 deletions(-)
+ create mode 100644 crates/aluka-cli/tests/m52_disconnect_test.rs
+ create mode 100644 tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0001.cjs
+```
+
+只暂存目标文件（`.work/scratch/`、`.workbuddy/` 未入库）。改动文件：
+`cluster.rs` / `cluster_ipc.rs` / `net.rs` / `http/mod.rs` / `http/server.rs` /
+`gc.rs` / `m52_disconnect_test.rs`（新增）/ `gen-block-fn-decl-0001.cjs`（新增，
+门禁隔离区）/ `.work/TODO/20260911/README.md`。
+
+**过程登记（诚实记录）**：本切片的实现由一次后台委托完成，该委托在提交前撞轮上限，
+留下两处编译错误（`ns_attach` 未闭合括号、`Option<Vec<Value>>` 未解包）——我定位并修复
+后，其实现经 p7/p8 逐字节对拍与全部回归验证通过。定位过程中的一次误判也记录在案：
+primary 侧 `start` 崩溃曾怀疑为实现缺陷，实测为**块内函数声明**引擎缺陷（§12.2）。
+
+**文档工具链教训（本轮）**：本文件的一次「用 PowerShell `Set-Content` 做全文替换」
+导致编码/行数被破坏（1211 行 → 864 行）——已用 `git checkout` 恢复并改用编辑工具重做。
+**口径**：本仓中文文档一律用编辑工具（Edit/Write）修改，不用 shell 文本替换。
