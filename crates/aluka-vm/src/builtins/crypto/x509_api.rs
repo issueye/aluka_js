@@ -241,7 +241,7 @@ fn keys_equal(a: (&[u8], u64), b: (&[u8], u64)) -> bool {
 
 /// 从 JS 值解析密钥公开参数（KeyObject 登记 / `__alukaKeyPEM` / PEM 文本）。
 fn key_info_from_arg(vm: &mut Vm, v: Value) -> Option<KeyEntry> {
-    if let Value::Object(r) = v {
+    if let Some(r) = v.as_object {
         if let Some(entry) = get_key(r) {
             return Some(entry);
         }
@@ -333,7 +333,7 @@ fn instance_check_issued(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
     let Some(cert) = get_cert(r) else {
         return Ok(Value::Undefined);
     };
-    let Some(Value::Object(other)) = args.first().copied() else {
+    let Some(other) = args.first().copied().as_object() else {
         return Ok(Value::Boolean(false));
     };
     let Some(other_cert) = get_cert(other) else {

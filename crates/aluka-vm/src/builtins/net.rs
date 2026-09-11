@@ -415,7 +415,7 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                     signal_opt = Some(s);
                 }
             }
-        } else if let Value::Number(n) = a {
+        } else if let Some(n) = a.as_number {
             port = *n as u16;
         } else if matches!(a, Value::Object(_)) {
             // 堆字符串参数视作 host（对齐 Go TypeString 分支）。
@@ -871,7 +871,7 @@ fn net_socket_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `socket.destroy()`：立即关闭并派发生命周期事件。
 fn net_socket_destroy(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         close_socket_lifecycle(r.0);
     }
     Ok(receiver)

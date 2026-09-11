@@ -366,10 +366,10 @@ fn ucs2_decode_handler(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `punycode.ucs2.encode(arr)`：码点数组 → 字符串。
 fn ucs2_encode_handler(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut cps: Vec<i64> = Vec::new();
-    if let Some(Value::Object(r)) = args.first() {
+    if let Some(r) = args.first().as_object {
         if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.index()) {
             for e in elements {
-                if let Value::Number(n) = e {
+                if let Some(n) = e.as_number {
                     cps.push(*n as i64);
                 }
             }

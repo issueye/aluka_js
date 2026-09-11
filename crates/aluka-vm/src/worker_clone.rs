@@ -849,7 +849,7 @@ impl Vm {
     /// 字符串）。属性不存在（或已被删除）返回 `None`。
     fn own_text(&self, idx: usize, key: &str) -> Option<String> {
         let v = self.own_value(idx, key)?;
-        if let Value::Object(r) = v {
+        if let Some(r) = v.as_object {
             if let Some(HeapObject::String(s)) = self.heap.get(r.0 as usize) {
                 return Some(s.clone());
             }

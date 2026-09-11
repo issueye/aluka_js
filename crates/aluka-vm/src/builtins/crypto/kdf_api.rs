@@ -111,7 +111,7 @@ fn parse_scrypt_args(vm: &mut Vm, args: &[Value]) -> Result<ScryptArgs, VmError>
         return Err(throw_error(vm, "scrypt: keylen must be positive"));
     }
     let (mut n, mut r, mut p) = (16384i64, 8i64, 1i64);
-    if let Some(Value::Object(opt_ref)) = args.get(3) {
+    if let Some(opt_ref) = args.get(3).as_object {
         for (key, dest) in [("N", &mut n), ("r", &mut r), ("p", &mut p)] {
             if let Ok(Value::Number(num)) = vm.get_property(Value::Object(*opt_ref), key) {
                 *dest = num as i64;

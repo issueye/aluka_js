@@ -528,7 +528,7 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut worker_data: Option<Value> = None;
     let mut eval = false;
     if let Some(opts) = args.get(1).copied() {
-        if let Value::Object(o) = opts {
+        if let Some(o) = opts.as_object {
             if let Ok(v) = vm.get_property(opts, "workerData") {
                 if !matches!(v, Value::Undefined) {
                     worker_data = Some(json_roundtrip(vm, v)?);
@@ -975,7 +975,7 @@ fn wt_port_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     // 链接端口：发给 _peer（无对端 → 丢弃，Go 语义一致）。
     let peer = vm.get_property(receiver, "_peer")?;
-    if let Value::Object(peer_ref) = peer {
+    if let Some(peer_ref) = peer.as_object {
         port_post(vm, Value::Object(peer_ref), msg)?;
     }
     Ok(Value::Undefined)
@@ -1062,7 +1062,7 @@ thread_local! {
 
 /// 写入当前接收者（端口对象）的 ref 状态。
 fn port_set_has_ref(has: bool) {
-    if let Value::Object(r) = crate::builtins::current_receiver() {
+    if let Some(r) = crate::builtins::current_receiver().as_object {
         PORT_HAS_REF.with(|m| {
             m.borrow_mut().insert(r.0, has);
         });
@@ -1142,7 +1142,7 @@ fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// worker `terminate()`：标记关闭（后续消息丢弃；已入队事件照常派发）。
 fn wt_worker_terminate(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         WORKER_CLOSED.with(|g| {
             g.borrow_mut()
                 .get_or_insert_with(Default::default)
@@ -1168,7 +1168,7 @@ fn wt_worker_terminate(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// 登记缓冲句柄——此后出现在 transfer list 时抛 DataCloneError（Node 实测
 /// `Cannot transfer object of unsupported type.`，与二次 transfer 同文本）。
 fn wt_mark_noop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if let Some(Value::Object(r)) = args.first() {
+    if let Some(r) = args.first().as_object {
         crate::worker_clone::mark_untransferable(*r);
     }
     let _ = vm;
@@ -1226,7 +1226,7 @@ fn env_data_key(vm: &Vm, v: Value) -> String {
 
 /// `receiveMessageOnPort(port)`：同步取一条缓冲消息 → `{ message }` 或 undefined。
 fn wt_receive_on_port(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(Value::Object(r)) = args.first().copied() else {
+    let Some(r) = args.first().copied().as_object() else {
         return Ok(Value::Undefined);
     };
     let msg = with_port_state(r.0, |st| st.queue.pop_front());
@@ -1247,7 +1247,7 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 参数重载：`transferList` 为数字且 `timeout` 未传 → 数字即 timeout
     let mut transfer_arg = args.get(2).copied();
     let mut timeout_arg = args.get(3).copied();
-    if let Some(Value::Number(_)) = transfer_arg {
+    if let Some(_) = transfer_arg.as_number {
         if timeout_arg.is_none() {
             timeout_arg = transfer_arg.take();
         }

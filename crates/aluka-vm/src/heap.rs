@@ -568,14 +568,14 @@ impl HeapObject {
                     }
                     OrdinaryProps::Dict { properties, .. } => {
                         for (_, v) in properties {
-                            if let Value::Object(r) = v {
+                            if let Some(r) = v.as_object {
                                 f(r.0);
                             }
                         }
                     }
                 }
                 for v in getters.values().chain(setters.values()) {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
@@ -589,12 +589,12 @@ impl HeapObject {
                 proto,
             } => {
                 for v in properties.values() {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
                 for v in elements {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
@@ -610,12 +610,12 @@ impl HeapObject {
                 ..
             } => {
                 for uv in upvalues {
-                    if let Value::Object(r) = *uv.0.borrow() {
+                    if let Some(r) = *uv.0.borrow().as_object {
                         f(r.0);
                     }
                 }
                 for v in properties.values().chain(getters.values()) {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
@@ -625,7 +625,7 @@ impl HeapObject {
             }
             HeapObject::NativeCtor { properties, .. } => {
                 for v in properties.values() {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
@@ -636,11 +636,11 @@ impl HeapObject {
                 rejected,
                 ..
             } => {
-                if let Value::Object(r) = value {
+                if let Some(r) = value.as_object {
                     f(r.0);
                 }
                 for h in handlers.iter().chain(rejected.iter()) {
-                    if let Value::Object(r) = h {
+                    if let Some(r) = h.as_object {
                         f(r.0);
                     }
                 }
@@ -649,7 +649,7 @@ impl HeapObject {
             HeapObject::EventEmitter { listeners } => {
                 for entries in listeners.values() {
                     for (v, _) in entries {
-                        if let Value::Object(r) = v {
+                        if let Some(r) = v.as_object {
                             f(r.0);
                         }
                     }
@@ -659,10 +659,10 @@ impl HeapObject {
                 // 键与值都是原始 `Value`（键不再字符串化），两者都可能引用
                 // 堆对象：必须全部标记——漏标键会让 GC 误回收键对象（悬垂）
                 for (k, v) in entries {
-                    if let Value::Object(r) = k {
+                    if let Some(r) = k.as_object {
                         f(r.0);
                     }
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
@@ -671,7 +671,7 @@ impl HeapObject {
                 buffer, waiting, ..
             } => {
                 for v in buffer {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }
@@ -681,7 +681,7 @@ impl HeapObject {
             }
             HeapObject::NativeFn { properties, .. } => {
                 for v in properties.values() {
-                    if let Value::Object(r) = v {
+                    if let Some(r) = v.as_object {
                         f(r.0);
                     }
                 }

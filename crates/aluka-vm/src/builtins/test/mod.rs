@@ -448,7 +448,7 @@ fn parse_options(vm: &mut Vm, args: &[Value]) -> (String, Value, registry::TestO
 
 /// options 对象读取 skip/todo/only。
 fn apply_opts(vm: &mut Vm, o: Value, opts: &mut registry::TestOpts) {
-    if let Value::Object(r) = o {
+    if let Some(r) = o.as_object {
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
             registry::apply_test_opts(vm, o, opts);
         }

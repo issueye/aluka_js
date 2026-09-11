@@ -137,7 +137,7 @@ pub unsafe extern "C" fn jit_set_property(
 /// PIC 缓存回写：对象为（Shape 模式 && 无删除 && 无访问器 && 含该键）→
 /// 记录 (shape_id, slot, FAST)；否则 NO_FAST。
 fn pic_writeback(vm: &mut Vm, obj: Value, key: &str, cell: *mut aluka_jit::ctx::PicCell) {
-    if let Value::Object(r) = obj {
+    if let Some(r) = obj.as_object {
         let idx = r.0 as usize;
         if let Some(HeapObject::Ordinary {
             props,

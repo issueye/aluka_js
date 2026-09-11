@@ -436,7 +436,7 @@ fn client_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `req.on(event, listener)`。
 fn client_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, false);
@@ -448,7 +448,7 @@ fn client_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.once(event, listener)`。
 fn client_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, true);
@@ -460,7 +460,7 @@ fn client_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.off(event, listener)` / `removeListener`。
 fn client_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::remove_listener(r.0, &name, *cb);

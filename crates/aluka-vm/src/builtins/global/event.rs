@@ -87,7 +87,7 @@ pub(crate) fn event_target_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value
                 _ => Vec::new(),
             };
             let has = !callbacks.is_empty();
-            if let Value::Object(e) = args.first().copied().unwrap_or(Value::Undefined) {
+            if let Some(e) = args.first().copied().unwrap_or(Value::Undefined).as_object {
                 let _ = vm.set_property(Value::Object(e), "target", target);
             }
             let event_val = args.first().copied().unwrap_or(Value::Undefined);

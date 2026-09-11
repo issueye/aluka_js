@@ -307,7 +307,7 @@ fn create_hook(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         enabled: false,
         callbacks: [None, None, None, None, None],
     };
-    if let Some(Value::Object(r)) = args.first() {
+    if let Some(r) = args.first().as_object {
         for (idx, key) in [
             (HOOK_INIT, "init"),
             (HOOK_BEFORE, "before"),

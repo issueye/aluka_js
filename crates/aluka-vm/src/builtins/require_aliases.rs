@@ -394,7 +394,7 @@ fn url_format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 vm.heap.get(r.index()),
                 Some(crate::heap::HeapObject::Ordinary { .. })
             ) {
-                if let Some(Value::Object(s)) = vm.own_value(r.index(), "href") {
+                if let Some(s) = vm.own_value(r.index(), "href").as_object {
                     if let Some(crate::heap::HeapObject::String(t)) = vm.heap.get(s.index()) {
                         href = t.clone();
                     }

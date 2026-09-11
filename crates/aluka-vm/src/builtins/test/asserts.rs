@@ -158,7 +158,7 @@ pub fn error_message(vm: &mut Vm, err: &VmError) -> String {
     let VmError::Thrown(v) = err else {
         return err.to_string();
     };
-    if let Value::Object(r) = v {
+    if let Some(r) = v.as_object {
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
             if let Ok(msg) = vm.get_property(*v, "message") {
                 if !matches!(msg, Value::Undefined | Value::Null) {

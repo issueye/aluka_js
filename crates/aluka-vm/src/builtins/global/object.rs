@@ -19,7 +19,7 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                 .map(|v| vm.to_property_key(*v))
                 .unwrap_or_default();
             let desc = args.get(2).copied().unwrap_or(Value::Undefined);
-            if let Value::Object(r) = target {
+            if let Some(r) = target.as_object {
                 if vm.proxy_parts(r).is_some() {
                     return Ok(Value::Boolean(vm.proxy_define_property(r, &key, desc)?));
                 }

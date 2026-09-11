@@ -24,7 +24,7 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     } = input;
 
     // AbortSignal 前置检查
-    if let Value::Object(sig_ref) = signal {
+    if let Some(sig_ref) = signal.as_object {
         if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
             let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
                 Ok(r) if !matches!(r, Value::Undefined) => r,
@@ -109,7 +109,7 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     };
     let (hdr_pairs, _) = parse_response_headers(&headers_text);
 
-    if let Value::Object(sig_ref) = signal {
+    if let Some(sig_ref) = signal.as_object {
         if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
             let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
                 Ok(r) if !matches!(r, Value::Undefined) => r,
@@ -405,7 +405,7 @@ pub(crate) fn response_array_buffer_handler(
 /// `new Request(input[, options])`。
 pub(crate) fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let input = args.first().copied().unwrap_or(Value::Undefined);
-    let (url, inherited) = if let Value::Object(_) = input {
+    let (url, inherited) = if let Some(_) = input.as_object {
         if let Ok(Value::Boolean(true)) = vm.get_property(input, "_isRequest") {
             (vm.get_property(input, "url")?, Some(input))
         } else {

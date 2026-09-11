@@ -155,7 +155,7 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let rl = create_emitter_instance(vm);
     let mut input: Option<Value> = None;
     let mut output: Option<Value> = None;
-    if let Some(Value::Object(o)) = args.first().copied() {
+    if let Some(o) = args.first().copied().as_object {
         if let Ok(v) = vm.get_property(Value::Object(o), "input") {
             if !matches!(v, Value::Undefined) {
                 input = Some(v);
@@ -279,7 +279,7 @@ fn promise_read_line(
     // 输出 query 到输出流或 stdout（对齐 Go：output 无 write 时才回退 stdout）。
     let mut wrote = false;
     if let Some(o) = output {
-        if let Value::Object(or) = o {
+        if let Some(or) = o.as_object {
             if let Ok(w) = vm.get_property(o, "write") {
                 if is_callable_value(vm, w) {
                     let arg = Value::Object(vm.alloc_string(query.clone()));
@@ -298,7 +298,7 @@ fn promise_read_line(
         .filter(|v| matches!(v, Value::Object(_)))
         .is_some_and(|v| matches!(vm.get_property(v, "on"), Ok(f) if is_callable_value(vm, f)));
     if has_on {
-        let Some(Value::Object(ir)) = input else {
+        let Some(ir) = input.and_then(|v| v.as_object()) else {
             return Ok(Value::Object(promise));
         };
         let id = ir.0;

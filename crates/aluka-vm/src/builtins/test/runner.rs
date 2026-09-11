@@ -466,7 +466,7 @@ fn is_promise(vm: &Vm, v: Value) -> bool {
 
 /// 已定 promise 是否为拒绝近似（兑现非 undefined 值）。
 fn promise_rejected(vm: &Vm, pv: Value) -> bool {
-    if let Value::Object(r) = pv {
+    if let Some(r) = pv.as_object {
         if let Some(HeapObject::Promise { pending, value, .. }) = vm.heap.get(r.index()) {
             return !*pending && !matches!(value, Value::Undefined);
         }
@@ -476,7 +476,7 @@ fn promise_rejected(vm: &Vm, pv: Value) -> bool {
 
 /// 从已定 promise 提取拒绝消息。
 fn rejection_message(vm: &mut Vm, pv: Value) -> String {
-    if let Value::Object(r) = pv {
+    if let Some(r) = pv.as_object {
         if let Some(HeapObject::Promise { value, .. }) = vm.heap.get(r.index()) {
             let v = *value;
             return error_message(vm, &VmError::Thrown(v));

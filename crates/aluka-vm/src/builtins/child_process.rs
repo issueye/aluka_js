@@ -94,7 +94,7 @@ fn parse_spawn_opts(vm: &mut Vm, opts_val: Option<Value>) -> SpawnOpts {
         windows_hide: cfg!(windows),
         env: None,
     };
-    let Some(Value::Object(opts)) = opts_val else {
+    let Some(opts) = opts_val.and_then(|v| v.as_object()) else {
         return o;
     };
     if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(opts), "silent") {
@@ -107,7 +107,7 @@ fn parse_spawn_opts(vm: &mut Vm, opts_val: Option<Value>) -> SpawnOpts {
         o.windows_hide = b;
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "env") {
-        if let Value::Object(_) = v {
+        if let Some(_) = v.as_object {
             let mut env_list = Vec::new();
             for (k, ev) in vm.own_properties(v) {
                 env_list.push((k, vm.format_value(ev)));
@@ -383,14 +383,14 @@ fn parse_sync_opts(vm: &mut Vm, opts_val: Option<Value>) -> SyncOpts {
         encoding: String::new(),
         windows_hide: cfg!(windows),
     };
-    let Some(Value::Object(opts)) = opts_val else {
+    let Some(opts) = opts_val.and_then(|v| v.as_object()) else {
         return o;
     };
     if let Ok(v) = vm.get_property(Value::Object(opts), "cwd") {
         o.cwd = heap_string(vm, v).unwrap_or_default();
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "env") {
-        if let Value::Object(_) = v {
+        if let Some(_) = v.as_object {
             let mut env_list = Vec::new();
             for (k, ev) in vm.own_properties(v) {
                 env_list.push((k, vm.format_value(ev)));
@@ -624,7 +624,7 @@ fn sync_result_or_throw(
     cmdline_for_error: String,
     opts: &SyncOpts,
 ) -> Result<Value, VmError> {
-    if let Value::Object(err_obj) = vm.get_property(result, "error")? {
+    if let Some(err_obj) = vm.get_property(result, "error")?.as_object {
         let mut code = "ENOENT".to_owned();
         if let Ok(Value::Object(c)) = vm.get_property(Value::Object(err_obj), "code") {
             code = heap_string(vm, Value::Object(c)).unwrap_or(code);
@@ -725,7 +725,7 @@ fn child_kill(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.destroy()`：置 destroyed 并返回流本身（Go destroyOnce 语义简化）。
 fn stream_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Value::Object(_) = receiver {
+    if let Some(_) = receiver.as_object {
         let _ = vm.set_property(receiver, "destroyed", Value::Boolean(true));
     }
     Ok(receiver)
@@ -833,7 +833,7 @@ pub(crate) fn go_look_path(file: &str) -> Option<String> {
 
 /// 取数组值实参的字符串元素列表（Go args[1].(*ArrayValue) 分支）。
 fn string_list(vm: &mut Vm, val: Option<Value>) -> Vec<String> {
-    let Some(Value::Object(r)) = val else {
+    let Some(r) = val.and_then(|v| v.as_object()) else {
         return Vec::new();
     };
     let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) else {

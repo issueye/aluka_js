@@ -382,7 +382,7 @@ fn dgram_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args {
         if is_function(vm, *a) {
             cb = Some(*a);
-        } else if let Value::Number(n) = a {
+        } else if let Some(n) = a.as_number {
             port = *n as u16;
         } else if matches!(a, Value::Object(_)) {
             address = vm.format_value(*a);
@@ -454,7 +454,7 @@ fn dgram_send(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args.iter().skip(1) {
         if is_function(vm, *a) {
             cb = Some(*a);
-        } else if let Value::Number(n) = a {
+        } else if let Some(n) = a.as_number {
             port = *n as u16;
         } else if matches!(a, Value::Object(_)) {
             address = vm.format_value(*a);
@@ -620,7 +620,7 @@ fn dgram_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args {
         if is_function(vm, *a) {
             cb = Some(*a);
-        } else if let Value::Number(n) = a {
+        } else if let Some(n) = a.as_number {
             port = *n as u16;
         } else if matches!(a, Value::Object(_)) {
             address = vm.format_value(*a);

@@ -268,7 +268,7 @@ fn stream_task_emit(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 会话 `on(event, listener)`。
 fn session_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, false);
@@ -280,7 +280,7 @@ fn session_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 会话 `once(event, listener)`。
 fn session_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, true);
@@ -292,7 +292,7 @@ fn session_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 会话 `off(event, listener)`。
 fn session_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::remove_listener(r.0, &name, *cb);

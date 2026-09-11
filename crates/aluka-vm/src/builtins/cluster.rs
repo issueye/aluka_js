@@ -499,7 +499,7 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         env_pairs.push((cluster_ipc::ENV_KEY.to_owned(), key.clone()));
     }
     if let Some(user_env) = args.first().copied() {
-        if let Value::Object(_) = user_env {
+        if let Some(_) = user_env.as_object {
             for (k, v) in vm.own_properties(user_env) {
                 env_pairs.push((k, vm.format_value(v)));
             }
@@ -855,7 +855,7 @@ fn cluster_setup_master(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
     // ③ options 浅合并覆盖（Node 用对象展开，未知键同样保留、undefined 同样覆盖）。
-    if let Some(Value::Object(_)) = opts {
+    if let Some(_) = opts.as_object {
         for (k, v) in vm.own_properties(opts.unwrap_or(Value::Undefined)) {
             set_own(vm, merged, &k, v);
         }

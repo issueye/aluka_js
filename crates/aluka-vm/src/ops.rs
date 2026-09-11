@@ -233,12 +233,12 @@ impl Vm {
         if let (Value::Number(a), Value::Number(b)) = (left, right) {
             return Value::Number(a + b);
         }
-        let is_left_str = if let Value::Object(r) = left {
+        let is_left_str = if let Some(r) = left.as_object {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         } else {
             false
         };
-        let is_right_str = if let Value::Object(r) = right {
+        let is_right_str = if let Some(r) = right.as_object {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         } else {
             false

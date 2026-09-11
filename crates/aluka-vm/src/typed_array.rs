@@ -365,7 +365,7 @@ impl Vm {
             crate::typed_array::TypedKind::BigInt64 | crate::typed_array::TypedKind::BigUint64
         ) {
             // BigInt 族：接受 BigInt 与整数值；BigUint64 按无符号回绕
-            if let Value::Object(r) = val {
+            if let Some(r) = val.as_object {
                 if let Some(HeapObject::BigInt(text)) = self.heap.get(r.0 as usize) {
                     let parsed = match kind {
                         crate::typed_array::TypedKind::BigUint64 => text
@@ -414,7 +414,7 @@ impl Vm {
         // resizable 支持：opts.resizable === true 时记录 maxByteLength
         let mut resizable = false;
         let mut max = len;
-        if let Some(Value::Object(opts)) = args.get(1).copied() {
+        if let Some(opts) = args.get(1).copied().as_object {
             if let Ok(v) = self.get_property(Value::Object(opts), "resizable") {
                 if self.truthy(v) {
                     resizable = true;
@@ -535,7 +535,7 @@ impl Vm {
 
     /// `new DataView(buffer[, byteOffset[, byteLength]])`。
     pub(crate) fn construct_data_view(&mut self, args: &[Value]) -> Result<Value, VmError> {
-        let Some(Value::Object(buffer)) = args.first().copied() else {
+        let Some(buffer) = args.first().copied().as_object() else {
             let msg = "first argument to DataView constructor must be an ArrayBuffer";
             return Err(VmError::Thrown(Value::Object(
                 self.alloc_typed_error(msg, "TypeError"),
@@ -765,7 +765,7 @@ impl Vm {
                 // ta.set(array|typedArray[, offset])
                 let offset = arg_num(1).unwrap_or(0.0).max(0.0) as usize;
                 let src = args.first().copied().unwrap_or(Value::Undefined);
-                let vals = if let Value::Object(sr) = src {
+                let vals = if let Some(sr) = src.as_object {
                     if self.ta_parts(sr).is_some() {
                         self.ta_to_values(sr)?
                     } else {
@@ -1115,7 +1115,7 @@ impl DvKind {
 
 /// DataView BigInt 族取值：BigInt 对象或整数值 → i64。
 fn bigint_of(vm: &mut Vm, val: Value) -> Result<i64, VmError> {
-    if let Value::Object(r) = val {
+    if let Some(r) = val.as_object {
         if let Some(HeapObject::BigInt(text)) = vm.heap.get(r.0 as usize) {
             return Ok(text.parse::<i64>().unwrap_or(0));
         }

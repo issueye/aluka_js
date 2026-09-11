@@ -57,7 +57,7 @@ fn inherits(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let super_ctor = args.get(1).copied().unwrap_or(Value::Undefined);
     let proto = vm.get_property(ctor, "prototype")?;
     let super_proto = vm.get_property(super_ctor, "prototype")?;
-    if let Value::Object(_) = proto {
+    if let Some(_) = proto.as_object {
         let sp = match super_proto {
             Value::Object(r) => Some(r),
             _ => None,
@@ -235,7 +235,7 @@ fn inspect_value(vm: &Vm, val: Value) -> String {
 /// `util.inspect` 的「条目级」表示：字符串加单引号（对齐 Node 的 `Map(1) { 1 => 'a' }`、
 /// `Set(1) { 's' }`）；其余类型复用紧凑递归表示。
 fn inspect_entry(vm: &Vm, val: Value) -> String {
-    if let Value::Object(r) = val {
+    if let Some(r) = val.as_object {
         if let Some(HeapObject::String(s)) = vm.heap.get(r.index()) {
             return format!("'{s}'");
         }

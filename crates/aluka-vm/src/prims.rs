@@ -50,7 +50,7 @@ impl Vm {
         if matches!(value, Value::Undefined) || is_json_ignored_value(self, value) {
             return Ok(Value::Undefined);
         }
-        if let Value::Object(r) = value {
+        if let Some(r) = value.as_object {
             // Promise 等无自有可枚举属性的异形堆对象：node 序列化为 "{}"
             // 而非 null（`JSON.stringify(Promise.resolve(1))` 实测）
             if matches!(

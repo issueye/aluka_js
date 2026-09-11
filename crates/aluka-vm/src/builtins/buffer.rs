@@ -279,7 +279,7 @@ fn is_buffer(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(val) = args.first() else {
         return Ok(Value::Boolean(false));
     };
-    if let Value::Object(r) = val {
+    if let Some(r) = val.as_object {
         if get_buffer(r.0).is_some() {
             return Ok(Value::Boolean(true));
         }
@@ -389,7 +389,7 @@ fn buffer_alloc(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `Buffer.concat(list, [totalLength])`
 fn concat(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(Value::Object(arr_ref)) = args.first() else {
+    let Some(arr_ref) = args.first().as_object() else {
         let inst = create_buffer_instance(vm, Vec::new());
         return Ok(Value::Object(inst));
     };
@@ -406,7 +406,7 @@ fn concat(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
 
-    if let Some(Value::Number(n)) = args.get(1) {
+    if let Some(n) = args.get(1).as_number {
         let total = (*n as i64).max(0) as usize;
         all_bytes.truncate(total);
     }

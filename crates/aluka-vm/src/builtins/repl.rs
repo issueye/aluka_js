@@ -83,7 +83,7 @@ fn repl_server_method(method: &'static str) -> crate::builtins::BuiltinHandler {
 fn repl_start(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut prompt = "> ".to_owned();
     let mut eval_fn: Option<Value> = None;
-    if let Some(Value::Object(o)) = args.first().copied() {
+    if let Some(o) = args.first().copied().as_object {
         if let Ok(v) = vm.get_property(Value::Object(o), "prompt") {
             if !matches!(v, Value::Undefined) {
                 prompt = vm.format_value(v);

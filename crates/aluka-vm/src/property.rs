@@ -186,13 +186,13 @@ impl Vm {
     /// 移除实体。非 Ordinary 或无该属性时为无操作。Proxy 经 trap 派发。
     pub(crate) fn delete_property(&mut self, obj: Value, key: &str) {
         // Proxy 对象：经 deleteProperty trap 派发（假值抛 TypeError 由 trap 层处理）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.proxy_parts(r).is_some() {
                 let _ = self.proxy_delete(r, key);
                 return;
             }
         }
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if let Some(HeapObject::Ordinary {
                 props,
                 deleted,
@@ -307,13 +307,13 @@ impl Vm {
     /// 读取属性（含原型链查找、getter 触发与数组元素读取）。
     pub fn get_property(&mut self, obj: Value, key: &str) -> Result<Value, VmError> {
         // Proxy 对象：经 get trap 派发（含 revoked 校验与 target 回退）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.proxy_parts(r).is_some() {
                 return self.proxy_get(r, key, obj);
             }
         }
         // globalThis：属性读取直通全局变量表与内建全局
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
                 return Ok(self.resolve_global(key));
             }
@@ -393,7 +393,7 @@ impl Vm {
         // 闭包函数：`name` / `length` 读模板元数据（Go 前端编译产物携带函数名）。
         // 先判断键再取模板：普通属性（尤其热路径中的 `prototype`/自定义键）
         // 不需要复制函数名 String。
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             let func_idx = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Closure { func_idx, .. }) => Some(*func_idx),
                 _ => None,
@@ -415,7 +415,7 @@ impl Vm {
             }
         }
         // 字符串接收者：`length` 与数字下标访问（原型方法由 CALL_METHOD 链求值）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             let str_len = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(text)) => Some(text.chars().count()),
                 _ => None,
@@ -547,7 +547,7 @@ impl Vm {
         }
         // RegExp 实例表面（source/flags 系/lastIndex/constructor）：堆对象
         // 不携带属性表，按需合成（`lastIndex` 存线程局部状态表）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if let Some(HeapObject::RegExp { pattern, flags }) = self.heap.get(r.0 as usize) {
                 let (pattern, flags) = (pattern.clone(), flags.clone());
                 let ctor = self.regexp_ctor;
@@ -629,7 +629,7 @@ impl Vm {
         // （如 Symbol.iterator——方法挂 container_proto 面，Map 变体无原型
         // 链字段，属性读取在此按需转发；普通方法 keys/values 等由
         // CALL_METHOD 特判处理，不依赖属性存在）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if let Some(HeapObject::Map { entries }) = self.heap.get(r.0 as usize) {
                 if key == "size" {
                     return Ok(Value::Number(entries.len() as f64));
@@ -653,7 +653,7 @@ impl Vm {
             }
         }
         // TypedArray / DataView / ArrayBuffer 实例表面（length/buffer 等按需合成）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             // 先快照堆字段（避免可变借用与堆读取冲突）
             let ta_info = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::TypedArray {
@@ -742,7 +742,7 @@ impl Vm {
         // 只查自有属性表 → `Array.name` 落回 fn_proto 的占位 → 得 `[function Function]`
         // （Node 为 "Array"）。此处优先合成，先于下方 fn_proto 兜底。
         if key == "name" {
-            if let Value::Object(r) = obj {
+            if let Some(r) = obj.as_object {
                 let name = match self.heap.get(r.0 as usize) {
                     Some(HeapObject::NativeFn { name, .. }) => Some(name.clone()),
                     Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
@@ -764,7 +764,7 @@ impl Vm {
         // 为 "d"、`Symbol().description` 为 undefined）。此前落到 symbol_proto 的
         // 占位 NativeFn，typeof 非 undefined 但取值错。
         if key == "description" {
-            if let Value::Object(r) = obj {
+            if let Some(r) = obj.as_object {
                 if let Some(HeapObject::Symbol { description, .. }) = self.heap.get(r.0 as usize) {
                     if description.is_empty() {
                         return Ok(Value::Undefined);
@@ -829,7 +829,7 @@ impl Vm {
     /// 设置属性（含数组下标写入、闭包对象属性写入与 Setter 访问器触发）。
     pub fn set_property(&mut self, obj: Value, key: &str, val: Value) -> Result<(), VmError> {
         // Proxy 对象：经 set trap 派发（假值返回抛 TypeError）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.proxy_parts(r).is_some() {
                 return self.proxy_set(r, key, val, obj);
             }
@@ -845,7 +845,7 @@ impl Vm {
             }
         }
         // globalThis：属性写入直通全局变量表
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
                 self.globals.insert(key.to_owned(), val);
                 return Ok(());
@@ -853,7 +853,7 @@ impl Vm {
         }
         // RegExp 实例的 lastIndex：写线程局部状态表（堆对象无可变属性）
         if key == "lastIndex" {
-            if let Value::Object(r) = obj {
+            if let Some(r) = obj.as_object {
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::RegExp { .. })) {
                     crate::interpreter::set_regex_last_index(r.0, to_number(val).max(0.0) as usize);
                     return Ok(());
@@ -861,7 +861,7 @@ impl Vm {
             }
         }
         // TypedArray 数值下标写入：按元素类型收窄/钳制后落盘（越界忽略）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if let Ok(i) = key.parse::<usize>() {
                 if matches!(
                     self.heap.get(r.0 as usize),
@@ -871,7 +871,7 @@ impl Vm {
                 }
             }
         }
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             let idx = r.0 as usize;
             if idx < self.heap.len() {
                 // Setter 访问器优先：命中则调用（不写数据属性，对齐 JS [[Set]] 语义）
@@ -992,7 +992,7 @@ impl Vm {
     /// 判断属性（自有或沿原型链）是否存在于对象上（`in` 运算符语义）。
     pub fn has_property(&mut self, obj: Value, key: &str) -> bool {
         // Proxy 对象：经 has trap 派发
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.proxy_parts(r).is_some() {
                 return self.proxy_has(r, key).unwrap_or(false);
             }
@@ -1054,7 +1054,7 @@ impl Vm {
     /// get trap 派发。其余类型为空集。
     pub(crate) fn own_properties(&mut self, obj: Value) -> Vec<(String, Value)> {
         // Proxy 对象：ownKeys trap 列键、get trap 取值（规范 [[OwnPropertyKeys]]）
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if self.proxy_parts(r).is_some() {
                 let keys = self.proxy_own_keys(r).unwrap_or_default();
                 return keys
@@ -1066,7 +1066,7 @@ impl Vm {
                     .collect();
             }
         }
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             let idx = r.0 as usize;
             if idx < self.heap.len() {
                 match &self.heap[idx] {
@@ -1188,7 +1188,7 @@ impl Vm {
 
     /// 读取对象的内部原型 [[Prototype]]。
     pub fn get_prototype(&self, val: Value) -> Option<ObjectRef> {
-        if let Value::Object(r) = val {
+        if let Some(r) = val.as_object {
             let idx = r.0 as usize;
             if let Some(obj) = self.heap.get(idx) {
                 match obj {
@@ -1209,7 +1209,7 @@ impl Vm {
     /// Proxy 由 [`crate::proxy`] 的 trap 路径先行拦截，此处仅处理普通容器）。
     /// 非 Ordinary/Array/Closure 对象为无操作。
     pub(crate) fn set_prototype_of(&mut self, obj: Value, proto: Option<ObjectRef>) {
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if let Some(
                 HeapObject::Ordinary { proto: p, .. }
                 | HeapObject::Closure { proto: p, .. }
@@ -1232,7 +1232,7 @@ impl Vm {
         this: Value,
         args: &[Value],
     ) -> Result<Value, VmError> {
-        if let Value::Object(r) = val {
+        if let Some(r) = val.as_object {
             if let Some(HeapObject::Closure {
                 func_idx, upvalues, ..
             }) = self.heap.get(r.0 as usize)
@@ -1257,7 +1257,7 @@ impl Vm {
         }
         // 访问器描述优先（getter/setter 表命中即访问器属性）。表存访问器
         // 函数值（闭包/原生），描述面直接暴露该函数（对齐 JS 语义）。
-        if let Value::Object(r) = obj {
+        if let Some(r) = obj.as_object {
             if let Some(HeapObject::Ordinary {
                 getters, setters, ..
             }) = self.heap.get(r.0 as usize)
@@ -1378,7 +1378,7 @@ impl Vm {
         }
         let value = get_v(self, "value")?;
         if !enumerable {
-            if let Value::Object(r) = obj {
+            if let Some(r) = obj.as_object {
                 if let Some(HeapObject::Ordinary {
                     non_enum, props, ..
                 }) = self.heap.get_mut(r.0 as usize)

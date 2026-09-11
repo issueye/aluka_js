@@ -123,7 +123,7 @@ fn set_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let cb = args.first().copied().unwrap_or(Value::Undefined);
     let id_val = schedule_raw(vm, cb, 0, mock::FakeApi::SetImmediate)?;
     if let Some(opts) = args.get(1) {
-        if let Value::Number(id) = id_val {
+        if let Some(id) = id_val.as_number {
             attach_timer_signal(vm, id as u64, opts)?;
         }
     }

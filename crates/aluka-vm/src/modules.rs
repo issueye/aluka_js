@@ -166,7 +166,7 @@ impl Vm {
         let exports = Value::Object(self.alloc_ordinary());
         let module_obj = Value::Object(self.alloc_ordinary());
         // 加载期间钉扎 module 对象（其 exports 指针在收尾读取时仍需有效）
-        if let Value::Object(r) = module_obj {
+        if let Some(r) = module_obj.as_object {
             self.gc_pinned.push(r.0);
         }
         self.set_property(module_obj, "exports", exports)?;
@@ -419,7 +419,7 @@ impl Vm {
 
     /// 解除 module 对象钉扎（call_require 收尾）。
     fn unpin_module(&mut self, module_obj: &Value) {
-        if let Value::Object(r) = module_obj {
+        if let Some(r) = module_obj.as_object {
             self.gc_pinned.retain(|&h| h != r.0);
         }
     }

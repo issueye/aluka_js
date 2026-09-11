@@ -138,7 +138,7 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let mut output: Option<Value> = None;
     let mut terminal = true;
-    if let Some(Value::Object(o)) = args.first().copied() {
+    if let Some(o) = args.first().copied().as_object {
         if let Ok(v) = vm.get_property(Value::Object(o), "output") {
             if !matches!(v, Value::Undefined) {
                 output = Some(v);
@@ -314,7 +314,7 @@ fn interface_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 提示符写入：优先 `output.write(fn)`，否则直接写 stdout。
 fn write_prompt(vm: &mut Vm, output: Option<Value>, text: &str) -> Result<(), VmError> {
     if let Some(o) = output {
-        if let Value::Object(or) = o {
+        if let Some(or) = o.as_object {
             if let Ok(w) = vm.get_property(o, "write") {
                 if is_callable_value(vm, w) {
                     let arg = Value::Object(vm.alloc_string(text.to_owned()));

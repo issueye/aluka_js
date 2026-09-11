@@ -692,7 +692,7 @@ fn promises_get_servers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 
 /// `dns.promises.setServers(servers)`：记录进程内列表（后续报文查询生效）。
 fn promises_set_servers(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if let Some(Value::Object(r)) = args.first().copied() {
+    if let Some(r) = args.first().copied().as_object {
         if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
             let servers: Vec<String> = elements.iter().map(|v| vm.format_value(*v)).collect();
             dns_resolver::set_servers(servers);

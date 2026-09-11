@@ -214,7 +214,7 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         fn_proto_to_string,
     );
     // `constructor` → 真 Function 构造器（同上：占位会令 `f.constructor.name` 错）
-    if let Value::Object(fc) = vm.resolve_global("Function") {
+    if let Some(fc) = vm.resolve_global("Function").as_object {
         let _ = vm.set_property(Value::Object(fn_p), "constructor", Value::Object(fc));
     }
     register_handler(registry, "Function.prototype", "call", fn_proto_call_apply);

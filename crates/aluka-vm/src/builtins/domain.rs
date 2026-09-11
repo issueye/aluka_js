@@ -502,7 +502,7 @@ fn run_intercepted_trampoline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
     };
     let first = args.first().copied().unwrap_or(Value::Undefined);
     if is_error_like(vm, first) {
-        if let Value::Object(er) = first {
+        if let Some(er) = first.as_object {
             let self_val = Value::Object(ObjectRef(ctx.domain));
             let _ = vm.set_property(Value::Object(er), "domainBound", ctx.cb);
             let _ = vm.set_property(Value::Object(er), "domainThrown", Value::Boolean(false));
@@ -537,13 +537,13 @@ fn domain_add(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let self_val = Value::Object(ObjectRef(id));
     // 已绑定本 domain：直接返回
-    if let Value::Object(er) = ee {
+    if let Some(er) = ee.as_object {
         if vm.get_property(ee, "domain").ok() == Some(self_val) {
             return Ok(Value::Undefined);
         }
         // 已有旧 domain：先经旧 domain 的 remove 解除
         if let Ok(old) = vm.get_property(ee, "domain") {
-            if let Value::Object(old_ref) = old {
+            if let Some(old_ref) = old.as_object {
                 if old_ref.0 != er.0 {
                     if let Ok(remove_fn) = vm.get_property(old, "remove") {
                         if is_function(vm, remove_fn) {
@@ -554,7 +554,7 @@ fn domain_add(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
-    if let Value::Object(er) = ee {
+    if let Some(er) = ee.as_object {
         let _ = vm.set_property(ee, "domain", self_val);
         // 注册内部 'error' 转发监听器（ee.emit('error') → 本 domain 路由）
         if let Ok(on_fn) = vm.get_property(ee, "on") {
@@ -586,7 +586,7 @@ fn domain_remove(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(ee) = args.first().copied() else {
         return Ok(Value::Undefined);
     };
-    if let Value::Object(er) = ee {
+    if let Some(er) = ee.as_object {
         let _ = vm.set_property(ee, "domain", Value::Null);
         let forwarder = with_domain(id, |st| st.forwarders.remove(&er.0)).flatten();
         FORWARDER_OF.with(|g| {
@@ -638,7 +638,7 @@ fn error_forwarder(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let er = args.first().copied().unwrap_or(Value::Undefined);
     let self_val = Value::Object(ObjectRef(domain_id));
-    if let Value::Object(eo) = er {
+    if let Some(eo) = er.as_object {
         let _ = vm.set_property(
             Value::Object(eo),
             "domainEmitter",
@@ -658,7 +658,7 @@ fn domain_error_handler(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(er) = args.first().copied() else {
         return Ok(Value::Boolean(false));
     };
-    if let Value::Object(eo) = er {
+    if let Some(eo) = er.as_object {
         let self_val = Value::Object(ObjectRef(id));
         let _ = vm.set_property(Value::Object(eo), "domain", self_val);
         let _ = vm.set_property(Value::Object(eo), "domainThrown", Value::Boolean(true));
@@ -916,7 +916,7 @@ fn emitter_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
     let Some(id) = receiver_id() else {
         return Ok(Value::Undefined);
     };
-    if let Some(Value::Number(n)) = args.first() {
+    if let Some(n) = args.first().as_number {
         with_domain(id, |st| st.max_listeners = *n as i64);
     }
     Ok(current_receiver())

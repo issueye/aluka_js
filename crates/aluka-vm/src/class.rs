@@ -32,7 +32,7 @@ impl Vm {
             match self.get_property(s, "prototype") {
                 Ok(Value::Object(p)) => Some(p),
                 _ => {
-                    if let Value::Object(p) = s {
+                    if let Some(p) = s.as_object {
                         Some(p)
                     } else {
                         None
@@ -92,7 +92,7 @@ impl Vm {
             let actual_super_ctor = match self.get_property(s_val, "constructor") {
                 Ok(Value::Object(c)) => Some(c),
                 _ => {
-                    if let Value::Object(c) = s_val {
+                    if let Some(c) = s_val.as_object {
                         Some(c)
                     } else {
                         None
@@ -165,7 +165,7 @@ impl Vm {
                 }
                 1 => {
                     // Getter（存方法闭包值，保留 upvalue 捕获）
-                    if let Value::Object(t_ref) = target {
+                    if let Some(t_ref) = target.as_object {
                         if let Some(HeapObject::Ordinary {
                             getters,
                             has_accessors,
@@ -179,7 +179,7 @@ impl Vm {
                 }
                 2 => {
                     // Setter
-                    if let Value::Object(t_ref) = target {
+                    if let Some(t_ref) = target.as_object {
                         if let Some(HeapObject::Ordinary {
                             setters,
                             has_accessors,

@@ -227,7 +227,7 @@ pub fn test_name_and_fn(vm: &mut crate::interpreter::Vm, args: &[Value]) -> (Str
     if args.len() >= 2 {
         return (vm.format_value(args[0]), args[1]);
     }
-    if let Value::Object(r) = args[0] {
+    if let Some(r) = args[0].as_object {
         if let Some(crate::heap::HeapObject::String(s)) = vm.heap.get(r.index()) {
             return (s.clone(), Value::Undefined);
         }

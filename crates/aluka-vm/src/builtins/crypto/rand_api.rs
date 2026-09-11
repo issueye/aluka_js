@@ -103,7 +103,7 @@ fn random_fill_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(throw_error(vm, "randomFillSync: invalid buffer or bounds"));
     };
     fill_random(&mut bytes[offset..offset + size]);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         crate::builtins::buffer::overwrite_buffer_instance(vm, r, &bytes);
     }
     Ok(target)
@@ -120,7 +120,7 @@ fn random_fill(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(throw_error(vm, "randomFill: invalid buffer or bounds"));
     };
     fill_random(&mut bytes[offset..offset + size]);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         crate::builtins::buffer::overwrite_buffer_instance(vm, r, &bytes);
     }
     schedule_delivery(vm, cb, Delivery::Passthrough(target));

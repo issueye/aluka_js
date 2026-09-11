@@ -300,17 +300,17 @@ fn agent_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut keep_alive = false;
     let mut keep_alive_msecs = 1000.0f64;
     let mut max_sockets = 0.0f64; // 0 → Infinity
-    if let Some(Value::Object(opts)) = args.first() {
+    if let Some(opts) = args.first().as_object {
         let read = |vm: &mut Vm, key: &str| vm.get_property(Value::Object(*opts), key).ok();
         if let Some(v) = read(vm, "keepAlive") {
             if !matches!(v, Value::Undefined) {
                 keep_alive = vm.truthy(v);
             }
         }
-        if let Some(Value::Number(n)) = read(vm, "keepAliveMsecs") {
+        if let Some(n) = read(vm, "keepAliveMsecs").as_number {
             keep_alive_msecs = n;
         }
-        if let Some(Value::Number(n)) = read(vm, "maxSockets") {
+        if let Some(n) = read(vm, "maxSockets").as_number {
             max_sockets = n;
         }
     }
@@ -473,7 +473,7 @@ pub(crate) fn is_function(vm: &Vm, v: Value) -> bool {
 
 /// 头值 → 字符串列表：数组展开（跳过 undefined/null），其余单值。
 pub(crate) fn header_values(vm: &mut Vm, v: Value) -> Vec<String> {
-    if let Value::Object(r) = v {
+    if let Some(r) = v.as_object {
         if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
             return elements
                 .iter()
@@ -541,7 +541,7 @@ pub(crate) fn build_message_instance(
 /// `message.on(event, listener)`。
 fn message_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, false);
@@ -553,7 +553,7 @@ fn message_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `message.once(event, listener)`。
 fn message_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, true);
@@ -565,7 +565,7 @@ fn message_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `message.off(event, listener)` / `removeListener`。
 fn message_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::remove_listener(r.0, &name, *cb);

@@ -82,7 +82,7 @@ fn parse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `stringify(obj)`：`{ a: 1, b: "x y" }` → `a=1&b=x+y`（键序无关，逐字对齐测试）。
 fn stringify(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut parts: Vec<String> = Vec::new();
-    if let Value::Object(r) = args.first().copied().unwrap_or(Value::Undefined) {
+    if let Some(r) = args.first().copied().unwrap_or(Value::Undefined).as_object {
         if matches!(
             vm.heap.get(r.index()),
             Some(crate::heap::HeapObject::Ordinary { .. })

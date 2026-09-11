@@ -40,7 +40,7 @@ fn fail_expected_but_got(vm: &mut Vm, a: Value, b: Value) -> VmError {
 /// 归属状态。找不到时回退 CURRENT（顺序模式/微任务子测试路径不变）。
 fn receiver_state_id(vm: &mut Vm) -> Option<u64> {
     let receiver = crate::builtins::current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let Ok(Value::Number(n)) = vm.get_property(Value::Object(r), "_stateId") {
             let id = n as u64;
             if id > 0 {
@@ -251,7 +251,7 @@ pub fn ctx_assert_throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// （引擎 promise 拒绝与兑现同形——Go `AwaitPromise` 错误路径的近似移植）。
 fn promise_rejected(vm: &mut Vm, pv: Value) -> Result<bool, VmError> {
     vm.drain_microtasks()?;
-    if let Value::Object(r) = pv {
+    if let Some(r) = pv.as_object {
         if let Some(HeapObject::Promise { pending, value, .. }) = vm.heap.get(r.index()) {
             return Ok(!*pending && !matches!(value, Value::Undefined));
         }
@@ -403,7 +403,7 @@ pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     if cancelled {
-        if let Value::Object(p) = promise_val {
+        if let Some(p) = promise_val.as_object {
             vm.fulfill_promise(p, Value::Undefined)?;
         }
         return Ok(Value::Undefined);
@@ -458,7 +458,7 @@ pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 error: Some(format!("subtest hook: {}", error_message(vm, &e))),
             },
         );
-        if let Value::Object(p) = promise_val {
+        if let Some(p) = promise_val.as_object {
             vm.fulfill_promise(p, Value::Undefined)?;
         }
         return Ok(Value::Undefined);
@@ -494,7 +494,7 @@ pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
-    if let Value::Object(p) = promise_val {
+    if let Some(p) = promise_val.as_object {
         vm.fulfill_promise(p, Value::Undefined)?;
     }
     Ok(Value::Undefined)

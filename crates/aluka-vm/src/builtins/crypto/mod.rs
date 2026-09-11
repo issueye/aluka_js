@@ -349,7 +349,7 @@ fn get_random_values(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(arg) = args.first().copied() {
         if let Some(mut bytes) = extract_bytes(vm, arg) {
             random::fill_random(&mut bytes);
-            if let Value::Object(r) = arg {
+            if let Some(r) = arg.as_object {
                 crate::builtins::buffer::overwrite_buffer_instance(vm, r, &bytes);
             }
             return Ok(arg);

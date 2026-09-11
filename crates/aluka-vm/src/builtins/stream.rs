@@ -123,7 +123,7 @@ fn chunk_byte_len(vm: &crate::interpreter::Vm, chunk: Value) -> usize {
 
 /// 从 options 对象读取 highWaterMark（缺省/非法 → 默认水位线）
 fn read_high_water_mark(vm: &mut crate::interpreter::Vm, args: &[Value]) -> usize {
-    if let Some(Value::Object(opts)) = args.first().copied() {
+    if let Some(opts) = args.first().copied().as_object {
         if let Ok(Value::Number(n)) = vm.get_property(Value::Object(opts), "highWaterMark") {
             if n.is_finite() && n >= 0.0 {
                 return n as usize;
@@ -293,7 +293,7 @@ fn stream_internal_web_sink_write(vm: &mut Vm, args: &[Value]) -> Result<Value, 
     let Value::Object(fwd_ref) = super::pending_callee() else {
         return Ok(Value::Undefined);
     };
-    let Some(Value::Number(n)) = vm.get_native_fn_property(fwd_ref, "_webId") else {
+    let Some(n) = vm.get_native_fn_property(fwd_ref, "_webId").as_number() else {
         return Ok(Value::Undefined);
     };
     let chunk = args.first().copied().unwrap_or(Value::Undefined);
@@ -540,7 +540,7 @@ pub fn create_transform_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRe
         "writableHighWaterMark",
         Value::Number(hwm as f64),
     );
-    if let Some(Value::Object(opts)) = args.first().copied() {
+    if let Some(opts) = args.first().copied().as_object {
         if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(opts), "writableObjectMode")
         {
             let _ = vm.set_property(
@@ -603,7 +603,7 @@ pub fn create_writable_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef
     let hwm = read_high_water_mark(vm, args);
     let self_val = Value::Object(obj);
     let mut write_fn = None;
-    if let Some(Value::Object(opts_ref)) = args.first() {
+    if let Some(opts_ref) = args.first().as_object {
         if let Ok(w) = vm.get_property(Value::Object(*opts_ref), "write") {
             if matches!(w, Value::Object(_)) {
                 write_fn = Some(w);
@@ -1109,7 +1109,7 @@ fn stream_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `stream.pause()`：暂停流动
 fn stream_pause(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         with_stream_state(r.0, |s| s.flowing = false);
     }
     Ok(receiver)
@@ -1118,7 +1118,7 @@ fn stream_pause(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.resume()`：恢复流动
 fn stream_resume(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         with_stream_state(r.0, |s| s.flowing = true);
         drain_buffer_to_data(vm, r.0, receiver)?;
         let state = get_stream_state(r.0);
@@ -1143,7 +1143,7 @@ fn stream_is_paused(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// error（携带 err 时）与 close；错误存 errored 供 `stream.errored` 读取。
 fn stream_destroy(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         let already = with_stream_state(r.0, |s| {
             let was = s.destroyed;
             s.destroyed = true;

@@ -498,7 +498,7 @@ fn member_channel(tracing_id: u32, index: usize) -> Option<ObjectRef> {
 /// 抛出值的字符串化（对齐 Go `err.Error()` 的首行 `Name: message` 形态）。
 fn describe_thrown(vm: &mut Vm, err: &VmError) -> String {
     if let VmError::Thrown(v) = err {
-        if let Value::Object(r) = *v {
+        if let Some(r) = *v.as_object {
             if matches!(vm.heap.get(r.0 as usize), Some(HeapObject::Ordinary { .. })) {
                 let name = vm.get_property(*v, "name").unwrap_or(Value::Undefined);
                 let message = vm.get_property(*v, "message").unwrap_or(Value::Undefined);

@@ -318,7 +318,7 @@ pub(crate) fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value,
     let stream = vm.alloc_ordinary();
     let mut sink_write = None;
     let mut sink_close = None;
-    if let Some(Value::Object(sink_ref)) = args.first().copied() {
+    if let Some(sink_ref) = args.first().copied().as_object {
         let sink = Value::Object(sink_ref);
         if let Ok(w) = vm.get_property(sink, "write") {
             if is_function(vm, w) {

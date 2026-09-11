@@ -514,7 +514,7 @@ impl Vm {
         let roots = self.build_gc_roots();
         let mut marked = vec![false; self.heap.len()];
         for root in roots.iter() {
-            if let Value::Object(r) = root {
+            if let Some(r) = root.as_object {
                 self.mark_all(r.0, &mut marked);
             }
         }
@@ -560,7 +560,7 @@ impl Vm {
         let roots = self.build_gc_roots();
         let mut marked = vec![false; self.heap.len()];
         for root in roots.iter() {
-            if let Value::Object(r) = root {
+            if let Some(r) = root.as_object {
                 self.mark_young(r.0, &mut marked);
             }
         }

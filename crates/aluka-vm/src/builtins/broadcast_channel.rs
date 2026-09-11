@@ -108,7 +108,7 @@ fn bc_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `close()`：退出频道（此后 postMessage 不再广播到本实例）。
 fn bc_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         let name = channel_name_of(vm, receiver);
         with_channels(|ch| {
             if let Some(members) = ch.get_mut(&name) {

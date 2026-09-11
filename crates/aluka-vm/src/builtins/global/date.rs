@@ -307,7 +307,7 @@ fn date_time_value(vm: &Vm, v: Value) -> f64 {
 
 /// 写回接收者的 `_timeValue` 并返回新的时间值（set* 返回值即新时间值）。
 fn set_time_value(vm: &mut Vm, receiver: Value, t: f64) -> f64 {
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         let _ = vm.set_property(Value::Object(r), "_timeValue", Value::Number(t));
     }
     t

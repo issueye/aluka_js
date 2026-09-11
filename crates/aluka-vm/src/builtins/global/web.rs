@@ -41,7 +41,7 @@ pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> 
         }
         return entries;
     }
-    if let Value::Object(r) = init {
+    if let Some(r) = init.as_object {
         let is_arr = matches!(
             vm.heap.get(r.index()),
             Some(crate::heap::HeapObject::Array { .. })
@@ -52,7 +52,7 @@ pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> 
                 _ => Vec::new(),
             };
             for e in elements {
-                if let Value::Object(er) = e {
+                if let Some(er) = e.as_object {
                     let pair: Vec<Value> = match vm.heap.get(er.index()) {
                         Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
                         _ => Vec::new(),
@@ -259,13 +259,13 @@ pub(crate) fn text_decoder_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
 /// `decoder.decode(uint8)`。
 pub(crate) fn text_decoder_decode(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut bytes: Vec<u8> = Vec::new();
-    if let Some(Value::Object(r)) = args.first() {
+    if let Some(r) = args.first().as_object {
         let elements: Vec<Value> = match vm.heap.get(r.index()) {
             Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
             _ => Vec::new(),
         };
         for v in elements {
-            if let Value::Number(n) = v {
+            if let Some(n) = v.as_number {
                 bytes.push(n as u8);
             }
         }
@@ -300,7 +300,7 @@ pub(crate) fn queuing_strategy_size(vm: &mut Vm, args: &[Value]) -> Result<Value
     if strategy == "CountQueuingStrategy" {
         return Ok(Value::Number(1.0));
     }
-    let len = if let Value::Object(r) = chunk {
+    let len = if let Some(r) = chunk.as_object {
         match vm.heap.get(r.index()) {
             Some(crate::heap::HeapObject::Array { elements, .. }) => elements.len() as f64,
             _ => 1.0,
@@ -318,14 +318,14 @@ pub(crate) fn blob_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErr
     let parts = args.first().copied().unwrap_or(Value::Undefined);
     let opts = args.get(1).copied().unwrap_or(Value::Undefined);
     let mut text = String::new();
-    if let Value::Object(r) = parts {
+    if let Some(r) = parts.as_object {
         let elements: Vec<Value> = match vm.heap.get(r.index()) {
             Some(HeapObject::Array { elements, .. }) => elements.clone(),
             _ => Vec::new(),
         };
         for e in elements {
             let s = vm.format_value(e);
-            if let Value::Object(er) = e {
+            if let Some(er) = e.as_object {
                 if matches!(vm.heap.get(er.index()), Some(HeapObject::Array { .. })) {
                     let bytes: Vec<Value> = match vm.heap.get(er.index()) {
                         Some(HeapObject::Array { elements, .. }) => elements.clone(),
@@ -333,7 +333,7 @@ pub(crate) fn blob_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErr
                     };
                     let mut sub = String::new();
                     for b in bytes {
-                        if let Value::Number(n) = b {
+                        if let Some(n) = b.as_number {
                             if let Some(c) = std::char::from_u32(n as u32) {
                                 sub.push(c);
                             }

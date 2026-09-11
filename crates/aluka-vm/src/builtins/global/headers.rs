@@ -65,7 +65,7 @@ pub(crate) fn hdr_sync_props(vm: &mut Vm, receiver: Value, entries: &[(String, S
 
 /// 将任意对象字面量形态规范化为 Headers 实例。
 pub(crate) fn build_headers(vm: &mut Vm, val: Value) -> Value {
-    if let Value::Object(_) = val {
+    if let Some(_) = val.as_object {
         if matches!(vm.get_property(val, "_isHeaders"), Ok(Value::Boolean(true))) {
             return val;
         }
@@ -79,7 +79,7 @@ pub(crate) fn build_headers(vm: &mut Vm, val: Value) -> Value {
         let _ = vm.set_property(Value::Object(h), m, Value::Object(f));
     }
     let mut pairs: Vec<(String, String)> = Vec::new();
-    if let Value::Object(r) = val {
+    if let Some(r) = val.as_object {
         for (k, v) in vm.own_entries(r.index()) {
             if !k.starts_with('_') {
                 pairs.push((k, vm.format_value(v)));
@@ -102,7 +102,7 @@ pub(crate) fn headers_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
         let _ = vm.set_property(Value::Object(headers), method, Value::Object(f));
     }
     let mut entries: Vec<(String, String)> = Vec::new();
-    if let Value::Object(r) = args.first().copied().unwrap_or(Value::Undefined) {
+    if let Some(r) = args.first().copied().unwrap_or(Value::Undefined).as_object {
         let elements: Vec<Value> = match vm.heap.get(r.index()) {
             Some(HeapObject::Array { elements, .. }) => elements.clone(),
             _ => Vec::new(),
@@ -116,7 +116,7 @@ pub(crate) fn headers_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
             }
         } else {
             for e in elements {
-                if let Value::Object(er) = e {
+                if let Some(er) = e.as_object {
                     let pair: Vec<Value> = match vm.heap.get(er.index()) {
                         Some(HeapObject::Array { elements, .. }) => elements.clone(),
                         _ => Vec::new(),

@@ -573,7 +573,7 @@ fn render_to_html(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Object(vm.alloc_string(String::new())));
     }
     let mut title = "Aluka Site".to_owned();
-    if let Some(Value::Object(r)) = args.get(1) {
+    if let Some(r) = args.get(1).as_object {
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
             let t = vm.get_property(args[1], "title")?;
             if !matches!(t, Value::Undefined) {

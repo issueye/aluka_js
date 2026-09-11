@@ -134,9 +134,9 @@ fn proxy_revocable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `revoke` 属性还原捕获的 fn 对象再读 `_revokes`）。
 fn proxy_revoke(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Value::Object(r) = receiver {
+    if let Some(r) = receiver.as_object {
         if let Ok(Value::Object(fr)) = vm.get_property(Value::Object(r), "revoke") {
-            if let Some(Value::Object(pr)) = vm.get_native_fn_property(fr, "_revokes") {
+            if let Some(pr) = vm.get_native_fn_property(fr, "_revokes").as_object {
                 vm.revoke_proxy(pr);
             }
         }
@@ -176,7 +176,7 @@ fn reflect_define_property(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
         .unwrap_or_default();
     let desc = args.get(2).copied().unwrap_or(Value::Undefined);
     // Proxy 目标经 trap 派发；普通对象走 Ordinary 定义
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             let ok = vm.proxy_define_property(r, &key, desc)?;
             return Ok(Value::Boolean(ok));
@@ -193,7 +193,7 @@ fn reflect_delete_property(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
         .get(1)
         .map(|v| vm.to_property_key(*v))
         .unwrap_or_default();
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             vm.proxy_delete(r, &key)?;
             return Ok(Value::Boolean(true));
@@ -212,7 +212,7 @@ fn reflect_get(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .unwrap_or_default();
     let receiver = args.get(2).copied().unwrap_or(target);
     // Proxy 目标经 get trap 派发（receiver 语义对齐规范第三参）
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             return vm.proxy_get(r, &key, receiver);
         }
@@ -227,7 +227,7 @@ fn reflect_get_own_property_descriptor(vm: &mut Vm, args: &[Value]) -> Result<Va
         .get(1)
         .map(|v| vm.to_property_key(*v))
         .unwrap_or_default();
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             return vm.proxy_get_own_property_descriptor(r, &key);
         }
@@ -238,7 +238,7 @@ fn reflect_get_own_property_descriptor(vm: &mut Vm, args: &[Value]) -> Result<Va
 /// `Reflect.getPrototypeOf(target)`。
 fn reflect_get_prototype_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let target = args.first().copied().unwrap_or(Value::Undefined);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             return vm.proxy_get_prototype_of(r);
         }
@@ -262,7 +262,7 @@ fn reflect_has(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `Reflect.isExtensible(target)`。
 fn reflect_is_extensible(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let target = args.first().copied().unwrap_or(Value::Undefined);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             return Ok(Value::Boolean(vm.proxy_is_extensible(r)?));
         }
@@ -273,7 +273,7 @@ fn reflect_is_extensible(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// `Reflect.ownKeys(target)`。
 fn reflect_own_keys(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let target = args.first().copied().unwrap_or(Value::Undefined);
-    let keys: Vec<String> = if let Value::Object(r) = target {
+    let keys: Vec<String> = if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             vm.proxy_own_keys(r)?
         } else {
@@ -295,7 +295,7 @@ fn reflect_own_keys(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `Reflect.preventExtensions(target)`。
 fn reflect_prevent_extensions(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let target = args.first().copied().unwrap_or(Value::Undefined);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             return Ok(Value::Boolean(vm.proxy_prevent_extensions(r)?));
         }
@@ -312,7 +312,7 @@ fn reflect_set(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .unwrap_or_default();
     let val = args.get(2).copied().unwrap_or(Value::Undefined);
     let receiver = args.get(3).copied().unwrap_or(target);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             vm.proxy_set(r, &key, val, receiver)?;
             return Ok(Value::Boolean(true));
@@ -326,7 +326,7 @@ fn reflect_set(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn reflect_set_prototype_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let target = args.first().copied().unwrap_or(Value::Undefined);
     let proto = args.get(1).copied().unwrap_or(Value::Null);
-    if let Value::Object(r) = target {
+    if let Some(r) = target.as_object {
         if vm.proxy_parts(r).is_some() {
             return Ok(Value::Boolean(vm.proxy_set_prototype_of(r, proto)?));
         }

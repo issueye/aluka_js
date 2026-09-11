@@ -687,7 +687,7 @@ impl Vm {
     /// 数组呈现为 `[ a, b ]`（空数组 `[]`，元素 `, ` 分隔、递归同规则），
     /// BigInt 呈现为带 `n` 后缀的字面量（例如 `123n`），其余值与 [`Vm::format_value`] 一致。
     pub fn format_console_value(&self, val: Value) -> String {
-        if let Value::Object(r) = val {
+        if let Some(r) = val.as_object {
             let idx = r.0 as usize;
             if let Some(obj) = self.heap.get(idx) {
                 match obj {
@@ -739,7 +739,7 @@ impl Vm {
 
     /// `++` / `--` 的 ToNumeric 递增（BigInt 保持 BigInt，对齐 Go 版 `updateNumeric`）。
     fn update_numeric(&mut self, val: Value, delta: i128) -> Value {
-        if let Value::Object(r) = val {
+        if let Some(r) = val.as_object {
             if let Some(HeapObject::BigInt(s)) = self.heap.get(r.0 as usize) {
                 let n: i128 = s.parse().unwrap_or(0);
                 let updated = n + delta;
@@ -1059,7 +1059,7 @@ impl Vm {
     /// 堆感知的 ToNumber：堆字符串/BigInt 按内容转数值（裸 `ops::to_number`
     /// 无法读取堆，字符串一律 NaN——真实包大量依赖 `"404"` 参与算术）。
     pub(crate) fn to_number_value(&self, val: Value) -> f64 {
-        if let Value::Object(r) = val {
+        if let Some(r) = val.as_object {
             match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => {
                     return parse_js_number(s);
@@ -1118,7 +1118,7 @@ impl Vm {
         let mut out = Vec::with_capacity(elems.len());
         for e in elems {
             if depth >= 1.0 {
-                if let Value::Object(ar) = e {
+                if let Some(ar) = e.as_object {
                     if let Some(HeapObject::Array { elements, .. }) = self.heap.get(ar.0 as usize) {
                         out.extend(self.flat_array(elements.clone(), depth - 1.0));
                         continue;
@@ -1768,7 +1768,7 @@ impl Vm {
                 Op::Neg => {
                     let top = self.pop()?;
                     // BigInt 取负：按十进制字符串取负生成新 BigInt（数值族走 f64）
-                    if let Value::Object(r) = top {
+                    if let Some(r) = top.as_object {
                         if let Some(HeapObject::BigInt(text)) = self.heap.get(r.0 as usize) {
                             let text = text.clone();
                             let neg = if let Some(stripped) = text.strip_prefix('-') {
@@ -2089,7 +2089,7 @@ impl Vm {
                         pc += 1;
                         continue;
                     }
-                    if let Value::Object(r) = receiver {
+                    if let Some(r) = receiver.as_object {
                         let is_reflect_like = match self.heap.get(r.0 as usize) {
                             Some(HeapObject::NativeFn { name, .. }) => {
                                 name.starts_with("Reflect.") || name.starts_with("Proxy.")
@@ -2503,7 +2503,7 @@ impl Vm {
                         } else {
                             Value::Undefined
                         };
-                        if let Value::Object(rr) = receiver {
+                        if let Some(rr) = receiver.as_object {
                             let p2 = self.alloc_pending_promise();
                             let res2 = self.alloc_promise_resolver(p2, true);
                             let rej2 = self.alloc_promise_resolver(p2, false);
@@ -2607,7 +2607,7 @@ impl Vm {
                         // promise.then(onF)：登记处理器，返回自身；已完成时立即调度。
                         // promise.catch(onR)：pending 时登记（reject 简化同 fulfill——
                         // 本引擎无 reject 语义，fulfilled 完成不触发 catch）
-                        if let Value::Object(rr) = receiver {
+                        if let Some(rr) = receiver.as_object {
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
                             // then(onF, onR) 的第二参数：rejected 处理器
                             let on_rejected = if method_name == "then" {
@@ -2734,7 +2734,7 @@ impl Vm {
                         // 生成器按 next() 同步驱动（async 生成器在语料中同步产值）
                         let iterable = args.first().copied().unwrap_or(Value::Undefined);
                         let mut elems: Vec<Value> = Vec::new();
-                        if let Value::Object(it) = iterable {
+                        if let Some(it) = iterable.as_object {
                             match self.heap.get(it.0 as usize) {
                                 Some(HeapObject::Array { elements, .. }) => {
                                     elems.extend(elements.iter().copied());
@@ -2876,7 +2876,7 @@ impl Vm {
                         };
                         if let Some(entries) = snapshot {
                             let is_set = self.is_set_instance(receiver);
-                            if let Value::Object(rr) = receiver {
+                            if let Some(rr) = receiver.as_object {
                                 match method {
                                     "keys" => {
                                         if is_set {
@@ -2935,7 +2935,7 @@ impl Vm {
                                     _ => {}
                                 }
                             }
-                        } else if let Value::Object(rr) = receiver {
+                        } else if let Some(rr) = receiver.as_object {
                             // SameValueZero 命中下标：先在**不可变**借用下求出，再进入
                             // 可变借用改写——比较需读堆判定字符串内容（本 VM 以堆对象
                             // 表示字符串，句柄不同但内容相同必须视为同键），若在
@@ -3009,7 +3009,7 @@ impl Vm {
                             )
                     ) {
                         // EventEmitter：on/once 注册监听器，emit 触发，off/removeListener 移除
-                        if let Value::Object(rr) = receiver {
+                        if let Some(rr) = receiver.as_object {
                             match method_name.as_ref() {
                                 "on" | "once" => {
                                     let name = args
@@ -3085,7 +3085,7 @@ impl Vm {
                             "push" => {
                                 let v = args.first().copied().unwrap_or(Value::Undefined);
                                 let is_end = matches!(v, Value::Null);
-                                let waiting = if let Value::Object(rr) = receiver {
+                                let waiting = if let Some(rr) = receiver.as_object {
                                     if let Some(HeapObject::Readable {
                                         buffer,
                                         ended,
@@ -3108,7 +3108,7 @@ impl Vm {
                                     None
                                 };
                                 // 写屏障：老可读流缓冲/等待槽写入新值
-                                if let Value::Object(rr2) = receiver {
+                                if let Some(rr2) = receiver.as_object {
                                     self.gc_write_barrier(rr2, v);
                                 }
                                 // 有等待中的 promise：兑现为 {value, done} 结果对象
@@ -3136,7 +3136,7 @@ impl Vm {
                                 // 无条件先建 pending promise（NeedWait 时登记等待；
                                 // Data/Done 时弃用——堆对象无副作用）
                                 let pending_promise = self.alloc_pending_promise();
-                                let action = if let Value::Object(rr) = receiver {
+                                let action = if let Some(rr) = receiver.as_object {
                                     match self.heap.get_mut(rr.0 as usize) {
                                         Some(HeapObject::Readable {
                                             buffer,
@@ -3150,7 +3150,7 @@ impl Vm {
                                             } else {
                                                 // 空读未结束：登记等待 promise（挂起等待 push）
                                                 *waiting = Some(pending_promise);
-                                                if let Value::Object(rr2) = receiver {
+                                                if let Some(rr2) = receiver.as_object {
                                                     self.gc_write_barrier(
                                                         rr2,
                                                         Value::Object(pending_promise),
@@ -3254,7 +3254,7 @@ impl Vm {
                             if matches!(self.heap.get(rr.0 as usize), Some(HeapObject::Array { .. }))
                     ) {
                         // ES2023 不可变数组方法：返回新数组
-                        let mut elems: Vec<Value> = if let Value::Object(rr) = receiver {
+                        let mut elems: Vec<Value> = if let Some(rr) = receiver.as_object {
                             if let Some(HeapObject::Array { elements, .. }) =
                                 self.heap.get(rr.0 as usize)
                             {
@@ -3403,7 +3403,7 @@ impl Vm {
                         // TypedArray 构造器静态方法（from/of/isTypedArray）
                         let val = st_res?;
                         self.stack.push(val);
-                    } else if let Value::Object(r) = receiver {
+                    } else if let Some(r) = receiver.as_object {
                         let idx = r.0 as usize;
                         if idx < self.heap.len()
                             && matches!(self.heap[idx], HeapObject::Array { .. })
@@ -3682,7 +3682,7 @@ impl Vm {
                                     } else {
                                         start_raw.min(len) as usize
                                     };
-                                    let end = if let Some(Value::Number(n)) = args.get(1) {
+                                    let end = if let Some(n) = args.get(1).as_number {
                                         let end_raw = *n as i64;
                                         if end_raw < 0 {
                                             (len + end_raw).max(0) as usize
@@ -3739,7 +3739,7 @@ impl Vm {
                                 "concat" => {
                                     let mut elems = self.array_elements(idx);
                                     for a in args {
-                                        if let Value::Object(ar) = a {
+                                        if let Some(ar) = a.as_object {
                                             if let Some(HeapObject::Array { elements, .. }) =
                                                 self.heap.get(ar.0 as usize)
                                             {
@@ -3933,7 +3933,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if let Value::Object(ar) = mapped {
+                                        if let Some(ar) = mapped.as_object {
                                             if let Some(HeapObject::Array { elements, .. }) =
                                                 self.heap.get(ar.0 as usize)
                                             {
@@ -4018,7 +4018,7 @@ impl Vm {
                         } else {
                             // 普通对象方法调用
                             let method_val = self.get_property(receiver, &method_name)?;
-                            if let Value::Object(m_ref) = method_val {
+                            if let Some(m_ref) = method_val.as_object {
                                 // Promise resolver/rejecter（Promise.withResolvers 的
                                 // resolve/reject 属性）：按解析器标志兑现目标 promise
                                 let resolver = match self.heap.get(m_ref.0 as usize) {
@@ -4158,7 +4158,7 @@ impl Vm {
                         // Symbol([description])：唯一符号原语
                         let sym = self.symbol_create(args);
                         self.stack.push(sym);
-                    } else if let Value::Object(r) = callee {
+                    } else if let Some(r) = callee.as_object {
                         let callee_ref = r.0 as usize;
                         let resolver = match self.heap.get(callee_ref) {
                             Some(HeapObject::PromiseResolver { promise, resolve }) => {
@@ -4383,7 +4383,7 @@ impl Vm {
                 Op::ArrayPush => {
                     let val = self.pop()?;
                     let arr_val = self.peek()?;
-                    if let Value::Object(r) = arr_val {
+                    if let Some(r) = arr_val.as_object {
                         if let Some(HeapObject::Array { elements, .. }) =
                             self.heap.get_mut(r.0 as usize)
                         {
@@ -4397,7 +4397,7 @@ impl Vm {
                     let target_arr = self.peek()?;
                     // 展开语义：数组/字符串/Map/Set/类型化数组全部按迭代协议物化
                     let to_append = self.collect_iter_values(spread_val)?;
-                    if let Value::Object(t_ref) = target_arr {
+                    if let Some(t_ref) = target_arr.as_object {
                         // 写屏障：老数组展开追加年轻元素（borrow 前先屏障）
                         for a in &to_append {
                             self.gc_write_barrier(t_ref, *a);
@@ -4546,7 +4546,7 @@ impl Vm {
                 Op::DelProp => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let obj = self.pop()?;
-                    if let Value::Object(r) = obj {
+                    if let Some(r) = obj.as_object {
                         // 删除不改 shape：清槽 + 记入删除集 + 代数递增（见 delete_property）
                         self.delete_property(Value::Object(r), &key);
                     }
@@ -4556,7 +4556,7 @@ impl Vm {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);
                     let obj = self.pop()?;
-                    if let Value::Object(r) = obj {
+                    if let Some(r) = obj.as_object {
                         self.delete_property(Value::Object(r), &key);
                     }
                     self.stack.push(Value::Boolean(true));
@@ -4611,7 +4611,7 @@ impl Vm {
                     let args = call_args.as_slice();
                     let callee = self.pop()?;
                     let this_val = *self.locals.first().unwrap_or(&Value::Undefined);
-                    if let Value::Object(c_ref) = callee {
+                    if let Some(c_ref) = callee.as_object {
                         let (f_idx, uvs) =
                             if let Some(HeapObject::Closure {
                                 func_idx, upvalues, ..
@@ -4786,7 +4786,7 @@ impl Vm {
                     // for-in 头部：快照原型链可枚举键为字符串数组（对齐 Go OpEnumKeys）
                     let src = self.pop()?;
                     // Proxy 对象：经 ownKeys trap 快照（trap 异常时按空集降级）
-                    let keys: Vec<String> = if let Value::Object(r) = src {
+                    let keys: Vec<String> = if let Some(r) = src.as_object {
                         if self.proxy_parts(r).is_some() {
                             self.proxy_own_keys(r).unwrap_or_default()
                         } else {
@@ -4860,7 +4860,7 @@ impl Vm {
                         self.stack.push(val);
                     } else if self.is_array_value(val) {
                         // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
-                        if let Value::Object(arr) = val {
+                        if let Some(arr) = val.as_object {
                             let it = self.alloc_array_iterator(arr);
                             self.stack.push(it);
                         } else {
@@ -4868,7 +4868,7 @@ impl Vm {
                         }
                     } else if self.is_typed_array(val) {
                         // 类型化数组：物化元素快照迭代器（values 形态）
-                        if let Value::Object(ta) = val {
+                        if let Some(ta) = val.as_object {
                             let elems = self.ta_to_values(ta)?;
                             let snapshot = self.alloc_array(elems);
                             let it = self.alloc_array_iterator(snapshot);
@@ -4878,7 +4878,7 @@ impl Vm {
                         }
                     } else if self.is_string_value(val) {
                         // 字符串：直接创建逐字符迭代器（避免 Symbol.iterator 查找开销）
-                        if let Value::Object(r) = val {
+                        if let Some(r) = val.as_object {
                             let it = self.alloc_string_iterator(r);
                             self.stack.push(it);
                         } else {
@@ -4886,7 +4886,7 @@ impl Vm {
                         }
                     } else if self.is_map_instance(val) {
                         // Map：entries 迭代器（产出 [key, value] 对）
-                        if let Value::Object(r) = val {
+                        if let Some(r) = val.as_object {
                             let it = self.alloc_map_iterator(r, "entries");
                             self.stack.push(it);
                         } else {
@@ -4894,7 +4894,7 @@ impl Vm {
                         }
                     } else if self.is_set_instance(val) {
                         // Set：values 迭代器（产出元素）
-                        if let Value::Object(r) = val {
+                        if let Some(r) = val.as_object {
                             let it = self.alloc_set_iterator(r, "values");
                             self.stack.push(it);
                         } else {

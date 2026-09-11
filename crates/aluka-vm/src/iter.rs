@@ -31,7 +31,7 @@ impl Vm {
     fn attach_iterator_surface(&mut self, obj: ObjectRef) {
         let next = self.alloc_native_fn("Iterator.prototype.next");
         let _ = self.define_proto_method(Value::Object(obj), "next", Value::Object(next));
-        if let Value::Object(sym_ref) = self.well_known_symbol("iterator") {
+        if let Some(sym_ref) = self.well_known_symbol("iterator").as_object {
             let key = crate::symbol::mangled_key(sym_ref);
             let f = self.alloc_native_fn("Iterator.prototype.Symbol.iterator");
             let _ = self.define_proto_method(Value::Object(obj), &key, Value::Object(f));
@@ -373,7 +373,7 @@ impl Vm {
             Entries(Vec<(Value, Value)>, bool), // (entries, is_set)
             Text(String),
         }
-        let src = if let Value::Object(r) = val {
+        let src = if let Some(r) = val.as_object {
             let is_set = self.is_set_instance(val);
             match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Array { elements, .. }) => Some(Src::Array(elements.clone())),

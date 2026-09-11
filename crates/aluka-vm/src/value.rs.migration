@@ -1,0 +1,18 @@
+M6.2 NaN-box 迁移状态（WIP，分支 m62-nanobox，勿合并）
+=======================================================
+已完成：
+- value.rs：8 字节 NaN-box Value（repr(transparent) u64，valbox 同源编码）
+  + 同名关联函数构造层（Value::Number(x) 等构造点零改动）
+  + Undefined/Null 关联常量（构造与模式双兼容）
+  + 访问器面（as_number/as_object/as_bool/is_*/kind）
+- 全仓单行模式自动转换 235 处（let-else/if-let Some(...) 的
+  `Value::X(v)` → `.as_x()` 链）。
+剩余（约 990 处，均为多臂 match / 复合模式，需语义改写）：
+- interpreter.rs 122 / property.rs 56 / surface.rs 43 / stream.rs 42 /
+  ops.rs 36 / net.rs 36 / worker_threads 32 / fetch 27 / mod 27 / cluster 25
+  …（cargo check -p aluka-vm 计数）
+- 典型改写形态：
+  match v { Value::Object(r) => A, Value::Number(n) => B, _ => C }
+  → match v.kind() { ValueKind::Object => { let r = v.as_object()…; A } … }
+  或 if-chain；注意 last_use/NLL 与嵌套 Box::new(Stmt::) 无关。
+- 完成后：ALUKA_GC_STRESS=8 全量 + conformance 全绿 + fib_bench 前后对比。

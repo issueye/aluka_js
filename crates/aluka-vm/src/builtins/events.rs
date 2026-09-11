@@ -702,10 +702,10 @@ fn events_static_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `events.setMaxListeners(n, ...emitters)`
 fn events_static_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if let Some(Value::Number(n)) = args.first() {
+    if let Some(n) = args.first().as_number {
         let limit = *n as usize;
         for target in args.iter().skip(1) {
-            if let Value::Object(r) = *target {
+            if let Some(r) = *target.as_object {
                 with_emitter_mut(r.0, |state| {
                     state.max_listeners = limit;
                 });
@@ -717,7 +717,7 @@ fn events_static_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value
 
 /// `events.getMaxListeners(emitter)`
 fn events_static_get_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(Value::Object(r)) = args.first() else {
+    let Some(r) = args.first().as_object() else {
         return Ok(Value::Number(10.0));
     };
     let max = with_emitter(r.0, |state| state.max_listeners);
