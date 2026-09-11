@@ -1290,6 +1290,7 @@ fn-body-blocks=function,function      / upvalue=3
 | 项 | Node | 本运行时 | 影响 |
 |---|---|---|---|
 | 块内函数声明在**块执行前**的值 | `undefined`（绑定在函数入口初始化为 undefined，块执行时才赋值） | `function`（提升编译在函数入口即 `MakeClosure` + `StoreLocal`） | 仅「块执行前引用该名字」可见（如函数入口特性探测）；方向为**更宽松**，不崩溃 |
+| 块内函数声明捕获**同块 `let`/`const`** | 正常（函数与块级绑定同处块作用域） | 读到 `undefined`（提升函数捕获函数级预注册槽，而块级 `let`/`const` 写入块级槽） | **功能缺口**：`{ const rec = []; function f() { rec.push(1); } f(); }` 抛 `TypeError`；见 §13.6 |
 
 **已隔离**：`tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0001.cjs`
 （该目录结构性不参与门禁）。
@@ -1299,6 +1300,79 @@ fn-body-blocks=function,function      / upvalue=3
 子语句前取出对应模板并 `MakeClosure` + `StoreLocal`。需保证「块编译序 == 收集序」
 （当前两者同为先序），属编译期绑定时机专项，风险中等，建议独立一轮施行并配
 deviations 用例回填。
+
+### 13.6 二次修复尝试与回退（块内函数捕获同块 `let`/`const`）
+
+### 13.6.1 现象
+
+修复「块内函数可见性」（§13.1）后暴露的新缺口——**块内函数捕获同块的 `let`/`const`**：
+
+```js
+if (true) {
+  const rec = [];
+  function start() { rec.push('ok'); return rec.length; }   // 提升到函数作用域
+  start();                                                  // 修复前：rec 为 undefined
+}
+// Node v22.23.1: same-block-capture=1
+// aluka（当前）  : TypeError: Cannot read properties of undefined (reading 'push')
+```
+
+**根因（编译期槽位模型，三处叠加）**：
+1. 块内函数声明被提升到**函数作用域** → 其闭包在**函数入口**创建，捕获函数级预注册槽；
+2. 块级 `let`/`const` 在 `codegen.rs` 的 `block_depth > 0` 分支中**总是分配新槽**
+   （用于实现块级遮蔽），值写入**块级槽**；
+3. 两者不是同一个槽 → 提升函数读到函数级槽的 `undefined`。
+
+### 13.6.2 已尝试的方案与回退原因（重要记录）
+
+| 方案 | 做法 | 结果 |
+|---|---|---|
+| 递归预注册块内绑定名 | 让块内函数名与其同块 `const` 在提升编译前入 `symbol_map` | 不足（槽仍非同一个） |
+| 块级 `let`/`const` **复用**函数级预注册槽 | 新增 `nested_preregistered` 集合 + `codegen.rs` 两处判据（仅当无 shadow 记录时复用） | ❌ **破坏块级遮蔽**：`(() => { let x = 10; { let x = 20; } return x })()` 实测 Node=`10` / aluka=`20`（`gen-lang-more-0014.cjs`）→ **已 `git checkout` 回退** |
+
+**结论**：近似方案不可取（遮蔽是更高频语义）。**当前保持 §13.1 的净改善**（块内函数
+可见性），把「同块 `let`/`const` 捕获」如实登记为**未修缺口**，并隔离用例：
+
+```
+tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0002.cjs
+```
+
+### 13.6.3 精确修法（已勘察，未实施）
+
+把绑定动作从函数入口**下移到块入口**：块内函数模板在编译期预编译并登记（按收集序，
+或按「名字 + 出现序」匹配），`codegen.rs` 的 `Stmt::Block` 分支在编译子语句前取出
+模板并 `MakeClosure` + `StoreLocal`——此时闭包与块级 `let`/`const` 同处块级槽位语义，
+遮蔽语义亦不受影响。
+
+需注意的前置：`compile_stmt` 是自由函数（无 `self`），故模板必须**预先编译**并随
+`CompiledUnit` 传递（新增字段），块分支只做绑定；同时要防止 `opt.rs` 的语句重排
+导致「块编译序 ≠ 收集序」（可用按名匹配降低风险）。
+
+### 13.6.4 验证与门禁（回退后）
+
+```text
+# 遮蔽回归已消除（复现用例）
+$env:ALUKA_CONF_FILTER="lang-more"; cargo test -p aluka-cli --all-features \
+    --test conformance_node22_test -- --nocapture
+Result: 24/24 passed, 0 invalid
+
+$ cargo fmt --all --check                                    FMT=0
+$ cargo clippy --all-targets --all-features -- -D warnings   CLIPPY=0
+$ cargo test --workspace --all-features -j 4                 TEST=0（墙钟 221.5s）
+聚合：suites=90 passed=632 failed=0 ignored=1
+```
+
+**工程隐患（复现一次）**：本轮构建时再次触发已登记的 rustc ICE
+（`core::option::expect_failed`，增量缓存损坏）——按既有规避口径
+`Remove-Item -Recurse target/debug/incremental` 后重试即过。
+
+### 13.6.5 本轮编译器改动的最终范围
+
+**入库（`cc0b922`）**：块内函数声明的**收集递归化 + 绑定预注册**（可见性修复）。
+**未入库（已回退）**：`nested_preregistered` 槽复用方案（破坏遮蔽）。
+**证据**：`p10b`/`p11` 两侧对拍（p11 全一致；p10b 在 aluka 侧抛 `TypeError`）；
+`gen/gen-block-fn-decl-0002.cjs` 门禁内通过；`gen/deviations/gen-block-fn-decl-000{1,2}.cjs`
+分别隔离「块前引用」与「同块 `let`/`const` 捕获」两项余差异。
 
 ### 13.4 门禁（修复后）
 
