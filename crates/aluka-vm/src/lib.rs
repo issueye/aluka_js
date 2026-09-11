@@ -19,6 +19,7 @@ pub mod jit_hot;
 pub mod microtask;
 pub mod modules;
 pub mod ops;
+pub mod pic;
 pub mod prims;
 pub mod property;
 pub mod proxy;

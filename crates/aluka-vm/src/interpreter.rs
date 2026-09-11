@@ -158,6 +158,10 @@ pub struct Vm {
     pub(crate) entry_file: String,
     /// 最近执行指令的下标（错误定位用）
     pub last_pc: usize,
+    /// 解释器属性读取 IC（直接映射，见 `pic.rs`）
+    pub(crate) prop_ic: Vec<crate::pic::PropIcEntry>,
+    /// IC 命中计数（诊断/测试观测面）
+    pub pic_hits: u64,
     /// 当前执行函数索引（错误定位用；-1 表示无）
     pub current_func_idx: i64,
     /// LCOV 行覆盖计数（`aluka test --test-reporter=lcov` 才挂载；默认 None
@@ -341,6 +345,8 @@ impl Vm {
             generators: HashMap::new(),
             yield_pc: 0,
             last_pc: 0,
+            prop_ic: crate::pic::pic_table_new(),
+            pic_hits: 0,
             current_func_idx: -1,
             coverage: None,
             nexttick_queue: std::collections::VecDeque::new(),
@@ -4406,8 +4412,9 @@ impl Vm {
                 Op::GetProp => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let obj = self.pop()?;
+                    let site = self.pic_site(pc);
 
-                    let val = self.get_property(obj, &key)?;
+                    let val = self.get_property_ic(obj, &key, site)?;
                     self.stack.push(val);
                 }
                 Op::GetPropLocal => {
@@ -4415,7 +4422,8 @@ impl Vm {
                     let name_idx = (instr.operand & 0xFFFF) as usize;
                     let key = constant_string(&constants, name_idx);
                     let obj = *self.locals.get(slot).ok_or(VmError::LocalOutOfRange)?;
-                    let val = self.get_property(obj, &key)?;
+                    let site = self.pic_site(pc);
+                    let val = self.get_property_ic(obj, &key, site)?;
                     self.stack.push(val);
                 }
                 Op::GetElem => {

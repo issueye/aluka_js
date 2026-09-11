@@ -166,3 +166,37 @@ $ cargo run --release -p aluka-cli --example gcpressure
   表示切换的直接收益有限；总表 M6.2「≥1.5x」为表示切换 + M6.3（PIC 全量接入 +
   JIT 扩容）协同后的复合目标，**不放宽验收线**，登记为待 M6.3 协同复核项；
 - **总表 M6.2 行**：合并后同步为「表示切换落地（本日），吞吐复合验收待 M6.3」。
+
+## 8. 待办 5 · M6.3 启动：切片一——解释器属性读取内联缓存（PIC）
+
+### 8.1 实现（`crates/aluka-vm/src/pic.rs` 新模块）
+
+| 项 | 内容 |
+|---|---|
+| 结构 | **直接映射站点缓存**（4096 槽，`Vm.prop_ic`）：站点键 `((func_idx+1)<<32)\|pc`，每点位缓存单一 `shape → 槽位` 绑定；命中跳过 `shape_table.shape(id).lookup(key)` 名字查表，槽位直读 |
+| 命中守卫（6 条，缺一回慢路径） | 站点键相等；Ordinary + Shape 快速模式；shape 相等（ShapeId 不可变 ⇒ 键→槽映射一致）；`deleted_gen == 0`（删除语义）；`has_accessors == 0`（defineProperty 覆盖访问器**不改 shape**，粘性标记拦截）；槽位在界 |
+| 写回资格 | 上述守卫外，键不在魔法键表（流计算属性 8 个 + process 面 5 个——解析依赖隐含状态，禁止 IC 直读），且 shape 键集不含 `_isStream`/`_isGlobalThis` 标记属性 |
+| 接线点 | `Op::GetProp` / `Op::GetPropLocal`（`pic_site(pc)` + `get_property_ic`）；`Vm.pic_hits` 命中计数观测面 |
+
+### 8.2 测试与门禁（真实输出）
+
+```text
+$ cargo test -p aluka-vm --lib pic
+    → 7 passed（单态命中/写后同槽读新值/多态互挤正确/访问器粘性拦截/
+      删除转字典回退/原型链回退 + jit_helpers 布局一致性既有用例）
+$ cargo test -p aluka-vm --all-features        → 208 passed, 0 failed
+$ cargo test --workspace --all-features        → 644 passed, 0 failed
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm     → 208 passed, 0 failed
+$ cargo fmt --all --check / clippy -D warnings → 通过 / 0 error
+$ cargo test -p aluka-jit --release --test jitbench → 3/3（JIT ≥ 解释器门禁保持）
+$ cargo run --release -p aluka-cli --example fib_bench
+    → 812.893ms（min-of-5）——master 840.4 → M6.2 824.5 → +PIC 812.9，
+      累计 1.034x；输出校验 832040
+```
+
+### 8.3 切片二及以后（待续）
+
+- `Op::SetProp`/`SetPropLocal` 写路径 IC + `Op::CallMethod` 方法调用 IC（receiver shape → 方法值绑定）；
+- 多态桩（2~4 shape 计数数组）与超多态回退（现直接映射互挤已保证正确性）；
+- JIT 全指令流扩容（调用/闭包/生成器/Try）——表示切换与解释器 IC 就位后，
+  复核 M6.2「≥1.5x」吞吐复合验收。
