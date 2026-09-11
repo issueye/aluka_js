@@ -448,6 +448,10 @@ impl Vm {
                     let r = crate::builtins::stream::create_writable_instance(self, args)?;
                     return Ok(Value::Object(r));
                 }
+                if name == "stream.Transform" {
+                    let r = crate::builtins::stream::create_transform_instance(self, args)?;
+                    return Ok(Value::Object(r));
+                }
                 if let Some(handler) = self.builtin_registry.lookup(name) {
                     return handler(self, args);
                 }

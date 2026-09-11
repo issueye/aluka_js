@@ -28,6 +28,7 @@
 | 4 | 登记 `core.untrackedCache` 隐患与规避口径 | `[x]` | 工程流程 |
 | 5 | 待办 30 · M5.1 收尾：`postMessageToThread` 真线程分支 + eval worker（§14） | `[x]` | M5.1 |
 | 6 | 待办 31 · M5.2 `{"t":"e"}` ack 回程（§15） | `[x]` | M5.2 |
+| 7 | 待办 32 · M5.4 真 `stream.Transform` 报告器（§16） | `[x]` | M5.4 |
 
 ---
 
@@ -1648,3 +1649,75 @@ $ cargo clippy --all-targets --all-features -- -D warnings
 $ cargo test --workspace --all-features
     → passed: 633, failed: 0（632 基线 + 新增 ack e2e 1 例）
 ```
+
+---
+
+## 16. 待办 32 · M5.4 真 `stream.Transform` 报告器（`run().compose(reporter)` 可用）
+
+> 触发指令：「继续」。承接 M5.4 剩余缺口：「报告器流非真 `stream.Transform`
+> （`run().compose(spec)` 不可用）」。
+
+### 16.1 开工前登记（目标 + 验收标准）
+
+| # | 目标 | 验收标准 | 证据 |
+|---|---|---|---|
+| 1 | `stream.Transform` 原生构造器 | `new stream.Transform()` 可用；报告器实例 `instanceof Transform` 成立（prototype 链）；方法面 write/end/on/pipe | §16.2/§16.4 |
+| 2 | `node:test/reporters` 形态对齐 Node 22.23.1 实测 | `typeof` 全 function、`lcov` 为预构造实例（object）；`spec` 可 `new`：实例 `constructor.name === 'SpecReporter'`、`writableObjectMode === true`；导出名怪癖对齐（`spec.name === 'value'`、`tap.name === 'tapReporter'`、`junit.name === 'junitReporter'`、`dot.name === 'dot'`） | §16.2/§16.4 |
+| 3 | `TestsStream.compose(reporter)` | `run().compose(reporter)` 返回可 `pipe` 的流（`constructor.name === 'Readable'`）；`pipe(process.stdout)` 输出**格式化报告**（tap：`TAP version 13`/`ok N - name`/`1..N`/`# tests N` 汇总；spec：`ok`/`not ok` 行 + `ℹ tests N` 汇总；dot：`.`/`X` + 失败清单）；pipe 先于事件到达时直通、后于事件到达时补冲 | §16.2/§16.4 |
+| 4 | 既有用例不回归 | phase8 `test_reporters_surface_e2e_matches_go`（Go 契约锚点）+ M5 差分门禁 + 门禁三连全绿 | §16.4 |
+
+**登记偏离（先声明）**：① 报告器**输出文本**沿用本仓报告契约（与 CLI 同源——
+M5.4 切片一既定口径：不声称与 `node --test` reporter 逐字一致；Node 侧
+`duration_ms`/stack 本身非确定值，逐字节对拍不可能）；② Node 对 `tap`/`dot`/
+`junit` 工厂 `new` 抛 `TypeError: reporters[k] is not a constructor`——本运行时
+原生函数均可构造（返回实例），不复制该内部怪癖；③ `lcov` 实例的内部状态键
+（`_readableState` 等）不复刻（引擎无同构流内部面）。
+
+### 16.2 Oracle 取证（node v22.23.1，探针 `.work/scratch/m54_reporter/`）
+
+- **模块面**：`exports` = `dot,junit,spec,tap,lcov`（无 bench）；`typeof` 四 function
+  + lcov object；`spec.name === 'value'`、`tap.name === 'tapReporter'`、
+  `junit.name === 'junitReporter'`、`dot.name === 'dot'`；
+  `new reporters.spec()` → `SpecReporter` 实例、`instanceof stream.Transform === true`、
+  `writableObjectMode === true`；`tap`/`dot`/`junit` 为**不可 new 的工厂**
+  （`new` 抛 `not a constructor`），调用返回实例；`lcov` 为**预构造实例**
+  （自有键 `_events/_readableState/_writableState/allowHalfOpen/_maxListeners/_eventsCount`）。
+- **TestsStream**：`run()` 返回 `TestsStream`（`extends Readable`，object mode，
+  同时 emit 事件并 push `{type, data}`——Node 源码 `tests_stream.js`）；`compose`
+  来自 Readable 原型；`run().compose(reporters.spec)` → `Readable` 实例（有 `pipe`）。
+- **TAP 输出形态**（`run().compose(reporters.tap).pipe(process.stdout)`）：
+  `TAP version 13` 头、`# Subtest: <name>`、`ok N - <name>`/`not ok N - <name>`、
+  每用例 YAML 块（`duration_ms` 非确定）、`1..N`、`# tests/pass/fail/...` 汇总。
+- **spec 输出形态**：`✔/✖` 符号行 + `ℹ tests N` 六行汇总；用例在 `run()` 前
+  声明、`run()` 后声明被 cancelled（「test did not finish before its parent」）。
+
+### 16.3 实现记录
+
+| 位置 | 内容 |
+|---|---|
+| `crates/aluka-vm/src/builtins/stream.rs` | 新增 `stream.Transform`：真 prototype 链（ctor `prototype` ↔ proto `constructor`，实例 `alloc_ordinary_with_exact_proto` 挂链——`instanceof Transform` 判定依据，区别于 Readable/Writable 的标记属性形态）；`create_transform_instance` 方法面复用 stream 组分派（write/end/on/once/off/read/pipe/destroy），`options.writableObjectMode` 以自有键暴露；`do_construct` 名字特判 + `stream.Transform` 处理器双路径（new/直调） |
+| `crates/aluka-vm/src/builtins/test_reporters.rs` | 报告器升级为真 Transform 实例：类原型链（实例 → `SpecReporter` 等类原型（constructor 回指）→ Transform.prototype）；导出名对齐 Node 内部怪癖（`spec`→fn 名 `'value'`、`tap`→`'tapReporter'`、`junit`→`'junitReporter'`、`dot`→`'dot'`，导出名即分派键）；`lcov` 预构造实例；`write` 收到**事件形态分块**（`{type: 'test:*', data}`）时增量格式化（tap 首Output前补 `TAP version 13` 头、`end` 出汇总块）并转发 `data` + **返回文本**（compose 管道消费形态），非事件分块保持 `data` 透传；`end` 出汇总 + `finish`/`close`（既有契约）；`pipe(dest)` 返回 **destination**（Node 语义；`d.pipe(d) === d` 锚点不受影响） |
+| `crates/aluka-vm/src/builtins/test/mod.rs` | `TestsStream.compose`：订阅源流全部测试事件（test:start/pass/fail/skip/todo/plan/end），每事件构造 `{type, data}` 分块交报告器 `write` 格式化，文本直通 `dest.write`（pipe 晚于事件时缓冲、pipe 时补冲）；组合流 `constructor.name === 'Readable'`；挂起表（dest 堆值）纳入 GC 根；`error_value` 辅助 |
+| `crates/aluka-cli/tests/m54_transform_reporter_test.rs` | 新增 5 例：表面常量（Node 实测值）+ tap/spec/dot 三种 compose 管道结构化断言 + pipe 直通 |
+
+### 16.4 验证与门禁
+
+**新增 e2e**：`crates/aluka-cli/tests/m54_transform_reporter_test.rs` 5 例——
+表面常量（Node 实测值：导出名怪癖/SpecReporter/instanceof Transform/
+writableObjectMode/composed Readable）+ tap/spec/dot 三种 compose 管道
+结构化断言 + 直通输出。
+
+**门禁三连**：
+
+```text
+$ cargo fmt --all --check                → 通过
+$ cargo clippy --all-targets --all-features -- -D warnings
+    → 0 error
+$ cargo test --workspace --all-features
+    → passed: 638, failed: 0（633 基线 + 新增 5 例）
+$ ALUKA_CONF_FILTER=m5 …conformance_node22_test
+    → 8/8 passed, 0 invalid（既有 M5 差分无回归）
+```
+
+**锚点复核**：phase8 `test_reporters_surface_e2e_matches_go`（Go 契约锚点）绿——
+`d.pipe(d) === d` 在 pipe 返回 destination 的新语义下依然成立。

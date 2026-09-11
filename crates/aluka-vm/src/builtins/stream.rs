@@ -507,6 +507,66 @@ pub(crate) fn call_stream_method(
     }
 }
 
+// Transform.prototype（`instanceof Transform` 判定用；每线程 Vm 构建期装配）。
+thread_local! {
+    static TRANSFORM_PROTO: RefCell<Option<ObjectRef>> = const { RefCell::new(None) };
+}
+
+/// Transform.prototype 读取（报告器实例挂链用；未装配时 None）。
+pub fn transform_prototype() -> Option<ObjectRef> {
+    TRANSFORM_PROTO.with(|c| c.borrow().as_ref().copied())
+}
+
+/// `new stream.Transform([options])`：创建 Transform 实例（真 prototype 链）。
+///
+/// 方法面与 Writable/Readable 复用同一组分派（write/end/on/pipe/…）；
+/// `options.writableObjectMode` 为真时以自有键暴露（Node 22 实测：报告器
+/// 实例 `writableObjectMode === true`）。
+pub fn create_transform_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef, VmError> {
+    let proto = TRANSFORM_PROTO.with(|c| c.borrow().as_ref().copied());
+    let obj = match proto {
+        Some(p) => vm.alloc_ordinary_with_exact_proto(Some(p)),
+        None => vm.alloc_ordinary(),
+    };
+    let hwm = read_high_water_mark(vm, args);
+    let self_val = Value::Object(obj);
+    init_stream_state(obj.0, None, hwm, self_val);
+
+    let _ = vm.set_property(Value::Object(obj), "_isStream", Value::Boolean(true));
+    let _ = vm.set_property(Value::Object(obj), "_isWritable", Value::Boolean(true));
+    let _ = vm.set_property(Value::Object(obj), "_isReadable", Value::Boolean(true));
+    let _ = vm.set_property(
+        Value::Object(obj),
+        "writableHighWaterMark",
+        Value::Number(hwm as f64),
+    );
+    if let Some(Value::Object(opts)) = args.first().copied() {
+        if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(opts), "writableObjectMode")
+        {
+            let _ = vm.set_property(
+                Value::Object(obj),
+                "writableObjectMode",
+                Value::Boolean(true),
+            );
+        }
+    }
+
+    for method in [
+        "write", "end", "on", "once", "off", "read", "pipe", "destroy",
+    ] {
+        let fn_ref = vm.alloc_native_fn(&format!("stream.{method}"));
+        let _ = vm.set_property(Value::Object(obj), method, Value::Object(fn_ref));
+    }
+
+    Ok(obj)
+}
+
+/// `stream.Transform` 构造调用（`new` / 直调同形，Node 可调用构造器语义）。
+fn stream_transform_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let r = create_transform_instance(vm, args)?;
+    Ok(Value::Object(r))
+}
+
 /// 创建新的 Readable 实例
 ///
 /// 使用 `HeapObject::Readable` 变体，使 `for await...of` 的 `GetAsyncIterator`
@@ -642,6 +702,31 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // 模块导出属性挂载
     set_module_prop(vm, obj, "Readable", Value::Object(readable_ctor))?;
     set_module_prop(vm, obj, "Writable", Value::Object(writable_ctor))?;
+
+    // Transform 构造器（M5.4：报告器等 Transform 流的 `instanceof` 面——
+    // 实例以真 prototype 链挂到 Transform.prototype，区别于 Readable/Writable
+    // 的标记属性形态）
+    let transform_ctor = vm.alloc_native_fn("stream.Transform");
+    let transform_proto = vm.alloc_ordinary();
+    let _ = vm.set_property(
+        Value::Object(transform_ctor),
+        "prototype",
+        Value::Object(transform_proto),
+    );
+    let _ = vm.set_property(
+        Value::Object(transform_proto),
+        "constructor",
+        Value::Object(transform_ctor),
+    );
+    TRANSFORM_PROTO.with(|c| *c.borrow_mut() = Some(transform_proto));
+    set_module_prop(vm, obj, "Transform", Value::Object(transform_ctor))?;
+    register_handler(registry, "stream", "Transform", stream_transform_ctor);
+    register_handler(
+        registry,
+        "stream.Transform",
+        "Transform",
+        stream_transform_ctor,
+    );
 
     let pipeline_fn = vm.alloc_native_fn("stream.pipeline");
     let finished_fn = vm.alloc_native_fn("stream.finished");

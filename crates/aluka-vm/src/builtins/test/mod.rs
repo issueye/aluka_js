@@ -59,6 +59,7 @@ use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
 /// `require("test")` / `require("node:test")` 模块条目。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -247,6 +248,9 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "test.snapshot", "setResolveSnapshotPath", noop);
     register_handler(registry, "test:postedRun", "task", posted_run);
     register_handler(registry, "test:streamPipe", "pipe", stream_pipe);
+    register_handler(registry, "test:stream", "compose", stream_compose);
+    register_handler(registry, "test:stream.compose", "forward", compose_forward);
+    register_handler(registry, "test:stream.compose", "pipe", compose_pipe);
 
     context::register_handlers(registry);
     mock::register_handlers(registry);
@@ -500,7 +504,190 @@ fn new_test_stream(vm: &mut Vm) -> ObjectRef {
     }
     let pipe_fn = vm.alloc_native_fn("test:stream.pipe");
     let _ = vm.set_property(Value::Object(stream), "pipe", Value::Object(pipe_fn));
+    let compose_fn = vm.alloc_native_fn("test:stream.compose");
+    let _ = vm.set_property(Value::Object(stream), "compose", Value::Object(compose_fn));
     stream
+}
+
+// ---------------------------------------------------------------------------
+// TestsStream.compose（M5.4）：`run().compose(reporter).pipe(dest)` 管道。
+//
+// Node 22.23.1 口径：TestsStream extends Readable（object mode，push
+// `{type, data}` 分块），`compose` 返回新 Readable——报告器消费事件分块、
+// 产出格式化文本，`pipe(dest)` 把文本写入目标流。本实现以挂起表 +
+// 事件转发近似：compose 时向源流订阅全部测试事件，每个事件经报告器
+// `write({type, data})` 格式化，文本直通 `dest.write`（pipe 晚于事件时先
+// 缓冲、pipe 时补冲）。
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// 组合流状态：composed 对象句柄 id → 目的地 / 补冲缓冲。
+    static COMPOSED: RefCell<HashMap<u32, ComposedState>> = RefCell::new(HashMap::new());
+}
+
+/// 组合流状态。
+struct ComposedState {
+    /// `pipe(dest)` 的目的地（值可直接 `write`；晚接时先缓冲）
+    dest: Option<Value>,
+    /// pipe 前已产出、尚未落地的文本
+    buffer: Vec<String>,
+}
+
+/// `run().compose(reporter)`：报告器可为实例（有 `_reporterKind`）或工厂函数
+/// （调用后得实例）。返回组合流（`constructor.name === 'Readable'`、可 `pipe`）。
+fn stream_compose(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    // 先取源流：工厂调用会覆盖 current_receiver
+    let source = crate::builtins::current_receiver();
+    let reporter = match args.first().copied() {
+        Some(r @ Value::Object(_)) => {
+            let already = vm
+                .get_property(r, "_reporterKind")
+                .ok()
+                .is_some_and(|v| vm.is_string_value(v));
+            if already {
+                r
+            } else {
+                // 工厂函数：调用后得实例
+                let inst = vm.invoke_callable(r, Value::Undefined, &[])?;
+                let ok = vm
+                    .get_property(inst, "_reporterKind")
+                    .ok()
+                    .is_some_and(|v| vm.is_string_value(v));
+                if !ok {
+                    return Err(VmError::Thrown(error_value(
+                        vm,
+                        "TypeError",
+                        "The \"reporter\" argument must be a test reporter Transform",
+                    )));
+                }
+                inst
+            }
+        }
+        _ => {
+            return Err(VmError::Thrown(error_value(
+                vm,
+                "TypeError",
+                "The \"reporter\" argument must be a test reporter Transform",
+            )));
+        }
+    };
+
+    let composed = vm.alloc_ordinary();
+    let ctor = vm.alloc_native_fn("Readable");
+    let _ = vm.set_property(Value::Object(composed), "constructor", Value::Object(ctor));
+    let pipe_fn = vm.alloc_native_fn("test:stream.compose.pipe");
+    let _ = vm.set_property(Value::Object(composed), "pipe", Value::Object(pipe_fn));
+    COMPOSED.with(|g| {
+        g.borrow_mut().insert(
+            composed.0,
+            ComposedState {
+                dest: None,
+                buffer: Vec::new(),
+            },
+        );
+    });
+
+    // 订阅源流的全部测试事件（source 已在函数入口捕获）。
+    for ev in [
+        "test:start",
+        "test:pass",
+        "test:fail",
+        "test:skip",
+        "test:todo",
+        "test:plan",
+        "end",
+    ] {
+        let cb = vm.alloc_native_fn("test:stream.compose.forward");
+        vm.set_native_fn_property(cb, "_composed", Value::Number(composed.0 as f64));
+        vm.set_native_fn_property(cb, "_reporter", reporter);
+        let ev_str = vm.alloc_string(ev.to_owned());
+        vm.set_native_fn_property(cb, "_event", Value::Object(ev_str));
+        let on_fn = vm.get_property(source, "on")?;
+        let ev_val = Value::Object(vm.alloc_string(ev.to_owned()));
+        vm.invoke_callable(on_fn, source, &[ev_val, Value::Object(cb)])?;
+    }
+    Ok(Value::Object(composed))
+}
+
+/// 事件转发：把 `{type, data}` 事件分块交报告器格式化，文本直通目的地
+/// （未 pipe 时缓冲；写目的地在状态锁外执行，避免 borrow 跨调用）。
+fn compose_forward(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Value::Object(callee) = crate::builtins::pending_callee() else {
+        return Ok(Value::Undefined);
+    };
+    let composed_id = match vm.get_native_fn_property(callee, "_composed") {
+        Some(Value::Number(n)) if n >= 0.0 => n as u32,
+        _ => return Ok(Value::Undefined),
+    };
+    let reporter = vm
+        .get_native_fn_property(callee, "_reporter")
+        .unwrap_or(Value::Undefined);
+    let ev = match vm.get_native_fn_property(callee, "_event") {
+        Some(v) => vm.format_value(v),
+        None => return Ok(Value::Undefined),
+    };
+    let data = args.first().copied().unwrap_or(Value::Undefined);
+
+    // 构造事件分块 {type, data} 并交报告器 write（返回格式化文本）
+    let chunk = vm.alloc_ordinary();
+    let ev_val = Value::Object(vm.alloc_string(ev));
+    let _ = vm.set_property(Value::Object(chunk), "type", ev_val);
+    let _ = vm.set_property(Value::Object(chunk), "data", data);
+    let write_fn = vm.get_property(reporter, "write")?;
+    let text_val = vm.invoke_callable(write_fn, reporter, &[Value::Object(chunk)])?;
+    if !vm.is_string_value(text_val) {
+        return Ok(Value::Undefined);
+    }
+    let text = vm.format_value(text_val);
+    if text.is_empty() {
+        return Ok(Value::Undefined);
+    }
+    COMPOSED.with(|g| {
+        if let Some(st) = g.borrow_mut().get_mut(&composed_id) {
+            if st.dest.is_none() {
+                st.buffer.push(text.clone());
+            }
+        }
+    });
+    let dest = COMPOSED.with(|g| g.borrow().get(&composed_id).and_then(|s| s.dest));
+    if let Some(dest) = dest {
+        if let Ok(write) = vm.get_property(dest, "write") {
+            let out = Value::Object(vm.alloc_string(text));
+            vm.invoke_callable(write, dest, &[out])?;
+        }
+    }
+    Ok(Value::Undefined)
+}
+
+/// 组合流 `pipe(dest)`：登记目的地并补冲缓冲；返回 destination（Node 语义）。
+fn compose_pipe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let dest = args.first().copied().unwrap_or(Value::Undefined);
+    let Value::Object(r) = crate::builtins::current_receiver() else {
+        return Ok(dest);
+    };
+    let pending: Vec<String> = COMPOSED.with(|g| {
+        let mut map = g.borrow_mut();
+        let Some(st) = map.get_mut(&r.0) else {
+            return Vec::new();
+        };
+        st.dest = Some(dest);
+        std::mem::take(&mut st.buffer)
+    });
+    for text in pending {
+        if let Ok(write) = vm.get_property(dest, "write") {
+            let out = Value::Object(vm.alloc_string(text));
+            vm.invoke_callable(write, dest, &[out])?;
+        }
+    }
+    Ok(dest)
+}
+
+/// 构造带 name 的错误实例。
+fn error_value(vm: &mut Vm, name: &str, message: &str) -> Value {
+    let err = vm.alloc_error_instance(message);
+    let n = vm.alloc_string(name.to_owned());
+    let _ = vm.set_property(Value::Object(err), "name", Value::Object(n));
+    Value::Object(err)
 }
 
 /// `run(options)`：程序化运行已注册用例。返回事件流（EventEmitter），
@@ -699,11 +886,18 @@ pub fn auto_run(vm: &mut Vm, kind: ReporterKind) -> Option<ReportCounts> {
     Some(counts)
 }
 
-/// GC 根快照：运行流对象。
+/// GC 根快照：运行流对象与组合流挂起表（目的地 / 报告器堆值）。
 pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
     RUN_STREAM.with(|g| {
         if let Some(v) = g.borrow().as_ref() {
             out.push(*v);
+        }
+    });
+    COMPOSED.with(|g| {
+        for st in g.borrow().values() {
+            if let Some(d) = &st.dest {
+                out.push(*d);
+            }
         }
     });
 }
