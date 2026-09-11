@@ -102,6 +102,28 @@
   - **动态函数构造器 `new Function(...args, body)` / `Function(...)`**：实现形参与函数体字符串拼接解析、全局作用域函数模板动态生成；
   - **动态字节码 Verifier 安全门禁**：动态编译产出的字节码必须 100% 经由 `aluka-bytecode::verifier` 静态安全校验，杜绝非法跳转与栈溢出；
   - 验收：通过 eval 与 Function 专项测试套件（≥50 用例），与 Node.js 22 LTS 差分对拍 100% 一致。✅ test262 m1-eval-001..052 共 52 例全过
+- [~] **M1.7 块内函数声明的绑定与提升**（20260911 发现并部分修复）
+  - **背景（引擎级缺口）**：`codegen.rs` 对 `Stmt::Function` 是空实现（只保证栈平衡），
+    而提升收集只遍历**直接子语句**——`if`/`for`/普通块内的函数声明既不绑定名字也不可用，
+    `typeof f` 恒为 `undefined`、调用即抛 `TypeError`。影响面：任何把辅助函数声明写在
+    块内的真实代码（本轮 M5.2 断连探针首版即因此崩溃）。
+  - ✅ **已修复（20260911，`cc0b922`）**：新增递归收集
+    `collect_scope_functions`（进入 `Block`/`if`/`while`/`do-while`/`for`/`for-in`/
+    `for-of`/`try`/`switch`/`export`；不进入嵌套函数体、不进入表达式），模块顶层与
+    函数体的提升收集改用它，并补「收集到的函数名 `ensure_slot`」预注册（保证
+    `ParentScopeInfo` 快照与上值捕获识别可见）。**块内可调用（含声明之前）、块外可访问、
+    函数体内块、上值捕获**均与 Node v22.23.1 逐字节一致；门禁内回归保护用例
+    `tests/conformance/node22/cases/gen/gen-block-fn-decl-0002.cjs`。
+  - ⚠️ **余差异（隔离登记，未修）**：
+    ① **块执行前**引用块内函数名为 `function`（Node 为 `undefined`；方向更宽松、不崩溃）；
+    ② **块内函数捕获同块 `let`/`const`** 时读到 `undefined`（功能缺口）——根因是提升函数
+    的闭包在函数入口创建（捕获函数级预注册槽），而块级 `let`/`const` 在 `codegen.rs`
+    的 `block_depth > 0` 分支总是分配块级新槽。近似方案（块级 `let`/`const` 复用函数级
+    槽）已尝试并**回退**：会破坏块级遮蔽（`(() => { let x = 10; { let x = 20; } return x })()`
+    实测 Node=`10` / aluka=`20`）。**精确修法**：把绑定动作下移到**块入口**（块内函数
+    模板编译期预编译 + 随 `CompiledUnit` 传递 + `Stmt::Block` 分支内 `MakeClosure`）。
+  - 证据与完整记录：[20260911/README.md §12.2/§13](./20260911/README.md)；隔离用例
+    `gen/deviations/gen-block-fn-decl-000{1,2}.cjs`。
 
 ---
 
@@ -264,7 +286,7 @@
     worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
     与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
     已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** + **primary 侧生命周期事件（`listening`/`disconnect`/`state`/异步 `fork`）** + **worker 侧 IPC 面（`process.on('message')` 接收 / `process.disconnect()` / `process` 真实事件器 / `cluster.worker` 事件面与桥接 / 通道默认保活）** 达成——余 RR 调度，20260911）
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** + **primary 侧生命周期事件（`listening`/`disconnect`/`state`/异步 `fork`）** + **worker 侧 IPC 面（`process.on('message')` 接收 / `process.disconnect()` / `process` 真实事件器 / `cluster.worker` 事件面与桥接 / 通道默认保活）** + **`process.channel` 对象面（`ref`/`unref`/`refCounted`/`unrefCounted`/`fd`）** + **断连闭环（primary `{"t":"d"}` 帧路径 + worker `cluster.worker.disconnect()` + 断连关闭 worker 内 server）** 达成——余 RR 调度（架构级，见 §10.6/§11.5 决策记录），20260911）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
     OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——
@@ -300,8 +322,20 @@
     `send`/`isConnected`/`isDead` 与 `require('cluster')` 时的 process→worker 桥接；
     **IPC 通道默认保活**（Node 实测口径：fork 出的子进程脚本跑完不退出）——
     5 例探针与 Node v22.23.1 逐字节一致（详见
-    [20260911/README.md §10](./20260911/README.md)）。遗留：RR 调度（架构级，
-    §10.6 已登记处置建议）；`Object.keys` 键序（字典序 vs 插入序）为独立
+    [20260911/README.md §10](./20260911/README.md)）。✅ **`process.channel` 对象面已闭环**
+    （20260911 §11，`61da226`）：`ref`/`unref`/`refCounted`/`unrefCounted` + `fd` 自有键；
+    `unref()` **真正解除通道保活**（排空后 worker 以 code 0 自然退出）、同 tick `unref→ref`
+    可恢复（`fd` 值与 `Control` 类名为登记偏离）。✅ **断连闭环已达成**
+    （20260911 §12，`7012ce0`）：primary 侧 `intercom`/`removeWorker`/`Worker.prototype.disconnect`
+    （置 `ead=true` → 发 `{"t":"d"}` 帧 → **立即出表** → 返回 `this`）+ `cluster.disconnect(cb)`
+    重写（不再 `destroy` 杀进程；workers 为空走 `nextTick` 触发 cb）；worker 侧
+    `cluster.worker.disconnect()`（返回自身、**同步**置 `state='disconnecting'`/`ead=true`、
+    **同步**关闭本进程内 server）；配套新增 `net`/`http` 的 `pub(crate)` 批量关闭
+    （断连关闭 worker 内全部监听 server 并派发 `'close'`，否则 worker 无法优雅退出）。
+    两例 e2e（`m52_disconnect_test.rs`）与 Node v22.23.1 逐字节一致。
+    **遗留**：RR 调度（架构级，判定「需 unsafe FFI + 换 IPC 介质 + 新直连依赖」，
+    与仓库 `unsafe_code=deny` 冲突 → §11.5 决策记录，替代方案待决策）；`{"t":"e"}` 的
+    primary→worker ack 回程未实现；`Object.keys` 键序（字典序 vs 插入序）为独立
     全仓专项（详见 [20260911/README.md §9](./20260911/README.md)）。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
