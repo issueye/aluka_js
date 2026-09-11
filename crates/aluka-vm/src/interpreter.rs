@@ -469,8 +469,8 @@ impl Vm {
         }
         // cluster worker / fork 子进程的 IPC 面（M5.2）：Node 在 bootstrap 阶段
         // 建立通道（与是否 require('cluster') 无关），此后 `process.send` /
-        // `process.disconnect` 存在、`process.connected` 为 true，并由本调用点
-        // 激活 IPC 事件源（通道保活语义）；primary 无通道，三者均为 undefined。
+        // `process.disconnect` / `process.channel` 存在、`process.connected` 为 true，
+        // 并由本调用点激活 IPC 事件源（通道保活语义）；primary 无通道，四者均 undefined。
         if crate::builtins::cluster::worker_setup_channel(&mut vm) {
             let f = vm.alloc_native_fn("process.send");
             let _ = vm.set_property(Value::Object(process_obj), "send", Value::Object(f));
@@ -478,6 +478,11 @@ impl Vm {
             let _ = vm.set_property(Value::Object(process_obj), "disconnect", Value::Object(d));
             let connected = Value::Boolean(crate::builtins::cluster::worker_channel_connected());
             let _ = vm.set_property(Value::Object(process_obj), "connected", connected);
+            // `process.channel`（Node 由子进程 `setupChannel` 定义，仅 worker 侧存在）：
+            // `ref`/`unref`/`refCounted`/`unrefCounted` 开关通道保活（见
+            // `cluster::worker_channel_object` 的偏离说明）。
+            let ch = crate::builtins::cluster::worker_channel_object(&mut vm);
+            let _ = vm.set_property(Value::Object(process_obj), "channel", Value::Object(ch));
         }
         vm.process_object = Some(process_obj);
         // path 内置模块（方法经 CALL_METHOD 拦截求值）

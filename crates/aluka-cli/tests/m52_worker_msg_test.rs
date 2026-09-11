@@ -21,7 +21,11 @@
 //! 5. **`process` 事件器值语义**（`on`/`addListener`/`once`/`off`/`removeListener`/
 //!    `removeAllListeners`/`emit`/`listenerCount`/`listeners`）：`on` 返回 `process` 自身、
 //!    别名共用同一函数对象（`off === removeListener`）、`emit` 返回是否有监听器、
-//!    `once` 触发即自删。
+//!    `once` 触发即自删；
+//! 6. **`process.channel` 对象面（worker 侧）**：`typeof` 为 `object`、`'fd' in` 为真、
+//!    `hasRef` 为 `undefined`、`ref`/`unref`/`refCounted`/`unrefCounted` 为函数且
+//!    `ref`/`unref` 返回 `undefined`；**`unref()` 真正解除通道保活**（事件循环排空后
+//!    worker 以 code 0 自然退出），同 tick 内 `unref()`→`ref()` 可恢复保活。
 //!
 //! **探针纪律（均来自本轮实测踩坑，见 20260911/README.md §10.2）**：
 //! 1. 一切「primary 先发」必须以 worker 的 `ready` 上报为门——`'online'` 到达 primary
@@ -466,5 +470,106 @@ if (cluster.isPrimary) {
     assert!(
         idx("P online") < idx("P @300ms") && idx("P @300ms") < idx("P exit-observed"),
         "次序 online → 300ms 存活标记 → exit:\n{out}"
+    );
+}
+
+// --- 6：`process.channel` 对象面与保活开关 -----------------------------------
+
+/// worker 侧 `process.channel`：面型（`typeof`/`'fd' in`/`hasRef`/四个开关函数与
+/// 返回值）+ **`unref()` 真正解除保活**（本 tick 结束后自然退出 code 0）+
+/// 同 tick `unref()`→`ref()` 的可逆性（可逆性由「primary 后续还能收到回复」证明）。
+#[test]
+fn cluster_worker_process_channel_matches_node() {
+    let work = work_dir("channel");
+    write(
+        &work,
+        "probe.js",
+        r#"
+const cluster = require('node:cluster');
+
+if (cluster.isPrimary) {
+  const rec = [];
+  const w = cluster.fork();
+  w.on('online', function () {
+    rec.push('online');
+  });
+  w.on('message', function (m) {
+    if (m && m.ready) {
+      rec.push('send-intro=' + w.send({ step: 'introspect' }));
+      return;
+    }
+    if (m.step === 'introspect') {
+      rec.push('intro ' + m.text);
+      rec.push('send-go=' + w.send({ step: 'go' }));
+      return;
+    }
+    if (m.step === 'unrefref') {
+      rec.push('unrefref r1=' + m.r1 + ' r2=' + m.r2 + ' connected=' + m.connected);
+      rec.push('send-final=' + w.send({ step: 'final' }));
+      return;
+    }
+    if (m.step === 'final') {
+      rec.push('final r3=' + m.r3 + ' connected=' + m.connected);
+    }
+  });
+  w.on('exit', function (code, signal) {
+    rec.push('exit code=' + code + ' signal=' + signal);
+    for (const line of rec) console.log('P ' + line);
+  });
+} else {
+  const ch = process.channel;
+  process.on('message', function (m) {
+    if (m.step === 'introspect') {
+      process.send({
+        step: 'introspect',
+        text:
+          'typeof=' + typeof ch +
+          ' fd-in=' + ('fd' in ch) +
+          ' hasRef=' + String(ch.hasRef) +
+          ' fns=' + typeof ch.ref + ',' + typeof ch.unref + ',' +
+          typeof ch.refCounted + ',' + typeof ch.unrefCounted,
+      });
+    } else if (m.step === 'go') {
+      const r1 = String(ch.unref());
+      const r2 = String(ch.ref());
+      process.send({ step: 'unrefref', r1: r1, r2: r2, connected: process.connected });
+    } else if (m.step === 'final') {
+      const r3 = String(ch.unref());
+      process.send({ step: 'final', r3: r3, connected: process.connected });
+    }
+  });
+  process.send({ ready: true });
+}
+"#,
+    );
+    let out = common::assert_e2e_matches_node(&work, "probe.js");
+
+    assert!(
+        out.contains(
+            "intro typeof=object fd-in=true hasRef=undefined fns=function,function,function,function"
+        ),
+        "`process.channel` 面型（`hasRef` 不存在、四个开关函数存在、`'fd' in` 为真）:\n{out}"
+    );
+    assert!(
+        out.contains("unrefref r1=undefined r2=undefined connected=true"),
+        "`unref()`/`ref()` 返回 undefined；同 tick unref→ref 后仍连通:\n{out}"
+    );
+    assert!(
+        out.contains("final r3=undefined connected=true"),
+        "末次 `unref()` 返回 undefined、此刻 `connected` 仍为 true（Node 语义）:\n{out}"
+    );
+    assert!(
+        out.contains("P exit code=0 signal=null"),
+        "`unref()` 解除保活后 worker 自然退出（code=0，无需 kill）:\n{out}"
+    );
+    let idx = |needle: &str| {
+        out.find(needle)
+            .unwrap_or_else(|| panic!("缺行 {needle}:\n{out}"))
+    };
+    assert!(
+        idx("P intro ") < idx("P unrefref")
+            && idx("P unrefref") < idx("P final")
+            && idx("P final") < idx("P exit code"),
+        "次序 intro → unrefref → final → exit（逐轮门控）:\n{out}"
     );
 }

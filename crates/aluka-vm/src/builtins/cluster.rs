@@ -365,6 +365,22 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "isDead",
         worker_self_is_dead,
     );
+    // worker 进程内 `process.channel` 的开关面（`ref`/`unref`/`refCounted`/
+    // `unrefCounted`：Node `lib/internal/child_process.js` 的 `Control` 类）。
+    register_handler(registry, "cluster:channel", "ref", channel_ref);
+    register_handler(registry, "cluster:channel", "unref", channel_unref);
+    register_handler(
+        registry,
+        "cluster:channel",
+        "refCounted",
+        channel_ref_counted,
+    );
+    register_handler(
+        registry,
+        "cluster:channel",
+        "unrefCounted",
+        channel_unref_counted,
+    );
     // worker 侧 process ↔ cluster.worker 桥接（Node `internal/cluster/worker.js`
     // 的 Worker ctor 与 `child.js` 的 `_setupWorker`）：经 require('cluster')
     // 挂接监听器（`on_cluster_required`），故处理器在此登记。
@@ -1137,6 +1153,83 @@ fn worker_self_is_dead(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
     Ok(Value::Boolean(false))
 }
 
+// ---------------------------------------------------------------------------
+// `process.channel`（worker 侧；M5.2）
+// ---------------------------------------------------------------------------
+
+// worker 进程内的 `process.channel` 单例句柄（仅通道建立时创建）。
+thread_local! {
+    static WORKER_CHANNEL: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// 取（首次调用时创建）`process.channel` 对象。
+///
+/// Node 侧该对象是 `internal/child_process` 的 `Control` 实例（EventEmitter 子类），
+/// `Control.prototype` 上有 `refCounted`/`unrefCounted`/`ref`/`unref`/`fd` getter。
+/// 本运行时只接线**可观测的开关面**：
+/// * `ref()`/`unref()`：显式设置保活（返回值 `undefined`，Node 一致）；
+/// * `refCounted()`/`unrefCounted()`：计数式开关（Node `#refs`/`#refExplicitlySet` 公式）；
+/// * `fd`：**仅提供同名自有键**（值 `undefined`）——Node 返回 IPC 管道 fd（实测 3），
+///   本运行时介质为回环 TCP，无 fd3 管道（登记偏离；`'fd' in process.channel` 两侧同为真）。
+///
+/// 未接线（登记偏离）：`constructor.name === 'Control'`、channel 自身的
+/// EventEmitter 面（`on`/`once`/`emit`…）与 `_handle`。
+pub(crate) fn worker_channel_object(vm: &mut Vm) -> ObjectRef {
+    if let Some(id) = WORKER_CHANNEL.with(|c| c.get()) {
+        return ObjectRef(id);
+    }
+    let obj = vm.alloc_ordinary();
+    ns_attach(
+        vm,
+        obj,
+        "cluster:channel",
+        &["ref", "unref", "refCounted", "unrefCounted"],
+    );
+    let _ = vm.set_property(Value::Object(obj), "fd", Value::Undefined);
+    WORKER_CHANNEL.with(|c| c.set(Some(obj.0)));
+    obj
+}
+
+/// 按当前 ref 状态同步 worker 侧 IPC 事件源（保活/解除保活）。
+fn sync_worker_ipc_source(vm: &mut Vm) {
+    if !is_worker_process() {
+        return;
+    }
+    if cluster_ipc::child_channel_refed() {
+        vm.activate_event_source("cluster_ipc", cluster_ipc_pump);
+    } else {
+        vm.deactivate_event_source("cluster_ipc");
+    }
+}
+
+/// `process.channel.unref()`：解除保活（worker 可在事件循环排空后自然退出）。
+fn channel_unref(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    cluster_ipc::child_channel_unref();
+    sync_worker_ipc_source(vm);
+    Ok(Value::Undefined)
+}
+
+/// `process.channel.ref()`：恢复保活。
+fn channel_ref(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    cluster_ipc::child_channel_ref();
+    sync_worker_ipc_source(vm);
+    Ok(Value::Undefined)
+}
+
+/// `process.channel.refCounted()`：计数式 ref。
+fn channel_ref_counted(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    cluster_ipc::child_channel_ref_counted();
+    sync_worker_ipc_source(vm);
+    Ok(Value::Undefined)
+}
+
+/// `process.channel.unrefCounted()`：计数式 unref。
+fn channel_unref_counted(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    cluster_ipc::child_channel_unref_counted();
+    sync_worker_ipc_source(vm);
+    Ok(Value::Undefined)
+}
+
 /// worker 侧派发 `'disconnect'`（幂等）：先置 `process.connected = false`，再在
 /// `process` 上派发（桥接随后转发给 `cluster.worker` 并按 Node 退出）。
 fn emit_self_disconnect(vm: &mut Vm) -> Result<Value, VmError> {
@@ -1342,7 +1435,8 @@ fn drain_ipc_inbox(vm: &mut Vm) -> Result<bool, VmError> {
 /// * 两态都叠加「inbox 尚有未派发条目」，避免在途帧被搁浅。
 fn cluster_ipc_busy() -> bool {
     let alive = if is_worker_process() {
-        cluster_ipc::child_is_connected()
+        // worker 侧：通道连通**且**未被 `process.channel.unref()` 显式解除保活。
+        cluster_ipc::child_is_connected() && cluster_ipc::child_channel_refed()
     } else {
         WORKER_PHASE.with(|g| {
             g.borrow()

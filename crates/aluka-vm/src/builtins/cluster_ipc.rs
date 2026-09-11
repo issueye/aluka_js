@@ -360,11 +360,25 @@ pub(crate) fn send_to_worker(worker_id: u64, line: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// 子进程侧通道状态（VM 线程独占）。
+///
+/// `refed` / `refs` / `explicit` 承载 Node `process.channel` 的 ref/unref 语义
+/// （`lib/internal/child_process.js` 的 `Control` 类）：
+/// * `refed`：**保活生效态**——本运行时以「通道连通即保活」实现（Node 实测：
+///   fork 出的子进程脚本跑完不退出），`process.channel.unref()` 置假后即解除；
+/// * `refs`：`refCounted`/`unrefCounted` 的计数器（Node `#refs`，初值 0）；
+/// * `explicit`：是否被 `ref()`/`unref()` **显式**设置过——置真后计数式调用
+///   变为 no-op（Node `#refExplicitlySet`）。
 struct ChildIpc {
     /// 与父进程连接的写端
     writer: Mutex<TcpStream>,
     /// 通道是否仍连通（Node `process.connected`）
     connected: bool,
+    /// 保活生效态（`process.channel.unref()` 置假）
+    refed: bool,
+    /// `refCounted`/`unrefCounted` 计数（Node `#refs`）
+    refs: i32,
+    /// 是否被 `ref()`/`unref()` 显式设置过（Node `#refExplicitlySet`）
+    explicit: bool,
 }
 
 thread_local! {
@@ -414,6 +428,10 @@ pub(crate) fn child_connect() -> bool {
         *c.borrow_mut() = Some(ChildIpc {
             writer: Mutex::new(writer),
             connected: true,
+            // 默认保活（Node 实测：fork 出的子进程脚本跑完不退出）。
+            refed: true,
+            refs: 0,
+            explicit: false,
         });
     });
     true
@@ -480,4 +498,66 @@ pub(crate) fn child_close_channel() -> bool {
     });
     child_mark_closed();
     true
+}
+
+// ---------------------------------------------------------------------------
+// 子进程侧 `process.channel` 的 ref/unref 面（M5.2）
+// ---------------------------------------------------------------------------
+
+/// 通道保活生效态（`process.channel.unref()` 后为 false）。
+///
+/// 无通道时返回 true——该函数只用于「是否保活」判定，调用点在 worker 进程内
+/// 且已确认连通；无通道的进程不激活事件源（见 `cluster::cluster_ipc_busy`）。
+pub(crate) fn child_channel_refed() -> bool {
+    CHILD_IPC
+        .with(|c| c.borrow().as_ref().map(|s| s.refed))
+        .unwrap_or(true)
+}
+
+/// 改写子进程侧通道的 ref 相关状态（无通道时 no-op）。
+fn with_child_ref_state<F>(f: F)
+where
+    F: FnOnce(&mut ChildIpc),
+{
+    CHILD_IPC.with(|c| {
+        if let Some(state) = c.borrow_mut().as_mut() {
+            f(state);
+        }
+    });
+}
+
+/// `process.channel.ref()`：显式恢复保活（Node `Control.prototype.ref`）。
+pub(crate) fn child_channel_ref() {
+    with_child_ref_state(|s| {
+        s.explicit = true;
+        s.refed = true;
+    });
+}
+
+/// `process.channel.unref()`：显式解除保活（Node `Control.prototype.unref`）。
+pub(crate) fn child_channel_unref() {
+    with_child_ref_state(|s| {
+        s.explicit = true;
+        s.refed = false;
+    });
+}
+
+/// `process.channel.refCounted()`：计数式 ref（Node `#refs` 0→1 且未显式设置时生效）。
+pub(crate) fn child_channel_ref_counted() {
+    with_child_ref_state(|s| {
+        s.refs += 1;
+        if s.refs == 1 && !s.explicit {
+            s.refed = true;
+        }
+    });
+}
+
+/// `process.channel.unrefCounted()`：计数式 unref（Node `#refs` 1→0 且未显式设置时生效）。
+pub(crate) fn child_channel_unref_counted() {
+    with_child_ref_state(|s| {
+        s.refs -= 1;
+        if s.refs == 0 && !s.explicit {
+            s.refed = false;
+        }
+    });
 }
