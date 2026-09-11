@@ -57,7 +57,7 @@
 | **M2** | **模块系统与真实生态承载** | `package.json` `exports`/`imports` 条件映射规范、Top-Level Await、**Express 100% 跑通真实依赖树与 Web 服务** | `[x]` |
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
-| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3 ✅ 已闭环；M5.4 切片一已落地——`aluka test` 运行器/函数属性形态/Node 模块形态，余 Timer Mock 与 LCOV，见 §M5） |
+| **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]`（M5.1/M5.2 主体达成；M5.3 ✅ 已闭环；M5.4 切片一（`aluka test` 运行器/函数属性形态）+ 切片二（Timer Mock）均已落地，余 LCOV 覆盖率与真 `stream.Transform` 报告器，见 §M5） |
 | **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
@@ -264,19 +264,22 @@
     worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
     与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
     已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** 达成——余 RR 调度 / `Connection: close` / `settings.exec,args` 生效，20260910）
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** 达成——余 RR 调度 / 服务端 `Connection: close`，20260911）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
     OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——
     `worker.send`/`process.send`/`cluster.worker.send` 真实可用、`isConnected()`/`isDead()`
-    与 `'exit'` 退出码均为真实值（余：RR 调度、`Connection: close`、listen 错误载体）；
+    与 `'exit'` 退出码均为真实值（余：RR 调度、服务端 `Connection: close`）；
     无 RR 调度（内核对分发）；`worker.send`/`isConnected`/`isDead`/exit code 已于 20260910 收口；
+    `settings.exec/args/silent/cwd` 生效 + settings 契约（默认值/浅合并/对象重建 +
+    `fork` 隐式 `setupPrimary`）+ validator 文本面已于 20260911 收口（详见
+    [20260911/README.md §7](./20260911/README.md)）；
   - 验收：多进程集群 HTTP 端口共享测试通过。✅ `21-m5` Node 逐字节对拍 PASS
     （bc 模式实测）。✅ **P0 已关闭**（round6：fetch 响应完成判定不依赖
     连接关闭——原「挂死」实为每请求 10s 读超时叠加，修复后并发双 fetch
     20s → 13ms、phase9 71s → 1.1s；conformance 全量绿）。遗留：⚠️ IPC 面
     （worker.send/isConnected/isDead/exit code）降级、`Connection: close`
-    响应后关闭连接的 server 语义、listen 错误载体为字符串非 Error 对象。
+    响应后关闭连接的 server 语义（listen 错误载体已于 20260910 收敛为真 `Error`）。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
     （每次执行重编译，语义等价）登记跟踪；`columns()` 对齐 Node 五键

@@ -4,8 +4,16 @@
 //! - 模块对象自带事件器表面（`on/once/emit/...`，`'fork'/'online'/'exit'/'message'`）；
 //! - `isPrimary`/`isMaster`/`isWorker`：环境变量 `ALUKA_WORKER_ID` 标记 worker
 //!   进程（worker 进程内另有 `worker = {id, send}`）；
-//! - `workers`（id → Worker 实例）、`settings`（setupMaster/setupPrimary 写入）、
-//!   `schedulingPolicy`/`SCHED_NONE`(1)/`SCHED_RR`(2)；
+//! - `workers`（id → Worker 实例）、`settings`、`schedulingPolicy`/`SCHED_NONE`(1)/`SCHED_RR`(2)；
+//! - **`setupPrimary`/`setupMaster` settings 契约（M5.2）**：按 Node 源码语义
+//!   `{ 默认值, ...旧 settings, ...options }` **重建** settings 对象（默认值 =
+//!   `args: 主进程额外 CLI 参数`、`exec: 当前主脚本绝对路径`、`execArgv: []`、
+//!   `silent: false`）；未知键同样保留、`undefined` 同样覆盖；
+//! - **`fork()` 生效 `settings.exec` / `settings.args` / `silent` / `cwd`（M5.2）**：
+//!   `fork()` 首行隐式 `setupPrimary()`（Node 行为），随后按 `createWorkerProcess`
+//!   直取 settings 派生子进程——`exec` 为运行脚本、`args` 为实参尾串；`exec`
+//!   非字符串或 `args` 非数组时，按 Node validator 文本抛
+//!   `TypeError`(`code=ERR_INVALID_ARG_TYPE`)，且为 `fork()` 调用栈内**同步抛出**；
 //! - `fork()`：复用 `child_process.fork` 派生当前可执行文件重跑当前脚本
 //!   （Go 用 `os.Args[1]` 作脚本路径），并包一层 Worker 对象：child 的
 //!   `'exit'` 事件转接到 Worker 与 cluster（携带**真实退出码**）；
@@ -24,7 +32,19 @@
 //!   运行时的事件源无 unref 语义，激活会让 worker 无法自行退出），因此
 //!   worker 侧收 primary 消息（`process.on('message')` 目前亦为空实现）与
 //!   primary 侧 `disconnect()` 后 worker 内 `process.connected` 翻转均未落地；
-//! - `listening` 事件、句柄（sendHandle）传递、`serialization: 'advanced'`。
+//! - `listening` 事件、句柄（sendHandle）传递、`serialization: 'advanced'`、
+//!   **真 round-robin 调度**（`schedulingPolicy` 恒 `SCHED_NONE`，端口由内核分发）；
+//! - **`settings.execArgv` 不生效**：Node 把 execArgv 作为 node 旗标插在脚本之前
+//!   （`node <execArgv...> <exec> <args...>`），本运行时进程形态为
+//!   `aluka run <script>`，无对应旗标槽位；settings 中该键按 Node 默认写入
+//!   `[]`，显式设置时不生效（登记偏离）；
+//! - `settings.serialization` / `stdio` / `uid` / `gid` / `windowsHide` 未接线；
+//! - **`settings.args` 为非数组对象时的 Node 特殊语义未复刻**：Node 会把该对象
+//!   当作 `child_process.fork` 的 options（覆盖 `cwd`/`silent`/`stdio` 等），
+//!   本运行时仅按「args 置空」处理（探针可覆盖的等价部分已对齐）；
+//! - validator 的 `Received …` 描述实现 string/number/boolean/null/undefined/
+//!   bigint/Symbol/Array/Object 形态；函数（Node 作 `Received function <name>`）
+//!   与其它 exotic 形未复刻（登记偏离）。
 
 use crate::builtins::child_process::proc_common::{
     ns_attach, ns_emit, ns_push_listener, register_ns_emitter_handlers,
@@ -225,27 +245,27 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(self_val);
     }
 
+    // Node：`cluster.fork()` 首行即 `cluster.setupPrimary()`（无参）——把默认值
+    // 并入 settings 后再派生子进程（源码 `internal/cluster/primary.js:161-164`）。
+    // 这一步同时保证「未调用过 setupPrimary 的裸 fork」也能从 settings 取到
+    // exec/args（等价于旧行为：重跑当前脚本、不带参数）。
+    cluster_setup_master(vm, &[])?;
+
+    let settings = vm.get_property(self_val, "settings")?;
+    // exec：Node `createWorkerProcess` 直取 `cluster.settings.exec`，缺失即
+    // undefined → 由 `child_process.fork` 的 modulePath validator 抛 TypeError。
+    let script = settings_exec(vm, settings)?;
+    // args：Node 取 `cluster.settings.args`（数组），非数组同样由 validator 拒绝。
+    let fork_args = settings_args(vm, settings)?;
+    let settings_silent = read_silent(vm, settings);
+    let settings_cwd = read_cwd(vm, settings);
+
     // worker id = 现有 workers 键数 + 1（Go len(workersObj.Keys())+1）。
     let worker_id = workers_count(vm, self_val) as u64 + 1;
 
     // IPC 监听器须在 spawn 之前绑定：端口 + 一次性握手 key 经环境变量注入子进程
     // （Node 的 ipc 管道在 stdio 数组里传递；本运行时以回环 TCP 承载同一语义）。
     let ipc = cluster_ipc::spawn_worker_listener(worker_id);
-
-    // 当前脚本路径：优先 VM 登记的入口文件（字节码模式下为 .bc 路径，
-    // 如 `aluvm run app.bc`——argv[1] 会是子命令 "run"）；回退 argv[1]
-    // （源码模式 `aluka app.js`）。
-    let script = {
-        let entry = vm.entry_file.clone();
-        if entry.is_empty() {
-            std::env::args()
-                .nth(1)
-                .filter(|a| !matches!(a.as_str(), "run" | "test" | "-v" | "--version"))
-                .unwrap_or_default()
-        } else {
-            entry
-        }
-    };
 
     // env：继承当前环境 + ALUKA_WORKER_ID 标记，用户传入 env 覆盖。
     let mut env_pairs: Vec<(String, String)> = std::env::vars_os()
@@ -269,13 +289,16 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
     let opts = SpawnOpts {
-        silent: Some(false),
-        cwd: String::new(),
+        // Node：`silent: cluster.settings.silent`（缺省 false → 继承 stdio）。
+        silent: Some(settings_silent),
+        // Node：`cwd: cluster.settings.cwd`（缺省 undefined → 继承主进程 cwd；
+        // 显式设置时相对 exec 亦按该目录解析——见 `read_cwd` 注释）。
+        cwd: settings_cwd,
         windows_hide: cfg!(windows),
         env: Some(env_pairs),
     };
 
-    let child_val = fork_spawn(vm, script, Vec::new(), opts)?;
+    let child_val = fork_spawn(vm, script, fork_args, opts)?;
     let Value::Object(child_ref) = child_val else {
         return Ok(child_val);
     };
@@ -374,31 +397,238 @@ fn workers_count(vm: &mut Vm, module_val: Value) -> usize {
     vm.own_properties(workers_val).len()
 }
 
-/// `cluster.setupMaster([settings])` / `setupPrimary`：写入 settings 的既定键。
+// ---------------------------------------------------------------------------
+// settings（setupMaster / setupPrimary）与 fork 的取值契约
+// ---------------------------------------------------------------------------
+
+/// `cluster.setupMaster([settings])` / `setupPrimary([settings])`。
+///
+/// Node 语义（源码 `internal/cluster/primary.js` `setupPrimary`，本机
+/// v22.22.2 实测核对）：
+/// ```text
+/// settings = { args: process.argv.slice(2), exec: process.argv[1],
+///              execArgv: process.execArgv, silent: false,
+///              ...cluster.settings, ...options }
+/// cluster.settings = settings;      // 每次**重建对象**（非原地改写）
+/// ```
+/// 要点：① 默认值每次都写入；② 旧 settings 覆盖默认值；③ options（**含未知键**）
+/// 覆盖前两者；④ fork 会先隐式调用本函数，故裸 `fork()` 亦会填充默认值。
 fn cluster_setup_master(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let self_val = current_receiver();
-    let Some(opts) = args.first().copied() else {
-        return Ok(Value::Undefined);
-    };
-    if let Value::Object(_) = opts {
-        let settings = vm.get_property(self_val, "settings")?;
-        for k in [
-            "exec",
-            "execArgv",
-            "args",
-            "silent",
-            "cwd",
-            "serialization",
-            "stdio",
-        ] {
-            if let Ok(v) = vm.get_property(opts, k) {
-                if !matches!(v, Value::Undefined) {
-                    let _ = vm.set_property(settings, k, v);
-                }
-            }
+    let opts = args.first().copied();
+
+    let merged = vm.alloc_ordinary();
+
+    // ① 默认值。exec 缺省为「当前主脚本的绝对路径」（Node 的 `process.argv[1]`
+    //    由 Node 自身解析为绝对路径；本运行时同样绝对化以便 settings.cwd 生效）。
+    //    主脚本缺失（无 entry_file 且 argv 无脚本段）时**不写入 exec 键**——
+    //    与 Node 的 `exec: undefined` 同形，交由 fork 的 validator 报错。
+    let script = current_script(vm);
+    if !script.is_empty() {
+        let exec_ref = vm.alloc_string(script);
+        set_own(vm, merged, "exec", Value::Object(exec_ref));
+    }
+    let argv_default = cli_args(vm);
+    let argv_ref = vm.alloc_array(argv_default);
+    set_own(vm, merged, "args", Value::Object(argv_ref));
+    // execArgv：Node 缺省 `process.execArgv`。本运行时无「node 旗标」槽位
+    // （进程形态为 `aluka run <script>`），恒为空数组（登记偏离）。
+    let exec_argv_ref = vm.alloc_array(Vec::new());
+    set_own(vm, merged, "execArgv", Value::Object(exec_argv_ref));
+    set_own(vm, merged, "silent", Value::Boolean(false));
+
+    // ② 旧 settings 覆盖默认值。
+    if let Ok(Value::Object(prev)) = vm.get_property(self_val, "settings") {
+        for (k, v) in vm.own_properties(Value::Object(prev)) {
+            set_own(vm, merged, &k, v);
         }
     }
+    // ③ options 浅合并覆盖（Node 用对象展开，未知键同样保留、undefined 同样覆盖）。
+    if let Some(Value::Object(_)) = opts {
+        for (k, v) in vm.own_properties(opts.unwrap_or(Value::Undefined)) {
+            set_own(vm, merged, &k, v);
+        }
+    }
+
+    vm.set_property(self_val, "settings", Value::Object(merged))?;
     Ok(Value::Undefined)
+}
+
+/// 忽略失败的 `set_property`（settings 对象的键均为自有数据属性）。
+fn set_own(vm: &mut Vm, obj: ObjectRef, key: &str, val: Value) {
+    let _ = vm.set_property(Value::Object(obj), key, val);
+}
+
+/// 当前主脚本的**绝对**路径（Node `process.argv[1]` 的对应物）。
+///
+/// 本运行时 `process.argv` 无 exe 槽位（`[script, ...cli]`），故主脚本取
+/// `entry_file`（字节码模式下为 .bc 路径——`aluvm run app.bc` 的 argv 首段是
+/// 子命令 `run`，需先过滤），回退命令行首段。相对路径按主进程 cwd 绝对化，
+/// 与 Node 一致：Node 的 `process.argv[1]` 亦为解析后的绝对路径。
+fn current_script(vm: &Vm) -> String {
+    let raw = if vm.entry_file.is_empty() {
+        std::env::args()
+            .nth(1)
+            .filter(|a| !matches!(a.as_str(), "run" | "test" | "-v" | "--version"))
+            .unwrap_or_default()
+    } else {
+        vm.entry_file.clone()
+    };
+    if raw.is_empty() {
+        return raw;
+    }
+    let path = std::path::Path::new(&raw);
+    if path.is_absolute() {
+        return raw;
+    }
+    std::env::current_dir()
+        .map(|d| d.join(path).display().to_string())
+        .unwrap_or(raw)
+}
+
+/// 主进程的额外 CLI 参数（Node `settings.args` 缺省 = `process.argv.slice(2)`）。
+///
+/// 本运行时 argv 比 Node 少一个 exe 槽位 → 等价切片为 `slice(1)`。
+fn cli_args(vm: &mut Vm) -> Vec<Value> {
+    let Some(p) = vm.process_object else {
+        return Vec::new();
+    };
+    let Ok(Value::Object(arr)) = vm.get_property(Value::Object(p), "argv") else {
+        return Vec::new();
+    };
+    let Some(HeapObject::Array { elements, .. }) = vm.heap.get(arr.0 as usize) else {
+        return Vec::new();
+    };
+    elements.iter().skip(1).copied().collect()
+}
+
+/// `settings.exec` → spawn 的 modulePath。Node `child_process.fork` 的 validator
+/// 文本：须为 string（本运行时不含 Buffer/URL 形态，登记偏离），否则 TypeError。
+fn settings_exec(vm: &mut Vm, settings: Value) -> Result<String, VmError> {
+    let v = vm
+        .get_property(settings, "exec")
+        .unwrap_or(Value::Undefined);
+    if let Some(s) = heap_string(vm, v) {
+        return Ok(s);
+    }
+    Err(invalid_arg_type_throw(
+        vm,
+        &format!(
+            "The \"modulePath\" argument must be of type string or an instance of \
+             Buffer or URL. Received {}",
+            received_repr(vm, v)
+        ),
+    ))
+}
+
+/// `settings.args` → spawn 的实参串。
+///
+/// Node 侧规则（`lib/child_process.js::fork`，v22.22.2 实测核对）：
+/// `null`/`undefined` → `[]`；数组 → 逐元素取用；**非数组对象 → 被当作 fork 的
+/// options 参数（args 置空）**；其余原始类型 → `validateArray` 抛 TypeError。
+/// 本运行时对口径：前三者按 Node 实现，**非数组对象按「args 置空」处理但忽略其
+/// options 语义**（登记偏离——Node 会用它覆盖 `cwd`/`silent`/`stdio` 等）。
+fn settings_args(vm: &mut Vm, settings: Value) -> Result<Vec<String>, VmError> {
+    let v = vm
+        .get_property(settings, "args")
+        .unwrap_or(Value::Undefined);
+    if matches!(v, Value::Undefined | Value::Null) {
+        return Ok(Vec::new());
+    }
+    let Value::Object(r) = v else {
+        return Err(args_type_error(vm, v));
+    };
+    match vm.heap.get(r.0 as usize) {
+        Some(HeapObject::Array { elements, .. }) => {
+            Ok(elements.iter().map(|e| vm.format_value(*e)).collect())
+        }
+        // 堆上的原始类型（字符串/BigInt/Symbol）在 JS 侧 `typeof !== 'object'`，
+        // 同 Node 走 validateArray 抛错——不可并入下面的「非数组对象」分支。
+        Some(HeapObject::String(_) | HeapObject::BigInt(_) | HeapObject::Symbol { .. }) => {
+            Err(args_type_error(vm, v))
+        }
+        // 真对象（Ordinary/Map/Date/…）：Node 视作 fork options（args 置空）。
+        Some(_) => Ok(Vec::new()),
+        None => Err(args_type_error(vm, v)),
+    }
+}
+
+/// `args` 非数组原始值的 TypeError 文本。
+fn args_type_error(vm: &mut Vm, v: Value) -> VmError {
+    invalid_arg_type_throw(
+        vm,
+        &format!(
+            "The \"args\" argument must be an instance of Array. Received {}",
+            received_repr(vm, v)
+        ),
+    )
+}
+
+/// `settings.silent`（Node 传入 `child_process.fork` 的 silent；缺省 false）。
+/// 真值 → 管道 stdio（不继承），假值/缺省 → 继承。
+fn read_silent(vm: &mut Vm, settings: Value) -> bool {
+    matches!(
+        vm.get_property(settings, "silent"),
+        Ok(Value::Boolean(true))
+    )
+}
+
+/// `settings.cwd`（Node 传入 `child_process.fork` 的 cwd；缺省 undefined →
+/// 继承主进程 cwd）。空串/非字符串一律按「继承」处理（Node 侧由 spawn 校验，
+/// 本运行时取宽松口径并登记）。
+fn read_cwd(vm: &mut Vm, settings: Value) -> String {
+    match vm.get_property(settings, "cwd") {
+        Ok(v) => heap_string(vm, v).unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
+/// 取字符串堆对象的内部值（非字符串返回 None）。
+fn heap_string(vm: &Vm, v: Value) -> Option<String> {
+    let Value::Object(r) = v else {
+        return None;
+    };
+    match vm.heap.get(r.0 as usize) {
+        Some(HeapObject::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Node validator 文本里 `Received …` 的取值描述。
+///
+/// 实测核对（Node v22.22.2）：`undefined` / `null` 无 `type` 前缀；原始类型为
+/// `type <typeof> (<inspect 值>)`；数组与一般对象为 `an instance of Array|Object`。
+/// **未覆盖**：函数（Node 作 `Received function <name>`）与其它 exotic 形（登记偏离）。
+fn received_repr(vm: &Vm, v: Value) -> String {
+    match v {
+        Value::Undefined => "undefined".to_owned(),
+        Value::Null => "null".to_owned(),
+        Value::Boolean(b) => format!("type boolean ({b})"),
+        Value::Number(n) => format!("type number ({})", vm.format_value(Value::Number(n))),
+        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+            Some(HeapObject::String(s)) => format!("type string ('{s}')"),
+            Some(HeapObject::BigInt(s)) => format!("type bigint ({s}n)"),
+            Some(HeapObject::Symbol { description, .. }) => {
+                format!(
+                    "type symbol ({})",
+                    crate::symbol::symbol_display(description)
+                )
+            }
+            Some(HeapObject::Array { .. }) => "an instance of Array".to_owned(),
+            _ => "an instance of Object".to_owned(),
+        },
+    }
+}
+
+/// 构造 Node 形态的参数校验 TypeError（`code=ERR_INVALID_ARG_TYPE`）并抛出。
+fn invalid_arg_type_throw(vm: &mut Vm, msg: &str) -> VmError {
+    let obj = vm.alloc_error_instance(msg);
+    let name_ref = vm.alloc_string("TypeError".to_owned());
+    let code_ref = vm.alloc_string("ERR_INVALID_ARG_TYPE".to_owned());
+    let recv = Value::Object(obj);
+    let _ = vm.set_property(recv, "name", Value::Object(name_ref));
+    let _ = vm.set_property(recv, "code", Value::Object(code_ref));
+    VmError::Thrown(recv)
 }
 
 /// `cluster.disconnect([callback])`：逐 worker destroy 后调用回调。

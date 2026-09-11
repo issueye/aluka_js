@@ -133,3 +133,200 @@ $ cargo test --workspace --all-features      # TEST_EXIT=0；611 passed / 0 fail
   `Connection: close` 服务端语义、真 RR 调度）与 M5.4 的 LCOV 覆盖率维持
   20260910 README「待办 26」的登记状态，本周转轮未推进。
 - **未验证项（诚实登记）**：门禁 `1 ignored` 为既有遗留（非本轮引入），未在本次排查。
+
+---
+
+## 6. 本轮追加 · M5 文档同步（表述收口）
+
+> 触发指令：「先完成文档同步 然后逐项进行」。承接本文件前序 M5 完成情况复核。
+
+### 6.1 开工前登记（目标 + 验收标准）
+
+| # | 文件 / 位置 | 现状（不实表述） | 期望 | 验收 |
+|---|---|---|---|---|
+| 1 | `.work/TODO/README.md` 里程碑总览 M5 行 | 「M5.4 切片一已落地……余 Timer Mock 与 LCOV」 | 与 §M5 细分清单（line 296）一致：切片一 + 切片二（Timer Mock）均已落地，余 LCOV 与真 `stream.Transform` 报告器 | 两处表述一致 |
+| 2 | `docs/builtins-manifest.md` 第 38/39 行 | `worker_threads`/`cluster` 标「**[已完整实现]**」，并以 `builtins_phase6_proc_test.rs` 作「逐字对拍测试证明」——该文件全部走 `assert_e2e_matches_go`（= `rust_pipeline_run` 别名，**不比 Node**） | 下调为「[已实现核心]」并附剩余缺口；证明列改指向真实 Node 对拍通道（`conformance_node22_test.rs` 的 M5 用例 / `m5_semantics_test.rs` / `m52_http_cluster_test.rs`），并显式标注旧文件为「本地锚点，未与 Node 对拍」 | 表述可被 `grep` 复核 |
+| 3 | 同上 第 50 行 `sqlite` | 「`builtins_phase7_io_test.rs`（12 用例逐字对拍）」 | 实为 5 例（4 例本地锚点 + 1 例 `node:sqlite` 能力门控真对拍，缺失能力打印 `[SKIP node-e2e]`） | 用例计数与文件一致 |
+| 4 | 同上 第 54 行 `test` | 「Timer Mock 未实现——`t.mock.timers` 零入口」 | Timer Mock 已于 M5.4 切片二落地（`enable`/`tick`/`setTime`/`runAll`/`reset`），补 Node 对拍出处 | 与 `m5_semantics_test.rs` 一致 |
+| 5 | 同上 第 447 行汇总 | 「全部 60 项矩阵已收敛为『已完整实现』」 | 标注为 2026-09-04 快照，并列出其后下调为「已实现核心」的 5 项 | 行数与矩阵表计数一致（55 + 5 = 60） |
+| 6 | `docs/builtins-plan.md` 第 51-54 行 | 「遗留 Timer Mock（`t.mock.timers`）与 LCOV 覆盖率输出未闭环」 | Timer Mock 已落地；遗留收窄为 LCOV + 真 `stream.Transform` 报告器 | 表述与事实一致 |
+
+**红线**：只做**表述与事实对齐**，不改写历史日志（带日期的小节保留原貌，仅加「快照」限定）；
+不借机做全仓链接路径批量替换（该仓 `docs/builtins-manifest.md` 的 `file:///e:/codes/go_projects/...`
+链接基址整体过期，属独立问题，本轮仅登记不处理）。
+
+### 6.2 交付摘要
+
+**改动 3 文件（+10 / −7），无代码改动：**
+
+| 文件 | 改动 |
+|---|---|
+| `.work/TODO/README.md` | 里程碑总览 M5 行表述与 §M5 细分清单对齐 |
+| `docs/builtins-manifest.md` | 第 38/39 行 `worker_threads`/`cluster` 重新分级 + 真实对拍通道；第 50 行 sqlite 用例计数；第 54 行 Timer Mock 状态；第 447 行加「2026-09-04 快照」限定并列出 5 项下调 |
+| `docs/builtins-plan.md` | Tier 3.5 备注的 Timer Mock 状态更新 |
+
+复审：`git diff` 逐块核对，仅表述改动，无源码、无夹带。
+
+**独立登记（本轮不处理）**：`docs/builtins-manifest.md` 全文 60 余处代码链接基址为
+`file:///e:/codes/go_projects/aluka_lang/aluka_lang/aluka_r/...`，与本仓实际路径
+`e:/code/issueye/rust_projects/aluka_js/...` 不符（该盘符/路径疑似自旧 Go 仓复制而来），
+属文档整体性缺陷，需单独一轮批量修正。
+
+---
+
+## 7. 待办 27 · M5.2 剩余项①：`cluster.settings.exec/args` 生效
+
+> 触发指令：「先完成文档同步 然后逐项进行」。本项 = `20260910/README.md` 待办 26
+> 「未完成项 2/3」中的**项 2**（该项当时因 fixer 撞轮上限未做，登记为 ❌）。
+
+### 7.1 开工前登记（目标 + 验收标准）
+
+| # | 项 | 现状（已核对） | Node 22 期望 | 验收 |
+|---|---|---|---|---|
+| 1 | `cluster.settings.exec/args` 生效 | `cluster.rs` 存而不用；fork 恒走 `vm.entry_file` + 空参数 | `setupPrimary({exec,args})` 后 worker 执行 `exec` 并带 `args`；未设置时回退现状 | 探针对拍 + e2e；`11-cluster`/`21-m5` 不回归 |
+| 2 | settings 契约（默认值/合并/重建） | `setupMaster` 只按白名单原地改写；无默认值填充；`fork` 不隐式初始化 | `setupPrimary` 每次**重建** settings（默认值 ← 旧 settings ← options 浅合并）；`fork()` 首行隐式 `setupPrimary()` | 探针对拍 |
+| 3 | 关联字段 `silent` / `cwd` | 硬编码 `silent: Some(false)` / `cwd: ""` | 取 `settings.silent` / `settings.cwd` | 探针对拍 |
+
+**红线**：Node 22 唯一权威；做不到的如实登记，不放宽断言凑绿；既有 cluster/worker
+用例必须全绿。
+
+### 7.2 Oracle 取证（先取权威语义，再动代码）
+
+**方法**：不凭文档推断——直接取 Node v22.22.2 官方 JS 实现源码（下载件存于
+`.work/scratch/m52-exec/node-primary.js`、`node-child_process.js`），并用实测探针交叉验证。
+
+关键结论（决定实现形态）：
+
+```js
+// internal/cluster/primary.js
+function setupPrimary(options) {
+  const settings = {
+    args: process.argv.slice(2), exec: process.argv[1],
+    execArgv: process.execArgv, silent: false,
+    ...cluster.settings, ...options,      // 旧 settings 覆盖默认值；options 再覆盖
+  };
+  cluster.settings = settings;            // 每次重建对象（非原地改写）
+}
+cluster.fork = function(env) {
+  cluster.setupPrimary();                 // 首行隐式初始化
+  const workerProcess = createWorkerProcess(id, env);
+  ...
+};
+function createWorkerProcess(id, env) {
+  return fork(cluster.settings.exec, cluster.settings.args, {
+    cwd: cluster.settings.cwd, silent: cluster.settings.silent, ... });
+}
+// lib/child_process.js
+function fork(modulePath, args = [], options) {
+  modulePath = getValidatedPath(modulePath, 'modulePath');  // ← 先校验 exec
+  if (args == null) args = [];
+  else if (typeof args === 'object' && !ArrayIsArray(args)) { options = args; args = []; }
+  else validateArray(args, 'args');
+  args = [...execArgv, modulePath, ...args];               // ← 子进程 argv 布局
+}
+```
+
+实测补充（对拍锚点）：
+- 默认 `args` = 主进程额外 CLI 参数（**不是空数组**）；`[].slice` 语义见下；
+- `exec: null` → `Received null`；`true` → `Received type boolean (true)`；`[]` →
+  `Received an instance of Array`；`{}` → `Received an instance of Object`；`NaN` →
+  `Received type number (NaN)`；`10n` → `Received type bigint (10n)`；
+  `Symbol('x')` → `Received type symbol (Symbol(x))`；`undefined` → `Received undefined`；
+- `args` 为 `null`/`undefined` → 空数组（不报错）；为**非数组对象** → 被当作 fork 的
+  options（args 置空）；为其它原始类型 → `ERR_INVALID_ARG_TYPE`；
+- 两类校验错误均在 `cluster.fork()` **调用栈内同步抛出**（非 `'error'` 事件）。
+
+### 7.3 交付摘要
+
+**源码改动（`crates/aluka-vm/src/builtins/cluster.rs`，+312/−48 量级）**：
+
+1. `cluster_setup_master` 重写为 Node 展开语义：新建 settings 对象 → 写默认值
+   （`exec` = 当前主脚本**绝对路径**、`args` = 主进程额外 CLI 参数、`execArgv: []`、
+   `silent: false`）→ 旧 settings 覆盖 → options 浅合并覆盖（含未知键）。
+   主脚本缺失时**不写 `exec` 键**（与 Node 的 `exec: undefined` 同形，交 validator 报错）。
+2. `cluster_fork` 首行隐式 `cluster_setup_master(vm, &[])`；随后按 `createWorkerProcess`
+   直取 `settings.exec` / `settings.args` / `settings.silent` / `settings.cwd` 派生子进程。
+3. 新增 `settings_exec` / `settings_args` 两个校验器（+`received_repr` 文本构造），
+   按 Node validator 文案抛 `TypeError(code=ERR_INVALID_ARG_TYPE)`；
+   `exec` 校验先于 `args`（与 Node 调用序一致）。
+4. 辅助：`current_script`（绝对化，含 `run`/`test` 子命令过滤）、`cli_args`、
+   `read_silent`、`read_cwd`、`heap_string`。
+5. 模块文档补齐 M5.2 契约说明与**新登记的偏离**（见 §7.5）。
+
+**探针对拍（scratch，`.work/scratch/m52-exec/`，7 个全部逐字一致）**：
+
+| 探针 | 覆盖面 | node vs aluka |
+|---|---|---|
+| `probe-settings.js` | 默认值 / 未知键 / 浅合并 / 对象重建 / `setupMaster` 别名 | **IDENTICAL** |
+| `probe-default-fork.js` | 裸 fork 隐式初始化 + 回退重跑当前脚本、无实参 | **IDENTICAL** |
+| `probe-exec-args.js` | `settings.exec` + `settings.args` 生效（目标文件独立） | **IDENTICAL** |
+| `probe-validate-fork.js` | 15 例 validator 矩阵（含 bigint/Symbol/数组/对象/NaN） | **IDENTICAL** |
+| `probe-cwd.js` | `settings.cwd` → 子进程工作目录 | **IDENTICAL**（连跑 3 次稳定） |
+| `probe-silent-on.js` | `silent: true` → 子进程 stdout 不继承 | **IDENTICAL** |
+| `probe-silent-off.js` | `silent: false` → 继承可见 | **IDENTICAL** |
+
+**e2e 门禁用例（新增 `crates/aluka-cli/tests/m52_settings_test.rs`，7 例）**：
+上述 7 个探针全量固化，全部走 `assert_e2e_matches_node`（bc 流水线 + Node 逐字对拍）。
+`--nocapture` 确认**无 `[SKIP node-e2e]`**，即真对拍而非可见跳过：
+
+```
+$ cargo test -p aluka-cli --all-features --test m52_settings_test
+running 7 tests
+test cluster_settings_contract_matches_node ... ok
+test cluster_settings_exec_args_apply_matches_node ... ok
+test cluster_default_fork_fallback_matches_node ... ok
+test cluster_settings_cwd_matches_node ... ok
+test cluster_settings_silent_on_matches_node ... ok
+test cluster_settings_silent_off_matches_node ... ok
+test cluster_fork_arg_validation_matches_node ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored
+```
+
+**生产路径回归（M5 差分门禁）**：
+
+```
+$ ALUKA_CONF_FILTER=m5 cargo test -p aluka-cli --all-features --test conformance_node22_test
+PASS 20-m5-worker-threads.cjs / 21-m5-cluster-http.cjs / 25-m5-structured-clone.cjs
+PASS 26-m5-fetch-bodyless.cjs / 27-m5-worker-timer.cjs
+Result: 5/5 passed, 0 invalid
+```
+
+### 7.4 门禁三连（真实输出）
+
+```bash
+$ cargo fmt --all --check                     # FMT_EXIT=0
+$ cargo clippy --all-targets --all-features -- -D warnings   # CLIPPY_EXIT=0（零 lint 告警）
+$ cargo test --workspace --all-features       # suites=86 passed=618 failed=0 ignored=1
+```
+
+- 与上一轮基线（20260911 §4：85 suites / 611 passed / 0 failed / 1 ignored）对照：
+  **+1 套件、+7 用例，恰好等于本轮新增的 `m52_settings_test.rs`**；`1 ignored` 为既有
+  doc-test（`builtins::builtin_module`），非本轮引入。
+- 门禁日志中 `grep -cE "^test result: FAILED"` = **0**。
+
+### 7.5 本轮新登记的偏离（诚实登记，不静默）
+
+| 项 | Node | 本运行时 | 影响 |
+|---|---|---|---|
+| `settings.execArgv` 不生效 | 作为 node 旗标插在脚本前（`node <execArgv...> <exec> <args...>`） | 进程形态为 `aluka run <script>`，无旗标槽位；键仍按 Node 默认写 `[]` | 显式设置 `execArgv` 无效 |
+| `settings.args` 为非数组对象 | 该对象被当作 `child_process.fork` 的 options（覆盖 `cwd`/`silent`/`stdio`） | 仅按「args 置空」处理 | 携带 options 键的对象语义不同（探针可覆盖的等价面已对齐） |
+| validator `Received` 描述 | 含 `Received function <name>` 等 exotic 形 | 实现 string/number/boolean/null/undefined/bigint/Symbol/Array/Object | 函数等 exotic 值文案不同 |
+| `settings.serialization`/`stdio`/`uid`/`gid`/`windowsHide` | 传入 fork | 未接线 | — |
+| 真 round-robin 调度 | `schedulingPolicy` 可生效 | 恒 `SCHED_NONE`（内核分发） | 沿用待办 26 登记 |
+
+### 7.6 工程隐患登记（本机环境，非代码缺陷）
+
+- **增量编译缓存损坏 → rustc ICE**：本轮构建时 `aluka-builtins` / `aluka-webapi` 触发
+  `rustc_metadata::encode_metadata` 处 `expect_failed`（rustc 1.95.0），且此前已有
+  `failed to garbage collect finalized incremental compilation session directory ...
+  拒绝访问 (os error 5)` 警告。**规避口径**：本轮全部构建/门禁用
+  `CARGO_INCREMENTAL=0`，ICE 不再复现。建议后续 CI/门禁固定该变量，或清理
+  `target/debug/incremental` 后重试。
+- **`process.argv` 缺 exe 槽位 / `__dirname` 为相对路径**：均为既有引擎级形态偏离
+  （非本轮引入）。本轮探针以「与 `__filename` 同名的 argv 段」定位脚本槽位、
+  以 `path.resolve(__dirname, ...)` 绝对化，使两侧打印同一语义面；探针头部已写明
+  归一理由。建议后续立专项评估是否向 Node 形态对齐（影响面超出 M5）。
+- **构建耗时观察**：`CARGO_INCREMENTAL=0` 下全量测试门禁墙钟约 5 分钟（增量开启时
+  约 85~117s）；本轮因 ICE 权衡取正确性优先。
+
+

@@ -51,7 +51,8 @@
 > 备注：registry.go 中 `node:sqlite`（nodesqlite）为演示性注册，Go 侧亦非
 > 完整实现，Tier 4 排后；`node:test`（nodetest）作为 15-test-runner 用例的
 > 依赖列 Tier 3.5——注册/执行模型与 `aluka test` 子命令已落地（M5.4 切片一），
-> 遗留 Timer Mock（`t.mock.timers`）与 LCOV 覆盖率输出未闭环。
+> Timer Mock（`t.mock.timers`）已于 M5.4 切片二落地并与 Node 22 逐字对拍，
+> 遗留 LCOV 覆盖率输出与真 `stream.Transform` 报告器未闭环。
 
 ## 4. 分批路线（每批：实现 → Go Oracle e2e 对拍 → 固化 cjs_test → 门禁）
 
