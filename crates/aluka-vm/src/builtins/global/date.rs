@@ -339,10 +339,10 @@ impl Vm {
             )
         } else {
             match args.first().map(|v| v.case()) {
-                None | Some(Value::Undefined) => date_now_ms(),
+                None | Some(ValueCase::Undefined) => date_now_ms(),
                 Some(ValueCase::Number(n)) => time_clip(n),
                 // null / true / false：ToPrimitive 后退化为数值（Node 实测）
-                Some(Value::Null) => 0.0,
+                Some(ValueCase::Null) => 0.0,
                 Some(ValueCase::Boolean(b)) => {
                     if b {
                         1.0
@@ -351,7 +351,7 @@ impl Vm {
                     }
                 }
                 Some(other) => {
-                    let text = self.format_value(other);
+                    let text = self.format_value(Value::from(other));
                     parse_iso_date(&text).unwrap_or(f64::NAN)
                 }
             }

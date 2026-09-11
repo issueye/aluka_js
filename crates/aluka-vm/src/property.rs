@@ -283,8 +283,8 @@ impl Vm {
                 }
             }
             ValueCase::Boolean(b) => format!("{b}"),
-            Value::Null => "null".to_owned(),
-            Value::Undefined => "undefined".to_owned(),
+            ValueCase::Null => "null".to_owned(),
+            ValueCase::Undefined => "undefined".to_owned(),
             ValueCase::Object(r) => {
                 let idx = r.0 as usize;
                 if idx < self.heap.len() {
@@ -1485,19 +1485,19 @@ impl Vm {
                 }
             }
         }
-        let target_proto = match self.get_property(r, "prototype").map(|v| v.case()) {
+        let target_proto = match self.get_property(r, "prototype").map(|v| v.case()).map(ValueCase::from) {
             Ok(ValueCase::Object(p)) => p,
             _ => return false,
         };
         // 原型链遍历对 Proxy 感知：链上 Proxy 经 getPrototypeOf trap 解析
         let mut cur = match l.case() {
             ValueCase::Object(lr) if self.proxy_parts(lr).is_some() => {
-                match self.proxy_get_prototype_of(lr).map(|v| v.case()) {
+                match self.proxy_get_prototype_of(lr).map(|v| v.case()).map(ValueCase::from) {
                     Ok(ValueCase::Object(p)) => Some(p),
                     _ => None,
                 }
             }
-            other => self.get_prototype(other),
+            other => self.get_prototype(Value::from(other)),
         };
         let mut depth = 0;
         while let Some(proto_ref) = cur {

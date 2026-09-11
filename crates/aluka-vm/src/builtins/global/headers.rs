@@ -65,8 +65,8 @@ pub(crate) fn hdr_sync_props(vm: &mut Vm, receiver: Value, entries: &[(String, S
 
 /// 将任意对象字面量形态规范化为 Headers 实例。
 pub(crate) fn build_headers(vm: &mut Vm, val: Value) -> Value {
-    if let Some(_) = val.as_object() {
-        if matches!(vm.get_property(val, "_isHeaders"), Ok(ValueCase::Boolean(true))) {
+    if let Some(_) = val.as_object().map(ValueCase::from) {
+        if matches!(vm.get_property(val, "_isHeaders").map(ValueCase::from), Ok(ValueCase::Boolean(true))) {
             return val;
         }
     }

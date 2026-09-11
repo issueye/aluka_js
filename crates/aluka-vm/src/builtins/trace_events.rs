@@ -122,8 +122,8 @@ fn tracing_disable(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// null → "object"、字符串 → "string"、函数 → "function"）。
 fn go_type_name(vm: &Vm, val: Value) -> &'static str {
     match val.case() {
-        Value::Undefined => "undefined",
-        Value::Null => "object",
+        ValueCase::Undefined => "undefined",
+        ValueCase::Null => "object",
         ValueCase::Boolean(_) => "boolean",
         ValueCase::Number(_) => "number",
         ValueCase::Object(r) => match vm.heap.get(r.index()) {

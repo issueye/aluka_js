@@ -134,8 +134,8 @@ fn is_ordinary(vm: &Vm, v: Value) -> bool {
 /// 渲染 Node 的 "Received ..." 片段（对齐 Go `wasiTypeString`）。
 fn type_string(vm: &Vm, v: Value) -> String {
     match v.case() {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
+        ValueCase::Undefined => "undefined".to_owned(),
+        ValueCase::Null => "null".to_owned(),
         ValueCase::Number(n) => format!("type number ({})", vm.format_value(Value::Number(n))),
         ValueCase::Boolean(b) => format!("type boolean ({b})"),
         ValueCase::Object(r) => match vm.heap.get(r.index()) {

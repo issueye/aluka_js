@@ -438,7 +438,7 @@ impl Vm {
         let first = args.first().copied().unwrap_or(Value::Undefined);
         match first.case() {
             // 数字：分配 length 个零元素
-            ValueCase::Number(_) | Value::Undefined => {
+            ValueCase::Number(_) | ValueCase::Undefined => {
                 let len = match first.case() {
                     ValueCase::Number(n) if n > 0.0 => n as usize,
                     _ => 0,

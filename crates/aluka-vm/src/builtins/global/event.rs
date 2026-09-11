@@ -37,11 +37,11 @@ pub(crate) fn event_target_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value
         vm.format_value(first)
     };
     let cb = args.get(1).copied();
-    let map = match vm.get_property(target, "_etListeners").map(|v| v.case()) {
+    let map = match vm.get_property(target, "_etListeners").map(|v| v.case()).map(ValueCase::from) {
         Ok(ValueCase::Object(m)) => m,
         _ => return Ok(Value::Undefined),
     };
-    let arr = match vm.get_property(Value::Object(map), &ev).map(|v| v.case()) {
+    let arr = match vm.get_property(Value::Object(map), &ev).map(|v| v.case()).map(ValueCase::from) {
         Ok(ValueCase::Object(a)) => a,
         _ => {
             if name.ends_with("addEventListener") {
@@ -108,7 +108,7 @@ pub(crate) fn event_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
     let ty_val = vm.alloc_string(ty);
     let _ = vm.set_property(Value::Object(event), "type", Value::Object(ty_val));
     let opts = args.get(1).copied().unwrap_or(Value::Undefined);
-    let bubbles = matches!(vm.get_property(opts, "bubbles"), Ok(ValueCase::Boolean(true)));
+    let bubbles = matches!(vm.get_property(opts, "bubbles").map(ValueCase::from), Ok(ValueCase::Boolean(true)));
     let cancelable = matches!(
         vm.get_property(opts, "cancelable"),
         Ok(ValueCase::Boolean(true))

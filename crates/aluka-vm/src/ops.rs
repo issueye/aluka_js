@@ -10,8 +10,8 @@ pub fn to_number(val: Value) -> f64 {
     match val.case() {
         ValueCase::Number(n) => n,
         ValueCase::Boolean(true) => 1.0,
-        ValueCase::Boolean(false) | Value::Null => 0.0,
-        Value::Undefined => f64::NAN,
+        ValueCase::Boolean(false) | ValueCase::Null => 0.0,
+        ValueCase::Undefined => f64::NAN,
         ValueCase::Object(_) => f64::NAN,
     }
 }
@@ -116,7 +116,7 @@ pub fn parse_js_number(s: &str) -> f64 {
 #[must_use]
 pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
     match val.case() {
-        Value::Undefined | Value::Null => false,
+        ValueCase::Undefined | ValueCase::Null => false,
         ValueCase::Boolean(b) => b,
         ValueCase::Number(n) => n != 0.0 && !n.is_nan(),
         ValueCase::Object(r) => match heap.get(r.0 as usize) {
@@ -311,7 +311,7 @@ impl Vm {
     fn to_cmp_primitive(&self, v: Value) -> CmpPrimitive {
         match v.case() {
             ValueCase::Number(n) => CmpPrimitive::Num(n),
-            ValueCase::Boolean(_) | Value::Null | Value::Undefined => CmpPrimitive::Num(to_number(v)),
+            ValueCase::Boolean(_) | ValueCase::Null | ValueCase::Undefined => CmpPrimitive::Num(to_number(v)),
             ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => CmpPrimitive::Str(s.clone()),
                 Some(HeapObject::BigInt(b)) => {

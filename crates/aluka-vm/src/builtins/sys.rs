@@ -119,7 +119,7 @@ fn inspect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 递归格式化紧凑值。
 fn inspect_value(vm: &Vm, val: Value) -> String {
     match val.case() {
-        Value::Undefined | Value::Null | ValueCase::Boolean(_) | ValueCase::Number(_) => {
+        ValueCase::Undefined | ValueCase::Null | ValueCase::Boolean(_) | ValueCase::Number(_) => {
             vm.format_value(val)
         }
         ValueCase::Object(r) => match vm.heap.get(r.index()) {

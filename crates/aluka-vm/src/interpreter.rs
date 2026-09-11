@@ -263,8 +263,8 @@ impl Vm {
         for (k, v) in &self.globals {
             k.hash(&mut h);
             match v.case() {
-                Value::Undefined => 0u8.hash(&mut h),
-                Value::Null => 1u8.hash(&mut h),
+                ValueCase::Undefined => 0u8.hash(&mut h),
+                ValueCase::Null => 1u8.hash(&mut h),
                 ValueCase::Boolean(b) => {
                     2u8.hash(&mut h);
                     b.hash(&mut h);
@@ -624,8 +624,8 @@ impl Vm {
     /// 格式化值为字符串（对齐 JS 的 String(...) 与 console.log 输出语义）。
     pub fn format_value(&self, val: Value) -> String {
         match val.case() {
-            Value::Undefined => "undefined".to_owned(),
-            Value::Null => "null".to_owned(),
+            ValueCase::Undefined => "undefined".to_owned(),
+            ValueCase::Null => "null".to_owned(),
             ValueCase::Boolean(b) => format!("{b}"),
             ValueCase::Number(n) => js_number_to_string(n),
             ValueCase::Object(r) => {
@@ -716,8 +716,8 @@ impl Vm {
     /// JS `typeof` 语义的字符串化。
     fn typeof_value(&self, val: Value) -> String {
         match val.case() {
-            Value::Undefined => "undefined".to_owned(),
-            Value::Null => "object".to_owned(),
+            ValueCase::Undefined => "undefined".to_owned(),
+            ValueCase::Null => "object".to_owned(),
             ValueCase::Boolean(_) => "boolean".to_owned(),
             ValueCase::Number(_) => "number".to_owned(),
             ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
@@ -1157,7 +1157,7 @@ impl Vm {
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
                 match args.get(1).map(|v| v.case()) {
-                    None | Some(Value::Undefined) => name,
+                    None | Some(ValueCase::Undefined) => name,
                     // 第二参为扩展名（字符串对象）：剥离（如 ".txt"）
                     Some(ValueCase::Object(_)) => name
                         .strip_suffix(&self.format_value(*args.get(1).expect("已确认存在")))
@@ -1406,12 +1406,12 @@ impl Vm {
     /// pattern/flags，flags 实参覆盖；经引擎编译校验，非法抛 SyntaxError。
     pub(crate) fn construct_regexp(&mut self, args: &[Value]) -> Result<Value, VmError> {
         let (pattern, mut flags) = match args.first().map(|v| v.case()) {
-            None | Some(Value::Undefined) => (String::new(), String::new()),
+            None | Some(ValueCase::Undefined) => (String::new(), String::new()),
             Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::RegExp { pattern, flags }) => (pattern.clone(), flags.clone()),
                 _ => (self.format_value(args[0]), String::new()),
             },
-            Some(v) => (self.format_value(v), String::new()),
+            Some(v) => (self.format_value(Value::from(v)), String::new()),
         };
         if let Some(f) = args.get(1) {
             if !matches!(*f, Value::Undefined) {

@@ -656,8 +656,8 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
                 0.0
             }
         }
-        Value::Undefined => f64::NAN,
-        Value::Null => 0.0,
+        ValueCase::Undefined => f64::NAN,
+        ValueCase::Null => 0.0,
         ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             // Number/Boolean 包装对象以 Ordinary 承载：读值槽，缺省字符串化
             Some(HeapObject::Ordinary { .. }) => vm

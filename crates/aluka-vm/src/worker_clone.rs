@@ -238,11 +238,11 @@ impl Ser<'_> {
 
     fn serialize_value(&mut self, v: Value) -> Result<(), VmError> {
         match v.case() {
-            Value::Undefined => {
+            ValueCase::Undefined => {
                 self.tag(T_UNDEF);
                 Ok(())
             }
-            Value::Null => {
+            ValueCase::Null => {
                 self.tag(T_NULL);
                 Ok(())
             }

@@ -541,14 +541,14 @@ fn stream_compose(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let reporter = match args.first().copied().map(|v| v.case()) {
         Some(r @ ValueCase::Object(_)) => {
             let already = vm
-                .get_property(r, "_reporterKind")
+                .get_property(Value::from(r), "_reporterKind")
                 .ok()
                 .is_some_and(|v| vm.is_string_value(v));
             if already {
                 r
             } else {
                 // 工厂函数：调用后得实例
-                let inst = vm.invoke_callable(r, Value::Undefined, &[])?;
+                let inst = vm.invoke_callable(Value::from(r), Value::Undefined, &[])?;
                 let ok = vm
                     .get_property(inst, "_reporterKind")
                     .ok()

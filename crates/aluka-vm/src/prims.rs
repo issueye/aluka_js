@@ -14,7 +14,7 @@ use crate::value::{Value, ValueCase};
 /// 对象属性值是否为 JSON 忽略值（整键剔除）：`undefined` / 函数 / 符号。
 fn is_json_ignored_value(vm: &Vm, v: Value) -> bool {
     match v.case() {
-        Value::Undefined => true,
+        ValueCase::Undefined => true,
         ValueCase::Object(r) => matches!(
             vm.heap.get(r.0 as usize),
             Some(
@@ -133,7 +133,7 @@ impl Vm {
         seen: &mut Vec<u32>,
     ) -> Result<(), VmError> {
         match value.case() {
-            Value::Undefined | Value::Null => out.push_str("null"),
+            ValueCase::Undefined | ValueCase::Null => out.push_str("null"),
             ValueCase::Boolean(b) => out.push_str(if b { "true" } else { "false" }),
             ValueCase::Number(n) => {
                 if n.is_nan() || n.is_infinite() {

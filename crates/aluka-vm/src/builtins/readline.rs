@@ -138,7 +138,7 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let mut output: Option<Value> = None;
     let mut terminal = true;
-    if let Some(o) = args.first().copied().and_then(|v| v.as_object()) {
+    if let Some(o) = args.first().copied().and_then(|v| v.as_object()).map(ValueCase::from) {
         if let Ok(v) = vm.get_property(Value::Object(o), "output") {
             if !matches!(v, Value::Undefined) {
                 output = Some(v);

@@ -388,7 +388,7 @@ fn not_enabled_error(vm: &mut Vm) -> VmError {
 /// 读取时间入参（缺省 `default`；非数字/负数按 Node 抛错）。
 fn time_arg(vm: &mut Vm, v: Option<Value>, default: i64) -> Result<i64, VmError> {
     match v.map(|v| v.case()) {
-        None | Some(Value::Undefined) => Ok(default),
+        None | Some(ValueCase::Undefined) => Ok(default),
         Some(ValueCase::Number(n)) => {
             if n.is_nan() {
                 return Err(code_error(
@@ -408,7 +408,7 @@ fn time_arg(vm: &mut Vm, v: Option<Value>, default: i64) -> Result<i64, VmError>
             "ERR_INVALID_ARG_TYPE",
             &format!(
                 "The \"time\" argument must be of type number. Received {}",
-                vm.format_value(other)
+                vm.format_value(Value::from(other))
             ),
         )),
     }
@@ -527,7 +527,7 @@ fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
     let now = match vm.get_property(opts, "now").unwrap_or(Value::Undefined).case() {
-        Value::Undefined => 0,
+        ValueCase::Undefined => 0,
         ValueCase::Number(n) if !n.is_nan() => {
             let t = n as i64;
             if t < 0 {
@@ -541,7 +541,7 @@ fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 "ERR_INVALID_ARG_TYPE",
                 &format!(
                     "The \"options.now\" property must be of type number. Received {}",
-                    vm.format_value(other)
+                    vm.format_value(Value::from(other))
                 ),
             ));
         }

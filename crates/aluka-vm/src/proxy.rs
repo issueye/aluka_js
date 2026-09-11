@@ -206,7 +206,7 @@ impl Vm {
         let args2 = [args_arr, Value::Object(r)];
         match self.call_trap(r, "construct", &args2)?.map(|v| v.case()) {
             // 规范校验：construct trap 必须返回对象
-            Some(v @ ValueCase::Object(_)) => Ok(v),
+            Some(v @ ValueCase::Object(_)) => Ok(Value::from(v)),
             Some(_) => Err(VmError::Thrown(Value::Object(self.alloc_typed_error(
                 "'construct' on proxy: trap returned non-object ('undefined')",
                 "TypeError",

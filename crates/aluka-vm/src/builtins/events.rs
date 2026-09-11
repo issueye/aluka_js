@@ -457,7 +457,7 @@ fn emitter_remove_all_listeners(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
             state.listeners.clear();
         }
         Some(v) => {
-            let name = vm.format_value(v);
+            let name = vm.format_value(Value::from(v));
             state.listeners.remove(&name);
         }
     });

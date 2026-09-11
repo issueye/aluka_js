@@ -1311,7 +1311,7 @@ fn self_disconnect_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// worker 进程内 `cluster.worker.isConnected()`：通道连通性（Node `Worker`
 /// 的 `this.process.connected`）。
 fn worker_self_is_connected(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    if let Some(proc) = process_value(vm) {
+    if let Some(proc) = process_value(vm).map(ValueCase::from) {
         if let Ok(ValueCase::Boolean(b)) = vm.get_property(proc, "connected").map(ValueCase::from) {
             return Ok(Value::Boolean(b));
         }

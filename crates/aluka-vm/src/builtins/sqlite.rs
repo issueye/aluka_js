@@ -874,8 +874,8 @@ fn not_bindable(vm: &mut Vm, param_idx: usize) -> VmError {
 /// 普通对象/数组 → TypeError；number 整值入 INTEGER；bigint 超 i64 按文本近似）。
 fn js_to_param(vm: &mut Vm, v: Value, param_idx: usize) -> Result<SqlParam, VmError> {
     match v.case() {
-        Value::Undefined => Err(not_bindable(vm, param_idx)),
-        Value::Null => Ok(SqlParam::Null),
+        ValueCase::Undefined => Err(not_bindable(vm, param_idx)),
+        ValueCase::Null => Ok(SqlParam::Null),
         ValueCase::Boolean(_) => Err(not_bindable(vm, param_idx)),
         ValueCase::Number(n) => {
             if n.is_finite() && n == n.trunc() && n.abs() <= 9.2e18 {

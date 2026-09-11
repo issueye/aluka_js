@@ -457,7 +457,7 @@ impl Vm {
                 }
             }
         }
-        let proto_ref = match self.get_property(callee, "prototype").map(|v| v.case()) {
+        let proto_ref = match self.get_property(callee, "prototype").map(|v| v.case()).map(ValueCase::from) {
             Ok(ValueCase::Object(p)) => Some(p),
             _ => None,
         };

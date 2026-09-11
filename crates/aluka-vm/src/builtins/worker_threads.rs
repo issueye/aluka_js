@@ -171,8 +171,8 @@ fn received_inspect(vm: &Vm, v: Value) -> String {
     match v.case() {
         ValueCase::Number(_) => format!("type number ({})", vm.format_value(v)),
         ValueCase::Boolean(_) => format!("type boolean ({})", vm.format_value(v)),
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
+        ValueCase::Undefined => "undefined".to_owned(),
+        ValueCase::Null => "null".to_owned(),
         ValueCase::Object(r) => {
             if vm.is_string_value(Value::Object(r)) {
                 format!("type string ('{}')", vm.format_value(v))
@@ -528,7 +528,7 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut worker_data: Option<Value> = None;
     let mut eval = false;
     if let Some(opts) = args.get(1).copied() {
-        if let Some(o) = opts.as_object() {
+        if let Some(o) = opts.as_object().map(ValueCase::from) {
             if let Ok(v) = vm.get_property(opts, "workerData") {
                 if !matches!(v, Value::Undefined) {
                     worker_data = Some(json_roundtrip(vm, v)?);
@@ -1220,7 +1220,7 @@ fn wt_get_env_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn env_data_key(vm: &Vm, v: Value) -> String {
     match v.case() {
         ValueCase::Number(n) => format!("num:{n}"),
-        other => format!("str:{}", vm.format_value(other)),
+        other => format!("str:{}", vm.format_value(Value::from(other))),
     }
 }
 
@@ -1280,7 +1280,7 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 other => {
                     let err = vm.alloc_error_instance(&format!(
                         "The \"timeout\" argument must be of type number. Received {}",
-                        received_inspect(vm, other)
+                        received_inspect(vm, Value::from(other))
                     ));
                     let name = vm.alloc_string("TypeError".to_owned());
                     let code = vm.alloc_string("ERR_INVALID_ARG_TYPE".to_owned());

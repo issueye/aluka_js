@@ -528,7 +528,7 @@ pub fn ctx_wait_for(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(type_fail(vm, "t.waitFor() requires a condition function"));
     }
     let mut timeout_ms = 0u64;
-    if let Some(v) = args.get(1).copied() {
+    if let Some(v) = args.get(1).copied().map(ValueCase::from) {
         if let Ok(ValueCase::Number(n)) = vm.get_property(v, "timeout").map(ValueCase::from) {
             if n > 0.0 {
                 timeout_ms = n as u64;

@@ -150,7 +150,7 @@ pub(crate) fn signal_add_event_listener(vm: &mut Vm, args: &[Value]) -> Result<V
     let Some(cb) = args.get(1).copied() else {
         return Ok(Value::Undefined);
     };
-    let arr = match vm.get_property(this, "_listeners").map(|v| v.case()) {
+    let arr = match vm.get_property(this, "_listeners").map(|v| v.case()).map(ValueCase::from) {
         Ok(ValueCase::Object(r)) => r,
         _ => vm.alloc_array(Vec::new()),
     };

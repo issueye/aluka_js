@@ -7,12 +7,15 @@ M6.2 NaN-box 迁移状态（WIP，分支 m62-nanobox，勿合并）
   + 访问器面（as_number/as_object/as_bool/is_*/kind）
 - 全仓单行模式自动转换 235 处（let-else/if-let Some(...) 的
   `Value::X(v)` → `.as_x()` 链）。
-迁移进度（20260912 第二轮）：
+迁移进度（20260912 第三轮）：
 - ValueCase 镜像枚举落地（match 臂前缀机械替换 + `.case()` 头包裹）
 - rustc JSON 诊断驱动自动修复：E0164 臂路径 688 处、E0599/E0609 32 处、
   E0614 解引用清理两轮、matches!/元组/const 模式若干
-- 当前余量：**179 处**（全部进入逐点语义改写阶段，分布：
-  interpreter 26 / surface 14 / asserts 13 / stream 12 / ops 11 / property 10 …）
+- 第二轮：E0308 span 精确替换（expected ValueCase 44 处 / expected Value 93 处）
+  + Result 匹配头 `.map(ValueCase::from)` 31 处
+- 当前余量：**154 处**（逐点人工形态：
+  get_property 参数为 ValueCase 需回包、tuple &Value 混合、单点 E0308/E0164 等；
+  分布集中在 cluster/event/global/abort 等 builtins 文件）
 剩余（约 179 处，逐点语义改写）：
 - interpreter.rs 122 / property.rs 56 / surface.rs 43 / stream.rs 42 /
   ops.rs 36 / net.rs 36 / worker_threads 32 / fetch 27 / mod 27 / cluster 25

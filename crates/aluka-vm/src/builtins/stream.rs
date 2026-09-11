@@ -123,7 +123,7 @@ fn chunk_byte_len(vm: &crate::interpreter::Vm, chunk: Value) -> usize {
 
 /// 从 options 对象读取 highWaterMark（缺省/非法 → 默认水位线）
 fn read_high_water_mark(vm: &mut crate::interpreter::Vm, args: &[Value]) -> usize {
-    if let Some(opts) = args.first().copied().and_then(|v| v.as_object()) {
+    if let Some(opts) = args.first().copied().and_then(|v| v.as_object()).map(ValueCase::from) {
         if let Ok(ValueCase::Number(n)) = vm.get_property(Value::Object(opts), "highWaterMark").map(ValueCase::from) {
             if n.is_finite() && n >= 0.0 {
                 return n as usize;
@@ -540,7 +540,7 @@ pub fn create_transform_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRe
         "writableHighWaterMark",
         Value::Number(hwm as f64),
     );
-    if let Some(opts) = args.first().copied().and_then(|v| v.as_object()) {
+    if let Some(opts) = args.first().copied().and_then(|v| v.as_object()).map(ValueCase::from) {
         if let Ok(ValueCase::Boolean(true)) = vm.get_property(Value::Object(opts), "writableObjectMode")
         {
             let _ = vm.set_property(
@@ -822,7 +822,7 @@ fn build_promises(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectR
         let fn_ref = vm.alloc_native_fn(&format!("stream/promises.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
     }
-    if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
+    if std::env::var("ALUKA_REQ_DEBUG").is_ok().map(ValueCase::from) {
         let ok = matches!(
             vm.get_property(Value::Object(obj), "finished"),
             Ok(ValueCase::Object(_))
@@ -1055,19 +1055,19 @@ fn stream_pipe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         _ => return Ok(receiver),
     };
     with_stream_state(id, |s| {
-        s.pipe_dest = Some(dest);
+        s.pipe_dest = Some(Value::from(dest));
         s.flowing = true;
     });
     // 背压联动：dest 队列清空发 'drain' 时恢复源流排空（Node pipe 语义）
     attach_pipe_drain_listener(vm, receiver)?;
     // 立即排空缓冲区到目标流
-    drain_to_dest(vm, id, receiver, dest)?;
+    drain_to_dest(vm, id, receiver, Value::from(dest))?;
     let state = get_stream_state(id);
     if state.ended {
         finish_readable(vm, id, receiver)?;
-        end_pipe_dest(vm, dest)?;
+        end_pipe_dest(vm, Value::from(dest))?;
     }
-    Ok(dest)
+    Ok(Value::from(dest))
 }
 
 /// `stream.on(event, callback)`：注册事件监听器

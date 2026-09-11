@@ -109,7 +109,7 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     };
     let (hdr_pairs, _) = parse_response_headers(&headers_text);
 
-    if let Some(sig_ref) = signal.as_object() {
+    if let Some(sig_ref) = signal.as_object().map(ValueCase::from) {
         if let Ok(ValueCase::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted").map(ValueCase::from) {
             let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
                 Ok(r) if !matches!(r, Value::Undefined) => r,
@@ -243,7 +243,7 @@ pub(crate) fn response_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, V
     } else {
         String::new()
     };
-    let status = match vm.get_property(init, "status").map(|v| v.case()) {
+    let status = match vm.get_property(init, "status").map(|v| v.case()).map(ValueCase::from) {
         Ok(ValueCase::Number(n)) => n as u16,
         _ => 200,
     };
@@ -338,7 +338,7 @@ pub(crate) fn response_clone(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmEr
             pairs.push((k, vm.format_value(v)));
         }
     }
-    let status = match vm.get_property(this, "status").map(|v| v.case()) {
+    let status = match vm.get_property(this, "status").map(|v| v.case()).map(ValueCase::from) {
         Ok(ValueCase::Number(n)) => n as u16,
         _ => 200,
     };
@@ -405,7 +405,7 @@ pub(crate) fn response_array_buffer_handler(
 /// `new Request(input[, options])`。
 pub(crate) fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let input = args.first().copied().unwrap_or(Value::Undefined);
-    let (url, inherited) = if let Some(_) = input.as_object() {
+    let (url, inherited) = if let Some(_) = input.as_object().map(ValueCase::from) {
         if let Ok(ValueCase::Boolean(true)) = vm.get_property(input, "_isRequest").map(ValueCase::from) {
             (vm.get_property(input, "url")?, Some(input))
         } else {
@@ -569,7 +569,7 @@ fn parse_fetch_input(vm: &mut Vm, first: Value, opts: Value) -> Result<FetchInpu
         method = ms.to_uppercase();
     }
     let mut headers: Vec<(String, String)> = Vec::new();
-    if is_request {
+    if is_request.map(ValueCase::from) {
         if let Ok(ValueCase::Object(ho)) = vm.get_property(first, "headers").map(ValueCase::from) {
             for (k, v) in vm.own_entries(ho.0 as usize) {
                 headers.push((k, vm.format_value(v)));

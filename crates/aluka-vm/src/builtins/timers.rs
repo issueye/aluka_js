@@ -276,7 +276,7 @@ fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 兑现通道——非 undefined 值即拒绝近似）
     if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val) {
         if let Ok(signal) = vm.get_property(*opts, "signal") {
-            if !matches!(signal, Value::Undefined | Value::Null).case() {
+            if !matches!(signal, Value::Undefined | Value::Null).case().map(ValueCase::from) {
                 if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
                     vm.active_timers.insert(id as u64);
                     let reason = vm

@@ -397,7 +397,7 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args {
         if is_function(vm, *a) {
             connect_listener = Some(*a);
-        } else if is_plain_object(vm, *a) {
+        } else if is_plain_object(vm, *a).map(ValueCase::from) {
             if let Ok(v) = vm.get_property(*a, "host") {
                 if !matches!(v, Value::Undefined | Value::Null) {
                     let s = vm.format_value(v);
@@ -442,7 +442,7 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     vm.activate_event_source("net", net_pump);
 
     // M4.3：signal 联动——已 abort 立即销毁；未 abort 挂监听（abort 时销毁）
-    if let Some(signal) = signal_opt {
+    if let Some(signal) = signal_opt.map(ValueCase::from) {
         if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
             close_socket_lifecycle(obj.0);
         } else {
@@ -675,7 +675,7 @@ fn net_socket_address_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     let mut port = 0.0f64;
     let mut family = "ipv4".to_owned();
     let mut flowlabel = 0.0f64;
-    if let Some(opts) = args.first().copied().filter(|v| is_plain_object(vm, *v)) {
+    if let Some(opts) = args.first().copied().filter(|v| is_plain_object(vm, *v)).map(ValueCase::from) {
         if let Ok(v) = vm.get_property(opts, "address") {
             if !matches!(v, Value::Undefined) {
                 address = vm.format_value(v);
@@ -1060,7 +1060,7 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             });
             vm.activate_event_source("net", net_pump);
             // M4.3：listen signal——已 abort 立即关停；未 abort 挂监听
-            if let Some(signal) = signal_opt {
+            if let Some(signal) = signal_opt.map(ValueCase::from) {
                 if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
                     let _ = net_server_close(vm, &[]);
                 } else {

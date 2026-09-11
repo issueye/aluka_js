@@ -43,8 +43,8 @@ pub(crate) fn to_vm_value(b: u64) -> Value {
 /// VM Value → 盒。
 pub(crate) fn from_vm_value(v: Value) -> u64 {
     match v.case() {
-        Value::Undefined => valbox::UNDEFINED,
-        Value::Null => valbox::NULL,
+        ValueCase::Undefined => valbox::UNDEFINED,
+        ValueCase::Null => valbox::NULL,
         ValueCase::Boolean(false) => valbox::FALSE,
         ValueCase::Boolean(true) => valbox::TRUE,
         ValueCase::Number(n) => valbox::box_number(n),

@@ -148,11 +148,11 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// 两种情况都写 `_builtinNs = "vm:context"` 标记供 `isContext` 判定。
 fn create_context(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let target = match args.first().map(|v| v.case()) {
-        Some(v @ ValueCase::Object(_)) if is_ordinary(vm, v) => v,
-        _ => Value::Object(vm.alloc_ordinary()),
+        Some(v @ ValueCase::Object(_)) if is_ordinary(vm, Value::from(v)) => v,
+        _ => ValueCase::Object(vm.alloc_ordinary()),
     };
-    mark_ns(vm, target, NS_CONTEXT);
-    Ok(target)
+    mark_ns(vm, Value::from(target), NS_CONTEXT);
+    Ok(Value::from(target))
 }
 
 /// `vm.isContext(object)`：非对象 / 无 context 标记 → false（Go 实测

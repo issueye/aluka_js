@@ -402,7 +402,7 @@ fn url_format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
             href
         }
-        Some(v) => vm.format_value(v),
+        Some(v) => vm.format_value(Value::from(v)),
         None => String::new(),
     };
     Ok(Value::Object(vm.alloc_string(out)))

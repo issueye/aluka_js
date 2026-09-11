@@ -281,7 +281,7 @@ pub(crate) fn queuing_strategy_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value
     let name = pending_native_name();
     let strategy = name.rsplit('.').next().unwrap_or("");
     let init = args.first().copied().unwrap_or(Value::Undefined);
-    let hwm = match vm.get_property(init, "highWaterMark").map(|v| v.case()) {
+    let hwm = match vm.get_property(init, "highWaterMark").map(|v| v.case()).map(ValueCase::from) {
         Ok(ValueCase::Number(n)) => n,
         _ => 1.0,
     };
