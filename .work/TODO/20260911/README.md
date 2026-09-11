@@ -485,3 +485,213 @@ $ git commit -F -   # feat(m5.2): 服务端 Connection 语义——close/keep-al
 `.work/TODO/README.md` / `.work/TODO/20260911/README.md` / `docs/builtins-manifest.md`。
 
 
+
+## 9. 待办 27 · M5.2 剩余项③：`cluster` 的 `listening` / `disconnect` 事件
+
+### 9.1 开工前登记（目标 + 验收标准）
+
+| # | 目标 | 验收标准 | 证据 |
+|---|---|---|---|
+| 1 | `cluster.on('listening', (worker, info))` | 2 实参；`info` 自有键 `addressType/address/port/fd`（`fd` 恒 `undefined` 但为自有键）；`worker.state === 'listening'` | §9.4 逐字节对拍 |
+| 2 | `cluster.on('disconnect', (worker))` | **1 实参**；`state === 'disconnected'`、`isConnected() === false`、`isDead() === false`、`exitedAfterDisconnect === false`，且 worker **仍在** `cluster.workers` 表中 | 同上 |
+| 3 | `worker.state` 全生命周期 | `none → online → listening → disconnected → dead` 逐事件可取 | 同上 |
+| 4 | `'fork'` 异步化 | `fork()` 返回后的同步阶段事件计数为 0；`fork` 事件处 `state === 'none'`、`isConnected() === true`、`workers[id]` 已写入 | 同上 |
+| 5 | 事件序 | `fork → online → listening → disconnect → exit` | 同上（逐行定位断言） |
+| 6 | `listening` payload 的形态覆盖 | 显式 `127.0.0.1` / `0.0.0.0` / `::1` / 未指定 host（`address === null`）四形态均一致 | §9.4 四例对拍 |
+| 7 | 既有用例不回归 | 定向套件（`cluster` / `http` / Express / `child_process`）+ 门禁三连全绿 | §9.6 |
+
+**开工前事实**（`git show f6e6bfb` 之后的基线实测，`timeout 25`）：
+
+```
+EV fork id=1 state=undefined
+primary-fork-returned            ← fork 事件先于 "primary-fork-returned"（Node 相反）
+EV online id=1 state=undefined
+EV exit id=1 code=143 signal=null state=undefined
+```
+→ 4 项缺陷：① `fork` 同步发射；② 无 `state` 属性；③ 无 `listening`；④ 无 `disconnect`。
+
+### 9.2 Oracle 取证（先取权威语义，再动代码）
+
+**双证据**：Node v22.22.2 官方实现（`.work/scratch/m52-cluster-events/node-primary.js`
+/ `node-worker.js` / `node-child.js`）+ 本机实测 oracle。
+
+关键源码事实：
+
+| 环节 | 出处 | 语义 |
+|---|---|---|
+| `'fork'` 异步 | `primary.js:196` | `process.nextTick(emitForkNT, worker)`；`cluster.workers[id] = worker` 在**返回前**同步写入 |
+| `state` 初值 | `worker.js:26` | `this.state = options.state \|\| 'none'`；`exitedAfterDisconnect = undefined` |
+| `isConnected()` | `worker.js:55` | `return this.process.connected`——**与 `state` 无关**（故 `state='none'` 时已为 `true`） |
+| `'online'` | `primary.js:257` | `worker.state='online'` + `worker.online` + `cluster.online(worker)` |
+| `'listening'` | `primary.js:332` | `info = {addressType, address, port, fd}`；`state='listening'`；`worker.emit('listening', info)` + `cluster.emit('listening', worker, info)` |
+| `'disconnect'` | `primary.js:191-211` | `isDead()` 才移除（此刻未退 → 保留）；`exitedAfterDisconnect = !!exitedAfterDisconnect`（`undefined`→`false`）；`state='disconnected'`；`worker.emit('disconnect')`（**无实参**）+ `cluster.emit('disconnect', worker)`（**1 实参**） |
+| `'exit'` | `primary.js:170-190` | `!isConnected()` → 移除；`state='dead'`；`worker.emit('exit', code, signal)` + `cluster.emit('exit', worker, code, signal)` |
+
+**探针纪律（本轮新增两条，均来自实测踩坑）**：
+
+1. **worker 侧 `'listening'` 处理器不得同步 `close()`**：Node `internal/cluster/child.js:119`
+   有 `if (!indexes.has(indexesKey)) return;` 守卫——同步 `srv.close()` 会在内部上报
+   监听器之前清掉 index 键，**上报帧被短路**（探针必须把「关停+退出」推迟到
+   `setImmediate`）。
+2. **不依赖 primary → worker 的消息投递**：本运行时 worker 侧
+   `process.on('message')` 为空实现（已登记缺口），故探针让 worker 在自身 `'listening'`
+   后自行关停退出，避免把「已登记缺口」混进本项验收。
+
+**固化 oracle**：`.work/scratch/m52-cluster-events/probe-e.js`（3/3 稳定）
+
+```
+after-fork-sync fork-events-seen=0
+EV fork id=1 state=none connected=true dead=false exitedAfterDisconnect=undefined workers=1 in-table=true
+EV online id=1 state=online connected=true
+EV listening id=1 state=listening argc=2 connected=true workers=1
+  info.addressType=4 (typeof=number)
+  info.address=127.0.0.1
+  info.port-is-ephemeral=true
+  info.fd=undefined (typeof=undefined)
+  info-keys=addressType,address,port,fd
+EV disconnect id=1 state=disconnected argc=1 connected=false dead=false exitedAfterDisconnect=false workers=1
+EV exit id=1 code=0 signal=null state=dead dead=true workers=
+```
+
+补充形态 oracle（`probe-h.js` / `probe-h4.js` / `probe-h6.js`）：
+
+| listen 形态 | `info.addressType` | `info.address` |
+|---|---|---|
+| `listen(0, '127.0.0.1')` | 4 | `"127.0.0.1"` |
+| `listen(0)`（未指定 host） | 4 | `null` |
+| `listen(0, '0.0.0.0')` | 4 | `"0.0.0.0"` |
+| `listen(0, '::1')` | 6 | `"::1"` |
+
+（`listen(port)` 的 `address === null` 对应 Node `Server.prototype.listen` 的
+`listenInCluster(this, null, port, 4, …)` 分支。）
+
+### 9.3 实现要点
+
+- `cluster.rs`：`WorkerPhase` 扩为 `None/Online/Listening/Disconnected/Dead` 五态
+  并新增 `as_state_str()`；`set_phase(vm, …)` 同步镜像 `worker.state`；
+  `phase_connected()` 改为「通道连通性」（`None|Online|Listening` → true，
+  对齐 `process.connected` 而非 `state`）；
+- `cluster_fork`：置 `None` + `exitedAfterDisconnect: undefined`；`workers[id]`
+  仍**同步**写入；`'fork'` 改为入 `vm.nexttick_queue` 的 `cluster.__emitForkNT`
+  （待发射句柄经线程局部队列传递——nextTick 回调以 `this === undefined` 调用，
+  拿不到接收者）；
+- `dispatch_worker_frame` 新增 `"l"` 分支：构造 `info`（键序
+  `addressType/address/port/fd`，`fd` 为 `undefined` 自有键）→ `set_phase(Listening)`
+  → worker + cluster 双向 `'listening'`；
+- `emit_disconnect(vm, worker_ref)`（幂等）：`exitedAfterDisconnect = false` →
+  `state='disconnected'` → `worker 'disconnect'`（无实参）+ `cluster 'disconnect'`（1 实参），
+  **不动 `workers` 表**；
+- `worker_exit_wrapper`：先「等通道 EOF + 排空 inbox」→ `emit_disconnect` →
+  出表 → `Dead` → `close_channel` → `'exit'`；
+- `worker_notify_listening(vm, address, address_type, port)`：worker 侧在 listen
+  绑定成功点上报 `{"t":"l",…}` 帧，并尽力置 worker 侧 `cluster.worker.state='listening'`；
+  调用点两处——`net.rs::net_server_listen` 与 `http/server.rs::server_listen`
+  （Node 下 `http.Server` 继承 `net.Server`，同样经 `cluster._getServer`）。
+
+### 9.4 对拍证据（aluka vs Node 22，逐字节）
+
+**主链探针**（`probe-e.js`）：
+
+```
+$ diff <(node probe-e.js) <(aluvm run probe-e.bc)
+IDENTICAL          # 两侧退出码均为 0
+```
+
+**四形态 payload 探针**（`probe-h*.js`）：`explicit` / `wildcard` / `zero4` / `v6`
+四例 `diff` 均 `IDENTICAL`。
+
+**新增 e2e 用例** `crates/aluka-cli/tests/m52_cluster_events_test.rs`（4 例，
+`assert_e2e_matches_node` 真 Node 对拍 + 逐字段期望串防「两侧同错」）：
+
+| 用例 | 覆盖 |
+|---|---|
+| `cluster_lifecycle_events_match_node` | 完整事件链 + 事件序逐行定位 + 载荷逐字段 |
+| `cluster_listening_payload_wildcard_matches_node` | 未指定 host → `address=null`、`addressType=4` |
+| `cluster_listening_payload_zero4_matches_node` | `0.0.0.0` → `address="0.0.0.0"`、`addressType=4` |
+| `cluster_listening_payload_ipv6_matches_node` | `::1` → `addressType=6` |
+
+连跑 3 轮全绿（含并发执行下的稳定性）。
+
+### 9.5 本轮发现的真实缺陷与修复（关键）
+
+**症状**：`listening` 事件**偶发丢失**（约 1.5%，`0/25` 才可能复现一次）；一度
+误判为「primary 侧退出转接抢先 `close_channel` 丢帧」。
+
+**取证过程**（临时诊断，按 pid/角色标记后定位）：
+
+```
+[DBG][pid=13568 role=W] child_send_line FAIL (io) line={"t":"o"}
+[DBG][pid=13568 role=W] notify-listening SKIP env=Ok("1") conn=false
+[DBG][pid=6516  role=P] exit-wrapper worker=1 established=false eof=false drained=false
+```
+
+**根因**：`cluster_ipc::read_handshake` 把「`read_line` 读超时（`READ_POLL`
+= 100ms）」直接判为**非法握手**并 `continue`，此时 `stream` 被 drop → 向对端
+发 RST。对端（worker）随后的第一个 IPC 帧（`online`）即 `ECONNRESET`，`connected`
+被翻转为 false，此后**所有**帧被拒发，primary 侧整条 IPC 面静默失效。连接已建立
+而握手帧稍后才到是**正常时序**，原实现把正常时序当异常。
+
+**修复**（三处，均在 `cluster_ipc.rs`）：
+
+1. `read_handshake` 改为**带总期限（`HANDSHAKE_TIMEOUT` = 5s）的重试**，`line`
+   跨重试累积；仅 EOF / 超期 / 非超时 IO 错误才判失败；
+2. 握手阶段改用**长读超时**（5s），转入读行循环时再调回 `READ_POLL`(100ms)——
+   100ms 粒度会在对端稍慢时反复触发超时；
+3. 读行循环的 `is_closed` 判定**只在「本轮无数据可读」（读超时分支）时生效**，
+   内核缓冲区中已到达的帧一律先读净。
+
+**验证**：修复前 3/200 复现；修复后 **0/250** 复现。
+
+另配套「次序钉死」：`worker_exit_wrapper` 在发 `'disconnect'`/`'exit'` 前等本
+worker 通道 EOF（上限 300ms 兜底）并排空 inbox 在途帧——判据用
+`cluster_ipc::listener_spawned`（**不是**「曾经握手成功」）：accept 线程可能尚未
+处理完握手，据此跳过等待会把已在内核缓冲区里的帧永久搁浅。
+
+### 9.6 门禁三连（真实输出）
+
+```
+# 1. 格式化门禁
+$ CARGO_INCREMENTAL=0 cargo fmt --all --check
+FMT_CHECK_EXIT=0
+
+# 2. 严格 Clippy 门禁（零警告允许）
+$ CARGO_INCREMENTAL=0 cargo clippy --all-targets --all-features -- -D warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 36.59s
+CLIPPY_EXIT=0
+
+# 3. 全工作区全量测试门禁
+$ CARGO_INCREMENTAL=0 cargo test --workspace --all-features
+（聚合：suites=88 passed=624 failed=0 ignored=1；无 FAILED/panicked）
+TEST_EXIT=0
+```
+
+汇总（88 个 test suite）: passed=624 failed=0 ignored=1
+（上一轮 §8 为 87 suites / 611 passed / 1 ignored；本轮新增 `m52_cluster_events_test.rs`
+4 例、`builtins_phase6_proc_test.rs` 由 1 例拆为 2 例断言、其余为既有套件。）
+
+定向套件（`m52_cluster_events_test` / `m52_settings_test` / `builtins_phase6_proc_test`）
+连跑 3 轮全绿（含并发用例执行下的稳定性）。
+
+### 9.7 本轮新登记的偏离（诚实登记，不静默）
+
+1. **`Object.keys` 键序为字典序**（既有全仓偏离，本轮首次被对拍暴露）：
+   Node 按插入序，本运行时按字典序（`interpreter.rs` 的 `keys.sort()`）。
+   故 `listening` payload 只断言键**集合**（`Object.keys(info).sort()`），
+   不比较插入序。该偏离涉及解释器核心路径（影响面覆盖所有对象键枚举与
+   `JSON.stringify`），属**独立专项**，不在 M5.2 内修。
+2. **`cluster.disconnect()` 的 `exitedAfterDisconnect` 仍为 `false`**：Node 下
+   主进程发起的 `disconnect` 会把该标志置 `true`（`Worker.prototype.disconnect`）；
+   本运行时走既有 `destroy`（杀进程）路径。
+3. **worker 侧 `Worker.prototype.disconnect` / `isDisconnected` 不实现**：前者需
+   额外 `{"t":"d"}` 帧与 primary 侧 ack 回程；后者在 Node 中仅经 `deprecate()`
+   定义、并非自有属性。
+4. **`listening` 帧的 `info.address` 不做 `dns.lookup` 解析**：显式 IP 与
+   `'0.0.0.0'` / `'::1'` / 未指定 host 四形态与 Node 一致；`'localhost'` 等别名
+   不做解析（登记偏离）。
+5. **`'fork'` 异步化的连带修正**：`builtins_phase6_proc_test.rs` 原断言
+   `fork evt count: 1`（同步发射时代的产物，且该用例为 `assert_e2e_matches_go`
+   **未与 Node 对拍**）→ 按 Node 语义改为同步阶段 `0` + `nextTick` 段 `1`。
+
+### 9.8 提交证据
+
+（待回填）

@@ -226,9 +226,10 @@ fn server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     match crate::builtins::net::bind_shared_listener(&bind_host, bind_port) {
         Ok(ln) => {
             let _ = ln.set_nonblocking(true);
-            let (actual_host, actual_port) = match ln.local_addr() {
-                Ok(a) => (a.ip().to_string(), a.port()),
-                Err(_) => (host.clone(), port),
+            let bound_addr = ln.local_addr().ok();
+            let (actual_host, actual_port) = match bound_addr {
+                Some(a) => (a.ip().to_string(), a.port()),
+                None => (host.clone(), port),
             };
             with_servers(|servers| {
                 if let Some(s) = servers.iter_mut().find(|s| s.obj == r.0) {
@@ -239,6 +240,22 @@ fn server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 }
             });
             let _ = vm.set_property(receiver, "listening", Value::Boolean(true));
+            // cluster worker：向 primary 上报 listening 帧（http.Server 继承
+            // net.Server，Node 下同样经 `cluster._getServer`）。
+            crate::builtins::cluster::worker_notify_listening(
+                vm,
+                if host.is_empty() {
+                    None
+                } else {
+                    Some(host.as_str())
+                },
+                if bound_addr.map(|a| a.is_ipv4()).unwrap_or(true) {
+                    4
+                } else {
+                    6
+                },
+                actual_port,
+            );
             vm.activate_event_source("http", super::pump);
             if let Some(cb) = callback {
                 schedule_task(vm, cb, 0);

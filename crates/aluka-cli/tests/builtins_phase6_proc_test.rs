@@ -381,8 +381,9 @@ fn message_channel_and_broadcast_match_go() {
 
 /// cluster 表面 + fork：isPrimary/isMaster/isWorker、schedulingPolicy/
 /// SCHED_NONE/SCHED_RR、settings（setupMaster/setupPrimary 写入）、
-/// 'fork' 事件、Worker 包装（id/process/send/kill/isConnected/isDead）、
-/// 子进程退出后 workers 表清理 + worker 'exit'(0)（Go 包装硬编码码）、
+/// 'fork' 事件（**异步**：Node `process.nextTick(emitForkNT, worker)`，
+/// 同步阶段计数为 0）、Worker 包装（id/process/state/send/kill/isConnected/
+/// isDead）、子进程退出后 workers 表清理 + worker 'exit'(0)（Go 包装硬编码码）、
 /// disconnect 回调、Worker 构造器。子进程（引擎二进制重跑自身）的报错
 /// 只写 stderr，不影响 stdout 对拍。
 #[test]
@@ -404,7 +405,8 @@ fn cluster_surface_and_fork_matches_go() {
             "let forkEvt = 0;\n",
             "cluster.on('fork', () => { forkEvt++; });\n",
             "const w = cluster.fork();\n",
-            "console.log('fork evt count:', forkEvt, 'id:', w.id, 'proc:', typeof w.process);\n",
+            "console.log('fork evt count sync:', forkEvt, 'id:', w.id, 'proc:', typeof w.process);\n",
+            "process.nextTick(() => { console.log('fork evt count nt:', forkEvt, 'state:', w.state); });\n",
             "w.on('exit', (code) => { console.log('worker exit evt:', code, 'id-1-left:', cluster.workers['1'] === undefined); });\n",
             "console.log('workers has 1:', typeof cluster.workers['1'] === 'object');\n",
             "console.log('send/kill/conn/dead:', w.send(), w.kill(), w.isConnected(), w.isDead());\n",
@@ -419,9 +421,16 @@ fn cluster_surface_and_fork_matches_go() {
         out.contains("primary: true master: true worker: false"),
         "{out:?}"
     );
+    // M5.2 收口：`'fork'` 为**异步**事件（Node `cluster.fork()` 内
+    // `process.nextTick(emitForkNT, worker)`，实测 Node 22 同步阶段计数为 0）。
+    // 旧断言 `fork evt count: 1` 是同步发射时代的产物，按 Node 语义修正。
     assert!(
-        out.contains("fork evt count: 1 id: 1 proc: object"),
-        "{out:?}"
+        out.contains("fork evt count sync: 0 id: 1 proc: object"),
+        "fork 事件必须异步（同步阶段计数应为 0）: {out:?}"
+    );
+    assert!(
+        out.contains("fork evt count nt: 1 state: none"),
+        "nextTick 处 fork 事件已发射且 state 为 none: {out:?}"
     );
     // `w.kill()` 后 exit 事件携带**真实退出码**（M5.2 IPC 面收口：旧实现硬编码 0）。
     // 本运行时无信号语义，被杀 worker 按引擎既有约定报 1（见 `worker_threads`

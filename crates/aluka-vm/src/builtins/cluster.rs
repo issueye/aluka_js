@@ -1,7 +1,9 @@
 //! `cluster` 内置模块（Phase 6 / M5.2 IPC 面）。
 //!
 //! 语义逐字对齐 Node.js 22 LTS 规范（实测基线 v22.23.1）：
-//! - 模块对象自带事件器表面（`on/once/emit/...`，`'fork'/'online'/'exit'/'message'`）；
+//! - 模块对象自带事件器表面（`on/once/emit/...`）：`'fork'`（**异步**，
+//!   Node `process.nextTick(emitForkNT, worker)`）、`'online'`、`'listening'`、
+//!   `'disconnect'`、`'exit'`、`'message'`；
 //! - `isPrimary`/`isMaster`/`isWorker`：环境变量 `ALUKA_WORKER_ID` 标记 worker
 //!   进程（worker 进程内另有 `worker = {id, send}`）；
 //! - `workers`（id → Worker 实例）、`settings`、`schedulingPolicy`/`SCHED_NONE`(1)/`SCHED_RR`(2)；
@@ -22,6 +24,19 @@
 //!   （Node bootstrap 阶段建立通道，与是否 require 本模块无关），primary 侧
 //!   `worker.send`（写端真实可写性）、`'online'`（worker 通道建立后上报）、
 //!   `'message'`（`(worker, message, handle)` 实参序）；
+//! - **primary 侧生命周期事件（M5.2）**：`worker.state` 全生命周期可观测
+//!   （`'none'` → `'online'` → `'listening'` → `'disconnected'` → `'dead'`，
+//!   Node `internal/cluster/primary.js` + `worker.js`）——
+//!   `'fork'` 在 `fork()` 返回后经 nextTick 发射（此刻 `state='none'`、
+//!   `isConnected()===true`、`workers[id]` 已写入）；
+//!   worker 上报 listening 帧后置 `'listening'` 并派发
+//!   `cluster.emit('listening', worker, info)`（`info` 自有键序
+//!   `addressType,address,port,fd`，`fd` 恒 `undefined`）；
+//!   IPC 通道关闭（或进程退出兜底）置 `'disconnected'` 并派发
+//!   `worker.emit('disconnect')`（**无实参**）+ `cluster.emit('disconnect', worker)`
+//!   （**1 实参**），此刻 worker 仍在 `workers` 表中；
+//!   进程退出置 `'dead'` 并从 `workers` 移除，随后
+//!   `cluster.emit('exit', worker, code, signal)`；
 //! - `disconnect([callback])`：对所有 worker 调 `destroy` 后调用回调；
 //!   `Worker` 构造器返回普通对象（供 instanceof 表面）。
 //!
@@ -32,7 +47,21 @@
 //!   运行时的事件源无 unref 语义，激活会让 worker 无法自行退出），因此
 //!   worker 侧收 primary 消息（`process.on('message')` 目前亦为空实现）与
 //!   primary 侧 `disconnect()` 后 worker 内 `process.connected` 翻转均未落地；
-//! - `listening` 事件、句柄（sendHandle）传递、`serialization: 'advanced'`、
+//! - **primary 侧 `disconnect` 的触发源**：本运行时的「IPC 读线程」与「子进程
+//!   退出事件源」是两条独立通路，退出转接处先**等本 worker 通道 EOF**（上限
+//!   300ms 兜底）并排空在途帧，再按 Node 次序发 `'disconnect'` → `'exit'`；
+//!   因此 worker **自行退出**的场景与 Node 逐字段一致。主进程发起的
+//!   `cluster.disconnect()` 走既有 `destroy`（杀进程）路径，其
+//!   `exitedAfterDisconnect` 仍为 `false`（Node 为 `true`，登记偏离）；
+//! - **worker 侧 `cluster.worker.state` 的 `'disconnecting'` 中间态不实现**
+//!   （Node 仅由 `Worker.prototype.disconnect` 写入；见下条）；
+//! - worker 侧 `Worker.prototype.disconnect` / `isDisconnected` 不实现——
+//!   前者需额外 `{"t":"d"}` 帧与 primary 侧 ack 回程；后者在 Node 中仅经
+//!   `deprecate()` 定义、并非自有属性；
+//! - `listening` 帧的 `info.address`：Node 取 `dns.lookup` **解析后**的地址，
+//!   本运行时原样回传请求的 host 串（显式 IP 完全一致；`'localhost'` 等
+//!   别名不做解析，登记偏离）；未给 host 时两侧同为 `null`、`addressType` 4；
+//! - 句柄（sendHandle）传递、`serialization: 'advanced'`、
 //!   **真 round-robin 调度**（`schedulingPolicy` 恒 `SCHED_NONE`，端口由内核分发）；
 //! - **`settings.execArgv` 不生效**：Node 把 execArgv 作为 node 旗标插在脚本之前
 //!   （`node <execArgv...> <exec> <args...>`），本运行时进程形态为
@@ -59,7 +88,7 @@ use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// `require("cluster")` / `require("node:cluster")` 模块导出。
 pub const MODULE: ModuleDef = ModuleDef {
@@ -80,16 +109,34 @@ where
     CHILD_TO_WORKER.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
-/// Worker 生命周期状态（Node master 侧 `worker.state`，取值面收敛到本模块
-/// 需要判定 `isConnected()`/`isDead()` 的子集）。
+/// Worker 生命周期状态（Node master 侧 `worker.state` 的完整取值面，
+/// 见 `internal/cluster/worker.js` 的 `this.state = options.state || 'none'`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerPhase {
-    /// `'online'`：通道已建立（实测 Node 22 fork 返回时即为 online）
+    /// `'none'`：通道已建立但尚未收到 worker 的 `'online'` 上报
+    /// （实测 Node 22 `fork()` 返回时即为此态，而 `isConnected()` 已为 true）
+    None,
+    /// `'online'`：worker 上报后（`primary.js` 的 `online(worker)`）
     Online,
+    /// `'listening'`：worker 上报 listening 帧后（`primary.js` 的 `listening()`）
+    Listening,
     /// `'disconnected'`：IPC 通道已关闭但进程未退出
     Disconnected,
     /// `'dead'`：进程已退出
     Dead,
+}
+
+impl WorkerPhase {
+    /// Node master 侧 `worker.state` 的字面值。
+    fn as_state_str(self) -> &'static str {
+        match self {
+            WorkerPhase::None => "none",
+            WorkerPhase::Online => "online",
+            WorkerPhase::Listening => "listening",
+            WorkerPhase::Disconnected => "disconnected",
+            WorkerPhase::Dead => "dead",
+        }
+    }
 }
 
 // worker 对象句柄 id → 生命周期状态（`isConnected()`/`isDead()` 的真实来源）；
@@ -106,11 +153,21 @@ where
     WORKER_PHASE.with(|g| f(g.borrow_mut().get_or_insert_with(HashMap::new)))
 }
 
-/// 置某 worker 对象的状态。
-fn set_phase(worker_ref: u32, phase: WorkerPhase) {
+/// 置某 worker 对象的状态：更新内部相表并**同步镜像** `worker.state`。
+///
+/// 偏离登记：Node master 侧 `state` 是普通数据属性（构造器直接赋值），本
+/// 运行时以「写 Phase 即写属性」等价镜像——差异仅在 `worker.state = x` 的
+/// 外部直写不会回写内部相表（Node 亦不会，`state` 非访问器，故行为一致）。
+fn set_phase(vm: &mut Vm, worker_ref: u32, phase: WorkerPhase) {
     with_phase_map(|m| {
         m.insert(worker_ref, phase);
     });
+    let state_str = vm.alloc_string(phase.as_state_str().to_owned());
+    let _ = vm.set_property(
+        Value::Object(ObjectRef(worker_ref)),
+        "state",
+        Value::Object(state_str),
+    );
 }
 
 /// 读取某 worker 对象的状态（未知句柄视为未登记 → `None`）。
@@ -122,13 +179,18 @@ fn phase_of(worker_ref: u32) -> Option<WorkerPhase> {
     })
 }
 
-/// `worker.isConnected()` 的真实判定：仅 `'online'` 为 true（Node
-/// `state === 'online' || state === 'listening'`；`listening` 本模块未实现）。
+/// `worker.isConnected()` 的真实判定——Node `Worker.prototype.isConnected`
+/// 返回 `this.process.connected`（**通道连通性**，与 `state` 无关）：故
+/// `'none'`（刚 fork、通道已建）亦为 `true`，仅通道关闭/进程退出后为 `false`。
 fn phase_connected(phase: Option<WorkerPhase>) -> bool {
-    matches!(phase, Some(WorkerPhase::Online))
+    matches!(
+        phase,
+        Some(WorkerPhase::None | WorkerPhase::Online | WorkerPhase::Listening)
+    )
 }
 
-/// `worker.isDead()` 的真实判定（Node `state === 'dead'`）。
+/// `worker.isDead()` 的真实判定（Node 由 `process.exitCode/signalCode` 表达，
+/// 等价于 master 侧 `state === 'dead'`）。
 fn phase_dead(phase: Option<WorkerPhase>) -> bool {
     matches!(phase, Some(WorkerPhase::Dead))
 }
@@ -172,12 +234,22 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     let _ = vm.set_property(Value::Object(obj), "isMaster", Value::Boolean(is_primary));
     let _ = vm.set_property(Value::Object(obj), "isWorker", Value::Boolean(!is_primary));
 
-    // worker 进程内：cluster.worker = {id, send}——`send` 与 `process.send`
-    // 同一条通道（Node `cluster.worker.send === fork 侧 process.send` 语义）。
+    // worker 进程内：cluster.worker = {id, send, state, exitedAfterDisconnect}
+    // ——`send` 与 `process.send` 同一条通道（Node `cluster.worker.send ===
+    // fork 侧 process.send` 语义）；`state` 初值 `'online'`、`exitedAfterDisconnect`
+    // 初值 `undefined`（Node `internal/cluster/child.js` 的 `_setupWorker`
+    // 以 `state: 'online'` 构造 Worker）。
     if !is_primary {
         let worker_obj = vm.alloc_ordinary();
         let id: f64 = worker_id_env.parse().unwrap_or(1.0);
         let _ = vm.set_property(Value::Object(worker_obj), "id", Value::Number(id));
+        let state_str = vm.alloc_string("online".to_owned());
+        let _ = vm.set_property(Value::Object(worker_obj), "state", Value::Object(state_str));
+        let _ = vm.set_property(
+            Value::Object(worker_obj),
+            "exitedAfterDisconnect",
+            Value::Undefined,
+        );
         ns_attach(vm, worker_obj, "cluster:worker-self", &["send"]);
         let _ = vm.set_property(Value::Object(obj), "worker", Value::Object(worker_obj));
     }
@@ -217,6 +289,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "cluster", "Worker", cluster_worker_ctor);
     // 事件转接 wrapper（child 'exit' → worker + cluster 事件；消息面走 IPC 泵）。
     register_handler(registry, "cluster", "__workerExit", worker_exit_wrapper);
+    // `'fork'` 事件的 nextTick 载体（Node `primary.js` 的 `emitForkNT`）：
+    // 无接收者实参（`drain_microtasks` 以 `this === undefined` 调用），故待
+    // 发射的 worker 句柄经线程局部队列传递。
+    register_handler(registry, "cluster", "__emitForkNT", emit_fork_nt);
     // `process.send`（仅 worker 进程内挂属性，primary 侧为 undefined）：方法
     // 名经 NativeFn 全名 "process.send" 命中分派表，与是否 require cluster 无关，
     // 故在此模块（必定构建）登记。
@@ -330,17 +406,30 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // IPC 帧只带 worker id，故另存 id → 对象句柄的映射（消息/在线事件定位用）。
     register_worker_id(worker_id, worker.0);
 
-    // 生命周期状态：实测 Node 22 `cluster.fork()` 返回时 worker 已可视为 online
-    // （`isConnected() === true`），故此处直接置 Online。
-    set_phase(worker.0, WorkerPhase::Online);
+    // 生命周期状态：Node `new Worker({id, process})` → `state = 'none'`
+    // （`'online'` 由 worker 上报后置入）；`exitedAfterDisconnect` 初值 undefined
+    // （`internal/cluster/worker.js:24`）。实测 oracle：`fork` 事件处
+    // `state=none connected=true exitedAfterDisconnect=undefined`。
+    set_phase(vm, worker.0, WorkerPhase::None);
+    let _ = vm.set_property(
+        Value::Object(worker),
+        "exitedAfterDisconnect",
+        Value::Undefined,
+    );
     // child 'exit' → Worker/cluster 'exit'（携带真实退出码）；IPC 帧由事件源泵派发。
     attach_child_wrapper(vm, child_ref.0, "exit", "cluster.__workerExit")?;
     vm.activate_event_source("cluster_ipc", cluster_ipc_pump);
 
-    // workers[id] = worker；同步触发 cluster 'fork'。
+    // `workers[id] = worker` 必须**同步**写入：Node 在 `fork()` 返回前写表，
+    // 随后才 `process.nextTick(emitForkNT, worker)`（实测 oracle：
+    // `EV fork … workers=1 in-table=true`）。
     let workers_val = vm.get_property(self_val, "workers")?;
     let _ = vm.set_property(workers_val, &worker_id.to_string(), Value::Object(worker));
-    ns_emit(vm, self_val, "fork", &[Value::Object(worker)])?;
+    // `'fork'` **异步**发射（Node `primary.js:196` `process.nextTick(emitForkNT, worker)`）：
+    // 同步阶段事件计数为 0（实测 oracle `after-fork-sync fork-events-seen=0`）。
+    let nt = vm.alloc_native_fn("cluster.__emitForkNT");
+    with_pending_fork(|q| q.push_back(worker.0));
+    vm.nexttick_queue.push_back(Value::Object(nt));
     Ok(Value::Object(worker))
 }
 
@@ -356,9 +445,51 @@ fn attach_child_wrapper(
     Ok(())
 }
 
-/// child 'exit' 转接：清理 workers 表 → 置 Dead → cluster `'exit'(worker, code, null)`
-/// → worker `'exit'(code, null)`。退出码取自 child `'exit'` 事件实参（真实子进程
-/// 状态，不再是 Go 包装的硬编码 0）。
+// 待异步发射 `'fork'` 的 worker 对象句柄队列（Node `process.nextTick(emitForkNT, worker)`
+// 的等价物：nextTick 回调无接收者实参，故句柄经线程局部队列传递）。
+thread_local! {
+    static PENDING_FORK: RefCell<Option<VecDeque<u32>>> = const { RefCell::new(None) };
+}
+
+fn with_pending_fork<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut VecDeque<u32>) -> R,
+{
+    PENDING_FORK.with(|g| f(g.borrow_mut().get_or_insert_with(VecDeque::new)))
+}
+
+/// `'fork'` 的 nextTick 载体：弹出队首 worker 并派发 `cluster.emit('fork', worker)`。
+///
+/// 队列为空（外部直接调用该内部函数）时静默返回。发射前校验 worker 仍在相表中，
+/// 避免 worker 在 nextTick 之前就已退出时派发幽灵事件。
+fn emit_fork_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let Some(worker_ref) = with_pending_fork(|q| q.pop_front()) else {
+        return Ok(Value::Undefined);
+    };
+    if phase_of(worker_ref).is_none() {
+        return Ok(Value::Undefined);
+    }
+    if let Some(module_ref) = vm.builtin_registry.module("cluster") {
+        ns_emit(
+            vm,
+            Value::Object(module_ref),
+            "fork",
+            &[Value::Object(ObjectRef(worker_ref))],
+        )?;
+    }
+    Ok(Value::Undefined)
+}
+
+/// child 'exit' 转接：补发 `'disconnect'` → 清理 workers 表 → 置 Dead →
+/// cluster `'exit'(worker, code, null)` → worker `'exit'(code, null)`。
+/// 退出码取自 child `'exit'` 事件实参（真实子进程状态，不再是 Go 包装的硬编码 0）。
+///
+/// **`'disconnect'` 先于 `'exit'`**（Node：`worker.process.once('disconnect')` 排在
+/// `once('exit')` 之前，实测 oracle 同为 disconnect → exit）。本运行时的 IPC 通道
+/// EOF（读线程）与子进程退出事件是两条独立通路，故此处先等通道 EOF 并排空
+/// inbox 在途帧，再按 Node 语义走 `'disconnect'` → `'exit'`
+/// （`emit_disconnect` 对已 Disconnected/Dead 的 worker 幂等，通道先行 EOF 时
+/// 不会重复派发）。
 fn worker_exit_wrapper(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let child = current_receiver();
     let Value::Object(child_ref) = child else {
@@ -373,6 +504,22 @@ fn worker_exit_wrapper(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     let module_val = Value::Object(module_ref);
+    // 次序钉死（对齐 Node：通道 EOF 产生的 `'disconnect'` 先于 `'exit'`）：
+    // 本运行时「IPC 读线程」与「子进程退出事件源」是两条独立通路，故先等本
+    // worker 的通道 EOF（子进程已退出，通常 <1ms；上限 300ms 兜底），再把
+    // inbox 中在途帧（online/listening/message）派发干净，随后才发
+    // `'disconnect'`/`'exit'`——既保证次序，也保证 listening 帧不被 close 抢先丢弃。
+    //
+    // 判据用 `listener_spawned`（而非「是否曾握手成功」）：accept 线程可能尚未
+    // 处理完握手，此刻「尚未建立」并不代表「对端不会连接」，若据此跳过等待就会
+    // 把已在内核缓冲区里的帧永久搁浅（该 worker 已 Dead，事件源随后注销）。
+    if cluster_ipc::listener_spawned(worker_id) {
+        cluster_ipc::wait_channel_eof(worker_id, std::time::Duration::from_millis(300));
+    }
+    drain_ipc_inbox(vm)?;
+    // Node：通道已断（`!worker.isConnected()`）才移除——未断的场景（如 `silent`
+    // 无 ipc 通道）保留在表中。实测 oracle 的常规路径已断，故等价于「总是移除」。
+    emit_disconnect(vm, worker_ref)?;
     let workers_val = vm.get_property(module_val, "workers")?;
     if let Value::Object(_) = workers_val {
         vm.delete_property(workers_val, &worker_id.to_string());
@@ -380,13 +527,40 @@ fn worker_exit_wrapper(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // child 'exit'(code, signal)：code 缺失（信号终止等）时按 Node 的 null 语义
     // 传 null；signal 本运行时无法区分，恒 null。
     let code = args.first().copied().unwrap_or(Value::Null);
-    set_phase(worker_ref, WorkerPhase::Dead);
+    set_phase(vm, worker_ref, WorkerPhase::Dead);
     // IPC 通道随进程退出关闭：停掉 accept/读线程并令后续 send 返回 false。
     cluster_ipc::close_channel(worker_id);
     let worker_val = Value::Object(ObjectRef(worker_ref));
     ns_emit(vm, module_val, "exit", &[worker_val, code, Value::Null])?;
     ns_emit(vm, worker_val, "exit", &[code, Value::Null])?;
     Ok(Value::Undefined)
+}
+
+/// 派发 `'disconnect'`（Node `primary.js:191-211` 的 `worker.process.once('disconnect')`）：
+/// `exitedAfterDisconnect = !!exitedAfterDisconnect` → `state = 'disconnected'` →
+/// `worker.emit('disconnect')`（**无实参**）→ `cluster.emit('disconnect', worker)`
+/// （**1 实参**）。worker 仍在 `workers` 表中（Node：仅 `isDead()` 时才移除，
+/// 而此刻进程未退，故保留——实测 oracle `workers=1`）。
+///
+/// 幂等：已 `Disconnected`/`Dead` 的 worker 直接返回（`'disconnect'` 在 Node 为 once）。
+fn emit_disconnect(vm: &mut Vm, worker_ref: u32) -> Result<(), VmError> {
+    match phase_of(worker_ref) {
+        Some(WorkerPhase::Disconnected | WorkerPhase::Dead) | None => return Ok(()),
+        _ => {}
+    }
+    set_phase(vm, worker_ref, WorkerPhase::Disconnected);
+    // Node 在 disconnect/exit 两处都做 `= !!值` 归一：初值 undefined → false。
+    let _ = vm.set_property(
+        Value::Object(ObjectRef(worker_ref)),
+        "exitedAfterDisconnect",
+        Value::Boolean(false),
+    );
+    let worker_val = Value::Object(ObjectRef(worker_ref));
+    ns_emit(vm, worker_val, "disconnect", &[])?;
+    if let Some(module_ref) = vm.builtin_registry.module("cluster") {
+        ns_emit(vm, Value::Object(module_ref), "disconnect", &[worker_val])?;
+    }
+    Ok(())
 }
 
 /// workers 对象的键数（worker id 个数）。
@@ -743,6 +917,77 @@ pub(crate) fn worker_channel_connected() -> bool {
     cluster_ipc::child_is_connected()
 }
 
+/// 服务端 `listen` 成功后（worker 进程内）上报 `listening` 帧，并置 worker 侧
+/// `cluster.worker.state = 'listening'`。
+///
+/// Node 语义（`internal/cluster/child.js:117-127`）：`obj.once('listening')` 里
+/// 复用 queryServer 的 message（含 `address/addressType/fd`），把 `act` 改为
+/// `'listening'`、`port` 改为 `obj.address()?.port || options.port` 后发出。
+/// 本运行时在**绑定成功点**直接发出（不再依赖 worker 侧 `'listening'` 事件的
+/// 注册顺序），primary 侧据此派发 `'listening'` 事件。
+///
+/// `address` 为 `None` 表示未指定 host（Node `message.address === null`，
+/// 实测 oracle：`listen(0)` → `address=null`、`addressType=4`）。
+/// 返回是否已上报（非 worker 进程 / 无 IPC 通道 → false）。
+pub(crate) fn worker_notify_listening(
+    vm: &mut Vm,
+    address: Option<&str>,
+    address_type: u8,
+    port: u16,
+) -> bool {
+    if std::env::var_os("ALUKA_WORKER_ID").is_none() || !cluster_ipc::child_is_connected() {
+        return false;
+    }
+    let address_json = match address {
+        Some(a) => json_escape(a),
+        None => "null".to_owned(),
+    };
+    // `fd` 不入帧：Node 侧 `message.fd` 为 undefined（JSON 序列化下键缺失），
+    // primary 构造 `info` 时按语义补 `fd: undefined`。
+    let line = format!(
+        "{{\"t\":\"l\",\"addressType\":{address_type},\"address\":{address_json},\"port\":{port}}}\n"
+    );
+    if !cluster_ipc::child_send_line(&line) {
+        return false;
+    }
+    // worker 侧 `cluster.worker.state = 'listening'`（cluster 模块未被 require
+    // 时无 `cluster.worker`，Node 亦然——net.js 在 worker 内会 require cluster，
+    // 本运行时仅当用户代码 require 过才存在，故为尽力而为）。
+    if let Some(module_ref) = vm.builtin_registry.module("cluster") {
+        let module_val = Value::Object(module_ref);
+        if let Ok(worker_val) = vm.get_property(module_val, "worker") {
+            if matches!(worker_val, Value::Object(_)) {
+                if let Ok(state) = vm.get_property(worker_val, "state") {
+                    if vm.format_value(state) == "online" {
+                        let s = vm.alloc_string("listening".to_owned());
+                        let _ = vm.set_property(worker_val, "state", Value::Object(s));
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+/// 最小 JSON 字符串转义（地址串只含 IP/主机名，仍按规范处理控制字符）。
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
 /// `process.send(message[, callback])`：仅 worker 进程内存在。
 ///
 /// 通道未建立/已关闭（含写失败）返回 false；提供了回调时按 Node 语义回调
@@ -802,6 +1047,15 @@ fn set_process_connected(vm: &mut Vm, connected: bool) {
 /// IPC 事件源泵：排空 inbox 中的帧并派发事件；无存活 worker 且队列为空时注销
 /// 事件源（否则事件循环会被闲置通道一直挂住）。
 fn cluster_ipc_pump(vm: &mut Vm) -> Result<bool, VmError> {
+    let progressed = drain_ipc_inbox(vm)?;
+    if !cluster_ipc_busy() {
+        vm.deactivate_event_source("cluster_ipc");
+    }
+    Ok(progressed)
+}
+
+/// 排空 inbox 并派发全部在途帧（事件源泵与 child `'exit'` 转接共用）。
+fn drain_ipc_inbox(vm: &mut Vm) -> Result<bool, VmError> {
     let mut progressed = false;
     while let Some((key, item)) = cluster_ipc::take_incoming() {
         progressed = true;
@@ -810,12 +1064,9 @@ fn cluster_ipc_pump(vm: &mut Vm) -> Result<bool, VmError> {
             // 文档缺口说明），此处仅丢弃。
             cluster_ipc::Incoming::Line(_) if key == 0 => {}
             cluster_ipc::Incoming::Line(text) => dispatch_worker_frame(vm, key, &text)?,
-            // 通道关闭 = worker 断开（Node 'disconnected'：进程未退出仍非 dead）。
-            cluster_ipc::Incoming::Closed => mark_disconnected(key),
+            // 通道关闭 = worker 断开（Node 'disconnect'：进程未退出仍非 dead）。
+            cluster_ipc::Incoming::Closed => mark_disconnected(vm, key)?,
         }
-    }
-    if !cluster_ipc_busy() {
-        vm.deactivate_event_source("cluster_ipc");
     }
     Ok(progressed)
 }
@@ -830,17 +1081,12 @@ fn cluster_ipc_busy() -> bool {
     alive || cluster_ipc::inbox_pending()
 }
 
-/// 通道关闭：worker 仍未退出时状态回落到 `Disconnected`（已 Dead 的不动）。
-fn mark_disconnected(worker_id: u64) {
+/// 通道关闭：派发 `'disconnect'`（已 Dead/Disconnected 的幂等不动）。
+fn mark_disconnected(vm: &mut Vm, worker_id: u64) -> Result<(), VmError> {
     if let Some(worker_ref) = worker_ref_by_id(worker_id) {
-        with_phase_map(|m| {
-            if let Some(p) = m.get_mut(&worker_ref) {
-                if !matches!(p, WorkerPhase::Dead) {
-                    *p = WorkerPhase::Disconnected;
-                }
-            }
-        });
+        emit_disconnect(vm, worker_ref)?;
     }
+    Ok(())
 }
 
 /// workers 表中某 id 对应的 worker 对象句柄 id（无此 worker 返回 None）。
@@ -850,8 +1096,8 @@ fn worker_ref_by_id(worker_id: u64) -> Option<u32> {
 
 /// 派发一条 worker 帧。
 ///
-/// 帧类型（见 `cluster_ipc` 模块文档）：`o` = online、`m` = message；
-/// `l`（listening）/`e`（exitedAfterDisconnect ack）本模块未实现，丢弃。
+/// 帧类型（见 `cluster_ipc` 模块文档）：`o` = online、`m` = message、
+/// `l` = listening；`e`（exitedAfterDisconnect ack）本模块未实现，丢弃。
 fn dispatch_worker_frame(vm: &mut Vm, worker_id: u64, text: &str) -> Result<(), VmError> {
     let Some((kind, frame)) = parse_frame(vm, text)? else {
         return Ok(());
@@ -865,9 +1111,31 @@ fn dispatch_worker_frame(vm: &mut Vm, worker_id: u64, text: &str) -> Result<(), 
     };
     match kind.as_str() {
         "o" => {
-            set_phase(worker_ref, WorkerPhase::Online);
+            set_phase(vm, worker_ref, WorkerPhase::Online);
             ns_emit(vm, worker_val, "online", &[])?;
             ns_emit(vm, Value::Object(module_ref), "online", &[worker_val])?;
+        }
+        // Node `primary.js` 的 `listening(worker, message)`：payload 只取
+        // `{addressType, address, port, fd}`（**键序即插入序**，`fd` 恒
+        // `undefined` 但为自有键——实测 oracle `info-keys=addressType,address,port,fd`）。
+        "l" => {
+            let address_type = vm.get_property(frame, "addressType")?;
+            let address = vm.get_property(frame, "address")?;
+            let port = vm.get_property(frame, "port")?;
+            let info = vm.alloc_ordinary();
+            let info_val = Value::Object(info);
+            let _ = vm.set_property(info_val, "addressType", address_type);
+            let _ = vm.set_property(info_val, "address", address);
+            let _ = vm.set_property(info_val, "port", port);
+            let _ = vm.set_property(info_val, "fd", Value::Undefined);
+            set_phase(vm, worker_ref, WorkerPhase::Listening);
+            ns_emit(vm, worker_val, "listening", &[info_val])?;
+            ns_emit(
+                vm,
+                Value::Object(module_ref),
+                "listening",
+                &[worker_val, info_val],
+            )?;
         }
         // Node cluster 'message' 实参序为 (worker, message, handle)，worker 侧为
         // (message, handle)；无句柄传递故 handle 恒 undefined。

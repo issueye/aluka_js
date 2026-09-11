@@ -264,7 +264,7 @@
     worker、`postMessageToThread` 真线程分支。✅ **本轮收口**：port `ref/unref/start/hasRef`
     与 `parentPort` 方法面（Node 22 实测：ref/unref 返回 undefined、hasRef 默认 true）
     已实现并与 Node 逐字对拍；`threadId` 恒 0 的过时文件头注释已随 M5.4 轮修正。
-- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** 达成——余 RR 调度与 `listening`/`disconnect` 事件，20260911）
+- [~] **M5.2 `cluster` 进程池模型**（端口共享 + **IPC 面最小集** + **listen 失败错误载体 `Error` 化（异步派发）** + **`settings.exec/args/silent/cwd` 生效** + **服务端 `Connection: close` 语义** + **primary 侧生命周期事件（`listening`/`disconnect`/`state`/异步 `fork`）** 达成——余 RR 调度，20260911）
   - 实现 Master / Worker 进程拓扑与 IPC 通道分发套接字；⚠️ 真多进程拓扑
     （self-exe spawn + `ALUKA_WORKER_ID`）+ socket2 SO_REUSEADDR/REUSEPORT
     OS 内核分发（非 IPC 句柄传递）；⚠️ 该三项已于 20260910 收口——
@@ -283,8 +283,16 @@
     且落盘后发 FIN；其余写 `keep-alive` + `Keep-Alive: timeout=5`。副作用对齐：
     HTTP/1.0 客户端响应不写 `Content-Length`（关连接定界）。五情形原始报文 +
     连接复用两组探针与 Node 逐字节一致（详见
-    [20260911/README.md §8](./20260911/README.md)）。遗留：RR 调度、
-    `listening`/`disconnect` 事件未接线。
+    [20260911/README.md §8](./20260911/README.md)）。✅ **primary 侧生命周期事件
+    已闭环**（20260911）：`worker.state` 全生命周期（`none→online→listening→
+    disconnected→dead`）、`cluster.on('listening', (worker, info))`（2 实参 +
+    键集 `addressType/address/port/fd`）、`cluster.on('disconnect', (worker))`
+    （1 实参、仍在 `workers` 表）、`'fork'` 异步化（`nextTick`）与
+    `isConnected()` 改为通道连通性语义；四形态 listen payload（显式 IP／
+    `0.0.0.0`／`::1`／未指定 host → `address=null`）逐字节对拍一致。**顺带修复
+    `cluster_ipc` 握手读超时误判导致的偶发 IPC 面静默失效（约 1.5% 复现率 →
+    0/250）**。遗留：RR 调度；`Object.keys` 键序（字典序 vs 插入序）为独立
+    全仓专项（详见 [20260911/README.md §9](./20260911/README.md)）。
 - [x] **M5.3 `node:sqlite` 生产级支持**（✅ Node 22.23.1 实测对齐 + 真对拍闭环，20260909 round5）
   - 规范实现 `DatabaseSync` 类与 SQL 语句 `StatementSync`；⚠️ 非真预编译
     （每次执行重编译，语义等价）登记跟踪；`columns()` 对齐 Node 五键

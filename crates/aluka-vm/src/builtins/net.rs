@@ -993,6 +993,14 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
+    // 请求的 host 原样（未指定主机时为空串）——cluster listening 帧的
+    // `address` 取请求值，未指定时为 null（Node `listen(port)` 的
+    // `listenInCluster(this, null, …, 4, …)` 语义）。
+    let requested_host: Option<String> = if host.is_empty() {
+        None
+    } else {
+        Some(host.clone())
+    };
     let bind_host = if host.is_empty() {
         "0.0.0.0".to_owned()
     } else {
@@ -1020,6 +1028,20 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 }
             });
             let _ = vm.set_property(Value::Object(r), "listening", Value::Boolean(true));
+            // cluster worker：向 primary 上报 listening 帧（Node `internal/cluster/
+            // child.js` 的 `obj.once('listening')` 语义）——未指定 host 时
+            // `address` 为 null（实测 oracle：`listen(0)` → `address=null`）。
+            let addr_type = if bound.map(|a| a.is_ipv4()).unwrap_or(true) {
+                4
+            } else {
+                6
+            };
+            crate::builtins::cluster::worker_notify_listening(
+                vm,
+                requested_host.as_deref(),
+                addr_type,
+                bound.map(|a| a.port()).unwrap_or(port),
+            );
             if let Some(cb) = callback {
                 with_net(|n| {
                     n.pending.push_back(NetAction::Call {

@@ -19,7 +19,15 @@
 //!   `{"t":"d"}`（primary 发起的 disconnect）/ `{"t":"e"}`（exitedAfterDisconnect ack）；
 //! - **跨线程边界只传字符串**：VM 堆句柄不可跨线程，inbox 条目一律是
 //!   已解析前的原始行文本，由属主线程（发起 fork/连接的 VM 线程）在泵中
-//!   解析为堆值（与 `proc_common` 的 proc 事件泵同一纪律）。
+//!   解析为堆值（与 `proc_common` 的 proc 事件泵同一纪律）；
+//! - **握手容错（20260911 修复）**：`read_handshake` 对「读超时」不再判定为
+//!   非法握手，改为带总期限（`HANDSHAKE_TIMEOUT`）的重试——连接已建立但
+//!   握手帧稍后才到是正常时序，原实现会把该连接丢弃（`drop(stream)` 发 RST），
+//!   使对端第一次写即 `ECONNRESET`，整条 IPC 面静默失效（实测约 1.5% 复现率，
+//!   修复后 250 次连跑零复现）；
+//! - **关闭标记的生效时机**：读行循环只在「本轮无数据可读」（读超时）时才
+//!   响应 `is_closed`，内核缓冲区中已到达的帧一律先读净——否则父进程侧抢先
+//!   `close_channel` 会丢掉子进程退出前写出的最后一帧（listening）。
 //!
 //! 未实现（如实登记）：句柄（socket/server handle）传递（`sendHandle`）、
 //! `serialization: 'advanced'`、以及 Node 的 `NODE_HANDLE` ack 协议。
@@ -109,6 +117,46 @@ fn is_closed(key: u64) -> bool {
         .is_some_and(|s| s.contains(&key))
 }
 
+/// 已为该 worker 成功起过 IPC 监听线程的集合。
+///
+/// 退出转接处据此决定「是否等待通道 EOF」：只要监听线程起过，对端就**应该**
+/// 连接（`connect` 早于子进程业务逻辑），故等待是安全且必要的；反之上游
+/// `bind`/线程创建失败时不必付出等待代价。
+static SPAWNED: Mutex<Option<HashSet<u64>>> = Mutex::new(None);
+
+/// 该 worker 是否成功起过 IPC 监听线程。
+pub(crate) fn listener_spawned(key: u64) -> bool {
+    SPAWNED
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|s| s.contains(&key))
+}
+
+/// 阻塞等待通道 EOF（`is_closed` 置位），上限 `timeout`；返回是否已关闭。
+///
+/// 语义对齐 Node：child_process 的 ipc 通道在子进程退出时先产生 EOF
+/// （`'disconnect'`），随后才上报进程退出（`'exit'`）。本运行时这两件事是
+/// **两条独立通路**（本模块的读线程 vs. 子进程退出事件源），故在退出转接处
+/// 以短等待把次序钉死；同时保证对端**退出前写出的帧**（listening 等）已被
+/// 读线程投递——读线程在 `close_channel` 之后会从循环顶部退出，若抢先置位
+/// 会丢掉内核缓冲区里尚未读出的帧（实测可复现的偶发丢帧）。
+///
+/// 轮询粒度 1ms（读线程的 `READ_POLL` 为 100ms，但 EOF/数据到达会让阻塞
+/// 读立即返回，故实际等待通常 <1ms）。
+pub(crate) fn wait_channel_eof(key: u64, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if is_closed(key) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// 关闭一条通道：登记关闭标记并丢弃写端（读线程下一轮读超时后退出）。
 pub(crate) fn close_channel(key: u64) {
     mark_closed(key);
@@ -145,6 +193,11 @@ pub(crate) fn spawn_worker_listener(worker_id: u64) -> Option<(u16, String)> {
         .name(format!("aluka-ipc-accept-{worker_id}"))
         .spawn(move || accept_loop(listener, worker_id, &expect, owner))
         .ok()?;
+    SPAWNED
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashSet::new)
+        .insert(worker_id);
     Some((port, key))
 }
 
@@ -159,7 +212,10 @@ fn accept_loop(listener: TcpListener, worker_id: u64, key: &str, owner: ThreadId
                 if stream.set_nodelay(true).is_err() {
                     return;
                 }
-                let _ = stream.set_read_timeout(Some(READ_POLL));
+                // 握手阶段用**长超时**：超时只会让 `read_handshake` 重试，
+                // 而 100ms 的轮询粒度会在对端稍慢送出握手帧时反复触发
+                // （Windows 上超时读还可能让套接字进入不佳状态）。
+                let _ = stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT));
                 let Ok(writer) = stream.try_clone() else {
                     return;
                 };
@@ -170,6 +226,8 @@ fn accept_loop(listener: TcpListener, worker_id: u64, key: &str, owner: ThreadId
                     // 握手不符：拒绝该连接并继续等待合法连接。
                     continue;
                 }
+                // 转入读行循环：回到 100ms 轮询粒度（用于 `is_closed` 的响应性）。
+                let _ = reader.get_ref().set_read_timeout(Some(READ_POLL));
                 serve(reader, writer, worker_id, owner);
                 return;
             }
@@ -181,24 +239,41 @@ fn accept_loop(listener: TcpListener, worker_id: u64, key: &str, owner: ThreadId
     }
 }
 
+/// 握手帧读取的总期限（跨多次 `READ_POLL` 超时的重试预算）。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 读一行并校验握手帧（`{"hello":"<key>"}`）。
+///
+/// **读超时（`READ_POLL`）不等于非法握手**：accept 到 `connect` 返回之间对端
+/// 未必已把握手帧送出（两次调度之间可能超过 100ms），且一行可能跨多次 `read`
+/// 才到齐。原先「一次 `read_line` 超时即 `false`」会让 accept 线程把该连接
+/// 丢弃（`continue` 时 `stream` 被 drop → 发出 RST），对端随后的第一次写即
+/// `ECONNRESET`——实测表现为 worker 的 `online` 帧写失败、整条 IPC 面静默
+/// 失效（约 1.5% 概率的偶发缺陷）。
+///
+/// 此处改为「带总期限的重试」：`line` 跨重试累积（`read_line` 追加写入），
+/// 直到读满一行、对端 EOF 或超过 `HANDSHAKE_TIMEOUT`。
 fn read_handshake(reader: &mut BufReader<TcpStream>, key: &str) -> bool {
     let expect = format!("{{\"hello\":\"{key}\"}}");
+    let deadline = std::time::Instant::now() + HANDSHAKE_TIMEOUT;
     let mut line = String::new();
-    match reader.read_line(&mut line) {
-        // EOF：未读到握手帧
-        Ok(0) => false,
-        Ok(_) => line.trim() == expect,
-        // 非阻塞 / 超时读取：视为未握手
-        Err(e)
-            if matches!(
-                e.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-            ) =>
-        {
-            false
+    loop {
+        match reader.read_line(&mut line) {
+            // EOF：未读到握手帧
+            Ok(0) => return false,
+            Ok(_) => return line.trim() == expect,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+            }
+            Err(_) => return false,
         }
-        Err(_) => false,
     }
 }
 
@@ -222,12 +297,13 @@ fn register_writer(worker_id: u64, writer: TcpStream) {
 }
 
 /// 读行循环：一行投递一条 `Line`，EOF/错误投递 `Closed` 并结束。
+///
+/// **关闭标记只在「本轮无数据可读」时才生效**（读超时分支）：内核缓冲区里
+/// 已到达的帧一律先读净再退出——否则 `close_channel` 抢先置位时会丢掉对端
+/// 退出前写出的最后一帧（listening），这是实测可复现的偶发丢帧根因。
 fn read_lines(reader: &mut BufReader<TcpStream>, key: u64, owner: ThreadId) {
     let mut line = String::new();
     loop {
-        if is_closed(key) {
-            return;
-        }
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) => return,
@@ -243,6 +319,9 @@ fn read_lines(reader: &mut BufReader<TcpStream>, key: u64, owner: ThreadId) {
                     std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
                 ) =>
             {
+                if is_closed(key) {
+                    return;
+                }
                 continue;
             }
             Err(_) => return,
