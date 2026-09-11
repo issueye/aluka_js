@@ -1327,4 +1327,20 @@ Result: 1/1 passed, 0 invalid
 
 ### 13.5 提交证据
 
-（提交后回填）
+```text
+$ git commit -F -   # fix(compiler): 块内函数声明提升到函数作用域——修复「块内 function 不可见」引擎缺陷
+[master cc0b922] 4 files changed, 290 insertions(+), 41 deletions(-)
+ rewrite tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0001.cjs (93%)
+ create mode 100644 tests/conformance/node22/cases/gen/gen-block-fn-decl-0002.cjs
+```
+
+只暂存目标文件（`.work/scratch/`、`.workbuddy/` 未入库）。改动文件：
+`crates/aluka-compiler/src/module.rs`（修复本体）/
+`tests/conformance/node22/cases/gen/gen-block-fn-decl-0002.cjs`（新增，门禁内回归保护）/
+`tests/conformance/node22/cases/gen/deviations/gen-block-fn-decl-0001.cjs`（收窄为余差异）/
+`.work/TODO/20260911/README.md`。
+
+**⚠️ 明确未做（如实登记）**：§13.3 的「块执行前引用」精确对齐（绑定下移到块入口）
+**本轮未实施**——需要引入「块内模板队列 + 块编译序 == 收集序」机制，改动面与回归风险
+中等；当前实现方向为更宽松（提前可见）且不崩溃，故先以 deviations 用例隔离 + 文档登记，
+建议独立一轮施行。**不得**在未实施的表述中声称已对齐。
