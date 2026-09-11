@@ -73,6 +73,27 @@ impl Vm {
         self.set_global("__dirname", dirname);
     }
 
+    /// eval worker 形态的 CJS 上下文（`new Worker(src, { eval: true })`）。
+    ///
+    /// Node 22.23.1 实测口径：`__filename === '[worker eval]'`、
+    /// `__dirname === '.'`；相对 `require` 自 cwd 解析（`base_dir` 由调用方
+    /// 传入 cwd 绝对路径，`__dirname` 观察值仍为 `.`）。
+    pub fn setup_cjs_eval(&mut self, base_dir: PathBuf) {
+        self.base_dir = Some(base_dir);
+        self.entry_file = "[worker eval]".to_owned();
+        let require = self.alloc_native_fn("require");
+        self.require_fn = Some(require);
+        let exports = Value::Object(self.alloc_ordinary());
+        let module_obj = Value::Object(self.alloc_ordinary());
+        let _ = self.set_property(module_obj, "exports", exports);
+        let filename = Value::Object(self.alloc_string("[worker eval]".to_owned()));
+        let dirname = Value::Object(self.alloc_string(".".to_owned()));
+        self.set_global("exports", exports);
+        self.set_global("module", module_obj);
+        self.set_global("__filename", filename);
+        self.set_global("__dirname", dirname);
+    }
+
     /// 内置模块名 → 模块对象（`node:` 前缀剥离；M2：`fs`/`path`/`os`）。
     fn builtin_module(&self, name: &str) -> Option<Value> {
         let name = name.strip_prefix("node:").unwrap_or(name);

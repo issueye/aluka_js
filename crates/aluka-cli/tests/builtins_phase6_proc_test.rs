@@ -319,6 +319,11 @@ fn worker_message_round_trip_matches_go() {
 }
 
 /// Worker 缺文件：'error' 事件（Go loader 失败路径）+ 'exit'(1)。
+///
+/// M5.1 收口：'error' 载荷由字符串改为 **Error 对象**（`WorkerEvent::Error`
+/// 结构化为 name/message）——Node 22.23.1 实测缺文件异步路径（`./` 前缀）同为
+/// Error 对象（code MODULE_NOT_FOUND）+ exit 1，旧字符串形态才是偏离。
+/// 错误文本仍为 Go loader 失败文案（本地锚点，未与 Node 对拍）。
 #[test]
 fn worker_missing_file_emits_error_and_exit_matches_go() {
     let work = work_dir("worker_missing");
@@ -327,14 +332,14 @@ fn worker_missing_file_emits_error_and_exit_matches_go() {
         concat!(
             "const wt = require('worker_threads');\n",
             "const w = new wt.Worker('no_such_worker_file.js');\n",
-            "w.on('error', (e) => { console.log('werr fired:', typeof e); });\n",
+            "w.on('error', (e) => { console.log('werr fired:', typeof e, e instanceof Error); });\n",
             "w.on('exit', (code) => { console.log('wexit:', code); });\n",
             "console.log('after new Worker, threadId:', typeof w.threadId);\n",
         ),
     )
     .unwrap();
     let out = common::assert_e2e_matches_go(&work, "probe.js");
-    assert!(out.contains("werr fired: string"), "{out:?}");
+    assert!(out.contains("werr fired: object true"), "{out:?}");
     assert!(out.contains("wexit: 1"), "{out:?}");
 }
 

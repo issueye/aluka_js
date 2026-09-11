@@ -16,9 +16,13 @@
 //!   DataCloneError；transfer list 移交 ArrayBuffer 并 detach 源）；\n
 //! - `MessageChannel`/`MessagePort`/`BroadcastChannel`：同进程链接端口 +\n
 //!   消息缓冲（有监听器时异步派发，无监听器时可 `receiveMessageOnPort` 同步取）；\n
-//! - 已知偏离：`{eval: true}` 在字节码 VM 上不可执行（走 worker `'error'` +\n
-//!   `'exit'(1)`）；模块级 `threadId` 恒为 0（Go 同款怪癖）；`SHARE_ENV` 为\n
-//!   普通对象（VM 暂无 Symbol 堆对象）。\n
+//! - `postMessageToThread(threadId, value[, transferList][, timeout])`（M5.1）：\n
+//!   跨线程 `process.on('workerMessage')` 投递通道（**不经 parentPort**——\n
+//!   Node 22.23.1 `lib/internal/worker/messaging.js` 口径），返回 Promise；\n
+//! - `{eval: true}`：真实线程路径由装配层现场编译执行（M5.1 收口）；\n
+//! - 已知偏离：模块级 `threadId` 恒为 0 的 Go 怪癖已随真实线程路径修正；\n
+//!   `SHARE_ENV` 为普通对象（VM 暂无 Symbol 堆对象）；filename 的 URL 实例\n
+//!   形态未接受（仅字符串）。\n
 
 use crate::builtins::child_process::proc_common::{
     EMITTER_METHODS, ProcEvent, ns_attach, ns_emit, ns_listener_count, push_event,
@@ -118,6 +122,206 @@ thread_local! {
     static REAL_PP_ID: RefCell<Option<u32>> = const { RefCell::new(None) };
 }
 
+// ---------------------------------------------------------------------------
+// postMessageToThread：`process.on('workerMessage')` 跨线程投递通道（M5.1）。
+//
+// Node 22.23.1 `lib/internal/worker/messaging.js` 语义：投递**不经 parentPort**
+// ——在目标线程 `process.emit('workerMessage', value, source)`；返回 Promise
+// （resolve undefined），目标线程/监听器缺失 → ERR_WORKER_MESSAGING_FAILED，
+// 监听器抛错 → ERR_WORKER_MESSAGING_ERRORED，同线程 → ERR_WORKER_MESSAGING_
+// SAME_THREAD，超时 → ERR_WORKER_MESSAGING_TIMEOUT。本实现以路由请求 + ack
+// 回程近似 Node 的 SharedArrayBuffer 应答（结果码同款：0/1/2）。
+// ---------------------------------------------------------------------------
+
+/// `postMessageToThread` 挂起请求（等待 ack 或超时）。
+struct PendingRoute {
+    /// 成功路径 resolve 函数（PromiseResolver）
+    resolver: Value,
+    /// 失败路径 reject 函数（PromiseResolver）
+    reject: Value,
+    /// 超时定时器 id（无 timeout 参数为 None；ack 先到时据此取消）
+    timer: Option<u64>,
+}
+
+thread_local! {
+    /// 主线程侧挂起表：`(origin_tid, request_id)` → 条目。origin=0 为主线程
+    /// 自己的请求；origin=N 为 worker N 发起、经主线程中转的请求。
+    static ROUTE_PENDING_MAIN: RefCell<HashMap<(u64, u64), PendingRoute>> =
+        RefCell::new(HashMap::new());
+    /// worker 线程侧挂起表：本线程发起的请求（request_id → 条目）。
+    static ROUTE_PENDING_WORKER: RefCell<HashMap<u64, PendingRoute>> =
+        RefCell::new(HashMap::new());
+}
+
+/// 按结果码构建投递错误（Node `Error` 实例，带 `code` 自有键）。
+fn route_error(vm: &mut Vm, code: &str, message: &str) -> Value {
+    let err = vm.alloc_error_instance(message);
+    let name = vm.alloc_string("Error".to_owned());
+    let code_v = vm.alloc_string(code.to_owned());
+    let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+    let _ = vm.set_property(Value::Object(err), "code", Value::Object(code_v));
+    Value::Object(err)
+}
+
+/// Node `Received ...` 检查形态（ERR_INVALID_ARG_TYPE 文本，实测 v22.23.1）：
+/// number → `type number (42)`；string → `type string ('abc')`（带单引号）；
+/// undefined → `undefined`；null → `null`；布尔 → `type boolean (true)`；
+/// 其余对象按 format_value 回退（登记偏离：复杂对象形态不做完整 inspect 复刻）。
+fn received_inspect(vm: &Vm, v: Value) -> String {
+    match v {
+        Value::Number(_) => format!("type number ({})", vm.format_value(v)),
+        Value::Boolean(_) => format!("type boolean ({})", vm.format_value(v)),
+        Value::Undefined => "undefined".to_owned(),
+        Value::Null => "null".to_owned(),
+        Value::Object(r) => {
+            if vm.is_string_value(Value::Object(r)) {
+                format!("type string ('{}')", vm.format_value(v))
+            } else {
+                vm.format_value(v)
+            }
+        }
+    }
+}
+
+/// 投递结果码 → reject 动作（0 成功 resolve undefined；1/2 对应 Node 错误）。
+fn settle_route(vm: &mut Vm, pending: PendingRoute, result: u8) -> Result<(), VmError> {
+    if let Some(timer) = pending.timer {
+        vm.active_timers.insert(timer);
+    }
+    match result {
+        crate::worker::ROUTE_DELIVERED => {
+            vm.invoke_callable(pending.resolver, Value::Undefined, &[])?;
+        }
+        crate::worker::ROUTE_NO_LISTENERS => {
+            let reason = route_error(
+                vm,
+                "ERR_WORKER_MESSAGING_FAILED",
+                "Cannot find the destination thread or listener",
+            );
+            vm.invoke_callable(pending.reject, Value::Undefined, &[reason])?;
+        }
+        _ => {
+            let reason = route_error(
+                vm,
+                "ERR_WORKER_MESSAGING_ERRORED",
+                "The destination thread threw an error while processing the message",
+            );
+            vm.invoke_callable(pending.reject, Value::Undefined, &[reason])?;
+        }
+    }
+    Ok(())
+}
+
+/// 挂起表登记 + 超时定时器（`timeout` 参数存在时）。
+/// 定时器回调为带 `_origin`/`_request_id` 自有键的原生函数，到期时若请求
+/// 仍在表中则以 ERR_WORKER_MESSAGING_TIMEOUT 拒绝。
+fn arm_route_timeout(
+    vm: &mut Vm,
+    origin: u64,
+    request_id: u64,
+    timeout_ms: u64,
+    main_side: bool,
+) -> Result<Option<u64>, VmError> {
+    let fire = vm.alloc_native_fn("worker_threads:route_timeout.fire");
+    vm.set_native_fn_property(fire, "_origin", Value::Number(origin as f64));
+    vm.set_native_fn_property(fire, "_request_id", Value::Number(request_id as f64));
+    vm.set_native_fn_property(fire, "_main_side", Value::Boolean(main_side));
+    let id_val = crate::builtins::timers::schedule_raw(
+        vm,
+        Value::Object(fire),
+        timeout_ms,
+        crate::builtins::test::mock::FakeApi::SetTimeout,
+    )?;
+    Ok(match id_val {
+        Value::Number(n) => Some(n as u64),
+        _ => None,
+    })
+}
+
+/// 当前线程 id（主线程 0；worker 线程为分配的物理线程 id）。
+fn current_thread_id() -> u64 {
+    crate::worker::worker_thread_io()
+        .map(|io| io.thread_id)
+        .unwrap_or(0)
+}
+
+/// 当前线程是否持有真实 worker 桥（区分真实线程路径与进程内伪 worker）。
+fn has_real_workers() -> bool {
+    REAL_WORKERS.with(|m| !m.borrow().is_empty())
+}
+
+/// threadId → 主线程侧发送端（仅主线程视角可用；桥整体不可克隆，
+/// 路由只需要 `to_worker` 端）。
+fn sender_by_tid(thread_id: u64) -> Option<std::sync::mpsc::Sender<crate::worker::WorkerInbound>> {
+    let worker = with_thread_map(|m| m.get(&thread_id).copied())?;
+    REAL_WORKERS.with(|m| m.borrow().get(&worker).map(|b| b.to_worker.clone()))
+}
+
+/// 在**本线程** process 对象上投递 `workerMessage`（返回 Node 结果码）。
+/// 监听器缺失 → 1；监听器抛错 → 吞错返回 2（Node `receiveMessageFromWorker`
+/// 的 `catch {}` 口径）；成功 → 0。
+fn emit_worker_message_on_current_thread(
+    vm: &mut Vm,
+    value: Value,
+    source: u64,
+) -> Result<u8, VmError> {
+    let Some(process) = vm.process_object else {
+        return Ok(crate::worker::ROUTE_NO_LISTENERS);
+    };
+    if ns_listener_count(process.0, "workerMessage") == 0 {
+        return Ok(crate::worker::ROUTE_NO_LISTENERS);
+    }
+    match ns_emit(
+        vm,
+        Value::Object(process),
+        "workerMessage",
+        &[value, Value::Number(source as f64)],
+    ) {
+        Ok(()) => Ok(crate::worker::ROUTE_DELIVERED),
+        Err(VmError::Thrown(_)) => Ok(crate::worker::ROUTE_LISTENER_ERROR),
+        Err(e) => Err(e),
+    }
+}
+
+/// `postMessageToThread` 超时定时器回调：请求仍在挂起表 → 摘除并以
+/// ERR_WORKER_MESSAGING_TIMEOUT 拒绝（ack 已先到的请求不在表中，no-op）。
+fn wt_route_timeout_fire(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let callee = crate::builtins::pending_callee();
+    let Value::Object(r) = callee else {
+        return Ok(Value::Undefined);
+    };
+    let read_num = |key: &str| -> Option<u64> {
+        match vm.get_native_fn_property(r, key) {
+            Some(Value::Number(n)) if n >= 0.0 => Some(n as u64),
+            _ => None,
+        }
+    };
+    let (Some(request_id), origin, main_side) = (
+        read_num("_request_id"),
+        read_num("_origin"),
+        matches!(
+            vm.get_native_fn_property(r, "_main_side"),
+            Some(Value::Boolean(true))
+        ),
+    ) else {
+        return Ok(Value::Undefined);
+    };
+    let pending = if main_side {
+        ROUTE_PENDING_MAIN.with(|g| g.borrow_mut().remove(&(origin.unwrap_or(0), request_id)))
+    } else {
+        ROUTE_PENDING_WORKER.with(|g| g.borrow_mut().remove(&request_id))
+    };
+    if let Some(pending) = pending {
+        let err = route_error(
+            vm,
+            "ERR_WORKER_MESSAGING_TIMEOUT",
+            "Sending a message to another thread timed out",
+        );
+        vm.invoke_callable(pending.reject, Value::Undefined, &[err])?;
+    }
+    Ok(Value::Undefined)
+}
+
 fn with_worker_pp<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HashMap<u32, u32>) -> R,
@@ -206,6 +410,12 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "worker_threads",
         "postMessageToThread",
         wt_post_to_thread,
+    );
+    register_handler(
+        registry,
+        "worker_threads:route_timeout",
+        "fire",
+        wt_route_timeout_fire,
     );
     register_handler(
         registry,
@@ -314,11 +524,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 
 /// `new Worker(filename[, options])`。
 fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let filename = args
-        .first()
-        .map(|v| vm.format_value(*v))
-        .unwrap_or_default();
-    // options：workerData（构造期 JSON 往返）与 eval 标记。
+    // options：workerData（构造期结构化克隆往返）与 eval 标记。
     let mut worker_data: Option<Value> = None;
     let mut eval = false;
     if let Some(opts) = args.get(1).copied() {
@@ -333,6 +539,35 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
+
+    // filename 类型校验（Node 22 实测口径）：
+    // - 非字符串 + eval !== true → ERR_INVALID_ARG_TYPE（同步抛）；
+    // - 非字符串 + eval === true → ERR_INVALID_ARG_VALUE（同步抛）。
+    let raw_first = args.first().copied().unwrap_or(Value::Undefined);
+    if !vm.is_string_value(raw_first) {
+        // 命中 ARG_VALUE 分支要求 options.eval === true，故 Received 恒为 true
+        let (message, code_name) = if eval {
+            (
+                "The property 'options.eval' must be false when 'filename' is not a string. Received true".to_owned(),
+                "ERR_INVALID_ARG_VALUE",
+            )
+        } else {
+            (
+                format!(
+                    "The \"filename\" argument must be of type string or an instance of URL. Received {}",
+                    received_inspect(vm, raw_first)
+                ),
+                "ERR_INVALID_ARG_TYPE",
+            )
+        };
+        let err = vm.alloc_error_instance(&message);
+        let name = vm.alloc_string("TypeError".to_owned());
+        let code = vm.alloc_string(code_name.to_owned());
+        let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+        let _ = vm.set_property(Value::Object(err), "code", Value::Object(code));
+        return Err(VmError::Thrown(Value::Object(err)));
+    }
+    let filename = vm.format_value(raw_first);
 
     // 主线程侧 Worker 实例（事件器 + postMessage/terminate）。
     let worker = vm.alloc_ordinary();
@@ -370,8 +605,17 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         m.insert(pp.0, worker.0);
     });
 
-    if eval {
-        // 字节码 VM 无法执行 JS 源码：走 Go 的失败路径（'error' + 'exit'(1)）。
+    // 源码串提取（eval 形态：第一参数即源码）。
+    let source_text: Option<String> = match raw_first {
+        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+            Some(crate::heap::HeapObject::String(s)) => Some(s.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    if eval && vm.worker_entry.is_none() {
+        // 伪 worker（无装配钩子）无法执行 eval 源码：Go 的失败路径。
         push_event(ProcEvent::WorkerError {
             worker: worker.0,
             message: "worker: eval:true is not supported by aluka_r (bytecode VM)".to_owned(),
@@ -381,14 +625,19 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             code: 1,
         });
     } else if let Some(entry) = vm.worker_entry.clone() {
-        // M5.1 真实跨物理线程路径：装配层钩子负责编译并运行 worker 文件，
-        // 消息只以 JSON 字符串跨线程（结构化克隆的传输层近似）。
-        let abs = absolute_js_path(vm, &filename);
+        // M5.1 真实跨物理线程路径：装配层钩子负责编译并运行 worker
+        // （文件路径或 eval 源码），消息只以结构化克隆字节跨线程。
+        let source = if eval {
+            crate::worker::WorkerSource::Eval(source_text.unwrap_or_default())
+        } else {
+            let abs = absolute_js_path(vm, &filename);
+            crate::worker::WorkerSource::File(abs)
+        };
         let data_json = match worker_data {
             Some(d) => Some(value_to_json_string(vm, d)?),
             None => None,
         };
-        match entry(&abs, data_json.as_deref()) {
+        match entry(source, data_json.as_deref()) {
             Ok(bridge) => {
                 let _ = vm.set_property(
                     Value::Object(worker),
@@ -874,7 +1123,7 @@ fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             let transfer = collect_transfer_list(vm, args.get(1).copied())?;
             let bytes = crate::worker_clone::serialize(vm, msg, &transfer)?;
             let json = b64_encode(&bytes);
-            let _ = bridge.send(json);
+            let _ = bridge.send(crate::worker::WorkerInbound::PortMessage(json));
         }
         return Ok(Value::Undefined);
     }
@@ -991,27 +1240,189 @@ fn wt_receive_on_port(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
 }
 
-/// `postMessageToThread(threadId, value)`：向指定 worker 的 parentPort 投递。
+/// `postMessageToThread(threadId, value[, transferList][, timeout])`：
+/// 向指定线程的 `process.on('workerMessage')` 监听器投递（Node 22.23.1 口径，
+/// 返回 Promise；transferList 为数字时按 `timeout` 重载解释）。
 fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let (Some(thread_val), Some(msg)) = (args.first().copied(), args.get(1).copied()) else {
-        return Ok(Value::Undefined);
-    };
-    let thread_id = match thread_val {
-        Value::Number(n) => n as u64,
-        _ => 0,
-    };
-    let worker = with_thread_map(|m| m.get(&thread_id).copied());
-    if let Some(worker) = worker {
-        let pp = with_worker_pp(|m| m.get(&worker).copied());
-        if let Some(pp) = pp {
-            push_event(ProcEvent::MainToWorker { pp, msg });
-            vm.activate_event_source(
-                "proc",
-                crate::builtins::child_process::proc_common::pump_proc,
-            );
+    // 参数重载：`transferList` 为数字且 `timeout` 未传 → 数字即 timeout
+    let mut transfer_arg = args.get(2).copied();
+    let mut timeout_arg = args.get(3).copied();
+    if let Some(Value::Number(_)) = transfer_arg {
+        if timeout_arg.is_none() {
+            timeout_arg = transfer_arg.take();
         }
     }
-    Ok(Value::Undefined)
+
+    // Promise 面（校验失败也走 rejection——Node async 函数语义）
+    let promise = vm.alloc_pending_promise();
+    let resolve = Value::Object(vm.alloc_promise_resolver(promise, true));
+    let reject = Value::Object(vm.alloc_promise_resolver(promise, false));
+
+    // timeout 校验：validateNumber(timeout, 'timeout', 0)
+    if let Some(t) = timeout_arg {
+        let ok = match t {
+            Value::Number(n) if n >= 0.0 => true,
+            Value::Number(_) => false,
+            _ => false,
+        };
+        if !ok {
+            let reason = match t {
+                Value::Number(n) => {
+                    let err = vm.alloc_error_instance(&format!(
+                        "The value of \"timeout\" is out of range. It must be >= 0. Received {n}"
+                    ));
+                    let name = vm.alloc_string("RangeError".to_owned());
+                    let code = vm.alloc_string("ERR_OUT_OF_RANGE".to_owned());
+                    let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+                    let _ = vm.set_property(Value::Object(err), "code", Value::Object(code));
+                    Value::Object(err)
+                }
+                other => {
+                    let err = vm.alloc_error_instance(&format!(
+                        "The \"timeout\" argument must be of type number. Received {}",
+                        received_inspect(vm, other)
+                    ));
+                    let name = vm.alloc_string("TypeError".to_owned());
+                    let code = vm.alloc_string("ERR_INVALID_ARG_TYPE".to_owned());
+                    let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
+                    let _ = vm.set_property(Value::Object(err), "code", Value::Object(code));
+                    Value::Object(err)
+                }
+            };
+            vm.invoke_callable(reject, Value::Undefined, &[reason])?;
+            return Ok(Value::Object(promise));
+        }
+    }
+
+    let current_tid = current_thread_id();
+    // 同线程判定：仅数值与当前线程 id 相等才命中（Node `===` 语义）
+    let same_thread = matches!(args.first(), Some(Value::Number(n)) if *n as u64 == current_tid && n.fract() == 0.0);
+    if same_thread {
+        let err = route_error(
+            vm,
+            "ERR_WORKER_MESSAGING_SAME_THREAD",
+            "Cannot sent a message to the same thread",
+        );
+        vm.invoke_callable(reject, Value::Undefined, &[err])?;
+        return Ok(Value::Object(promise));
+    }
+
+    let destination = match args.first().copied() {
+        Some(Value::Number(n)) if n >= 0.0 => n as u64,
+        _ => u64::MAX, // 非数值/负数：无匹配线程 → FAILED 路径
+    };
+    let msg = args.get(1).copied().unwrap_or(Value::Undefined);
+
+    // 主线程 + 存在真实 worker 桥：直接经桥投递（destination 0 在主线程
+    // 上发起即同线程，已在上方拒绝）。
+    if current_tid == 0 && has_real_workers() {
+        if let Some(bridge) = sender_by_tid(destination) {
+            let transfer = collect_transfer_list(vm, transfer_arg)?;
+            let bytes = crate::worker_clone::serialize(vm, msg, &transfer)?;
+            let json = b64_encode(&bytes);
+            let request_id = crate::worker::next_route_request_id();
+            let timer = match timeout_arg {
+                Some(Value::Number(n)) => {
+                    arm_route_timeout(vm, 0, request_id, n.max(0.0) as u64, true)?
+                }
+                _ => None,
+            };
+            ROUTE_PENDING_MAIN.with(|g| {
+                g.borrow_mut().insert(
+                    (0, request_id),
+                    PendingRoute {
+                        resolver: resolve,
+                        reject,
+                        timer,
+                    },
+                );
+            });
+            let _ = bridge.send(crate::worker::WorkerInbound::WorkerMessage {
+                request_id,
+                source: 0,
+                json,
+            });
+            vm.activate_event_source("real_workers", pump_real_workers);
+            return Ok(Value::Object(promise));
+        }
+        // 目标线程不存在（或为伪 worker）：Node threadsPorts.get 缺失 → FAILED
+        let err = route_error(
+            vm,
+            "ERR_WORKER_MESSAGING_FAILED",
+            "Cannot find the destination thread or listener",
+        );
+        vm.invoke_callable(reject, Value::Undefined, &[err])?;
+        return Ok(Value::Object(promise));
+    }
+
+    // worker 线程发起：一律经主线程中转/投递（RouteRequest）
+    if let Some(io) = crate::worker::worker_thread_io() {
+        let transfer = collect_transfer_list(vm, transfer_arg)?;
+        let bytes = crate::worker_clone::serialize(vm, msg, &transfer)?;
+        let json = b64_encode(&bytes);
+        let request_id = crate::worker::next_route_request_id();
+        let timer = match timeout_arg {
+            Some(Value::Number(n)) => {
+                arm_route_timeout(vm, io.thread_id, request_id, n.max(0.0) as u64, false)?
+            }
+            _ => None,
+        };
+        ROUTE_PENDING_WORKER.with(|g| {
+            g.borrow_mut().insert(
+                request_id,
+                PendingRoute {
+                    resolver: resolve,
+                    reject,
+                    timer,
+                },
+            );
+        });
+        let _ = io.to_main.send(crate::worker::WorkerEvent::RouteRequest {
+            request_id,
+            source: io.thread_id,
+            destination,
+            json,
+        });
+        return Ok(Value::Object(promise));
+    }
+
+    // 伪 worker 路径（无装配钩子/非真实线程）：同 VM 内直接投递——
+    // process 'workerMessage' 监听器为共享表面，投递结果同步可得。
+    if destination == u64::MAX {
+        let err = route_error(
+            vm,
+            "ERR_WORKER_MESSAGING_FAILED",
+            "Cannot find the destination thread or listener",
+        );
+        vm.invoke_callable(reject, Value::Undefined, &[err])?;
+        return Ok(Value::Object(promise));
+    }
+    let target_known = with_thread_map(|m| m.contains_key(&destination));
+    if !target_known {
+        let err = route_error(
+            vm,
+            "ERR_WORKER_MESSAGING_FAILED",
+            "Cannot find the destination thread or listener",
+        );
+        vm.invoke_callable(reject, Value::Undefined, &[err])?;
+        return Ok(Value::Object(promise));
+    }
+    let cloned = json_roundtrip(vm, msg)?;
+    let result = emit_worker_message_on_current_thread(vm, cloned, current_tid)?;
+    let reason = route_error(
+        vm,
+        "ERR_WORKER_MESSAGING_FAILED",
+        "Cannot find the destination thread or listener",
+    );
+    match result {
+        crate::worker::ROUTE_DELIVERED => {
+            vm.invoke_callable(resolve, Value::Undefined, &[])?;
+        }
+        _ => {
+            vm.invoke_callable(reject, Value::Undefined, &[reason])?;
+        }
+    }
+    Ok(Value::Object(promise))
 }
 
 /// `moveMessagePortToContext(port)`：返回原端口（Go 同款近似）。
@@ -1077,7 +1488,8 @@ fn collect_transfer_list(vm: &mut Vm, v: Option<Value>) -> Result<Vec<Value>, Vm
 }
 
 /// 主线程侧真实 worker 泵：非阻塞收取各 worker 线程事件并派发
-/// `'message'` / `'error'` / `'exit'`（`real_workers` 事件源）。
+/// `'message'` / `'error'` / `'exit'`，处理 `postMessageToThread` 路由请求
+/// 与 ack 回程（`real_workers` 事件源）。
 fn pump_real_workers(vm: &mut Vm) -> Result<bool, VmError> {
     let mut progressed = false;
     // 先全量取走事件（borrow 不跨 VM 调用）
@@ -1101,9 +1513,65 @@ fn pump_real_workers(vm: &mut Vm) -> Result<bool, VmError> {
                     ns_emit(vm, target, "message", &[val])?;
                 }
             }
-            crate::worker::WorkerEvent::Error(text) => {
-                let msg = vm.alloc_string(text);
-                ns_emit(vm, target, "error", &[Value::Object(msg)])?;
+            crate::worker::WorkerEvent::Error { name, message } => {
+                // 主线程 'error' 收到 Error 对象（name/message 保真，对齐 Node）
+                let err = vm.alloc_error_instance(&message);
+                let name_v = vm.alloc_string(name);
+                let _ = vm.set_property(Value::Object(err), "name", Value::Object(name_v));
+                ns_emit(vm, target, "error", &[Value::Object(err)])?;
+            }
+            crate::worker::WorkerEvent::RouteRequest {
+                request_id,
+                source,
+                destination,
+                json,
+            } => {
+                // worker → 主线程（destination 0）直接投递；其余经
+                // threadsPorts 表中转到目标 worker（Node 主线程角色）。
+                if destination == 0 {
+                    let result = match json_string_to_value(vm, &json) {
+                        Ok(val) => emit_worker_message_on_current_thread(vm, val, source)?,
+                        Err(_) => crate::worker::ROUTE_LISTENER_ERROR,
+                    };
+                    if let Some(sender) = sender_by_tid(source) {
+                        let _ = sender
+                            .send(crate::worker::WorkerInbound::RouteAck { request_id, result });
+                    }
+                } else if let Some(sender) = sender_by_tid(destination) {
+                    let _ = sender.send(crate::worker::WorkerInbound::WorkerMessage {
+                        request_id,
+                        source,
+                        json,
+                    });
+                } else if let Some(sender) = sender_by_tid(source) {
+                    let _ = sender.send(crate::worker::WorkerInbound::RouteAck {
+                        request_id,
+                        result: crate::worker::ROUTE_NO_LISTENERS,
+                    });
+                }
+            }
+            crate::worker::WorkerEvent::RouteAck {
+                origin,
+                request_id,
+                result,
+            } => {
+                // 目标 worker 的投递结果：origin=0 → 主线程自己的请求结算；
+                // origin=N → 转发给发起 worker N（其挂起表按 request_id 结算）。
+                let pending =
+                    ROUTE_PENDING_MAIN.with(|g| g.borrow_mut().remove(&(origin, request_id)));
+                match pending {
+                    Some(p) => settle_route(vm, p, result)?,
+                    None => {
+                        if origin != 0 {
+                            if let Some(sender) = sender_by_tid(origin) {
+                                let _ = sender.send(crate::worker::WorkerInbound::RouteAck {
+                                    request_id,
+                                    result,
+                                });
+                            }
+                        }
+                    }
+                }
             }
             crate::worker::WorkerEvent::Exit(code) => {
                 // M5.1 修复（双发竞态）：Exit 事件必须复查存活——同批
@@ -1193,9 +1661,26 @@ pub fn run_worker_event_loop(vm: &mut Vm) -> u32 {
         }
         let _ = vm.drain_microtasks();
         flush_worker_stdout(vm);
-        // 非阻塞收取主线程消息
+        // 非阻塞收取主线程信封（parentPort 消息 / workerMessage 投递 / ack 回程）
         while let Ok(msg) = io.from_main.try_recv() {
-            deliver_main_message(vm, &msg);
+            match msg {
+                crate::worker::WorkerInbound::PortMessage(json) => {
+                    deliver_main_message(vm, &json);
+                }
+                crate::worker::WorkerInbound::WorkerMessage {
+                    request_id,
+                    source,
+                    json,
+                } => {
+                    deliver_worker_message(vm, request_id, source, &json);
+                }
+                crate::worker::WorkerInbound::RouteAck { request_id, result } => {
+                    let pending = ROUTE_PENDING_WORKER.with(|g| g.borrow_mut().remove(&request_id));
+                    if let Some(pending) = pending {
+                        let _ = settle_route(vm, pending, result);
+                    }
+                }
+            }
         }
         if io.terminate.load(std::sync::atomic::Ordering::SeqCst) {
             return 1;
@@ -1235,6 +1720,39 @@ fn deliver_main_message(vm: &mut Vm, json: &str) {
     }
 }
 
+/// worker 侧 `workerMessage` 投递（`postMessageToThread` 通道）：反序列化值，
+/// 对本线程 process 派发 `'workerMessage'(value, source)`，并把投递结果
+/// 以 ack 回送主线程（Node `receiveMessageFromWorker` 响应口径）。
+fn deliver_worker_message(vm: &mut Vm, request_id: u64, source: u64, json: &str) {
+    let result = match vm.process_object {
+        Some(process) if ns_listener_count(process.0, "workerMessage") > 0 => {
+            match json_string_to_value(vm, json) {
+                Ok(val) => {
+                    match ns_emit(
+                        vm,
+                        Value::Object(process),
+                        "workerMessage",
+                        &[val, Value::Number(source as f64)],
+                    ) {
+                        Ok(()) => crate::worker::ROUTE_DELIVERED,
+                        Err(VmError::Thrown(_)) => crate::worker::ROUTE_LISTENER_ERROR,
+                        Err(_) => crate::worker::ROUTE_LISTENER_ERROR,
+                    }
+                }
+                Err(_) => crate::worker::ROUTE_LISTENER_ERROR,
+            }
+        }
+        _ => crate::worker::ROUTE_NO_LISTENERS,
+    };
+    if let Some(io) = crate::worker::worker_thread_io() {
+        let _ = io.to_main.send(crate::worker::WorkerEvent::RouteAck {
+            origin: source,
+            request_id,
+            result,
+        });
+    }
+}
+
 /// worker 线程 stdout 刷盘：各 Vm 独立缓冲，泵间隙写真实 stdout。
 fn flush_worker_stdout(vm: &mut Vm) {
     if vm.stdout_records.is_empty() {
@@ -1249,7 +1767,8 @@ fn flush_worker_stdout(vm: &mut Vm) {
     let _ = out.flush();
 }
 
-/// GC 根快照：端口消息队列、广播队列与 worker 环境表（线程局部静态持有）。
+/// GC 根快照：端口消息队列、广播队列、worker 环境表与投递挂起表
+/// （线程局部静态持有）。
 pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
     PORT_STATES.with(|g| {
         if let Some(map) = g.borrow().as_ref() {
@@ -1265,6 +1784,18 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
             for v in map.values() {
                 out.push(*v);
             }
+        }
+    });
+    ROUTE_PENDING_MAIN.with(|g| {
+        for p in g.borrow().values() {
+            out.push(p.resolver);
+            out.push(p.reject);
+        }
+    });
+    ROUTE_PENDING_WORKER.with(|g| {
+        for p in g.borrow().values() {
+            out.push(p.resolver);
+            out.push(p.reject);
         }
     });
 }

@@ -26,6 +26,7 @@
 | 2 | 单文件验证 + 门禁三连 | `[x]` | 门禁 |
 | 3 | 提交与证据回填 | `[x]` | 证据闭环 |
 | 4 | 登记 `core.untrackedCache` 隐患与规避口径 | `[x]` | 工程流程 |
+| 5 | 待办 30 · M5.1 收尾：`postMessageToThread` 真线程分支 + eval worker（§14） | `[x]` | M5.1 |
 
 ---
 
@@ -1418,3 +1419,150 @@ $ git commit -F -   # fix(compiler): 块内函数声明提升到函数作用域�
 **本轮未实施**——需要引入「块内模板队列 + 块编译序 == 收集序」机制，改动面与回归风险
 中等；当前实现方向为更宽松（提前可见）且不崩溃，故先以 deviations 用例隔离 + 文档登记，
 建议独立一轮施行。**不得**在未实施的表述中声称已对齐。
+
+---
+
+## 14. 待办 30 · M5.1 收尾：`postMessageToThread` 真线程分支 + eval worker
+
+> 触发指令：「继续M5」。本两项 = `.work/TODO/README.md` §M5.1 登记的最后两个缺口
+>（「余 `postMessageToThread` 真线程分支、eval worker，20260910」）。
+
+### 14.1 开工前登记（目标 + 验收标准）
+
+| # | 目标 | 验收标准 | 证据 |
+|---|---|---|---|
+| 1 | `postMessageToThread` 真实线程通路（按 Node 22.23.1 实测语义） | 返回 **Promise**（resolve `undefined`）；同线程投递 reject `ERR_WORKER_MESSAGING_SAME_THREAD`；目标线程/监听器缺失 reject `ERR_WORKER_MESSAGING_FAILED`；监听器抛错 reject `ERR_WORKER_MESSAGING_ERRORED`；投递目标为**目标线程 `process.on('workerMessage', (value, source))`**（与 parentPort 无关——Node 22.23.1 `lib/internal/worker/messaging.js` 实证）；支持主→worker、worker→主（destination 0）、worker→worker（经主线程中转）三向 | §14.3/§14.4 |
+| 2 | `timeout` 参数面 | `postMessageToThread(tid, v, n)` 重载 = timeout；负数 reject `RangeError ERR_OUT_OF_RANGE`（文本 `The value of "timeout" is out of range. It must be >= 0. Received -1`）；超时未响应 reject `ERR_WORKER_MESSAGING_TIMEOUT`（`Sending a message to another thread timed out`） | §14.3/§14.4 |
+| 3 | eval worker（`new Worker(src, { eval: true })`） | 真实线程路径现场编译源码执行；`require`/`parentPort`/`workerData` 可用；`__filename === '[worker eval]'`、`__dirname === '.'`；未捕获 TypeError → 主线程 `'error'` 收到 **Error 对象**（name/message 保真）+ `'exit'(1)`；语法错误 → SyntaxError + exit 1；非字符串 filename → 同步抛 `ERR_INVALID_ARG_TYPE`（eval:true 时为 `ERR_INVALID_ARG_VALUE`） | §14.3/§14.4 |
+| 4 | 既有用例不回归 | `20-m5` / `21-m5` / `25-m5` / `26-m5` / `27-m5` 差分 + `builtins_phase6_proc_test` + 门禁三连全绿 | §14.6 |
+
+**红线**：Node 22.23.1 为唯一 Oracle（本机 PATH node 已为 v22.23.1，直接对拍）；
+错误文本逐字（含 Node 原文拼写「Cannot **sent** a message to the same thread」）；
+做不到的如实登记为偏离，不放宽断言。
+
+### 14.2 Oracle 取证（node v22.23.1，探针存 `.work/scratch/m51_finish/`）
+
+- **postMessageToThread 通道真相**（`probe_a/b` + Node 源码 `lib/internal/worker/messaging.js`）：
+  投递**不经 parentPort**——worker 启动时经 `createMainThreadPort` 向主线程注册
+  `threadsPorts` 表；投递时在目标线程 `process.emit('workerMessage', value, source)`；
+  无监听器 → `WORKER_MESSAGING_RESULT_NO_LISTENERS` → `ERR_WORKER_MESSAGING_FAILED`。
+  首版探针（向 `parentPort.on('message')` 的 worker 投递）即因此得到 FAILED——
+  修正实现方向：aluka 侧以 `process.on('workerMessage')` 为投递面。
+- **返回值与错误面**（`probe_c`）：
+  `typeof ret === 'object'`（Promise）；`postMessageToThread(0, v)`（主线程自投）→
+  `Error|ERR_WORKER_MESSAGING_SAME_THREAD|Cannot sent a message to the same thread`；
+  未知线程 → `ERR_WORKER_MESSAGING_FAILED|Cannot find the destination thread or listener`；
+  `timeout=-1` → `RangeError|ERR_OUT_OF_RANGE|The value of "timeout" is out of range. It must be >= 0. Received -1`；
+  worker 侧自投同线程 → 同 SAME_THREAD；worker→主（主无监听器）→ FAILED（「or listener」对主线程同样生效）。
+- **官方错误文本**（Node v22.23.1 `lib/internal/errors.js`）：`ERR_WORKER_MESSAGING_ERRORED`
+  = `The destination thread threw an error while processing the message`；
+  `ERR_WORKER_MESSAGING_TIMEOUT` = `Sending a message to another thread timed out`。
+- **eval worker**（`probe_e/f`）：eval 源码内 `require`/`parentPort`/`workerData` 全可用、
+  正常结束 exit 0；未捕获 `TypeError('boom-eval')` → `'error'` 收到 **TypeError 对象**
+  （`e.message === 'boom-eval'`）+ exit 1；语法错误 → SyntaxError + exit 1；
+  `__filename === '[worker eval]'`、`__dirname === '.'`；
+  `new Worker(42, {eval:true})` → 同步抛 `ERR_INVALID_ARG_VALUE|The property 'options.eval' must be false when 'filename' is not a string. Received true`；
+  `new Worker(42)`（无 eval）→ 同步抛 `ERR_INVALID_ARG_TYPE|The "filename" argument must be of type string or an instance of URL. Received type number (42)`；
+  `eval: 'yes'`（真值非 bool）不触发校验（按 eval 执行）。
+
+### 14.3 实现记录
+
+| 位置 | 内容 |
+|---|---|
+| `crates/aluka-vm/src/worker.rs` | 传输契约升级：新增 [`WorkerSource`]（File/Eval）；`WorkerInbound` 由裸 String 升级为信封枚举（PortMessage/WorkerMessage/RouteAck）；[`WorkerEvent`] 新增 RouteRequest/RouteAck，`Error(String)` 结构化为 `Error { name, message }`（主线程 `'error'` 收 Error 对象）；投递请求 id 进程级计数；结果码常量 0/1/2 对齐 Node |
+| `crates/aluka-runtime/src/lib.rs` | spawn 钩子按 [`WorkerSource`] 分派：`run_worker_file`（原路径）+ `run_worker_eval`（`parse_source("[worker eval]")` 现场编译 → verify → 独立 Vm → 事件循环）；错误发送结构化（name/message；Thrown 异常提取 name/message）；eval worker `setup_cjs_eval(cwd)` |
+| `crates/aluka-vm/src/modules.rs` | 新增 `setup_cjs_eval`：`__filename='[worker eval]'`、`__dirname='.'`、base_dir=cwd（相对 require 自 cwd 解析） |
+| `crates/aluka-vm/src/builtins/worker_threads.rs` | ① `wt_worker_ctor`：filename 类型校验（非串+eval→ERR_INVALID_ARG_VALUE「Received true」；非串无 eval→ERR_INVALID_ARG_TYPE，`Received` 文本经 `received_inspect` 复刻）；eval+钩子→Eval 源码 spawn，伪 worker 路径维持失败登记；② `wt_post_to_thread` 重写：参数重载（transferList 数字→timeout）、timeout 校验（非数值 TypeError/negative RangeError ERR_OUT_OF_RANGE）、同线程拒绝、Promise 挂起表（主线程 `(origin, request_id)` / worker 侧 request_id）、主线程直发桥、worker 侧一律 RouteRequest 经主线程中转/投递、伪 worker 路径同步投递；③ worker 事件循环处理信封（PortMessage/WorkerMessage 投递+ack/RouteAck 结算）；④ `pump_real_workers` 处理 RouteRequest（destination 0 直投 / 中转 / 缺目标回 ack）与 RouteAck（origin=0 结算 / 转发回源 worker）、Error{name,message} 对象派发；⑤ 超时定时器经 `schedule_raw`（假时钟兼容）挂原生回调（自有键携带 origin/request_id/main_side），到期摘表并拒绝 ERR_WORKER_MESSAGING_TIMEOUT；⑥ 挂起表 resolver/reject 纳入 GC 根 |
+| `crates/aluka-vm/src/builtins/timers.rs` | `schedule_raw` 提为 `pub(crate)`（timeout 定时器复用同一调度通路） |
+| `crates/aluka-vm/src/interpreter.rs` | bootstrap 补挂 `Error.prototype.constructor`（对齐 RegExp 原型同款做法；`new Error('x').constructor.name === 'Error'`） |
+
+**新增差分用例**（`tests/conformance/node22/cases/`）：`37-m5-post-to-thread.cjs`（主↔worker
+双向 + 同线程/无目标/ERRORED/negative timeout 错误面）、`38-m5-post-to-thread-relay.cjs`
+（worker→worker 经主线程中转 + 目标忙 500ms vs timeout 50ms 的真实超时到期）、
+`39-m5-eval-worker.cjs`（eval 基本面/workerData/__filename/__dirname/未捕获
+TypeError 对象/语法错误名/两类构造同步校验）。输出确定性编排：worker 侧直打、
+主线程仅 exit 汇总，规避跨线程 stdout 交错的不确定性。
+
+**登记偏离**（不放宽断言，逐项有 Node 依据）：
+1. `Error` 族子类实例 `constructor.name` 恒为 `'Error'`（全引擎共用
+   Error.prototype 单例，无 per-kind 原型树）——Node 为 `'TypeError'` 等；
+   既有引擎形态，跨 M5 范围，用例规避该键（`e.name` 逐字对拍）。
+2. 语法错误的 `'error'` 消息文本为 aluka 解析器自有（V8 文本体系不同）——
+   用例只对拍 `e.name === 'SyntaxError'` 与退出码。
+3. ack 回程以 mpsc RouteAck 近似 Node 的 SharedArrayBuffer + Atomics 应答
+   （结果码语义一致：0/1/2）。
+4. `filename` 的 URL 实例形态未接受（仅字符串）；`ERR_INVALID_ARG_TYPE` 的
+   `Received` 对复杂对象按 format_value 回退（number/boolean/undefined/null/
+   string 四类已逐字对拍）。
+5. `timeout` 到期后迟到的 ack 静默丢弃（Node 迟到通知仅触 SAB，等价无副作用）。
+
+### 14.4 差分验证
+
+M5 差分门禁 `ALUKA_CONF_FILTER=m5` → **8/8 PASS, 0 invalid**（原 5 例 + 新增
+37/38/39 三例，全部与 node v22.23.1 逐字节一致）：
+
+```text
+$env:ALUKA_CONF_FILTER="m5"; cargo test -p aluka-cli --all-features     --test conformance_node22_test -- --nocapture
+PASS 20-m5-worker-threads.cjs
+PASS 21-m5-cluster-http.cjs
+PASS 25-m5-structured-clone.cjs
+PASS 26-m5-fetch-bodyless.cjs
+PASS 27-m5-worker-timer.cjs
+PASS 37-m5-post-to-thread.cjs
+PASS 38-m5-post-to-thread-relay.cjs
+PASS 39-m5-eval-worker.cjs
+----------------------------------------
+Result: 8/8 passed, 0 invalid
+```
+
+三例覆盖面（判定口径 = stdout 与 node v22.23.1 逐字节一致）：
+- **37**：主→worker 投递（worker 打印 `value + source`）；worker→主投递
+  （resolve undefined）；监听器抛错 → `ERR_WORKER_MESSAGING_ERRORED`（主线程
+  log 数组捕获到 `boom` 投递 + worker 侧 ack 文本双侧一致）；同线程（worker 自投）
+  → `ERR_WORKER_MESSAGING_SAME_THREAD`（Node 原文拼写「Cannot sent …」）；无目标
+  → `ERR_WORKER_MESSAGING_FAILED`；`timeout=-1` → `RangeError ERR_OUT_OF_RANGE`
+  逐字（含 `Received -1`）；主线程 log 顺序与 exit 码。
+- **38**：worker→worker 经主线程中转（`B got: {"kind":"hello-b"}` + ack resolve）；
+  真实超时到期（目标忙 500ms，timeout 50ms）→ `ERR_WORKER_MESSAGING_TIMEOUT`
+  逐字；terminate 收尾 exit 1。
+- **39**：eval worker 现场编译执行、`workerData.n*2`、`__filename === '[worker
+  eval]'`、`__dirname === '.'`；未捕获 `TypeError('boom-eval')` → `'error'` 收
+  Error 对象（`instanceof Error === true` + name/message）+ exit 1；语法错误 →
+  `SyntaxError` + exit 1；`new Worker(42, {eval:true})` 同步抛
+  `ERR_INVALID_ARG_VALUE`（含 `Received true`）；`new Worker(42)` 同步抛
+  `ERR_INVALID_ARG_TYPE`（含 `Received type number (42)`）。
+
+**锚点用例同步复核**（红线要求）：`builtins_phase6_proc_test.rs` 的
+`worker_missing_file_emits_error_and_exit_matches_go`——'error' 载荷由字符串改为
+Error 对象，断言同步更新为 `werr fired: object true`。Node 依据：缺文件异步路径
+（`./` 前缀）Node 实测同为 Error 对象（code `MODULE_NOT_FOUND`）+ exit 1，旧字符串
+形态才是历史偏离；错误文本仍为 Go loader 文案（该用例为显式本地锚点）。**新增偏离
+登记**：Node 对裸相对名（无 `./` 前缀）**同步抛** `ERR_WORKER_PATH`（v22.23.1 实测
+`The worker script or module filename must be an absolute path or a relative path
+starting with './' or '../'`），aluka 按 Go 口径接受裸相对名——既有本地锚点行为，
+未在本轮改收窄。
+
+### 14.5 门禁
+
+```text
+$ cargo fmt --all --check
+（无输出，通过）
+
+$ cargo clippy --all-targets --all-features -- -D warnings
+    Finished `dev` profile [...]
+（0 error；各 crate 的「generated 1 warning」均为增量缓存 hard-link 环境提示，
+ 非代码警告，全仓既有）
+
+$ cargo test --workspace --all-features
+passed: 632, failed: 0（与 §13.4 基线 632 持平；新增 conformance 用例聚合在
+ conformance_node22_test 单个 #[test] 内）
+```
+
+**首轮全量曾 1 失败**：`worker_missing_file_emits_error_and_exit_matches_go`
+（'error' 载荷字符串 → Error 对象的形态变更）——按红线复核：Node 缺文件异步
+路径实测同为 Error 对象 + exit 1（§14.4 锚点同步复核），断言更新后复跑全量
+632/0。
+
+### 14.6 提交证据
+
+（实施后回填）

@@ -386,14 +386,14 @@ static WORKER_THREAD_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::
 /// 独立 `Vm`（独立堆 + 线程局部内置表），跨线程只传 JSON 字符串。
 pub fn install_worker_entry(vm: &mut Vm) {
     vm.set_worker_entry(std::sync::Arc::new(
-        |js_path: &str, worker_data: Option<&str>| {
+        |source: aluka_vm::worker::WorkerSource, worker_data: Option<&str>| {
             let thread_id =
                 WORKER_THREAD_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let (to_worker_tx, to_worker_rx) = std::sync::mpsc::channel::<String>();
+            let (to_worker_tx, to_worker_rx) =
+                std::sync::mpsc::channel::<aluka_vm::worker::WorkerInbound>();
             let (from_worker_tx, from_worker_rx) = std::sync::mpsc::channel();
             let terminate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-            let path = js_path.to_owned();
             let data = worker_data.map(str::to_owned);
             let t_terminate = terminate.clone();
             let handle = std::thread::Builder::new()
@@ -406,7 +406,10 @@ pub fn install_worker_entry(vm: &mut Vm) {
                         from_main: to_worker_rx,
                         terminate: t_terminate,
                     };
-                    let code = run_worker_file(&path, io);
+                    let code = match source {
+                        aluka_vm::worker::WorkerSource::File(path) => run_worker_file(&path, io),
+                        aluka_vm::worker::WorkerSource::Eval(src) => run_worker_eval(&src, io),
+                    };
                     // 退出码后送（Sender 克隆保属主端存活；Receiver 端在桥上）
                     let _ = from_worker_tx.send(aluka_vm::worker::WorkerEvent::Exit(code));
                 });
@@ -440,11 +443,34 @@ fn resolve_worker_input(path: &str) -> String {
     path.to_owned()
 }
 
+/// 结构化错误事件载荷（主线程 `'error'` 收到 Error 对象的 name/message 面）。
+fn worker_error(name: &str, message: String) -> aluka_vm::worker::WorkerEvent {
+    aluka_vm::worker::WorkerEvent::Error {
+        name: name.to_owned(),
+        message,
+    }
+}
+
+/// 从抛出的异常值提取 `name`/`message`（缺省回退：name=Error，message=值格式化）。
+fn exc_name_message(vm: &mut aluka_vm::interpreter::Vm, exc: aluka_vm::Value) -> (String, String) {
+    let name = vm
+        .get_property(exc, "name")
+        .ok()
+        .filter(|v| !matches!(v, aluka_vm::Value::Undefined))
+        .map(|v| vm.format_value(v))
+        .unwrap_or_else(|| "Error".to_owned());
+    let message = vm
+        .get_property(exc, "message")
+        .ok()
+        .filter(|v| !matches!(v, aluka_vm::Value::Undefined))
+        .map(|v| vm.format_value(v))
+        .unwrap_or_else(|| vm.format_value(exc));
+    (name, message)
+}
+
 /// worker 线程主体：登记线程 I/O 束 → 加载 worker（字节码容器或源码编译）
 /// → 独立 Vm 执行 → 事件循环泵至退出。返回退出码（0 正常；1 异常 / 终止）。
 fn run_worker_file(path: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
-    use aluka_vm::worker::WorkerEvent;
-
     // 线程角色登记：此后本线程 `worker_thread_io()` 可用
     aluka_vm::worker::set_worker_thread_io(io);
     let io = aluka_vm::worker::worker_thread_io().expect("上方刚登记");
@@ -458,18 +484,20 @@ fn run_worker_file(path: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
         let data = match std::fs::read(input_path) {
             Ok(d) => d,
             Err(err) => {
-                let _ = io.to_main.send(WorkerEvent::Error(format!(
-                    "worker: 无法读取 {input}: {err}"
-                )));
+                let _ = io.to_main.send(worker_error(
+                    "Error",
+                    format!("worker: 无法读取 {input}: {err}"),
+                ));
                 return 1;
             }
         };
         match aluka_bytecode::BytecodeModule::load_any_container(&data) {
             Ok((module, range)) => (module, Some(data[range].to_vec())),
             Err(err) => {
-                let _ = io.to_main.send(WorkerEvent::Error(format!(
-                    "worker: 反序列化 {input} 失败: {err}"
-                )));
+                let _ = io.to_main.send(worker_error(
+                    "Error",
+                    format!("worker: 反序列化 {input} 失败: {err}"),
+                ));
                 return 1;
             }
         }
@@ -482,27 +510,30 @@ fn run_worker_file(path: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
         let mut unit = match LanguageRegistry::global().parse_file(&input, module_kind) {
             Ok(unit) => unit,
             Err(e) => {
-                let _ = io
-                    .to_main
-                    .send(WorkerEvent::Error(format!("worker: 无法读取 {input}: {e}")));
+                let _ = io.to_main.send(worker_error(
+                    "Error",
+                    format!("worker: 无法读取 {input}: {e}"),
+                ));
                 return 1;
             }
         };
         match compile_source_unit(&mut unit) {
             Ok(m) => (m, None),
             Err(e) => {
-                let _ = io
-                    .to_main
-                    .send(WorkerEvent::Error(format!("worker: 编译失败: {e}")));
+                let _ = io.to_main.send(worker_error(
+                    "SyntaxError",
+                    format!("worker: 编译失败: {e}"),
+                ));
                 return 1;
             }
         }
     };
     let (module, payload) = module_and_payload;
     if let Err(e) = module.verify() {
-        let _ = io
-            .to_main
-            .send(WorkerEvent::Error(format!("worker: 字节码校验失败: {e}")));
+        let _ = io.to_main.send(worker_error(
+            "Error",
+            format!("worker: 字节码校验失败: {e}"),
+        ));
         return 1;
     }
 
@@ -514,9 +545,10 @@ fn run_worker_file(path: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
 
     if let Some(payload) = payload {
         if let Err(err) = vm.load_module(&payload, &module) {
-            let _ = io.to_main.send(WorkerEvent::Error(format!(
-                "worker: functions 标量头不完整: {err}"
-            )));
+            let _ = io.to_main.send(worker_error(
+                "Error",
+                format!("worker: functions 标量头不完整: {err}"),
+            ));
             return 1;
         }
     }
@@ -524,8 +556,57 @@ fn run_worker_file(path: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
     match vm.run_module(&module) {
         Ok(_) => aluka_vm::builtins::worker_threads::run_worker_event_loop(&mut vm),
         Err(VmError::Thrown(exc)) => {
-            let text = format_uncaught_with_vm(&mut vm, exc, input_path);
-            let _ = io.to_main.send(WorkerEvent::Error(text));
+            // 主线程 'error' 收到 Error 对象（name/message 保真，对齐 Node）
+            let (name, message) = exc_name_message(&mut vm, exc);
+            let _ = io.to_main.send(worker_error(&name, message));
+            1
+        }
+        Err(_) => 1,
+    }
+}
+
+/// eval worker 线程主体（`new Worker(src, { eval: true })`）：源码现场编译
+/// → 独立 Vm 执行 → 事件循环泵至退出。Node 22 实测口径：`__filename ===
+/// '[worker eval]'`、`__dirname === '.'`，相对 `require` 自 cwd 解析。
+fn run_worker_eval(src: &str, io: aluka_vm::worker::WorkerThreadIo) -> u32 {
+    // 线程角色登记：此后本线程 `worker_thread_io()` 可用
+    aluka_vm::worker::set_worker_thread_io(io);
+    let io = aluka_vm::worker::worker_thread_io().expect("上方刚登记");
+
+    let mut unit =
+        match LanguageRegistry::global().parse_source(src, "[worker eval]", ModuleKind::Script) {
+            Ok(unit) => unit,
+            Err(e) => {
+                let _ = io.to_main.send(worker_error("SyntaxError", e.to_string()));
+                return 1;
+            }
+        };
+    let module = match compile_source_unit(&mut unit) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = io.to_main.send(worker_error("SyntaxError", e.to_string()));
+            return 1;
+        }
+    };
+    if let Err(e) = module.verify() {
+        let _ = io.to_main.send(worker_error(
+            "Error",
+            format!("worker: 字节码校验失败: {e}"),
+        ));
+        return 1;
+    }
+
+    let mut vm = Vm::new(0);
+    install_eval_provider(&mut vm);
+    aluka_vm::builtins::worker_threads::setup_worker_globals(&mut vm);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    vm.setup_cjs_eval(cwd);
+
+    match vm.run_module(&module) {
+        Ok(_) => aluka_vm::builtins::worker_threads::run_worker_event_loop(&mut vm),
+        Err(VmError::Thrown(exc)) => {
+            let (name, message) = exc_name_message(&mut vm, exc);
+            let _ = io.to_main.send(worker_error(&name, message));
             1
         }
         Err(_) => 1,

@@ -227,7 +227,14 @@ fn schedule_timer(vm: &mut Vm, args: &[Value], api: mock::FakeApi) -> Result<Val
 /// **假时钟先行拦截**（M5.4 切片二）：`mock.timers.enable({apis})` 覆盖该 api 时，
 /// 定时器只登记进假时钟队列，**不写 `macro_tasks`**——既不真调度、也不走
 /// `wait_until_due` 的真 `sleep`；`None` 时保持原有真实定时器行为。
-fn schedule_raw(vm: &mut Vm, cb: Value, delay: u64, api: mock::FakeApi) -> Result<Value, VmError> {
+/// crate 内复用：`worker_threads.postMessageToThread` 的 timeout 定时器
+/// 走同一调度通路（假时钟拦截 + 真实宏任务登记）。
+pub(crate) fn schedule_raw(
+    vm: &mut Vm,
+    cb: Value,
+    delay: u64,
+    api: mock::FakeApi,
+) -> Result<Value, VmError> {
     if let Some(id) = mock::fake_schedule(cb, delay, api) {
         return Ok(id);
     }

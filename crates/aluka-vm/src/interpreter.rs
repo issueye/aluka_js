@@ -431,6 +431,11 @@ impl Vm {
         let err_proto = vm.alloc_ordinary_with_proto(obj_proto);
         vm.error_prototype = Some(err_proto);
         vm.error_ctor = Some(vm.alloc_native_ctor("Error", Some(err_proto)));
+        // Error.prototype.constructor 挂接（对齐 RegExp 原型同款做法）：
+        // `new Error('x').constructor.name === 'Error'`（Node 口径）
+        if let Some(ctor) = vm.error_ctor {
+            let _ = vm.set_property(Value::Object(err_proto), "constructor", Value::Object(ctor));
+        }
         vm.array_ctor = Some(vm.alloc_native_ctor("Array", vm.array_prototype));
         vm.object_ctor = Some(vm.alloc_native_ctor("Object", obj_proto));
         // RegExp 构造器与原型：字面量 RegExp 对象的 source/flags/lastIndex/
