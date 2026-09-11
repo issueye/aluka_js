@@ -368,7 +368,7 @@
     Node 22.23.1 **逐字一致**）+ 既有 4 用例断言更新；裸名 `require('sqlite')`
     可用（剥前缀折衷已登记）。**遗留**：ctor options、真预编译句柄语义、
     wrapper 事务的 isTransaction 同步。
-- [~] **M5.4 `node:test` 进阶测试套件**（切片一（模块形态 / 函数属性 / CLI 运行器）与切片二（Timer Mock）均已落地，20260910；余 LCOV 与真 Transform 报告器）
+- [~] **M5.4 `node:test` 进阶测试套件**（切片一（模块形态 / 函数属性 / CLI 运行器）与切片二（Timer Mock）均已落地，20260910；✅ 真 `stream.Transform` 报告器已闭环（20260911 待办 32，`run().compose(reporter).pipe(dest)` 可用，见 [20260911/README.md §16](./20260911/README.md)）；余 LCOV 覆盖率）
   - ✅ **切片一（20260910，证据见 `20260910/README.md` 待办 24 + `crates/aluka-cli/tests/test_runner_cli_test.rs` 6 例）**：
     `it`/`test`/`describe`/`suite` 的 `skip`/`todo`/`only` **函数属性形态**；
     **`require('node:test')` 的导出值改为可调用的 `test` 函数**（Node 22 实测口径：
@@ -378,7 +378,14 @@
     有回调执行但 `fail` 不计入；CLI **`aluka test [--test-reporter=<spec|tap|dot>] [目标...]`**
     （目录递归发现、忽略 `node_modules`、每文件独立 Runtime、失败退码 1）把报告器纯函数
     接到生产路径。**报告格式沿用本仓 Go CLI 契约，不声称与 `node --test` reporter 逐字一致。**
-  - ❌ **仍未闭环**：LCOV 覆盖率（成本已量化——需 AST 位置 → 编译期行号表 → VM 逐行计数 → LCOV 生成四层改造，见 `20260910/README.md` 待办 25）、报告器流非真 `stream.Transform`（`run().compose(spec)` 不可用）。
+  - ❌ **仍未闭环**：LCOV 覆盖率（成本已量化——需 AST 位置 → 编译期行号表 → VM 逐行计数 → LCOV 生成四层改造，见 `20260910/README.md` 待办 25）。
+    ✅ **真 `stream.Transform` 报告器已闭环**（20260911 待办 32）：`stream.Transform`
+    原生构造器（真 prototype 链，`instanceof` 成立）；报告器实例升级为 Transform
+    实例（`SpecReporter` 等构造名 + `writableObjectMode` + 导出名怪癖对齐 Node 实测）；
+    **`run().compose(reporter).pipe(process.stdout)` 可用**（tap：`TAP version 13` 头 +
+    `ok N - name` + YAML 块 + `1..N` + `# tests` 汇总；spec/dot 同理），事件增量格式化、
+    pipe 直通/补冲；输出文本沿用本仓报告契约（不与 `node --test` reporter 逐字——
+    既定口径），tap/dot/junit 工厂 `new` 不复刻 Node 的 TypeError 怪癖（登记）。
   - 支持并发测试执行（`concurrency` 选项）；✅ 单线程 async 交错（与 Node
     协作式并发语义一致），phase8 e2e 绿；
   - 支持函数/方法 Mock、Timer Mock 推进；✅ Mock 族（fn/method/getter/

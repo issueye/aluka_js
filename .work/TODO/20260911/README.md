@@ -1719,5 +1719,8 @@ $ ALUKA_CONF_FILTER=m5 …conformance_node22_test
     → 8/8 passed, 0 invalid（既有 M5 差分无回归）
 ```
 
+**提交**：`9f2618c`（feat(test) 6 files, +846/−50；总表 M5.4 行同步随下一
+docs 提交入库）。
+
 **锚点复核**：phase8 `test_reporters_surface_e2e_matches_go`（Go 契约锚点）绿——
 `d.pipe(d) === d` 在 pipe 返回 destination 的新语义下依然成立。
