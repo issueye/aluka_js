@@ -694,4 +694,18 @@ TEST_EXIT=0
 
 ### 9.8 提交证据
 
-（待回填）
+```
+$ git commit -F -   # feat(m5.2): cluster primary 侧生命周期事件——listening/disconnect、worker.state 与异步 fork
+[master eb004f3] 9 files changed, 967 insertions(+), 70 deletions(-)
+ create mode 100644 crates/aluka-cli/tests/m52_cluster_events_test.rs
+```
+
+只暂存目标文件（`.work/scratch/m52-cluster-events/`、`.workbuddy/` 未入库）。
+改动文件：`cluster.rs` / `cluster_ipc.rs` / `net.rs` / `http/server.rs` /
+`m52_cluster_events_test.rs`（新增）/ `builtins_phase6_proc_test.rs`（旧断言按
+Node 语义修正）/ `.work/TODO/README.md` / `.work/TODO/20260911/README.md` /
+`docs/builtins-manifest.md`。
+
+**提交后剩余 M5.2 缺口**：真 round-robin 调度（`schedulingPolicy` 恒
+`SCHED_NONE`）；worker 侧 `process.on('message')` 接收面（worker 不激活 IPC
+事件源，见模块文档缺口段）。
