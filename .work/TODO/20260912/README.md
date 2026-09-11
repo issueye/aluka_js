@@ -237,3 +237,29 @@ $ cargo run --release -p aluka-cli --example fib_bench
 多态桩（2~4 shape 计数数组，现直接映射互挤已保证正确性仅损多态站点吞吐）；
 JIT 全指令流扩容（调用/闭包/生成器/Try——调用约定与 GC 栈映射协同），
 完成后复核 M6.2「≥1.5x」吞吐复合验收。
+
+## 10. M6.3：1.5x 吞吐复合验收复核（切片二后检查点）
+
+### 10.1 复测数据（真实输出）
+
+```text
+$ cargo run --release -p aluka-cli --example gcpressure
+    → 1.31x（≤3.0x 验收线）PASS（前次 1.25x，运行间波动内一致）
+$ cargo run --release -p aluka-cli --example fib_bench（连续复测）
+    → 793.5ms（静默窗口，切片二后）；gcpressure 高负载后同机复测
+      906/888/871ms——负载热噪声显著，跨窗口绝对值不可比，
+      验收以「同静默窗口配对」为准：master 840.4ms vs 切片二 793.5ms
+```
+
+### 10.2 复核结论（如实）
+
+- 当前累计加速 **1.059x**（840.4 → 793.5），**1.5x 复合验收未达成**；
+- 分解：NaN-box 表示单项 ≈1.02x + 读取 IC ≈1.014x + 写/方法 IC ≈1.024x；
+  fib(30) 负载的调用/压栈占比高，而调用族（CallMethod 2000 行内建分派链、
+  New、MakeClosure）与 Try/生成器仍在 JIT 编译期拒绝——提速空间被拒之门外；
+- **切片三（JIT 扩容前置）已定性**：把 Op::CallMethod 的内联内建分派链
+  提取为 `Vm::call_method_dispatch` 可复用入口（Op::CallMethod 与 JIT
+  helper 共用，消除「helper 走通用路径 ≠ 内联分派」的语义鸿沟），随后
+  JIT 侧接入调用族 helper；生成器（Yield/Await）与 Try 族需独立的
+  展开协议（栈映射与 try_stack 协同）——两项均为多日专项，按总表登记
+  于后续轮次，不在本窗口内声称完成。
