@@ -16,7 +16,7 @@ use crate::builtins::buffer::{create_buffer_instance, extract_bytes};
 use crate::builtins::register_handler;
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -73,8 +73,8 @@ fn get_key(r: ObjectRef) -> Option<KeyEntry> {
 /// 读取对象字符串属性（缺失返回 `None`）。
 fn get_string_prop(vm: &mut Vm, r: ObjectRef, key: &str) -> Option<String> {
     match vm.get_property(Value::Object(r), key) {
-        Ok(v) => match v {
-            Value::Object(s) => match vm.heap.get(s.index()) {
+        Ok(v) => match v.case() {
+            ValueCase::Object(s) => match vm.heap.get(s.index()) {
                 Some(HeapObject::String(text)) => Some(text.clone()),
                 _ => None,
             },
@@ -113,7 +113,7 @@ fn x509_certificate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     // 字符串 → PEM 解码；Buffer 实例 → DER（对齐 Go：先试 PEM，失败按
     // Buffer 处理仅在非字符串时发生）
-    let is_string = matches!(arg, Value::Object(r) if matches!(
+    let is_string = matches!(arg.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::String(_))
     ));
@@ -241,7 +241,7 @@ fn keys_equal(a: (&[u8], u64), b: (&[u8], u64)) -> bool {
 
 /// 从 JS 值解析密钥公开参数（KeyObject 登记 / `__alukaKeyPEM` / PEM 文本）。
 fn key_info_from_arg(vm: &mut Vm, v: Value) -> Option<KeyEntry> {
-    if let Some(r) = v.as_object {
+    if let Some(r) = v.as_object() {
         if let Some(entry) = get_key(r) {
             return Some(entry);
         }
@@ -276,7 +276,7 @@ fn key_info_from_arg(vm: &mut Vm, v: Value) -> Option<KeyEntry> {
 
 /// 实例 `toString()`：原始 PEM。
 fn instance_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let Some(cert) = get_cert(r) else {
@@ -289,7 +289,7 @@ fn instance_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 实例 `checkHost(host)`：精确 DNS → 通配符 DNS → IP；不匹配返回 undefined。
 fn instance_check_host(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let Some(cert) = get_cert(r) else {
@@ -327,13 +327,13 @@ fn instance_check_host(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 实例 `checkIssued(other)`：issuer DN 与 other.subject DN 串一致（对齐 Go 简化）。
 fn instance_check_issued(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let Some(cert) = get_cert(r) else {
         return Ok(Value::Undefined);
     };
-    let Some(other) = args.first().copied().as_object() else {
+    let Some(other) = args.first().copied().and_then(|v| v.as_object()) else {
         return Ok(Value::Boolean(false));
     };
     let Some(other_cert) = get_cert(other) else {
@@ -344,7 +344,7 @@ fn instance_check_issued(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
 
 /// 实例 `checkPrivateKey(key)`：私钥公开参数与证书公钥匹配。
 fn instance_check_private_key(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let Some(cert) = get_cert(r) else {
@@ -364,7 +364,7 @@ fn instance_check_private_key(vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
 
 /// 实例 `verify(publicKey)`：给定公钥（或私钥）参数与证书公钥匹配。
 fn instance_verify(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let Some(cert) = get_cert(r) else {
@@ -384,7 +384,7 @@ fn instance_verify(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 实例 `toLegacyObject()`：对象形式（Node 结构；时间串为 UTC 后缀）。
 fn instance_to_legacy_object(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let Some(cert) = get_cert(r) else {

@@ -28,7 +28,7 @@ use crate::builtins::dns_resolver::{
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -253,7 +253,7 @@ pub(crate) fn ip_family(addr: &str) -> f64 {
 
 /// 判断值是否为可调用对象。
 pub(crate) fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. } | HeapObject::NativeCtor { .. })
     ))
@@ -261,7 +261,7 @@ pub(crate) fn is_function(vm: &Vm, v: Value) -> bool {
 
 /// 判断对象值是否为普通对象。
 pub(crate) fn is_plain_object(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Ordinary { .. })
     ))
@@ -692,7 +692,7 @@ fn promises_get_servers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 
 /// `dns.promises.setServers(servers)`：记录进程内列表（后续报文查询生效）。
 fn promises_set_servers(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if let Some(r) = args.first().copied().as_object {
+    if let Some(r) = args.first().copied().and_then(|v| v.as_object()) {
         if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
             let servers: Vec<String> = elements.iter().map(|v| vm.format_value(*v)).collect();
             dns_resolver::set_servers(servers);

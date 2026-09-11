@@ -19,7 +19,7 @@
 use super::{BuiltinRegistry, register_handler};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// 原型方法面注册（幂等；`Vm::new` 的 register_all 中调用一次）。
@@ -214,7 +214,7 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         fn_proto_to_string,
     );
     // `constructor` → 真 Function 构造器（同上：占位会令 `f.constructor.name` 错）
-    if let Some(fc) = vm.resolve_global("Function").as_object {
+    if let Some(fc) = vm.resolve_global("Function").as_object() {
         let _ = vm.set_property(Value::Object(fn_p), "constructor", Value::Object(fc));
     }
     register_handler(registry, "Function.prototype", "call", fn_proto_call_apply);
@@ -349,8 +349,8 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
     // 使 `for...of` 的 GetIterator fallback 路径（Symbol.iterator 属性查找 +
     // 函数调用）取得迭代器。Array 还保留 GetIterator 直接快速路径作为优化。
     let iter_sym = vm.well_known_symbol("iterator");
-    let iter_mkey = match iter_sym {
-        Value::Object(r) => crate::symbol::mangled_key(r),
+    let iter_mkey = match iter_sym.case() {
+        ValueCase::Object(r) => crate::symbol::mangled_key(r),
         _ => unreachable!("well_known_symbol returns symbol object"),
     };
 
@@ -475,21 +475,21 @@ fn bound_fn_invoke(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 被调函数对象 = 绑定函数（普通调用 this 为 undefined，handler 经
     // pending_callee 取函数本体——_target/_this/_args 存于其 properties）
     let b = super::pending_callee();
-    let target = match b {
-        Value::Object(r) => vm
+    let target = match b.case() {
+        ValueCase::Object(r) => vm
             .get_native_fn_property(r, "_target")
             .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     };
-    let this_arg = match b {
-        Value::Object(r) => vm
+    let this_arg = match b.case() {
+        ValueCase::Object(r) => vm
             .get_native_fn_property(r, "_this")
             .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     };
-    let mut call_args: Vec<Value> = match b {
-        Value::Object(r) => match vm.get_native_fn_property(r, "_args") {
-            Some(Value::Object(arr)) => vm.to_array_values(Value::Object(arr)),
+    let mut call_args: Vec<Value> = match b.case() {
+        ValueCase::Object(r) => match vm.get_native_fn_property(r, "_args").map(|v| v.case()) {
+            Some(ValueCase::Object(arr)) => vm.to_array_values(Value::Object(arr)),
             _ => Vec::new(),
         },
         _ => Vec::new(),
@@ -505,8 +505,8 @@ fn obj_has_own_prop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .first()
         .map(|v| vm.to_property_key(*v))
         .unwrap_or_default();
-    let has = match this {
-        Value::Object(r) => vm.has_own_slot(r.0 as usize, &key),
+    let has = match this.case() {
+        ValueCase::Object(r) => vm.has_own_slot(r.0 as usize, &key),
         _ => false,
     };
     Ok(Value::Boolean(has))
@@ -553,8 +553,8 @@ fn obj_prop_is_enum(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .first()
         .map(|v| vm.to_property_key(*v))
         .unwrap_or_default();
-    let en = match this {
-        Value::Object(r) => {
+    let en = match this.case() {
+        ValueCase::Object(r) => {
             // 自有属性且不在不可枚举集合
             vm.has_own_slot(r.0 as usize, &key)
                 && !matches!(
@@ -571,10 +571,10 @@ fn obj_prop_is_enum(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn obj_is_proto_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
     let probe = args.first().copied().unwrap_or(Value::Undefined);
-    let Value::Object(target) = probe else {
+    let ValueCase::Object(target) = probe.case() else {
         return Ok(Value::Boolean(false));
     };
-    let Value::Object(proto) = this else {
+    let ValueCase::Object(proto) = this.case() else {
         return Ok(Value::Boolean(false));
     };
     let mut cur = Some(target);
@@ -587,15 +587,15 @@ fn obj_is_proto_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             Some(HeapObject::Ordinary { proto: p, .. }) => *p,
             Some(HeapObject::Array { proto: p, .. }) => *p,
             Some(HeapObject::NativeCtor { properties, .. }) => {
-                properties.get("prototype").and_then(|v| match v {
-                    Value::Object(r) => Some(*r),
+                properties.get("prototype").and_then(|v| match v.case() {
+                    ValueCase::Object(r) => Some(r),
                     _ => None,
                 })
             }
             Some(HeapObject::Closure { properties, .. })
             | Some(HeapObject::NativeFn { properties, .. }) => {
-                properties.get("prototype").and_then(|v| match v {
-                    Value::Object(r) => Some(*r),
+                properties.get("prototype").and_then(|v| match v.case() {
+                    ValueCase::Object(r) => Some(r),
                     _ => None,
                 })
             }
@@ -614,8 +614,8 @@ fn str_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .unwrap_or(&full)
         .to_owned();
     let this = super::current_receiver();
-    let text = match &this {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    let text = match &this.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::String(t)) => t.clone(),
             _ => vm.format_value(this),
         },
@@ -647,9 +647,9 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
         .unwrap_or(&full)
         .to_owned();
     let this = super::current_receiver();
-    let n = match this {
-        Value::Number(n) => n,
-        Value::Boolean(b) => {
+    let n = match this.case() {
+        ValueCase::Number(n) => n,
+        ValueCase::Boolean(b) => {
             if b {
                 1.0
             } else {
@@ -658,14 +658,14 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
         }
         Value::Undefined => f64::NAN,
         Value::Null => 0.0,
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             // Number/Boolean 包装对象以 Ordinary 承载：读值槽，缺省字符串化
             Some(HeapObject::Ordinary { .. }) => vm
                 .own_value(r.0 as usize, "[[NumberValue]]")
                 .or_else(|| vm.own_value(r.0 as usize, "[[BooleanValue]]"))
-                .and_then(|v| match v {
-                    Value::Number(n) => Some(n),
-                    Value::Boolean(b) => Some(if b { 1.0 } else { 0.0 }),
+                .and_then(|v| match v.case() {
+                    ValueCase::Number(n) => Some(n),
+                    ValueCase::Boolean(b) => Some(if b { 1.0 } else { 0.0 }),
                     _ => None,
                 })
                 .unwrap_or_else(|| vm.format_value(this).parse().unwrap_or(f64::NAN)),
@@ -680,7 +680,7 @@ pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, 
             let Some(arg) = args
                 .first()
                 .copied()
-                .filter(|v| !matches!(v, Value::Undefined))
+                .filter(|v| !matches!(*v, Value::Undefined))
             else {
                 return Ok(Value::Object(vm.alloc_string(format_number_decimal(n))));
             };
@@ -796,8 +796,8 @@ fn regexp_exec_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_default();
-    match vm.regexp_exec(re, &subject)? {
-        Some(Value::Object(arr)) => Ok(Value::Object(arr)),
+    match vm.regexp_exec(re, &subject)?.map(|v| v.case()) {
+        Some(ValueCase::Object(arr)) => Ok(Value::Object(arr)),
         _ => Ok(Value::Null),
     }
 }
@@ -832,7 +832,7 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
     match name.as_str() {
         "from" => {
             let source = args.first().copied().unwrap_or(Value::Undefined);
-            let mut items: Vec<Value> = match &source {
+            let mut items: Vec<Value> = match &source.case() {
                 Value::Undefined | Value::Null => {
                     let msg = vm.alloc_string(
                         "Array.from requires an array-like object - not null or undefined"
@@ -840,8 +840,8 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                     );
                     return Err(VmError::Thrown(Value::Object(msg)));
                 }
-                Value::Number(_) | Value::Boolean(_) => Vec::new(),
-                Value::Object(r) => {
+                ValueCase::Number(_) | ValueCase::Boolean(_) => Vec::new(),
+                ValueCase::Object(r) => {
                     // 先克隆源数据结束 heap 借用，再做需要 &mut Vm 的装箱
                     let cloned = match vm.heap.get(r.0 as usize) {
                         Some(HeapObject::String(s)) => {
@@ -861,14 +861,14 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                             // 优先走迭代协议：它们在 Node 中是可迭代的，若按类数组
                             // （length + 数字下标）处理会静默得到空数组
                             // （`Array.from(new Map(...))` 曾为 `[]`）。
-                            let iter_key = match vm.well_known_symbol("iterator") {
-                                Value::Object(s) => crate::symbol::mangled_key(s),
+                            let iter_key = match vm.well_known_symbol("iterator").case() {
+                                ValueCase::Object(s) => crate::symbol::mangled_key(s),
                                 _ => String::new(),
                             };
                             let iterable = !iter_key.is_empty()
                                 && matches!(
                                     vm.get_property(source, &iter_key),
-                                    Ok(Value::Object(_))
+                                    Ok(ValueCase::Object(_))
                                 );
                             if iterable {
                                 vm.collect_iter_values(source)?
@@ -877,8 +877,8 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                                 let len = vm
                                     .get_property(source, "length")
                                     .ok()
-                                    .and_then(|v| match v {
-                                        Value::Number(n) => Some(n as usize),
+                                    .and_then(|v| match v.case() {
+                                        ValueCase::Number(n) => Some(n as usize),
                                         _ => None,
                                     })
                                     .unwrap_or(0);
@@ -894,7 +894,7 @@ fn array_static_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
                 }
             };
             // mapFn 变换（第 2 参数；第 3 参数 thisArg）
-            if let Some(map_fn @ Value::Object(_)) = args.get(1).copied() {
+            if let Some(map_fn @ ValueCase::Object(_)) = args.get(1).copied() {
                 let this_arg = args.get(2).copied().unwrap_or(Value::Undefined);
                 let mut mapped = Vec::with_capacity(items.len());
                 for (i, item) in items.iter().enumerate() {
@@ -922,7 +922,7 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
         .unwrap_or(&full)
         .to_owned();
     let this = super::current_receiver();
-    let Value::Object(r) = this else {
+    let ValueCase::Object(r) = this.case() else {
         return Ok(Value::Undefined);
     };
     let elems = |vm: &Vm, r: aluka_core::ObjectRef| -> Vec<Value> {
@@ -969,7 +969,7 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
         "concat" => {
             let mut out = elems(vm, r);
             for a in args {
-                if let Value::Object(ar) = a
+                if let ValueCase::Object(ar) = a
                     && matches!(vm.heap.get(ar.0 as usize), Some(HeapObject::Array { .. }))
                 {
                     out.extend(elems(vm, *ar));
@@ -1067,8 +1067,8 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// TypeError（对齐 Node）。
 fn fn_proto_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
-    let text = match this {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    let text = match this.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::Closure { func_idx, .. }) => {
                 let name = vm
                     .module_functions
@@ -1106,8 +1106,8 @@ fn fn_proto_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `String.prototype[Symbol.iterator]()`：返回字符串迭代器。
 fn str_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
-    match this {
-        Value::Object(r) => Ok(vm.alloc_string_iterator(r)),
+    match this.case() {
+        ValueCase::Object(r) => Ok(vm.alloc_string_iterator(r)),
         _ => {
             let s =
                 vm.alloc_string("String.prototype[Symbol.iterator] requires a string".to_owned());
@@ -1119,8 +1119,8 @@ fn str_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `Array.prototype[Symbol.iterator]()` → `values()`：返回数组元素值迭代器。
 fn arr_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
-    match this {
-        Value::Object(r) => Ok(vm.alloc_array_iterator_kind(r, "values")),
+    match this.case() {
+        ValueCase::Object(r) => Ok(vm.alloc_array_iterator_kind(r, "values")),
         _ => Ok(Value::Undefined),
     }
 }
@@ -1131,8 +1131,8 @@ fn arr_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// values 迭代器（产出 value）。
 fn map_set_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
-    match this {
-        Value::Object(r) => {
+    match this.case() {
+        ValueCase::Object(r) => {
             if vm.is_set_instance(this) {
                 Ok(vm.alloc_set_iterator(r, "values"))
             } else if vm.is_map_instance(this) {
@@ -1152,7 +1152,7 @@ fn map_set_iter_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// （此前只有按名调用可用、属性读为 `undefined`）。
 fn iterator_next_handler(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
-    let Value::Object(r) = this else {
+    let ValueCase::Object(r) = this.case() else {
         return Ok(Value::Undefined);
     };
     if vm.is_array_iterator(this) {

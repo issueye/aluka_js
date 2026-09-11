@@ -21,7 +21,7 @@ use crate::builtins::{
     BuiltinHandler, BuiltinRegistry, ModuleDef, current_receiver, register_handler, set_module_prop,
 };
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 
@@ -268,7 +268,7 @@ fn stream_task_emit(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 会话 `on(event, listener)`。
 fn session_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, false);
@@ -280,7 +280,7 @@ fn session_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 会话 `once(event, listener)`。
 fn session_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, true);
@@ -292,7 +292,7 @@ fn session_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 会话 `off(event, listener)`。
 fn session_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::remove_listener(r.0, &name, *cb);
@@ -305,7 +305,7 @@ fn session_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 请求目标取 headers 的 `:authority`（缺省回退 connect 的 authority）。
 fn session_request(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if !matches!(receiver, Value::Object(_)) {
+    if !matches!(receiver.case(), ValueCase::Object(_)) {
         return Ok(receiver);
     }
     if args.is_empty() {
@@ -319,8 +319,8 @@ fn session_request(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .map(|v| vm.format_value(v))
         .unwrap_or_default();
     if http::is_plain_object(vm, args[0]) {
-        let props: Vec<(String, Value)> = match args[0] {
-            Value::Object(r) => match vm.heap.get(r.0 as usize) {
+        let props: Vec<(String, Value)> = match args[0].case() {
+            ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
                 Some(crate::heap::HeapObject::Ordinary { .. }) => vm.own_entries(r.0 as usize),
                 _ => Vec::new(),
             },

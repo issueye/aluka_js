@@ -19,7 +19,7 @@ use super::modes::{
 use crate::builtins::buffer::create_buffer_instance;
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -227,8 +227,8 @@ fn finalize_gcm_tag(state: &CipherState) -> Vec<u8> {
 /// 实例 `update(data)`：累积数据，恒返回空 Buffer（对齐 Go）。
 fn instance_update(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    let id = match this {
-        Value::Object(r) => r.0,
+    let id = match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     if let Some(arg) = args.first() {
@@ -241,8 +241,8 @@ fn instance_update(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 实例 `final()`：处理累积数据并产出密文/明文 Buffer。
 fn instance_final(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    let id = match this {
-        Value::Object(r) => r.0,
+    let id = match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let Some(state) = get_state(id) else {
@@ -261,8 +261,8 @@ fn instance_final(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 实例 `getAuthTag()`：GCM 加密后取认证标签。
 fn instance_get_auth_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    let id = match this {
-        Value::Object(r) => r.0,
+    let id = match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let Some(state) = get_state(id) else {
@@ -280,8 +280,8 @@ fn instance_get_auth_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError>
 /// 实例 `setAuthTag(tag)`：GCM 解密前设置认证标签（返回实例，链式）。
 fn instance_set_auth_tag(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    let id = match this {
-        Value::Object(r) => r.0,
+    let id = match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let Some(arg) = args.first() else {

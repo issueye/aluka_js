@@ -11,7 +11,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::Vm;
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -100,9 +100,7 @@ pub(crate) fn registry_roots(out: &mut crate::gc::GcRoots) {
 impl Vm {
     /// 判断值是否为符号。
     pub(crate) fn is_symbol(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Symbol { .. }))
         )
     }
@@ -145,8 +143,8 @@ impl Vm {
         if !self.is_symbol(arg) {
             return Ok(Value::Undefined);
         }
-        let registered = match arg {
-            Value::Object(r) => FOR_BY_HANDLE.with(|c| c.borrow().get(&r.0).cloned()),
+        let registered = match arg.case() {
+            ValueCase::Object(r) => FOR_BY_HANDLE.with(|c| c.borrow().get(&r.0).cloned()),
             _ => None,
         };
         Ok(match registered {

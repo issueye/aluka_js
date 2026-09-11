@@ -14,7 +14,7 @@ use super::hmac::HmacEngine;
 use crate::builtins::buffer::create_buffer_instance;
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -134,8 +134,8 @@ fn build_digest_instance(vm: &mut Vm, state: DigestState, algorithm: String) -> 
 /// 实例 `update(data)`：吸收数据并返回实例自身（链式）。
 fn instance_update(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    let id = match this {
-        Value::Object(r) => r.0,
+    let id = match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     if let Some(arg) = args.first() {
@@ -148,8 +148,8 @@ fn instance_update(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 实例 `digest([encoding])`：求摘要；默认 Buffer，`hex`/`base64` 返回字符串。
 fn instance_digest(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    let id = match this {
-        Value::Object(r) => r.0,
+    let id = match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let Some(state) = get_state(id) else {
@@ -203,7 +203,7 @@ pub(crate) fn one_shot_hash(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
     engine.update(&data);
     let sum = engine.finalize();
     if let Some(enc) = args.get(2) {
-        if !matches!(enc, Value::Undefined | Value::Null) {
+        if !matches!(*enc, Value::Undefined | Value::Null) {
             return match vm.format_value(*enc).as_str() {
                 "buffer" => Ok(Value::Object(create_buffer_instance(vm, sum))),
                 "hex" => Ok(Value::Object(vm.alloc_string(to_hex(&sum)))),

@@ -12,7 +12,7 @@
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::time::UNIX_EPOCH;
 
@@ -200,9 +200,9 @@ fn rm_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 解析第二参数：`{ recursive: true }` 或裸布尔（简化形态）。
 fn options_recursive(vm: &mut Vm, opt: Value) -> bool {
-    match opt {
-        Value::Boolean(b) => b,
-        Value::Object(r) => {
+    match opt.case() {
+        ValueCase::Boolean(b) => b,
+        ValueCase::Object(r) => {
             let key = vm
                 .get_property(Value::Object(r), "recursive")
                 .unwrap_or(Value::Undefined);

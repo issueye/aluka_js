@@ -11,7 +11,7 @@ use super::context;
 use super::registry::{self, Child, Registry};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// 单个用例的执行结果（对齐 Go `TestResult`）。
 #[derive(Clone, Debug)]
@@ -460,15 +460,15 @@ fn invoke_with_state(vm: &mut Vm, fn_val: Value) -> Result<InvokeOutcome, VmErro
 
 /// 是否 Promise 值。
 fn is_promise(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Promise { .. })))
 }
 
 /// 已定 promise 是否为拒绝近似（兑现非 undefined 值）。
 fn promise_rejected(vm: &Vm, pv: Value) -> bool {
-    if let Some(r) = pv.as_object {
+    if let Some(r) = pv.as_object() {
         if let Some(HeapObject::Promise { pending, value, .. }) = vm.heap.get(r.index()) {
-            return !*pending && !matches!(value, Value::Undefined);
+            return !*pending && !matches!(*value, Value::Undefined);
         }
     }
     false
@@ -476,7 +476,7 @@ fn promise_rejected(vm: &Vm, pv: Value) -> bool {
 
 /// 从已定 promise 提取拒绝消息。
 fn rejection_message(vm: &mut Vm, pv: Value) -> String {
-    if let Some(r) = pv.as_object {
+    if let Some(r) = pv.as_object() {
         if let Some(HeapObject::Promise { value, .. }) = vm.heap.get(r.index()) {
             let v = *value;
             return error_message(vm, &VmError::Thrown(v));
@@ -838,7 +838,7 @@ fn suite_test_full_name(reg: &Registry, suite_idx: usize, name: &str) -> String 
 
 /// promise 是否仍挂起（settle 判定）。
 fn promise_pending(vm: &Vm, pv: Value) -> bool {
-    matches!(pv, Value::Object(r)
+    matches!(pv.case(), ValueCase::Object(r)
     if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Promise { pending: true, .. })

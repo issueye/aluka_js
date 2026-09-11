@@ -8,7 +8,7 @@
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("sys")` / `require("node:sys")` 兼容模块。
@@ -100,8 +100,8 @@ fn format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `%d` 格式化数值截断。
 fn format_d(vm: &Vm, v: Value) -> String {
-    match v {
-        Value::Number(n) => format!("{}", n.trunc() as i64),
+    match v.case() {
+        ValueCase::Number(n) => format!("{}", n.trunc() as i64),
         _ => inspect_value(vm, v),
     }
 }
@@ -118,11 +118,11 @@ fn inspect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 递归格式化紧凑值。
 fn inspect_value(vm: &Vm, val: Value) -> String {
-    match val {
-        Value::Undefined | Value::Null | Value::Boolean(_) | Value::Number(_) => {
+    match val.case() {
+        Value::Undefined | Value::Null | ValueCase::Boolean(_) | ValueCase::Number(_) => {
             vm.format_value(val)
         }
-        Value::Object(r) => match vm.heap.get(r.index()) {
+        ValueCase::Object(r) => match vm.heap.get(r.index()) {
             Some(HeapObject::String(s)) => s.clone(),
             Some(HeapObject::BigInt(s)) => s.clone(),
             Some(HeapObject::Array { elements, .. }) => {

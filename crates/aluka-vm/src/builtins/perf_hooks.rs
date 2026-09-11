@@ -7,7 +7,7 @@
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -115,8 +115,8 @@ fn build_performance(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<Obje
         VmError::Thrown(Value::Object(msg))
     })?;
     let val = vm.get_property(Value::Object(perf_mod), "performance")?;
-    match val {
-        Value::Object(r) => Ok(r),
+    match val.case() {
+        ValueCase::Object(r) => Ok(r),
         _ => Err(VmError::Thrown(Value::Object(
             vm.alloc_string("performance 属性缺失".to_owned()),
         ))),

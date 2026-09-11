@@ -20,7 +20,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("wasi")` / `require("node:wasi")` 模块条目。
@@ -121,24 +121,24 @@ fn code_error(vm: &mut Vm, code: &str, msg: &str) -> VmError {
 
 /// 是否为堆字符串值。
 fn is_string(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
         if matches!(vm.heap.get(r.index()), Some(HeapObject::String(_))))
 }
 
 /// 是否为普通对象（Ordinary 堆对象）。
 fn is_ordinary(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })))
 }
 
 /// 渲染 Node 的 "Received ..." 片段（对齐 Go `wasiTypeString`）。
 fn type_string(vm: &Vm, v: Value) -> String {
-    match v {
+    match v.case() {
         Value::Undefined => "undefined".to_owned(),
         Value::Null => "null".to_owned(),
-        Value::Number(n) => format!("type number ({})", vm.format_value(Value::Number(n))),
-        Value::Boolean(b) => format!("type boolean ({b})"),
-        Value::Object(r) => match vm.heap.get(r.index()) {
+        ValueCase::Number(n) => format!("type number ({})", vm.format_value(Value::Number(n))),
+        ValueCase::Boolean(b) => format!("type boolean ({b})"),
+        ValueCase::Object(r) => match vm.heap.get(r.index()) {
             Some(HeapObject::String(s)) => format!("type string ('{s}')"),
             Some(HeapObject::Closure { .. })
             | Some(HeapObject::NativeCtor { .. })
@@ -171,7 +171,7 @@ fn wasi_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         Some(o) => {
             let ver = vm.get_property(o, "version")?;
             if is_string(vm, ver) {
-                let Value::Object(s) = ver else {
+                let ValueCase::Object(s) = ver.case() else {
                     unreachable!()
                 };
                 match vm.heap.get(s.index()) {
@@ -214,8 +214,8 @@ fn wasi_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // options.args：数组。
     if let Some(o) = opts_val {
         let av = vm.get_property(o, "args")?;
-        if !matches!(av, Value::Undefined) {
-            let is_array = matches!(av, Value::Object(ar)
+        if !matches!(av, Value::Undefined).case() {
+            let is_array = matches!(av.case(), ValueCase::Object(ar)
                 if matches!(vm.heap.get(ar.index()), Some(HeapObject::Array { .. })));
             if !is_array {
                 return Err(code_error(
@@ -256,11 +256,11 @@ fn wasi_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         if matches!(v, Value::Undefined) {
             continue;
         }
-        let ok_int = matches!(v, Value::Number(n)
+        let ok_int = matches!(v.case(), ValueCase::Number(n)
             if n.fract() == 0.0 && (0.0..=2147483647.0).contains(&n));
         if !ok_int {
-            let received = match v {
-                Value::Number(n) => n as i64,
+            let received = match v.case() {
+                ValueCase::Number(n) => n as i64,
                 _ => -1,
             };
             return Err(code_error(
@@ -310,8 +310,8 @@ fn wasi_proto(vm: &mut Vm) -> Option<ObjectRef> {
     let module = vm.builtin_registry.module("wasi")?;
     let ctor = vm.get_property(Value::Object(module), "WASI").ok()?;
     let proto = vm.get_property(ctor, "prototype").ok()?;
-    match proto {
-        Value::Object(p) => Some(p),
+    match proto.case() {
+        ValueCase::Object(p) => Some(p),
         _ => None,
     }
 }
@@ -353,7 +353,7 @@ fn setup_instance(vm: &mut Vm, args: &[Value]) -> Result<(), VmError> {
 /// started 标记检查 + 置位（对齐 Go：先置位后校验，失败路径保持已启动）。
 fn check_and_mark_started(vm: &mut Vm) -> Result<(), VmError> {
     let receiver = current_receiver();
-    if matches!(vm.get_property(receiver, "_started")?, Value::Boolean(true)) {
+    if matches!(vm.get_property(receiver, "_started")?, ValueCase::Boolean(true)) {
         return Err(code_error(
             vm,
             "ERR_WASI_ALREADY_STARTED",

@@ -25,7 +25,7 @@ pub(crate) mod proc_common;
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use proc_common::{
     ProcEvent, StreamKind, ns_attach, push_event, register_ns_emitter_handlers, spawn_pipe_reader,
@@ -97,17 +97,17 @@ fn parse_spawn_opts(vm: &mut Vm, opts_val: Option<Value>) -> SpawnOpts {
     let Some(opts) = opts_val.and_then(|v| v.as_object()) else {
         return o;
     };
-    if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(opts), "silent") {
+    if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(opts), "silent").map(ValueCase::from) {
         o.silent = Some(b);
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "cwd") {
         o.cwd = heap_string(vm, v).unwrap_or_default();
     }
-    if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(opts), "windowsHide") {
+    if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(opts), "windowsHide").map(ValueCase::from) {
         o.windows_hide = b;
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "env") {
-        if let Some(_) = v.as_object {
+        if let Some(_) = v.as_object() {
             let mut env_list = Vec::new();
             for (k, ev) in vm.own_properties(v) {
                 env_list.push((k, vm.format_value(ev)));
@@ -390,7 +390,7 @@ fn parse_sync_opts(vm: &mut Vm, opts_val: Option<Value>) -> SyncOpts {
         o.cwd = heap_string(vm, v).unwrap_or_default();
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "env") {
-        if let Some(_) = v.as_object {
+        if let Some(_) = v.as_object() {
             let mut env_list = Vec::new();
             for (k, ev) in vm.own_properties(v) {
                 env_list.push((k, vm.format_value(ev)));
@@ -406,13 +406,13 @@ fn parse_sync_opts(vm: &mut Vm, opts_val: Option<Value>) -> SyncOpts {
             );
         }
     }
-    if let Ok(Value::Number(n)) = vm.get_property(Value::Object(opts), "timeout") {
+    if let Ok(ValueCase::Number(n)) = vm.get_property(Value::Object(opts), "timeout").map(ValueCase::from) {
         o.timeout = (n as i64).max(0) as u64;
     }
     if let Ok(v) = vm.get_property(Value::Object(opts), "encoding") {
         o.encoding = heap_string(vm, v).unwrap_or_default();
     }
-    if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(opts), "windowsHide") {
+    if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(opts), "windowsHide").map(ValueCase::from) {
         o.windows_hide = b;
     }
     o
@@ -624,16 +624,16 @@ fn sync_result_or_throw(
     cmdline_for_error: String,
     opts: &SyncOpts,
 ) -> Result<Value, VmError> {
-    if let Some(err_obj) = vm.get_property(result, "error")?.as_object {
+    if let Some(err_obj) = vm.get_property(result, "error")?.as_object() {
         let mut code = "ENOENT".to_owned();
-        if let Ok(Value::Object(c)) = vm.get_property(Value::Object(err_obj), "code") {
+        if let Ok(ValueCase::Object(c)) = vm.get_property(Value::Object(err_obj), "code").map(ValueCase::from) {
             code = heap_string(vm, Value::Object(c)).unwrap_or(code);
         }
         let message = format!("spawnSync {cmdline_for_error} {code}");
         return throw_exec_error(vm, &code, message, -1);
     }
-    let status = match vm.get_property(result, "status")? {
-        Value::Number(n) => n as i32,
+    let status = match vm.get_property(result, "status")?.case() {
+        ValueCase::Number(n) => n as i32,
         _ => -1,
     };
     if status != 0 {
@@ -709,7 +709,7 @@ fn cp_exec_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `child.kill()`：终止进程，返回是否成功。
 fn child_kill(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     let ok = with_children(|map| {
@@ -725,7 +725,7 @@ fn child_kill(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.destroy()`：置 destroyed 并返回流本身（Go destroyOnce 语义简化）。
 fn stream_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Some(_) = receiver.as_object {
+    if let Some(_) = receiver.as_object() {
         let _ = vm.set_property(receiver, "destroyed", Value::Boolean(true));
     }
     Ok(receiver)
@@ -844,7 +844,7 @@ fn string_list(vm: &mut Vm, val: Option<Value>) -> Vec<String> {
 
 /// 判断值是否为数组堆对象。
 fn is_array_value(vm: &Vm, val: Value) -> bool {
-    let Value::Object(r) = val else {
+    let ValueCase::Object(r) = val.case() else {
         return false;
     };
     matches!(vm.heap.get(r.0 as usize), Some(HeapObject::Array { .. }))
@@ -860,7 +860,7 @@ fn find_callback(vm: &Vm, args: &[Value], from: usize) -> Option<Value> {
 
 /// 判断值是否为可调用堆对象（闭包 / 原生函数 / 原生构造器）。
 fn is_callable_value(vm: &Vm, val: Value) -> bool {
-    let Value::Object(r) = val else {
+    let ValueCase::Object(r) = val.case() else {
         return false;
     };
     matches!(
@@ -875,7 +875,7 @@ fn is_callable_value(vm: &Vm, val: Value) -> bool {
 
 /// 取字符串堆对象的文本（非字符串返回 None）。
 fn heap_string(vm: &Vm, v: Value) -> Option<String> {
-    let Value::Object(r) = v else {
+    let ValueCase::Object(r) = v.case() else {
         return None;
     };
     match vm.heap.get(r.0 as usize) {

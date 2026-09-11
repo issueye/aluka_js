@@ -8,7 +8,7 @@ use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_p
 // 假时钟（`node:test` 的 `mock.timers`）拦截：定时器注册/清除的唯一入口。
 use crate::builtins::test::mock;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -123,7 +123,7 @@ fn set_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let cb = args.first().copied().unwrap_or(Value::Undefined);
     let id_val = schedule_raw(vm, cb, 0, mock::FakeApi::SetImmediate)?;
     if let Some(opts) = args.get(1) {
-        if let Some(id) = id_val.as_number {
+        if let Some(id) = id_val.as_number() {
             attach_timer_signal(vm, id as u64, opts)?;
         }
     }
@@ -140,7 +140,7 @@ fn attach_timer_signal(vm: &mut Vm, timer_id: u64, opts: &Value) -> Result<(), V
         return Ok(());
     }
     // 已 abort → 直接清除
-    if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+    if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
         vm.active_timers.insert(timer_id);
         return Ok(());
     }
@@ -165,7 +165,7 @@ fn attach_timer_signal(vm: &mut Vm, timer_id: u64, opts: &Value) -> Result<(), V
 /// receiver 为携带 `_timerId` 的 NativeFn——按 id 等价 clearTimeout。
 fn timers_signal_clear(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Ok(Value::Number(n)) = vm.get_property(receiver, "_timerId") {
+    if let Ok(ValueCase::Number(n)) = vm.get_property(receiver, "_timerId").map(ValueCase::from) {
         vm.active_timers.insert(n as u64);
     }
     Ok(Value::Undefined)
@@ -193,8 +193,8 @@ fn clear_immediate(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn clear_timer(vm: &mut Vm, args: &[Value], api: mock::FakeApi) -> Result<Value, VmError> {
     let id = args
         .first()
-        .and_then(|v| match v {
-            Value::Number(n) => Some(*n as u64),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some(n as u64),
             _ => None,
         })
         .unwrap_or(0);
@@ -209,14 +209,14 @@ fn schedule_timer(vm: &mut Vm, args: &[Value], api: mock::FakeApi) -> Result<Val
     let cb = args.first().copied().unwrap_or(Value::Undefined);
     let delay = args
         .get(1)
-        .and_then(|v| match v {
-            Value::Number(n) => Some((*n as i64).max(0) as u64),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some((n as i64).max(0) as u64),
             _ => None,
         })
         .unwrap_or(0);
     let id_val = schedule_raw(vm, cb, delay, api)?;
     // M4.3：第三参 options.signal 联动
-    if let (Some(opts), Value::Number(id)) = (args.get(2), id_val) {
+    if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val) {
         attach_timer_signal(vm, id as u64, opts)?;
     }
     Ok(id_val)
@@ -252,8 +252,8 @@ pub(crate) fn schedule_raw(
 fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let delay = args
         .first()
-        .and_then(|v| match v {
-            Value::Number(n) => Some((*n as i64).max(0) as u64),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some((n as i64).max(0) as u64),
             _ => None,
         })
         .unwrap_or(0);
@@ -274,15 +274,15 @@ fn promises_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // M4.3：options.signal——abort → 清除定时器 + promise 兑现 reason
     //（Node 语义：reason 缺省 AbortError；reject 与 resolve 经引擎同形
     // 兑现通道——非 undefined 值即拒绝近似）
-    if let (Some(opts), Value::Number(id)) = (args.get(2), id_val) {
+    if let (Some(opts), ValueCase::Number(id)) = (args.get(2), id_val) {
         if let Ok(signal) = vm.get_property(*opts, "signal") {
-            if !matches!(signal, Value::Undefined | Value::Null) {
-                if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+            if !matches!(signal, Value::Undefined | Value::Null).case() {
+                if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
                     vm.active_timers.insert(id as u64);
                     let reason = vm
                         .get_property(signal, "reason")
                         .ok()
-                        .filter(|v| !matches!(v, Value::Undefined))
+                        .filter(|v| !matches!(*v, Value::Undefined))
                         .unwrap_or_else(|| {
                             let err = vm.alloc_error_instance("This operation was aborted");
                             let name = vm.alloc_string("AbortError".to_owned());

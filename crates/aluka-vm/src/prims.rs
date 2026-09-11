@@ -9,13 +9,13 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// 对象属性值是否为 JSON 忽略值（整键剔除）：`undefined` / 函数 / 符号。
 fn is_json_ignored_value(vm: &Vm, v: Value) -> bool {
-    match v {
+    match v.case() {
         Value::Undefined => true,
-        Value::Object(r) => matches!(
+        ValueCase::Object(r) => matches!(
             vm.heap.get(r.0 as usize),
             Some(
                 HeapObject::Closure { .. }
@@ -31,9 +31,7 @@ fn is_json_ignored_value(vm: &Vm, v: Value) -> bool {
 impl Vm {
     /// 判断值是否为 JSON 全局对象（`_isJSON` 标记）。
     pub(crate) fn is_json_object(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r) if self.has_own_slot(r.0 as usize, "_isJSON")
+        matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isJSON")
         )
     }
 
@@ -50,7 +48,7 @@ impl Vm {
         if matches!(value, Value::Undefined) || is_json_ignored_value(self, value) {
             return Ok(Value::Undefined);
         }
-        if let Some(r) = value.as_object {
+        if let Some(r) = value.as_object() {
             // Promise 等无自有可枚举属性的异形堆对象：node 序列化为 "{}"
             // 而非 null（`JSON.stringify(Promise.resolve(1))` 实测）
             if matches!(
@@ -75,12 +73,12 @@ impl Vm {
     /// `toJSON` 经**原型链**查找（`get_property`），与规范 `GetV` 一致。
     fn apply_to_json(&mut self, value: Value, key: &str) -> Result<Value, VmError> {
         // 仅对象（含函数、数组）参与；原始值直接返回
-        if !matches!(value, Value::Object(_)) {
+        if !matches!(value.case(), ValueCase::Object(_)) {
             return Ok(value);
         }
         let cb = self.get_property(value, "toJSON")?;
-        let callable = match cb {
-            Value::Object(cr) => {
+        let callable = match cb.case() {
+            ValueCase::Object(cr) => {
                 // Proxy 视为可调用（`invoke_callable` 会走 apply trap）；
                 // 其余按堆变体判定函数面
                 self.proxy_parts(cr).is_some()
@@ -134,17 +132,17 @@ impl Vm {
         value: Value,
         seen: &mut Vec<u32>,
     ) -> Result<(), VmError> {
-        match value {
+        match value.case() {
             Value::Undefined | Value::Null => out.push_str("null"),
-            Value::Boolean(b) => out.push_str(if b { "true" } else { "false" }),
-            Value::Number(n) => {
+            ValueCase::Boolean(b) => out.push_str(if b { "true" } else { "false" }),
+            ValueCase::Number(n) => {
                 if n.is_nan() || n.is_infinite() {
                     out.push_str("null");
                 } else {
                     out.push_str(&crate::ops::js_number_to_string(n));
                 }
             }
-            Value::Object(r) => {
+            ValueCase::Object(r) => {
                 if seen.contains(&r.0) {
                     out.push_str("null");
                     return Ok(());
@@ -253,28 +251,31 @@ impl Vm {
         args: &[Value],
         text: &str,
     ) -> Option<Result<Value, VmError>> {
-        use Value::Number;
+        #[allow(non_snake_case)]
+        fn Number(n: f64) -> Value {
+            Value::Number(n)
+        }
         // 借用隔离：arg_str/arg_num 提为自由函数（self 顺序借用）
         fn arg_str(vm: &mut Vm, args: &[Value], i: usize) -> String {
             args.get(i).map(|v| vm.format_value(*v)).unwrap_or_default()
         }
         fn arg_num(args: &[Value], i: usize) -> Option<f64> {
-            args.get(i).and_then(|v| match v {
-                Value::Number(n) => Some(*n),
+            args.get(i).and_then(|v| match v.case() {
+                ValueCase::Number(n) => Some(n),
                 _ => None,
             })
         }
         // 索引类参数按 JS ToInteger 语义强转：数字直用，字符串解析数值
         //（如 `charCodeAt('1')` → 1，对齐 Node），其余非数字为 NaN
         fn arg_index_num(vm: &Vm, args: &[Value], i: usize) -> f64 {
-            match args.get(i) {
-                Some(Value::Number(n)) => *n,
-                Some(Value::Object(r)) => match vm.heap.get(r.0 as usize) {
+            match args.get(i).map(|v| v.case()).unwrap_or(ValueCase::Undefined) {
+                Some(ValueCase::Number(n)) => n,
+                Some(ValueCase::Object(r)) => match vm.heap.get(r.0 as usize) {
                     Some(HeapObject::String(s)) => s.trim().parse::<f64>().unwrap_or(f64::NAN),
                     _ => f64::NAN,
                 },
-                Some(Value::Boolean(true)) => 1.0,
-                Some(Value::Boolean(false)) | Some(Value::Null) => 0.0,
+                Some(ValueCase::Boolean(true)) => 1.0,
+                Some(ValueCase::Boolean(false)) | Some(Value::Null) => 0.0,
                 _ => f64::NAN,
             }
         }
@@ -359,7 +360,7 @@ impl Vm {
                     target_f as usize
                 };
                 let fill = match args.get(1) {
-                    Some(v) if !matches!(v, Value::Undefined) => self.format_value(*v),
+                    Some(v) if !matches!(*v, Value::Undefined) => self.format_value(*v),
                     _ => " ".to_owned(),
                 };
                 if target <= chars.len() || fill.is_empty() {
@@ -526,8 +527,8 @@ impl Vm {
                 // RegExp 分隔符：按正则切分并交织捕获组
                 if let Some(re) = args.first().copied() {
                     if self.is_regexp_obj(re) {
-                        let limit = args.get(1).and_then(|v| match v {
-                            Value::Number(n) if *n >= 0.0 => Some(*n as usize),
+                        let limit = args.get(1).and_then(|v| match v.case() {
+                            ValueCase::Number(n) if n >= 0.0 => Some(n as usize),
                             _ => None,
                         });
                         match self.regexp_split_value(re, text, limit) {
@@ -626,8 +627,8 @@ impl Vm {
         to: &Replacer,
         replace_all: bool,
     ) -> Result<String, VmError> {
-        let (pattern, flags) = match re {
-            Value::Object(r) => match self.heap.get(r.0 as usize) {
+        let (pattern, flags) = match re.case() {
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::RegExp { pattern, flags }) => (pattern.clone(), flags.clone()),
                 _ => return Ok(text.to_owned()),
             },

@@ -17,7 +17,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_bytecode::BytecodeModule;
 use aluka_core::ObjectRef;
 use std::collections::HashMap;
@@ -166,7 +166,7 @@ impl Vm {
         let exports = Value::Object(self.alloc_ordinary());
         let module_obj = Value::Object(self.alloc_ordinary());
         // 加载期间钉扎 module 对象（其 exports 指针在收尾读取时仍需有效）
-        if let Some(r) = module_obj.as_object {
+        if let Some(r) = module_obj.as_object() {
             self.gc_pinned.push(r.0);
         }
         self.set_property(module_obj, "exports", exports)?;
@@ -302,8 +302,8 @@ impl Vm {
             self.stack.truncate(stack_base);
             let closure = closure?;
 
-            let (func_idx, upvalues) = match closure {
-                Value::Object(r) => match self.heap.get(r.0 as usize) {
+            let (func_idx, upvalues) = match closure.case() {
+                ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                     Some(HeapObject::Closure {
                         func_idx, upvalues, ..
                     }) => (*func_idx, upvalues.clone()),
@@ -338,9 +338,7 @@ impl Vm {
             )?;
             // 异步 wrapper（TLA / await import）：记录未完成 Promise，
             // 供 `__aluka_import__` 挂接依赖完成链（M2.2）
-            self.last_entry_async_promise = if matches!(
-                wrapper_ret,
-                Value::Object(r)
+            self.last_entry_async_promise = if matches!(wrapper_ret.case(), ValueCase::Object(r)
                     if matches!(
                         self.heap.get(r.0 as usize),
                         Some(HeapObject::Promise { pending: true, .. })
@@ -397,8 +395,8 @@ impl Vm {
         self.unpin_module(&module_obj);
         let final_exports = self.get_property(module_obj, "exports")?;
         if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
-            let obj_handle = match module_obj {
-                Value::Object(r) => Some(r.0),
+            let obj_handle = match module_obj.case() {
+                ValueCase::Object(r) => Some(r.0),
                 _ => None,
             };
             let is_free = obj_handle
@@ -419,7 +417,7 @@ impl Vm {
 
     /// 解除 module 对象钉扎（call_require 收尾）。
     fn unpin_module(&mut self, module_obj: &Value) {
-        if let Some(r) = module_obj.as_object {
+        if let Some(r) = module_obj.as_object() {
             self.gc_pinned.retain(|&h| h != r.0);
         }
     }

@@ -12,16 +12,14 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 impl Vm {
     /// 判断值是否为 Proxy 对象。
     #[must_use]
     pub fn is_proxy(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Proxy { .. }))
         )
     }
@@ -51,13 +49,13 @@ impl Vm {
     pub(crate) fn construct_proxy(&mut self, args: &[Value]) -> Result<Value, VmError> {
         let target = args.first().copied().unwrap_or(Value::Undefined);
         let handler = args.get(1).copied().unwrap_or(Value::Undefined);
-        if !matches!(target, Value::Object(_)) || !matches!(handler, Value::Object(_)) {
+        if !matches!(target.case(), ValueCase::Object(_)) || !matches!(handler.case(), ValueCase::Object(_)) {
             let msg = "Cannot create proxy with a non-object as target or handler";
             return Err(VmError::Thrown(Value::Object(
                 self.alloc_typed_error(msg, "TypeError"),
             )));
         }
-        let (Value::Object(t), Value::Object(h)) = (target, handler) else {
+        let (ValueCase::Object(t), ValueCase::Object(h)) = (target, handler) else {
             unreachable!("上方已校验均为对象");
         };
         Ok(Value::Object(self.alloc_proxy(t, h)))
@@ -206,9 +204,9 @@ impl Vm {
     ) -> Result<Value, VmError> {
         let args_arr = Value::Object(self.alloc_array(args.to_vec()));
         let args2 = [args_arr, Value::Object(r)];
-        match self.call_trap(r, "construct", &args2)? {
+        match self.call_trap(r, "construct", &args2)?.map(|v| v.case()) {
             // 规范校验：construct trap 必须返回对象
-            Some(v @ Value::Object(_)) => Ok(v),
+            Some(v @ ValueCase::Object(_)) => Ok(v),
             Some(_) => Err(VmError::Thrown(Value::Object(self.alloc_typed_error(
                 "'construct' on proxy: trap returned non-object ('undefined')",
                 "TypeError",
@@ -244,8 +242,8 @@ impl Vm {
             Some(v) => Ok(self.truthy(v)),
             None => {
                 let (target, _, _) = self.proxy_parts(r).unwrap();
-                let p = match proto {
-                    Value::Object(pr) => Some(pr),
+                let p = match proto.case() {
+                    ValueCase::Object(pr) => Some(pr),
                     _ => None,
                 };
                 self.set_prototype_of(Value::Object(target), p);

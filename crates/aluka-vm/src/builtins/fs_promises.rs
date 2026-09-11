@@ -14,7 +14,7 @@
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::time::UNIX_EPOCH;
 
@@ -89,11 +89,11 @@ fn thrown(vm: &mut Vm, msg: &str) -> VmError {
 
 /// 解析编码参数：支持字符串（如 "utf8"）或配置对象（如 `{ encoding: "utf8" }`）。
 fn parse_encoding(vm: &mut Vm, opt: Value) -> String {
-    match opt {
-        Value::Object(r) => {
+    match opt.case() {
+        ValueCase::Object(r) => {
             if let Some(HeapObject::String(s)) = vm.heap.get(r.index()) {
                 s.clone()
-            } else if let Ok(Value::Object(er)) = vm.get_property(Value::Object(r), "encoding") {
+            } else if let Ok(ValueCase::Object(er)) = vm.get_property(Value::Object(r), "encoding").map(ValueCase::from) {
                 if let Some(HeapObject::String(s)) = vm.heap.get(er.index()) {
                     s.clone()
                 } else {
@@ -109,9 +109,9 @@ fn parse_encoding(vm: &mut Vm, opt: Value) -> String {
 
 /// 解析第二参数中的递归选项：`{ recursive: true }` 或裸布尔值。
 fn options_recursive(vm: &mut Vm, opt: Value) -> bool {
-    match opt {
-        Value::Boolean(b) => b,
-        Value::Object(r) => {
+    match opt.case() {
+        ValueCase::Boolean(b) => b,
+        ValueCase::Object(r) => {
             let key = vm
                 .get_property(Value::Object(r), "recursive")
                 .unwrap_or(Value::Undefined);

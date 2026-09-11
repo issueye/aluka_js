@@ -59,7 +59,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("http")` / `require("node:http")` 模块定义。
@@ -300,17 +300,17 @@ fn agent_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut keep_alive = false;
     let mut keep_alive_msecs = 1000.0f64;
     let mut max_sockets = 0.0f64; // 0 → Infinity
-    if let Some(opts) = args.first().as_object {
-        let read = |vm: &mut Vm, key: &str| vm.get_property(Value::Object(*opts), key).ok();
+    if let Some(opts) = args.first().and_then(|v| v.as_object()) {
+        let read = |vm: &mut Vm, key: &str| vm.get_property(Value::Object(opts), key).ok();
         if let Some(v) = read(vm, "keepAlive") {
             if !matches!(v, Value::Undefined) {
                 keep_alive = vm.truthy(v);
             }
         }
-        if let Some(n) = read(vm, "keepAliveMsecs").as_number {
+        if let Some(n) = read(vm, "keepAliveMsecs").and_then(|v| v.as_number()) {
             keep_alive_msecs = n;
         }
-        if let Some(n) = read(vm, "maxSockets").as_number {
+        if let Some(n) = read(vm, "maxSockets").and_then(|v| v.as_number()) {
             max_sockets = n;
         }
     }
@@ -446,25 +446,21 @@ pub(crate) fn thrown_error(vm: &mut Vm, msg: &str) -> VmError {
 
 /// `nodebase.IntArg`：第 `i` 个参数取整数值，缺失/非数返回 `default`。
 pub(crate) fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
-    match args.get(i) {
-        Some(Value::Number(n)) => *n as i64,
+    match args.get(i).map(|v| v.case()).unwrap_or(ValueCase::Undefined) {
+        Some(ValueCase::Number(n)) => n as i64,
         _ => default,
     }
 }
 
 /// 判断值是否为普通对象（堆 Ordinary；堆字符串虽为 Object 包装但不算）。
 pub(crate) fn is_plain_object(vm: &Vm, v: Value) -> bool {
-    matches!(
-        v,
-        Value::Object(r) if matches!(vm.heap.get(r.0 as usize), Some(HeapObject::Ordinary { .. }))
+    matches!(v.case(), ValueCase::Object(r) if matches!(vm.heap.get(r.0 as usize), Some(HeapObject::Ordinary { .. }))
     )
 }
 
 /// 判断值是否为可调用对象（闭包 / 原生函数 / 原生构造器）。
 pub(crate) fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(
-        v,
-        Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
             vm.heap.get(r.0 as usize),
             Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. } | HeapObject::NativeCtor { .. })
         )
@@ -473,11 +469,11 @@ pub(crate) fn is_function(vm: &Vm, v: Value) -> bool {
 
 /// 头值 → 字符串列表：数组展开（跳过 undefined/null），其余单值。
 pub(crate) fn header_values(vm: &mut Vm, v: Value) -> Vec<String> {
-    if let Some(r) = v.as_object {
+    if let Some(r) = v.as_object() {
         if let Some(HeapObject::Array { elements, .. }) = vm.heap.get(r.0 as usize) {
             return elements
                 .iter()
-                .filter(|e| !matches!(e, Value::Undefined | Value::Null))
+                .filter(|e| !matches!(*e, Value::Undefined | Value::Null))
                 .map(|e| vm.format_value(*e))
                 .collect();
         }
@@ -541,7 +537,7 @@ pub(crate) fn build_message_instance(
 /// `message.on(event, listener)`。
 fn message_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, false);
@@ -553,7 +549,7 @@ fn message_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `message.once(event, listener)`。
 fn message_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, true);
@@ -565,7 +561,7 @@ fn message_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `message.off(event, listener)` / `removeListener`。
 fn message_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::remove_listener(r.0, &name, *cb);

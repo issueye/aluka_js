@@ -7,7 +7,7 @@ use super::random::{fill_random, random_int_range, random_uuid_v4};
 use crate::builtins::buffer::{create_buffer_instance, extract_bytes};
 use crate::builtins::register_handler;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// `randomBytes(size)`：返回随机字节 Buffer（`size <= 0` 或 `> 1MB` 报错）。
 fn random_bytes(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
@@ -60,7 +60,7 @@ fn random_int(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 严格判定值是否为真实 Buffer 实例（`_isBuffer` 标记；字符串不算）。
 fn strict_buffer_bytes(vm: &Vm, v: Value) -> Option<Vec<u8>> {
-    let Value::Object(r) = v else {
+    let ValueCase::Object(r) = v.case() else {
         return None;
     };
     let is_buffer = match vm.heap.get(r.0 as usize) {
@@ -103,7 +103,7 @@ fn random_fill_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(throw_error(vm, "randomFillSync: invalid buffer or bounds"));
     };
     fill_random(&mut bytes[offset..offset + size]);
-    if let Some(r) = target.as_object {
+    if let Some(r) = target.as_object() {
         crate::builtins::buffer::overwrite_buffer_instance(vm, r, &bytes);
     }
     Ok(target)
@@ -120,7 +120,7 @@ fn random_fill(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(throw_error(vm, "randomFill: invalid buffer or bounds"));
     };
     fill_random(&mut bytes[offset..offset + size]);
-    if let Some(r) = target.as_object {
+    if let Some(r) = target.as_object() {
         crate::builtins::buffer::overwrite_buffer_instance(vm, r, &bytes);
     }
     schedule_delivery(vm, cb, Delivery::Passthrough(target));

@@ -2,7 +2,7 @@
 
 use crate::builtins::{current_receiver, pending_native_name};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let method = pending_native_name()
@@ -19,7 +19,7 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                 .map(|v| vm.to_property_key(*v))
                 .unwrap_or_default();
             let desc = args.get(2).copied().unwrap_or(Value::Undefined);
-            if let Some(r) = target.as_object {
+            if let Some(r) = target.as_object() {
                 if vm.proxy_parts(r).is_some() {
                     return Ok(Value::Boolean(vm.proxy_define_property(r, &key, desc)?));
                 }
@@ -52,8 +52,8 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         }
         "setPrototypeOf" => {
             let proto = args.get(1).copied().unwrap_or(Value::Undefined);
-            let p = match proto {
-                Value::Object(pr) => Some(pr),
+            let p = match proto.case() {
+                ValueCase::Object(pr) => Some(pr),
                 _ => None,
             };
             vm.set_prototype_of(target, p);
@@ -76,12 +76,12 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             // 规范 SameValue：NaN 等值同真、+0/-0 异值（`Object.is` 实测缺失）
             let a = args.first().copied().unwrap_or(Value::Undefined);
             let b = args.get(1).copied().unwrap_or(Value::Undefined);
-            let same = match (&a, &b) {
-                (Value::Number(x), Value::Number(y)) => {
+            let same = match (&a, &b).case() {
+                (ValueCase::Number(x), ValueCase::Number(y)) => {
                     if x.is_nan() && y.is_nan() {
                         true
                     } else {
-                        x == y && (x.to_bits() == y.to_bits() || !(*x == 0.0 && *y == 0.0))
+                        x == y && (x.to_bits() == y.to_bits() || !(x == 0.0 && y == 0.0))
                     }
                 }
                 _ => a == b || (matches!(a, Value::Undefined) && matches!(b, Value::Undefined)),

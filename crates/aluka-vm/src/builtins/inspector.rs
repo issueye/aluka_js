@@ -16,7 +16,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -46,17 +46,15 @@ fn session_connected<R>(id: u32, f: impl FnOnce(&mut bool) -> R) -> R {
 
 /// 当前接收者（Session 实例）句柄 id。
 fn receiver_id() -> Option<u32> {
-    match current_receiver() {
-        Value::Object(r) => Some(r.0),
+    match current_receiver().case() {
+        ValueCase::Object(r) => Some(r.0),
         _ => None,
     }
 }
 
 /// 值是否为可调用函数。
 fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(
-        v,
-        Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
             if matches!(
                 vm.heap.get(r.0 as usize),
                 Some(HeapObject::Closure { .. })
@@ -272,7 +270,7 @@ mod tests {
 #[cfg(test)]
 mod probe_tests {
     use crate::Vm;
-    use crate::value::Value;
+    use crate::value::{Value, ValueCase};
 
     #[test]
     fn probe_session_construct() {

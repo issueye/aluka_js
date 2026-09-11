@@ -14,7 +14,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -71,8 +71,8 @@ impl Vm {
         let combiner = self.alloc_pending_promise();
         let resolver = self.alloc_promise_resolver(combiner, true);
         let reject_resolver = self.alloc_promise_resolver(combiner, false);
-        let elements: Vec<Value> = match args.first() {
-            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+        let elements: Vec<Value> = match args.first().map(|v| v.case()) {
+            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Array { elements, .. }) => elements.clone(),
                 _ => Vec::new(),
             },
@@ -88,8 +88,8 @@ impl Vm {
         };
         for (slot, el) in elements.iter().enumerate() {
             // 元素定型形态：None = pending promise（登记监听）；Some = 即期结果
-            let settled = match el {
-                Value::Object(r) => match self.heap.get(r.0 as usize) {
+            let settled = match el.case() {
+                ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                     Some(HeapObject::Promise {
                         pending,
                         value,
@@ -104,7 +104,7 @@ impl Vm {
                     }
                     _ => Some((*el, false)),
                 },
-                other => Some((*other, false)),
+                other => Some((other, false)),
             };
             match settled {
                 None => WATCHERS.with(|c| {
@@ -309,8 +309,8 @@ pub(crate) fn combiner_roots(out: &mut crate::gc::GcRoots) {
 
 /// 元素 promise 的 Value → 堆句柄（供监听表键控）。
 fn el_handle(el: Value) -> u32 {
-    match el {
-        Value::Object(r) => r.0,
+    match el.case() {
+        ValueCase::Object(r) => r.0,
         _ => u32::MAX,
     }
 }

@@ -9,7 +9,7 @@
 
 use crate::builtins::buffer;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 
@@ -90,9 +90,7 @@ pub(crate) fn register(registry: &mut crate::builtins::BuiltinRegistry) {
 
 /// 值是否为可调用对象（闭包 / 原生函数 / 原生构造器）。
 pub(crate) fn is_callable(vm: &Vm, v: Value) -> bool {
-    matches!(
-        v,
-        Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
             vm.heap.get(r.0 as usize),
             Some(
                 crate::heap::HeapObject::Closure { .. }

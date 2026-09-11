@@ -2,7 +2,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::{Upvalue, Value};
+use crate::value::{Upvalue, Value, ValueCase};
 use std::cell::RefCell;
 
 thread_local! {
@@ -122,7 +122,7 @@ impl CallArgs {
 impl Vm {
     /// 解析可调用对象：闭包返回 (函数模板索引, 上值)；裸函数模板索引返回 (索引, 空上值)。
     pub(crate) fn resolve_callable(&self, callee: Value) -> (Option<usize>, Vec<Upvalue>) {
-        if let Some(r) = callee.as_object {
+        if let Some(r) = callee.as_object() {
             if let Some(HeapObject::Closure {
                 func_idx, upvalues, ..
             }) = self.heap.get(r.0 as usize)
@@ -143,7 +143,7 @@ impl Vm {
         this_val: Value,
         args: &[Value],
     ) -> Result<Value, VmError> {
-        if let Some(r) = callee.as_object {
+        if let Some(r) = callee.as_object() {
             // Proxy 对象：经 apply trap 派发（未安装时转发 target 调用）
             if self.proxy_parts(r).is_some() {
                 return self.proxy_apply(r, this_val, args);
@@ -156,7 +156,7 @@ impl Vm {
             };
             if let Some((promise, resolve)) = resolver {
                 let val = match args.first() {
-                    Some(v) if !matches!(v, Value::Undefined) => *v,
+                    Some(v) if !matches!(*v, Value::Undefined) => *v,
                     _ => {
                         crate::builtins::timers::take_resolver_val(r.0).unwrap_or(Value::Undefined)
                     }
@@ -240,7 +240,7 @@ impl Vm {
             // 处理器签名无法拿到自身 fn 对象，故在此特判）
             if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
                 if name == "Proxy.revoke" {
-                    if let Some(pr) = self.get_native_fn_property(r, "_revokes").as_object {
+                    if let Some(pr) = self.get_native_fn_property(r, "_revokes").and_then(|v| v.as_object()) {
                         self.revoke_proxy(pr);
                     }
                     return Ok(Value::Undefined);
@@ -275,7 +275,7 @@ impl Vm {
     /// 构造调用（`new X(args)`）：分配实例（挂 `callee.prototype`）并以 `this`=实例
     /// 调用构造器；构造器返回对象则采用之，否则采用实例。原生构造器由解释器拦截。
     pub(crate) fn do_construct(&mut self, callee: Value, args: &[Value]) -> Result<Value, VmError> {
-        if let Some(r) = callee.as_object {
+        if let Some(r) = callee.as_object() {
             // Proxy 对象：经 construct trap 派发（未安装时转发 target 构造）
             if self.proxy_parts(r).is_some() {
                 return self.proxy_construct(r, args);
@@ -332,7 +332,7 @@ impl Vm {
                         // raw-body `new Array(arguments.length)` 依赖 length
                         // 语义——曾无条件空数组导致 done 回调参数全丢
                         if args.len() == 1
-                            && let Value::Number(n) = args[0]
+                            && let ValueCase::Number(n) = args[0]
                         {
                             if n.fract() == 0.0 && (0.0..4294967296.0).contains(&n) {
                                 let len = n as usize;
@@ -457,8 +457,8 @@ impl Vm {
                 }
             }
         }
-        let proto_ref = match self.get_property(callee, "prototype") {
-            Ok(Value::Object(p)) => Some(p),
+        let proto_ref = match self.get_property(callee, "prototype").map(|v| v.case()) {
+            Ok(ValueCase::Object(p)) => Some(p),
             _ => None,
         };
         let instance_ref = self.alloc_ordinary_with_proto(proto_ref);
@@ -466,7 +466,7 @@ impl Vm {
         let (f_idx, uvs) = self.resolve_callable(callee);
         if let Some(fi) = f_idx {
             let res = self.invoke_function(fi, instance_val, args, uvs)?;
-            if matches!(res, Value::Object(_)) {
+            if matches!(res.case(), ValueCase::Object(_)) {
                 return Ok(res);
             }
         }
@@ -490,7 +490,7 @@ impl Vm {
     /// 将 spread 参数表转为参数列表（对齐 Go 版 `toArrayValues`）：
     /// 数组取元素列表，普通对象取自有属性值集，其余为空。
     pub(crate) fn to_array_values(&self, val: Value) -> Vec<Value> {
-        if let Some(r) = val.as_object {
+        if let Some(r) = val.as_object() {
             let idx = r.0 as usize;
             if idx < self.heap.len() {
                 match &self.heap[idx] {
@@ -808,7 +808,7 @@ impl Vm {
         let res = self.run_func(&self.module_functions[0].clone())?;
 
         let mut ret = res;
-        if let Some(r) = res.as_object {
+        if let Some(r) = res.as_object() {
             let (target_func, uvs) = if let Some(HeapObject::Closure {
                 func_idx, upvalues, ..
             }) = self.heap.get(r.0 as usize)

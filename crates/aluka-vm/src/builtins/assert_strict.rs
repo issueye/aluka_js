@@ -101,7 +101,7 @@ fn not_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `assert.throws(fn, [error, message])`：断言函数执行抛出异常。
 fn throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
-    let Some(r) = args.first().copied().as_object() else {
+    let Some(r) = args.first().copied().and_then(|v| v.as_object()) else {
         return Err(thrown(vm, "assert.throws: function required"));
     };
     let Some(HeapObject::Closure {

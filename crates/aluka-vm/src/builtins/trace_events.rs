@@ -17,7 +17,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// Tracing 实例的命名空间标记（`builtin_ns` 机制）。
@@ -62,10 +62,10 @@ fn get_enabled_categories(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmErro
 fn create_tracing(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut categories = String::new();
     if let Some(opts) = args.first() {
-        if matches!(opts, Value::Object(_)) {
+        if matches!(opts.case(), ValueCase::Object(_)) {
             let c = vm.get_property(*opts, "categories")?;
-            let elems: Option<Vec<Value>> = match c {
-                Value::Object(r) => match vm.heap.get(r.index()) {
+            let elems: Option<Vec<Value>> = match c.case() {
+                ValueCase::Object(r) => match vm.heap.get(r.index()) {
                     Some(HeapObject::Array { elements, .. }) => Some(elements.clone()),
                     _ => None,
                 },
@@ -121,12 +121,12 @@ fn tracing_disable(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 值的 Go 类型名（对齐 Go `engine.ValueType.String()`，即 typeof 语义：
 /// null → "object"、字符串 → "string"、函数 → "function"）。
 fn go_type_name(vm: &Vm, val: Value) -> &'static str {
-    match val {
+    match val.case() {
         Value::Undefined => "undefined",
         Value::Null => "object",
-        Value::Boolean(_) => "boolean",
-        Value::Number(_) => "number",
-        Value::Object(r) => match vm.heap.get(r.index()) {
+        ValueCase::Boolean(_) => "boolean",
+        ValueCase::Number(_) => "number",
+        ValueCase::Object(r) => match vm.heap.get(r.index()) {
             Some(HeapObject::String(_)) => "string",
             Some(HeapObject::BigInt(_)) => "bigint",
             Some(

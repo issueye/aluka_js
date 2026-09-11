@@ -6,16 +6,16 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// 原始值/引用严格相等（对齐 Go `nodebase.StrictEqual`：NaN 不等、
 /// 字符串比内容、对象比引用）。
 pub fn strict_equal(vm: &Vm, a: Value, b: Value) -> bool {
-    match (a, b) {
+    match (a, b).case() {
         (Value::Undefined, Value::Undefined) | (Value::Null, Value::Null) => true,
-        (Value::Boolean(x), Value::Boolean(y)) => x == y,
-        (Value::Number(x), Value::Number(y)) => x == y,
-        (Value::Object(x), Value::Object(y)) => {
+        (ValueCase::Boolean(x), ValueCase::Boolean(y)) => x == y,
+        (ValueCase::Number(x), ValueCase::Number(y)) => x == y,
+        (ValueCase::Object(x), ValueCase::Object(y)) => {
             match (vm.heap.get(x.index()), vm.heap.get(y.index())) {
                 (Some(HeapObject::String(sa)), Some(HeapObject::String(sb))) => sa == sb,
                 (Some(HeapObject::BigInt(sa)), Some(HeapObject::BigInt(sb))) => sa == sb,
@@ -32,14 +32,14 @@ pub fn loose_equal(vm: &Vm, a: Value, b: Value) -> bool {
     if strict_equal(vm, a, b) {
         return true;
     }
-    if let (Value::Number(x), Value::Object(y)) = (a, b) {
+    if let (ValueCase::Number(x), ValueCase::Object(y)) = (a, b) {
         if let Some(HeapObject::String(s)) = vm.heap.get(y.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return x == n;
             }
         }
     }
-    if let (Value::Object(x), Value::Number(y)) = (a, b) {
+    if let (ValueCase::Object(x), ValueCase::Number(y)) = (a, b) {
         if let Some(HeapObject::String(s)) = vm.heap.get(x.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return n == y;
@@ -51,13 +51,13 @@ pub fn loose_equal(vm: &Vm, a: Value, b: Value) -> bool {
 
 /// 是否数组值。
 fn is_array(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Array { .. })))
 }
 
 /// 是否普通对象。
 fn is_ordinary(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })))
 }
 
@@ -71,7 +71,7 @@ pub fn deep_strict_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
         if !is_array(vm, a) || !is_array(vm, b) {
             return false;
         }
-        let (Some(Value::Object(ra)), Some(Value::Object(rb))) = (Some(a), Some(b)) else {
+        let (Some(ValueCase::Object(ra)), Some(ValueCase::Object(rb))) = (Some(a), Some(b)) else {
             unreachable!()
         };
         let (elems_a, elems_b) = match (vm.heap.get(ra.index()), vm.heap.get(rb.index())) {
@@ -90,7 +90,7 @@ pub fn deep_strict_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
             .all(|(x, y)| deep_strict_equal(vm, *x, *y));
     }
     if is_ordinary(vm, a) && is_ordinary(vm, b) {
-        let (Some(Value::Object(ra)), Some(Value::Object(rb))) = (Some(a), Some(b)) else {
+        let (Some(ValueCase::Object(ra)), Some(ValueCase::Object(rb))) = (Some(a), Some(b)) else {
             unreachable!()
         };
         let props_a = vm.own_entries(ra.index());
@@ -120,14 +120,14 @@ pub fn deep_loose_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
     if deep_strict_equal(vm, a, b) {
         return true;
     }
-    if let (Value::Number(x), Value::Object(y)) = (a, b) {
+    if let (ValueCase::Number(x), ValueCase::Object(y)) = (a, b) {
         if let Some(HeapObject::String(s)) = vm.heap.get(y.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return x == n;
             }
         }
     }
-    if let (Value::Object(x), Value::Number(y)) = (a, b) {
+    if let (ValueCase::Object(x), ValueCase::Number(y)) = (a, b) {
         if let Some(HeapObject::String(s)) = vm.heap.get(x.index()) {
             if let Ok(n) = s.trim().parse::<f64>() {
                 return n == y;
@@ -139,7 +139,7 @@ pub fn deep_loose_equal(vm: &mut Vm, a: Value, b: Value) -> bool {
 
 /// 正则整体匹配（对齐 Go `vmRegexpTest`：`re.test(target)` 语义）。
 pub fn regexp_test(vm: &mut Vm, re: Value, target: &str) -> bool {
-    let Value::Object(r) = re else {
+    let ValueCase::Object(r) = re.case() else {
         return false;
     };
     let (pattern, flags) = match vm.heap.get(r.index()) {
@@ -158,7 +158,7 @@ pub fn error_message(vm: &mut Vm, err: &VmError) -> String {
     let VmError::Thrown(v) = err else {
         return err.to_string();
     };
-    if let Some(r) = v.as_object {
+    if let Some(r) = v.as_object() {
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
             if let Ok(msg) = vm.get_property(*v, "message") {
                 if !matches!(msg, Value::Undefined | Value::Null) {

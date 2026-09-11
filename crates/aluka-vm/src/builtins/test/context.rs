@@ -18,7 +18,7 @@ pub use super::state::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// 状态访问器整体重导出（runner/mod 经 `context::*` 使用）。
 pub use super::state::*;
@@ -40,8 +40,8 @@ fn fail_expected_but_got(vm: &mut Vm, a: Value, b: Value) -> VmError {
 /// 归属状态。找不到时回退 CURRENT（顺序模式/微任务子测试路径不变）。
 fn receiver_state_id(vm: &mut Vm) -> Option<u64> {
     let receiver = crate::builtins::current_receiver();
-    if let Some(r) = receiver.as_object {
-        if let Ok(Value::Number(n)) = vm.get_property(Value::Object(r), "_stateId") {
+    if let Some(r) = receiver.as_object() {
+        if let Ok(ValueCase::Number(n)) = vm.get_property(Value::Object(r), "_stateId").map(ValueCase::from) {
             let id = n as u64;
             if id > 0 {
                 return Some(id);
@@ -180,7 +180,7 @@ pub fn ctx_assert_not_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<V
 pub fn ctx_assert_if_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let _ = with_receiver_state_mut(vm, |st| st.add_assert());
     if let Some(v) = args.first() {
-        if !matches!(v, Value::Undefined | Value::Null) {
+        if !matches!(*v, Value::Undefined | Value::Null) {
             return Err(assert_fail(vm, "ifError got unwanted exception"));
         }
     }
@@ -251,9 +251,9 @@ pub fn ctx_assert_throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// （引擎 promise 拒绝与兑现同形——Go `AwaitPromise` 错误路径的近似移植）。
 fn promise_rejected(vm: &mut Vm, pv: Value) -> Result<bool, VmError> {
     vm.drain_microtasks()?;
-    if let Some(r) = pv.as_object {
+    if let Some(r) = pv.as_object() {
         if let Some(HeapObject::Promise { pending, value, .. }) = vm.heap.get(r.index()) {
-            return Ok(!*pending && !matches!(value, Value::Undefined));
+            return Ok(!*pending && !matches!(*value, Value::Undefined));
         }
     }
     Ok(false)
@@ -277,7 +277,7 @@ pub fn ctx_assert_rejects(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
             }
         };
     }
-    if matches!(args[0], Value::Object(_)) {
+    if matches!(args[0], ValueCase::Object(_)) {
         return if promise_rejected(vm, args[0])? {
             Ok(Value::Undefined)
         } else {
@@ -344,8 +344,8 @@ pub fn ctx_plan(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if args.is_empty() {
         return Err(type_fail(vm, "plan: count required"));
     }
-    let n = match args.first() {
-        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => *n as u32,
+    let n = match args.first().map(|v| v.case()) {
+        Some(ValueCase::Number(n)) if n >= 0.0 && n.fract() == 0.0 => n as u32,
         _ => {
             return Err(type_fail(vm, "plan: count must be a non-negative integer"));
         }
@@ -394,8 +394,8 @@ pub fn ctx_test(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 子测试调度任务：`before/beforeEach → 用例 → afterEach/after`（Node 语义）。
 pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let sub_id = match args.first() {
-        Some(Value::Number(n)) => *n as u64,
+    let sub_id = match args.first().map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as u64,
         _ => return Ok(Value::Undefined),
     };
     let cancelled = subtest_get(sub_id, |s| s.cancelled).unwrap_or(false);
@@ -403,7 +403,7 @@ pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Undefined);
     };
     if cancelled {
-        if let Some(p) = promise_val.as_object {
+        if let Some(p) = promise_val.as_object() {
             vm.fulfill_promise(p, Value::Undefined)?;
         }
         return Ok(Value::Undefined);
@@ -458,7 +458,7 @@ pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                 error: Some(format!("subtest hook: {}", error_message(vm, &e))),
             },
         );
-        if let Some(p) = promise_val.as_object {
+        if let Some(p) = promise_val.as_object() {
             vm.fulfill_promise(p, Value::Undefined)?;
         }
         return Ok(Value::Undefined);
@@ -494,7 +494,7 @@ pub fn sub_run_task(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
-    if let Some(p) = promise_val.as_object {
+    if let Some(p) = promise_val.as_object() {
         vm.fulfill_promise(p, Value::Undefined)?;
     }
     Ok(Value::Undefined)
@@ -529,7 +529,7 @@ pub fn ctx_wait_for(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
     let mut timeout_ms = 0u64;
     if let Some(v) = args.get(1).copied() {
-        if let Ok(Value::Number(n)) = vm.get_property(v, "timeout") {
+        if let Ok(ValueCase::Number(n)) = vm.get_property(v, "timeout").map(ValueCase::from) {
             if n > 0.0 {
                 timeout_ms = n as u64;
             }

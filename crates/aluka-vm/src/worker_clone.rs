@@ -44,7 +44,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -115,9 +115,9 @@ pub(crate) fn serialize(vm: &mut Vm, root: Value, transfer: &[Value]) -> Result<
     // transfer list：仅接受 ArrayBuffer / TypedArray / DataView（取其底层
     // buffer）；其余（含 MessagePort 本轮登记）抛 unsupported。
     for t in transfer {
-        let buf = match t {
-            Value::Object(r) => match ser.vm.heap.get(r.0 as usize) {
-                Some(HeapObject::ArrayBuffer { .. }) => Some(*r),
+        let buf = match t.case() {
+            ValueCase::Object(r) => match ser.vm.heap.get(r.0 as usize) {
+                Some(HeapObject::ArrayBuffer { .. }) => Some(r),
                 Some(HeapObject::TypedArray { buffer, .. }) => Some(*buffer),
                 Some(HeapObject::DataView { buffer, .. }) => Some(*buffer),
                 _ => None,
@@ -216,9 +216,9 @@ impl Ser<'_> {
     }
 
     fn is_date(&mut self, idx: usize) -> Option<f64> {
-        match self.vm.own_value(idx, "_isDate") {
-            Some(Value::Boolean(true)) => match self.vm.own_value(idx, "_timeValue") {
-                Some(Value::Number(n)) => Some(n),
+        match self.vm.own_value(idx, "_isDate").map(|v| v.case()) {
+            Some(ValueCase::Boolean(true)) => match self.vm.own_value(idx, "_timeValue").map(|v| v.case()) {
+                Some(ValueCase::Number(n)) => Some(n),
                 _ => Some(f64::NAN),
             },
             _ => None,
@@ -237,7 +237,7 @@ impl Ser<'_> {
     }
 
     fn serialize_value(&mut self, v: Value) -> Result<(), VmError> {
-        match v {
+        match v.case() {
             Value::Undefined => {
                 self.tag(T_UNDEF);
                 Ok(())
@@ -246,16 +246,16 @@ impl Ser<'_> {
                 self.tag(T_NULL);
                 Ok(())
             }
-            Value::Boolean(b) => {
+            ValueCase::Boolean(b) => {
                 self.tag(if b { T_TRUE } else { T_FALSE });
                 Ok(())
             }
-            Value::Number(n) => {
+            ValueCase::Number(n) => {
                 self.tag(T_NUM);
                 self.f64(n);
                 Ok(())
             }
-            Value::Object(r) => {
+            ValueCase::Object(r) => {
                 let idx = r.0 as usize;
                 // 引用表命中（循环 / 共享同一对象）→ 回写索引
                 if let Some(pos) = self.objects.iter().position(|&o| o == r.0) {
@@ -849,7 +849,7 @@ impl Vm {
     /// 字符串）。属性不存在（或已被删除）返回 `None`。
     fn own_text(&self, idx: usize, key: &str) -> Option<String> {
         let v = self.own_value(idx, key)?;
-        if let Some(r) = v.as_object {
+        if let Some(r) = v.as_object() {
             if let Some(HeapObject::String(s)) = self.heap.get(r.0 as usize) {
                 return Some(s.clone());
             }
@@ -873,8 +873,8 @@ impl Vm {
             ));
         };
         // `{ transfer: [...] }`：ArrayBuffer 或其视图的移交列表（可选）
-        let transfer = match args.get(1).copied() {
-            Some(Value::Object(opts)) => {
+        let transfer = match args.get(1).copied().map(|v| v.case()) {
+            Some(ValueCase::Object(opts)) => {
                 let arr = self
                     .get_property(Value::Object(opts), "transfer")
                     .unwrap_or(Value::Undefined);

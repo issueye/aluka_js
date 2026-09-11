@@ -43,7 +43,7 @@ use super::context;
 use crate::builtins::BuiltinHandler;
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 
 /// spy 池容量（每槽位一个 trampoline）。
@@ -387,9 +387,9 @@ fn not_enabled_error(vm: &mut Vm) -> VmError {
 
 /// 读取时间入参（缺省 `default`；非数字/负数按 Node 抛错）。
 fn time_arg(vm: &mut Vm, v: Option<Value>, default: i64) -> Result<i64, VmError> {
-    match v {
+    match v.map(|v| v.case()) {
         None | Some(Value::Undefined) => Ok(default),
-        Some(Value::Number(n)) => {
+        Some(ValueCase::Number(n)) => {
             if n.is_nan() {
                 return Err(code_error(
                     vm,
@@ -496,8 +496,8 @@ fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         FakeApi::SetInterval,
         FakeApi::SetImmediate,
     ];
-    if !matches!(apis_val, Value::Undefined) {
-        let Value::Object(r) = apis_val else {
+    if !matches!(apis_val, Value::Undefined).case() {
+        let ValueCase::Object(r) = apis_val.case() else {
             return Err(code_error(
                 vm,
                 "ERR_INVALID_ARG_TYPE",
@@ -526,9 +526,9 @@ fn timers_enable(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
         }
     }
-    let now = match vm.get_property(opts, "now").unwrap_or(Value::Undefined) {
+    let now = match vm.get_property(opts, "now").unwrap_or(Value::Undefined).case() {
         Value::Undefined => 0,
-        Value::Number(n) if !n.is_nan() => {
+        ValueCase::Number(n) if !n.is_nan() => {
             let t = n as i64;
             if t < 0 {
                 return Err(time_arg_error(vm, t));
@@ -750,7 +750,7 @@ fn mock_method(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 是否普通对象。
 fn is_ordinary(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })))
 }
 
@@ -851,8 +851,8 @@ fn mock_restore_all(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 属性保留；槽位清空后 `.mock.calls` 仍可读——对齐 Node 快照语义）。
 fn mock_spy_restore(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    let mock_ref = match receiver {
-        Value::Object(r) => r.0,
+    let mock_ref = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let slot = SPY_STORE.with(|s| {

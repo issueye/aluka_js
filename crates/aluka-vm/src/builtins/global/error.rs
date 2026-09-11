@@ -3,7 +3,7 @@
 use crate::builtins::current_receiver;
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 const CALLSITE_FRAMES: usize = 12;
 
@@ -27,8 +27,8 @@ pub(crate) fn error_capture_stack_trace(vm: &mut Vm, args: &[Value]) -> Result<V
 
 pub(crate) fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let method = match receiver {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    let method = match receiver.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::NativeFn { name, .. }) => {
                 name.clone().split('.').next_back().unwrap_or("").to_owned()
             }
@@ -36,8 +36,8 @@ pub(crate) fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
         },
         _ => String::new(),
     };
-    let file = match receiver {
-        Value::Object(r) => vm
+    let file = match receiver.case() {
+        ValueCase::Object(r) => vm
             .own_value(r.0 as usize, "_file")
             .map(|v| vm.format_value(v))
             .unwrap_or_default(),

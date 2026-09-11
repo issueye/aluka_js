@@ -4,7 +4,7 @@
 use crate::builtins::{current_receiver, pending_native_name};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 // ===== URLSearchParams =====
 
@@ -30,7 +30,7 @@ pub(crate) fn url_search_params_ctor(vm: &mut Vm, args: &[Value]) -> Result<Valu
 pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = Vec::new();
     let init_text = vm.format_value(init);
-    if !init_text.is_empty() && !matches!(init, Value::Undefined | Value::Null | Value::Boolean(_))
+    if !init_text.is_empty() && !matches!(init, Value::Undefined | Value::Null | ValueCase::Boolean(_))
     {
         for pair in init_text.split('&').filter(|p| !p.is_empty()) {
             let mut it = pair.splitn(2, '=');
@@ -41,7 +41,7 @@ pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> 
         }
         return entries;
     }
-    if let Some(r) = init.as_object {
+    if let Some(r) = init.as_object() {
         let is_arr = matches!(
             vm.heap.get(r.index()),
             Some(crate::heap::HeapObject::Array { .. })
@@ -52,7 +52,7 @@ pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> 
                 _ => Vec::new(),
             };
             for e in elements {
-                if let Some(er) = e.as_object {
+                if let Some(er) = e.as_object() {
                     let pair: Vec<Value> = match vm.heap.get(er.index()) {
                         Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
                         _ => Vec::new(),
@@ -74,7 +74,7 @@ pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> 
 }
 
 pub(crate) fn usp_entries(vm: &mut Vm, receiver: Value) -> Vec<(String, String)> {
-    let Ok(Value::Object(arr)) = vm.get_property(receiver, "_uspEntries") else {
+    let Ok(ValueCase::Object(arr)) = vm.get_property(receiver, "_uspEntries") else {
         return Vec::new();
     };
     let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {
@@ -84,7 +84,7 @@ pub(crate) fn usp_entries(vm: &mut Vm, receiver: Value) -> Vec<(String, String)>
     elements
         .iter()
         .filter_map(|e| {
-            let Value::Object(_) = e else {
+            let ValueCase::Object(_) = e.case() else {
                 return None;
             };
             let k = vm
@@ -259,13 +259,13 @@ pub(crate) fn text_decoder_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
 /// `decoder.decode(uint8)`。
 pub(crate) fn text_decoder_decode(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut bytes: Vec<u8> = Vec::new();
-    if let Some(r) = args.first().as_object {
+    if let Some(r) = args.first().and_then(|v| v.as_object()) {
         let elements: Vec<Value> = match vm.heap.get(r.index()) {
             Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
             _ => Vec::new(),
         };
         for v in elements {
-            if let Some(n) = v.as_number {
+            if let Some(n) = v.as_number() {
                 bytes.push(n as u8);
             }
         }
@@ -281,8 +281,8 @@ pub(crate) fn queuing_strategy_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value
     let name = pending_native_name();
     let strategy = name.rsplit('.').next().unwrap_or("");
     let init = args.first().copied().unwrap_or(Value::Undefined);
-    let hwm = match vm.get_property(init, "highWaterMark") {
-        Ok(Value::Number(n)) => n,
+    let hwm = match vm.get_property(init, "highWaterMark").map(|v| v.case()) {
+        Ok(ValueCase::Number(n)) => n,
         _ => 1.0,
     };
     let qs = vm.alloc_ordinary();
@@ -300,7 +300,7 @@ pub(crate) fn queuing_strategy_size(vm: &mut Vm, args: &[Value]) -> Result<Value
     if strategy == "CountQueuingStrategy" {
         return Ok(Value::Number(1.0));
     }
-    let len = if let Some(r) = chunk.as_object {
+    let len = if let Some(r) = chunk.as_object() {
         match vm.heap.get(r.index()) {
             Some(crate::heap::HeapObject::Array { elements, .. }) => elements.len() as f64,
             _ => 1.0,
@@ -318,14 +318,14 @@ pub(crate) fn blob_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErr
     let parts = args.first().copied().unwrap_or(Value::Undefined);
     let opts = args.get(1).copied().unwrap_or(Value::Undefined);
     let mut text = String::new();
-    if let Some(r) = parts.as_object {
+    if let Some(r) = parts.as_object() {
         let elements: Vec<Value> = match vm.heap.get(r.index()) {
             Some(HeapObject::Array { elements, .. }) => elements.clone(),
             _ => Vec::new(),
         };
         for e in elements {
             let s = vm.format_value(e);
-            if let Some(er) = e.as_object {
+            if let Some(er) = e.as_object() {
                 if matches!(vm.heap.get(er.index()), Some(HeapObject::Array { .. })) {
                     let bytes: Vec<Value> = match vm.heap.get(er.index()) {
                         Some(HeapObject::Array { elements, .. }) => elements.clone(),
@@ -333,7 +333,7 @@ pub(crate) fn blob_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErr
                     };
                     let mut sub = String::new();
                     for b in bytes {
-                        if let Some(n) = b.as_number {
+                        if let Some(n) = b.as_number() {
                             if let Some(c) = std::char::from_u32(n as u32) {
                                 sub.push(c);
                             }

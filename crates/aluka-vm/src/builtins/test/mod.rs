@@ -56,7 +56,7 @@ use crate::builtins::test_reporters::{ReportCase, ReportCounts, ReportStatus, Re
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -76,7 +76,7 @@ thread_local! {
 
 /// 是否可调用值（函数）。
 pub fn is_function_value(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
     if matches!(
         vm.heap.get(r.index()),
         Some(HeapObject::Closure { .. }) | Some(HeapObject::NativeFn { .. })
@@ -448,7 +448,7 @@ fn parse_options(vm: &mut Vm, args: &[Value]) -> (String, Value, registry::TestO
 
 /// options 对象读取 skip/todo/only。
 fn apply_opts(vm: &mut Vm, o: Value, opts: &mut registry::TestOpts) {
-    if let Some(r) = o.as_object {
+    if let Some(r) = o.as_object() {
         if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
             registry::apply_test_opts(vm, o, opts);
         }
@@ -538,8 +538,8 @@ struct ComposedState {
 fn stream_compose(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 先取源流：工厂调用会覆盖 current_receiver
     let source = crate::builtins::current_receiver();
-    let reporter = match args.first().copied() {
-        Some(r @ Value::Object(_)) => {
+    let reporter = match args.first().copied().map(|v| v.case()) {
+        Some(r @ ValueCase::Object(_)) => {
             let already = vm
                 .get_property(r, "_reporterKind")
                 .ok()
@@ -612,11 +612,11 @@ fn stream_compose(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 事件转发：把 `{type, data}` 事件分块交报告器格式化，文本直通目的地
 /// （未 pipe 时缓冲；写目的地在状态锁外执行，避免 borrow 跨调用）。
 fn compose_forward(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(callee) = crate::builtins::pending_callee() else {
+    let ValueCase::Object(callee) = crate::builtins::pending_callee() else {
         return Ok(Value::Undefined);
     };
-    let composed_id = match vm.get_native_fn_property(callee, "_composed") {
-        Some(Value::Number(n)) if n >= 0.0 => n as u32,
+    let composed_id = match vm.get_native_fn_property(callee, "_composed").map(|v| v.case()) {
+        Some(ValueCase::Number(n)) if n >= 0.0 => n as u32,
         _ => return Ok(Value::Undefined),
     };
     let reporter = vm
@@ -662,7 +662,7 @@ fn compose_forward(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 组合流 `pipe(dest)`：登记目的地并补冲缓冲；返回 destination（Node 语义）。
 fn compose_pipe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let dest = args.first().copied().unwrap_or(Value::Undefined);
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(dest);
     };
     let pending: Vec<String> = COMPOSED.with(|g| {

@@ -17,7 +17,7 @@
 use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::Vm;
 use crate::ops;
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_bytecode::Constant;
 use aluka_core::ObjectRef;
 use aluka_jit::ctx::JitCtx;
@@ -42,13 +42,13 @@ pub(crate) fn to_vm_value(b: u64) -> Value {
 
 /// VM Value → 盒。
 pub(crate) fn from_vm_value(v: Value) -> u64 {
-    match v {
+    match v.case() {
         Value::Undefined => valbox::UNDEFINED,
         Value::Null => valbox::NULL,
-        Value::Boolean(false) => valbox::FALSE,
-        Value::Boolean(true) => valbox::TRUE,
-        Value::Number(n) => valbox::box_number(n),
-        Value::Object(r) => valbox::box_object(r.0),
+        ValueCase::Boolean(false) => valbox::FALSE,
+        ValueCase::Boolean(true) => valbox::TRUE,
+        ValueCase::Number(n) => valbox::box_number(n),
+        ValueCase::Object(r) => valbox::box_object(r.0),
     }
 }
 
@@ -137,7 +137,7 @@ pub unsafe extern "C" fn jit_set_property(
 /// PIC 缓存回写：对象为（Shape 模式 && 无删除 && 无访问器 && 含该键）→
 /// 记录 (shape_id, slot, FAST)；否则 NO_FAST。
 fn pic_writeback(vm: &mut Vm, obj: Value, key: &str, cell: *mut aluka_jit::ctx::PicCell) {
-    if let Some(r) = obj.as_object {
+    if let Some(r) = obj.as_object() {
         let idx = r.0 as usize;
         if let Some(HeapObject::Ordinary {
             props,
@@ -350,7 +350,7 @@ fn call_ic_writeback(
         // SAFETY: cell 由 JIT 提供、单线程独占、本次调用存活
         unsafe { (*cell).state = aluka_jit::ctx::CallCell::NO_FAST }
     };
-    let Value::Object(r) = to_vm_value(callee) else {
+    let ValueCase::Object(r) = to_vm_value(callee) else {
         return no_fast(cell);
     };
     let func_idx = match vm.heap.get(r.0 as usize) {

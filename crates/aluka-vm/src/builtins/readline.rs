@@ -19,7 +19,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -138,13 +138,13 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let mut output: Option<Value> = None;
     let mut terminal = true;
-    if let Some(o) = args.first().copied().as_object {
+    if let Some(o) = args.first().copied().and_then(|v| v.as_object()) {
         if let Ok(v) = vm.get_property(Value::Object(o), "output") {
             if !matches!(v, Value::Undefined) {
                 output = Some(v);
             }
         }
-        if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(o), "terminal") {
+        if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(o), "terminal").map(ValueCase::from) {
             terminal = b;
         }
     }
@@ -220,7 +220,7 @@ fn set_state_prompt(id: u32, prompt: &str) {
 /// `rl.question(query, cb)`：打印提示并阻塞读 stdin 一行。
 fn interface_question(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let query = args
@@ -251,7 +251,7 @@ fn interface_question(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `rl.setPrompt(prompt)`：更新提示符（链式返回实例）。
 fn interface_set_prompt(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(v) = args.first() {
@@ -263,8 +263,8 @@ fn interface_set_prompt(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `rl.getPrompt()`：读取当前提示符。
 fn interface_get_prompt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => 0,
     };
     Ok(Value::Object(vm.alloc_string(state_prompt(id))))
@@ -273,8 +273,8 @@ fn interface_get_prompt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// `rl.prompt()`：输出当前提示符（不读行）。
 fn interface_prompt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => 0,
     };
     write_prompt(vm, state_output(id), &state_prompt(id))?;
@@ -314,7 +314,7 @@ fn interface_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 提示符写入：优先 `output.write(fn)`，否则直接写 stdout。
 fn write_prompt(vm: &mut Vm, output: Option<Value>, text: &str) -> Result<(), VmError> {
     if let Some(o) = output {
-        if let Some(or) = o.as_object {
+        if let Some(or) = o.as_object() {
             if let Ok(w) = vm.get_property(o, "write") {
                 if is_callable_value(vm, w) {
                     let arg = Value::Object(vm.alloc_string(text.to_owned()));
@@ -394,7 +394,7 @@ fn read_line_impl(buf: &mut Vec<u8>) -> Option<String> {
 
 /// 判断值是否可调用（Closure / NativeFn / NativeCtor）。
 pub(crate) fn is_callable_value(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. } | HeapObject::NativeCtor { .. })
     ))

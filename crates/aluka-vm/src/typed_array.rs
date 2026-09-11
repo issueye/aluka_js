@@ -10,7 +10,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// 类型化数组元素类型（字节序一律按平台小端存储于 ArrayBuffer，
@@ -258,9 +258,7 @@ impl Vm {
     /// 判断值是否为类型化数组视图。
     #[must_use]
     pub fn is_typed_array(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::TypedArray { .. }))
         )
     }
@@ -268,9 +266,7 @@ impl Vm {
     /// 判断值是否为 ArrayBuffer / SharedArrayBuffer。
     #[must_use]
     pub fn is_array_buffer(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::ArrayBuffer { .. }))
         )
     }
@@ -278,9 +274,7 @@ impl Vm {
     /// 判断值是否为 DataView。
     #[must_use]
     pub fn is_data_view(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::DataView { .. }))
         )
     }
@@ -365,7 +359,7 @@ impl Vm {
             crate::typed_array::TypedKind::BigInt64 | crate::typed_array::TypedKind::BigUint64
         ) {
             // BigInt 族：接受 BigInt 与整数值；BigUint64 按无符号回绕
-            if let Some(r) = val.as_object {
+            if let Some(r) = val.as_object() {
                 if let Some(HeapObject::BigInt(text)) = self.heap.get(r.0 as usize) {
                     let parsed = match kind {
                         crate::typed_array::TypedKind::BigUint64 => text
@@ -414,7 +408,7 @@ impl Vm {
         // resizable 支持：opts.resizable === true 时记录 maxByteLength
         let mut resizable = false;
         let mut max = len;
-        if let Some(opts) = args.get(1).copied().as_object {
+        if let Some(opts) = args.get(1).copied().and_then(|v| v.as_object()) {
             if let Ok(v) = self.get_property(Value::Object(opts), "resizable") {
                 if self.truthy(v) {
                     resizable = true;
@@ -442,18 +436,18 @@ impl Vm {
         args: &[Value],
     ) -> Result<Value, VmError> {
         let first = args.first().copied().unwrap_or(Value::Undefined);
-        match first {
+        match first.case() {
             // 数字：分配 length 个零元素
-            Value::Number(_) | Value::Undefined => {
-                let len = match first {
-                    Value::Number(n) if n > 0.0 => n as usize,
+            ValueCase::Number(_) | Value::Undefined => {
+                let len = match first.case() {
+                    ValueCase::Number(n) if n > 0.0 => n as usize,
                     _ => 0,
                 };
                 let buf =
                     self.alloc_array_buffer(vec![0u8; len * kind.elem_size()], false, false, 0);
                 Ok(Value::Object(self.alloc_typed_array(kind, buf, 0, len)))
             }
-            Value::Object(r) => match self.heap.get(r.0 as usize) {
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 // buffer[, byteOffset[, length]]：在既有缓冲上建视图
                 Some(HeapObject::ArrayBuffer { shared: _, .. }) => {
                     let buf_len = match self.heap.get(r.0 as usize) {
@@ -478,7 +472,7 @@ impl Vm {
                         )));
                     }
                     let len = match args.get(2) {
-                        Some(v) if !matches!(v, Value::Undefined) => {
+                        Some(v) if !matches!(*v, Value::Undefined) => {
                             let n = crate::ops::to_number(*v);
                             if n.is_nan() || n < 0.0 { 0 } else { n as usize }
                         }
@@ -535,7 +529,7 @@ impl Vm {
 
     /// `new DataView(buffer[, byteOffset[, byteLength]])`。
     pub(crate) fn construct_data_view(&mut self, args: &[Value]) -> Result<Value, VmError> {
-        let Some(buffer) = args.first().copied().as_object() else {
+        let Some(buffer) = args.first().copied().and_then(|v| v.as_object()) else {
             let msg = "first argument to DataView constructor must be an ArrayBuffer";
             return Err(VmError::Thrown(Value::Object(
                 self.alloc_typed_error(msg, "TypeError"),
@@ -572,7 +566,7 @@ impl Vm {
             )));
         }
         let blen = match args.get(2) {
-            Some(v) if !matches!(v, Value::Undefined) => {
+            Some(v) if !matches!(*v, Value::Undefined) => {
                 let n = crate::ops::to_number(*v);
                 if n.is_nan() || n < 0.0 { 0 } else { n as usize }
             }
@@ -597,7 +591,7 @@ impl Vm {
         method: &str,
         args: &[Value],
     ) -> Option<Result<Value, VmError>> {
-        let Value::Object(r) = receiver else {
+        let ValueCase::Object(r) = receiver.case() else {
             return None;
         };
         match self.heap.get(r.0 as usize) {
@@ -685,7 +679,7 @@ impl Vm {
                 let needle = args.first().copied().unwrap_or(Value::Undefined);
                 let elems = self.ta_to_values(ta)?;
                 let found = elems.iter().any(|e| {
-                    if let (Value::Number(x), Value::Number(y)) = (e, needle) {
+                    if let (ValueCase::Number(x), ValueCase::Number(y)) = (e, needle) {
                         if x.is_nan() && y.is_nan() {
                             return true;
                         }
@@ -707,7 +701,7 @@ impl Vm {
                 let len = self.ta_length(ta);
                 let s = normalized_index(arg_num(1), len);
                 let e = match args.get(2) {
-                    Some(v) if !matches!(v, Value::Undefined) => {
+                    Some(v) if !matches!(*v, Value::Undefined) => {
                         normalized_index(Some(crate::ops::to_number(*v)), len)
                     }
                     _ => len,
@@ -723,7 +717,7 @@ impl Vm {
                 let target = normalized_index(arg_num(0), len);
                 let start = normalized_index(arg_num(1), len);
                 let end = match args.get(2) {
-                    Some(v) if !matches!(v, Value::Undefined) => {
+                    Some(v) if !matches!(*v, Value::Undefined) => {
                         normalized_index(Some(crate::ops::to_number(*v)), len)
                     }
                     _ => len,
@@ -740,7 +734,7 @@ impl Vm {
                 self.check_detached(buffer)?;
                 let begin = normalized_index(arg_num(0), length);
                 let end = match args.get(1) {
-                    Some(v) if !matches!(v, Value::Undefined) => {
+                    Some(v) if !matches!(*v, Value::Undefined) => {
                         normalized_index(Some(crate::ops::to_number(*v)), length)
                     }
                     _ => length,
@@ -765,7 +759,7 @@ impl Vm {
                 // ta.set(array|typedArray[, offset])
                 let offset = arg_num(1).unwrap_or(0.0).max(0.0) as usize;
                 let src = args.first().copied().unwrap_or(Value::Undefined);
-                let vals = if let Some(sr) = src.as_object {
+                let vals = if let Some(sr) = src.as_object() {
                     if self.ta_parts(sr).is_some() {
                         self.ta_to_values(sr)?
                     } else {
@@ -1043,7 +1037,7 @@ impl Vm {
         let len = data.len();
         let begin = normalized_index(args.first().map(|v| crate::ops::to_number(*v)), len);
         let end = match args.get(1) {
-            Some(v) if !matches!(v, Value::Undefined) => {
+            Some(v) if !matches!(*v, Value::Undefined) => {
                 normalized_index(Some(crate::ops::to_number(*v)), len)
             }
             _ => len,
@@ -1115,7 +1109,7 @@ impl DvKind {
 
 /// DataView BigInt 族取值：BigInt 对象或整数值 → i64。
 fn bigint_of(vm: &mut Vm, val: Value) -> Result<i64, VmError> {
-    if let Some(r) = val.as_object {
+    if let Some(r) = val.as_object() {
         if let Some(HeapObject::BigInt(text)) = vm.heap.get(r.0 as usize) {
             return Ok(text.parse::<i64>().unwrap_or(0));
         }
@@ -1158,7 +1152,7 @@ impl Vm {
         method: &str,
         args: &[Value],
     ) -> Option<Result<Value, VmError>> {
-        let Value::Object(r) = receiver else {
+        let ValueCase::Object(r) = receiver.case() else {
             return None;
         };
         let Some(HeapObject::NativeCtor { name, .. }) = self.heap.get(r.0 as usize) else {

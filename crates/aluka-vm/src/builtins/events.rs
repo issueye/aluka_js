@@ -10,7 +10,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -320,7 +320,7 @@ fn build_instance(_vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<Object
 /// `emitter.on(event, listener)` / `emitter.addListener(event, listener)`
 pub(crate) fn emitter_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     ensure_emitter_state(vm, r.0);
@@ -348,7 +348,7 @@ pub(crate) fn emitter_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// `emitter.once(event, listener)`
 fn emitter_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     ensure_emitter_state(vm, r.0);
@@ -376,7 +376,7 @@ fn emitter_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `emitter.emit(event, ...args)`
 pub(crate) fn emitter_emit(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     ensure_emitter_state(vm, r.0);
@@ -422,7 +422,7 @@ pub(crate) fn emitter_emit(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
 /// `emitter.off(event, listener)` / `emitter.removeListener(event, listener)`
 fn emitter_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     ensure_emitter_state(vm, r.0);
@@ -447,17 +447,17 @@ fn emitter_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `emitter.removeAllListeners([event])`
 fn emitter_remove_all_listeners(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     ensure_emitter_state(vm, r.0);
 
-    with_emitter_mut(r.0, |state| match args.first() {
-        Some(Value::Undefined) | None => {
+    with_emitter_mut(r.0, |state| match args.first().map(|v| v.case()) {
+        Some(ValueCase::Undefined) | None => {
             state.listeners.clear();
         }
         Some(v) => {
-            let name = vm.format_value(*v);
+            let name = vm.format_value(v);
             state.listeners.remove(&name);
         }
     });
@@ -468,7 +468,7 @@ fn emitter_remove_all_listeners(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
 /// `emitter.listenerCount(event)`
 fn emitter_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Number(0.0));
     };
     ensure_emitter_state(vm, r.0);
@@ -492,12 +492,12 @@ fn emitter_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError>
 /// `emitter.setMaxListeners(n)`
 fn emitter_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
 
-    let n = match args.first() {
-        Some(Value::Number(num)) => *num as usize,
+    let n = match args.first().map(|v| v.case()) {
+        Some(ValueCase::Number(num)) => num as usize,
         _ => 10,
     };
 
@@ -511,7 +511,7 @@ fn emitter_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmEr
 /// `emitter.getMaxListeners()`
 fn emitter_get_max_listeners(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Number(10.0));
     };
 
@@ -522,7 +522,7 @@ fn emitter_get_max_listeners(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
 /// `emitter.prependListener(event, listener)`
 fn emitter_prepend_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     ensure_emitter_state(vm, r.0);
@@ -549,7 +549,7 @@ fn emitter_prepend_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
 /// `emitter.prependOnceListener(event, listener)`
 fn emitter_prepend_once_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     ensure_emitter_state(vm, r.0);
@@ -576,7 +576,7 @@ fn emitter_prepend_once_listener(vm: &mut Vm, args: &[Value]) -> Result<Value, V
 /// `emitter.eventNames()`
 fn emitter_event_names(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Object(vm.alloc_array(Vec::new())));
     };
     ensure_emitter_state(vm, r.0);
@@ -599,7 +599,7 @@ fn emitter_event_names(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `emitter.listeners(event)`
 fn emitter_listeners(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Object(vm.alloc_array(Vec::new())));
     };
     ensure_emitter_state(vm, r.0);
@@ -628,7 +628,7 @@ fn events_static_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
     let Some(event_val) = args.get(1) else {
         return Ok(Value::Number(0.0));
     };
-    let Value::Object(r) = *emitter_val else {
+    let ValueCase::Object(r) = emitter_val.case() else {
         return Ok(Value::Number(0.0));
     };
     ensure_emitter_state(vm, r.0);
@@ -649,7 +649,7 @@ fn events_static_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(emitter_val) = args.first() else {
         return Ok(Value::Undefined);
     };
-    let Value::Object(r) = *emitter_val else {
+    let ValueCase::Object(r) = emitter_val.case() else {
         return Ok(Value::Undefined);
     };
     ensure_emitter_state(vm, r.0);
@@ -677,7 +677,7 @@ fn events_static_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(emitter_val) = args.first() else {
         return Ok(Value::Undefined);
     };
-    let Value::Object(r) = *emitter_val else {
+    let ValueCase::Object(r) = emitter_val.case() else {
         return Ok(Value::Undefined);
     };
     ensure_emitter_state(vm, r.0);
@@ -702,10 +702,10 @@ fn events_static_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `events.setMaxListeners(n, ...emitters)`
 fn events_static_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if let Some(n) = args.first().as_number {
-        let limit = *n as usize;
+    if let Some(n) = args.first().and_then(|v| v.as_number()) {
+        let limit = n as usize;
         for target in args.iter().skip(1) {
-            if let Some(r) = *target.as_object {
+            if let Some(r) = target.as_object() {
                 with_emitter_mut(r.0, |state| {
                     state.max_listeners = limit;
                 });
@@ -717,7 +717,7 @@ fn events_static_set_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value
 
 /// `events.getMaxListeners(emitter)`
 fn events_static_get_max_listeners(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(r) = args.first().as_object() else {
+    let Some(r) = args.first().and_then(|v| v.as_object()) else {
         return Ok(Value::Number(10.0));
     };
     let max = with_emitter(r.0, |state| state.max_listeners);

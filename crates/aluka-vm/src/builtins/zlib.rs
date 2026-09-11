@@ -21,7 +21,7 @@ use crate::builtins::buffer::{create_buffer_instance, extract_bytes};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("zlib")` / `require("node:zlib")` 主模块。
@@ -243,9 +243,7 @@ fn buffer_arg(vm: &mut Vm, val: Option<Value>) -> Result<Vec<u8>, VmError> {
 
 /// 判断值是否为可调用函数（JS 闭包或原生函数）。
 fn is_function(vm: &Vm, val: Value) -> bool {
-    matches!(
-        val,
-        Value::Object(r) if matches!(
+    matches!(val.case(), ValueCase::Object(r) if matches!(
             vm.heap.get(r.0 as usize),
             Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. })
         )
@@ -258,7 +256,7 @@ fn pick_callback(vm: &Vm, args: &[Value]) -> Value {
         if is_function(vm, second) {
             return second;
         }
-        if matches!(second, Value::Object(_)) {
+        if matches!(second.case(), ValueCase::Object(_)) {
             if let Some(&third) = args.get(2) {
                 if is_function(vm, third) {
                     return third;
@@ -438,7 +436,7 @@ fn crc32(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let data = buffer_arg(vm, Some(first))?;
     let mut value = 0u32;
-    if let Some(&Value::Number(n)) = args.get(1) {
+    if let Some(&ValueCase::Number(n)) = args.get(1) {
         value = (n as i64) as u32;
     }
     Ok(Value::Number(f64::from(crc32_update(value, &data))))

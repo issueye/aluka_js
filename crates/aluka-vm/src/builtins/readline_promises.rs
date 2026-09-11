@@ -19,7 +19,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -155,7 +155,7 @@ fn create_interface(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let rl = create_emitter_instance(vm);
     let mut input: Option<Value> = None;
     let mut output: Option<Value> = None;
-    if let Some(o) = args.first().copied().as_object {
+    if let Some(o) = args.first().copied().and_then(|v| v.as_object()) {
         if let Ok(v) = vm.get_property(Value::Object(o), "input") {
             if !matches!(v, Value::Undefined) {
                 input = Some(v);
@@ -207,7 +207,7 @@ fn readline_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let stream = args
         .first()
         .copied()
-        .filter(|v| matches!(v, Value::Object(_)));
+        .filter(|v| matches!(v.case(), ValueCase::Object(_)));
     let id = inst.0;
     with_map(&IFACES, |m| {
         m.insert(
@@ -253,7 +253,7 @@ fn iface_question(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         );
     }
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let found = with_map(&IFACES, |m| m.get(&r.0).map(|e| (e.input, e.output)));
@@ -279,7 +279,7 @@ fn promise_read_line(
     // 输出 query 到输出流或 stdout（对齐 Go：output 无 write 时才回退 stdout）。
     let mut wrote = false;
     if let Some(o) = output {
-        if let Some(or) = o.as_object {
+        if let Some(or) = o.as_object() {
             if let Ok(w) = vm.get_property(o, "write") {
                 if is_callable_value(vm, w) {
                     let arg = Value::Object(vm.alloc_string(query.clone()));
@@ -295,7 +295,7 @@ fn promise_read_line(
 
     // 输入流分派：带 `on` 方法的流走事件消费，否则回退阻塞读 stdin。
     let has_on = input
-        .filter(|v| matches!(v, Value::Object(_)))
+        .filter(|v| matches!(v.case(), ValueCase::Object(_)))
         .is_some_and(|v| matches!(vm.get_property(v, "on"), Ok(f) if is_callable_value(vm, f)));
     if has_on {
         let Some(ir) = input.and_then(|v| v.as_object()) else {
@@ -339,7 +339,7 @@ fn promise_read_line(
 /// `'data'` 事件：块追加进通道缓冲，遇换行按 FIFO 兑现最旧等待者。
 fn stream_on_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     if matches!(args.first(), Some(Value::Null)) {
@@ -373,7 +373,7 @@ fn stream_on_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `'end'` 事件：以缓冲残文（去尾部 `\r\n`）兑现全部等待者。
 fn stream_on_end(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let to_settle: Vec<(ObjectRef, String)> = with_map(&CHANNELS, |m| {
@@ -395,7 +395,7 @@ fn stream_on_end(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 对齐 Go 的 reject(err) 语义）。
 fn stream_on_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let msg = args

@@ -21,7 +21,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -143,7 +143,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 
 /// 判断值是否为可调用对象。
 fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. } | HeapObject::NativeCtor { .. })
     ))
@@ -207,7 +207,7 @@ fn create_dgram_socket(vm: &mut Vm, net_type: &str, message_cb: Option<Value>) -
 fn dgram_create_socket(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut net_type = "udp4".to_owned();
     if let Some(first) = args.first() {
-        if matches!(first, Value::Object(_)) {
+        if matches!(first.case(), ValueCase::Object(_)) {
             let text = vm.format_value(*first);
             if !text.is_empty() {
                 net_type = text;
@@ -230,7 +230,7 @@ fn dgram_socket_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `on(event, listener)` / `addListener`。
 fn dgram_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -248,7 +248,7 @@ fn dgram_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `once(event, listener)`。
 fn dgram_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -277,7 +277,7 @@ fn dgram_emit_handler(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `off(event, listener)` / `removeListener`。
 fn dgram_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -297,7 +297,7 @@ fn dgram_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `listenerCount(event)`。
 fn dgram_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Number(0.0));
     };
     let Some(event) = args.first().map(|v| vm.format_value(*v)) else {
@@ -310,8 +310,8 @@ fn dgram_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 监听器移除用的值同一性（对象比句柄）。
 fn is_same_value(a: Value, b: Value) -> bool {
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => x == y,
+    match (a.case(), b.case()) {
+        (ValueCase::Object(x), ValueCase::Object(y)) => x == y,
         _ => false,
     }
 }
@@ -337,7 +337,7 @@ fn emit_dgram_event(
     event: &str,
     args: &[Value],
 ) -> Result<(), VmError> {
-    let Value::Object(r) = target else {
+    let ValueCase::Object(r) = target.case() else {
         return Ok(());
     };
     let listeners = with_socket_listeners(r.0, |ls| {
@@ -373,7 +373,7 @@ fn emit_dgram_event(
 /// （数字 → port，字符串 → address，函数 → callback，对齐 Go）。
 fn dgram_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let mut port = 0u16;
@@ -382,9 +382,9 @@ fn dgram_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args {
         if is_function(vm, *a) {
             cb = Some(*a);
-        } else if let Some(n) = a.as_number {
-            port = *n as u16;
-        } else if matches!(a, Value::Object(_)) {
+        } else if let Some(n) = a.as_number() {
+            port = n as u16;
+        } else if matches!(a.case(), ValueCase::Object(_)) {
             address = vm.format_value(*a);
         }
     }
@@ -440,7 +440,7 @@ fn dgram_bind(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 支持未绑定 socket 的隐式绑定（自动绑定临时端口，对齐 Node/Go）。
 fn dgram_send(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let Some(data) = args.first().copied() else {
@@ -454,9 +454,9 @@ fn dgram_send(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args.iter().skip(1) {
         if is_function(vm, *a) {
             cb = Some(*a);
-        } else if let Some(n) = a.as_number {
-            port = *n as u16;
-        } else if matches!(a, Value::Object(_)) {
+        } else if let Some(n) = a.as_number() {
+            port = n as u16;
+        } else if matches!(a.case(), ValueCase::Object(_)) {
             address = vm.format_value(*a);
         }
     }
@@ -550,7 +550,7 @@ fn dgram_send(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `socket.close([callback])`：同步关闭并派发 'close'（对齐 Go）。
 fn dgram_close(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let cb = args.first().copied().filter(|v| is_function(vm, *v));
@@ -576,7 +576,7 @@ fn dgram_close(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `socket.address()`：`{address, port, family}`；未绑定时抛错（对齐 Go）。
 fn dgram_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let local = with_dgram(|s| {
@@ -611,7 +611,7 @@ fn dgram_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `socket.connect(port[, address][, callback])`：设置默认发送目标。
 fn dgram_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let mut port = 0u16;
@@ -620,9 +620,9 @@ fn dgram_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     for a in args {
         if is_function(vm, *a) {
             cb = Some(*a);
-        } else if let Some(n) = a.as_number {
-            port = *n as u16;
-        } else if matches!(a, Value::Object(_)) {
+        } else if let Some(n) = a.as_number() {
+            port = n as u16;
+        } else if matches!(a.case(), ValueCase::Object(_)) {
             address = vm.format_value(*a);
         }
     }
@@ -653,7 +653,7 @@ fn dgram_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `socket.disconnect()`：清除默认发送目标。
 fn dgram_disconnect(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     with_dgram(|s| {

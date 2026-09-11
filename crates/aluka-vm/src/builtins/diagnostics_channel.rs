@@ -18,7 +18,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -97,9 +97,7 @@ fn with_tracings<R>(f: impl FnOnce(&mut HashMap<u32, TracingState>) -> R) -> R {
 
 /// 值是否为可调用函数（对齐 Go 的 `Value.IsFunction`）。
 fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(
-        v,
-        Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
             if matches!(
                 vm.heap.get(r.0 as usize),
                 Some(HeapObject::Closure { .. })
@@ -450,7 +448,7 @@ fn trace_call(vm: &mut Vm, args: &[Value], tracing_id: u32) -> Result<Value, VmE
     }
     let mut context = Value::Object(vm.alloc_ordinary());
     if let Some(second) = args.get(1) {
-        if !matches!(second, Value::Undefined | Value::Null) {
+        if !matches!(*second, Value::Undefined | Value::Null) {
             context = *second;
         }
     }
@@ -498,7 +496,7 @@ fn member_channel(tracing_id: u32, index: usize) -> Option<ObjectRef> {
 /// 抛出值的字符串化（对齐 Go `err.Error()` 的首行 `Name: message` 形态）。
 fn describe_thrown(vm: &mut Vm, err: &VmError) -> String {
     if let VmError::Thrown(v) = err {
-        if let Some(r) = *v.as_object {
+        if let Some(r) = v.as_object() {
             if matches!(vm.heap.get(r.0 as usize), Some(HeapObject::Ordinary { .. })) {
                 let name = vm.get_property(*v, "name").unwrap_or(Value::Undefined);
                 let message = vm.get_property(*v, "message").unwrap_or(Value::Undefined);
@@ -641,8 +639,8 @@ fn run_stores_chain(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 当前分派接收者的堆句柄 id。
 fn receiver_id() -> Option<u32> {
-    match current_receiver() {
-        Value::Object(r) => Some(r.0),
+    match current_receiver().case() {
+        ValueCase::Object(r) => Some(r.0),
         _ => None,
     }
 }

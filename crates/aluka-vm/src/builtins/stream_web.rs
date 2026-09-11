@@ -21,7 +21,7 @@ use crate::builtins::{
     BuiltinHandler, BuiltinRegistry, ModuleDef, register_handler, set_module_prop,
 };
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("stream/web")` / `require("node:stream/web")` 主模块。
@@ -161,16 +161,16 @@ fn with_ws_state<R>(id: u32, f: impl FnOnce(&mut WsState) -> R) -> Option<R> {
 /// 读取接收者上的 `_wsId`（WritableStream / writer 共用关联键）。
 fn receiver_ws_id(vm: &mut Vm) -> Option<u32> {
     let this = crate::builtins::current_receiver();
-    match vm.get_property(this, "_wsId") {
-        Ok(Value::Number(n)) if n >= 0.0 => Some(n as u32),
+    match vm.get_property(this, "_wsId").map(|v| v.case()) {
+        Ok(ValueCase::Number(n)) if n >= 0.0 => Some(n as u32),
         _ => None,
     }
 }
 
 /// M4 互通：为 `Writable.toWeb` 创建真实 WritableStream 实例（无 underlyingSink）。
 pub fn create_web_writable(vm: &mut Vm) -> Result<ObjectRef, VmError> {
-    writable_stream_ctor(vm, &[]).map(|v| match v {
-        Value::Object(r) => r,
+    writable_stream_ctor(vm, &[]).map(|v| match v.case() {
+        ValueCase::Object(r) => r,
         _ => unreachable!("writable_stream_ctor 恒返回对象"),
     })
 }
@@ -223,7 +223,7 @@ fn thrown(vm: &mut Vm, message: &str) -> VmError {
 
 /// 判断值是否为可调用函数（JS 闭包或原生函数）。
 fn is_function(vm: &Vm, val: Value) -> bool {
-    matches!(val, Value::Object(r) if matches!(
+    matches!(val.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(crate::heap::HeapObject::Closure { .. } | crate::heap::HeapObject::NativeFn { .. })
     ))
@@ -244,8 +244,8 @@ fn set_method(vm: &mut Vm, obj: Value, ns: &str, method: &str) {
 /// 读取当前接收者（this）上记录的所属流 id。
 fn receiver_stream_id(vm: &mut Vm) -> Option<u32> {
     let this = crate::builtins::current_receiver();
-    match vm.get_property(this, "_streamId") {
-        Ok(Value::Number(n)) if n >= 0.0 => Some(n as u32),
+    match vm.get_property(this, "_streamId").map(|v| v.case()) {
+        Ok(ValueCase::Number(n)) if n >= 0.0 => Some(n as u32),
         _ => None,
     }
 }
@@ -318,7 +318,7 @@ pub(crate) fn writable_stream_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value,
     let stream = vm.alloc_ordinary();
     let mut sink_write = None;
     let mut sink_close = None;
-    if let Some(sink_ref) = args.first().copied().as_object {
+    if let Some(sink_ref) = args.first().copied().and_then(|v| v.as_object()) {
         let sink = Value::Object(sink_ref);
         if let Ok(w) = vm.get_property(sink, "write") {
             if is_function(vm, w) {
@@ -385,8 +385,8 @@ fn rs_get_reader(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 读取接收者对象的堆 id（`_streamId` 写入时已保证为流关联对象）。
 fn this_id(this: &Value) -> u32 {
-    match this {
-        Value::Object(r) => r.0,
+    match this.case() {
+        ValueCase::Object(r) => r.0,
         _ => 0,
     }
 }
@@ -559,7 +559,7 @@ fn readable_stream_tee(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(stream) = args.first().copied() else {
         return Ok(Value::Undefined);
     };
-    let Value::Object(_) = stream else {
+    let ValueCase::Object(_) = stream.case() else {
         return Err(thrown(vm, "ReadableStreamTee: stream must be an object"));
     };
     let tee = vm.get_property(stream, "tee").unwrap_or(Value::Undefined);
@@ -573,8 +573,8 @@ fn readable_stream_tee(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// M4 互通：为 `Readable.toWeb` 创建真实 ReadableStream 实例（无 underlyingSource）。
 pub fn create_web_readable(vm: &mut Vm) -> Result<ObjectRef, VmError> {
-    readable_stream_ctor(vm, &[]).map(|v| match v {
-        Value::Object(r) => r,
+    readable_stream_ctor(vm, &[]).map(|v| match v.case() {
+        ValueCase::Object(r) => r,
         _ => unreachable!("readable_stream_ctor 恒返回对象"),
     })
 }

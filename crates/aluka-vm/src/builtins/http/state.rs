@@ -5,7 +5,7 @@
 //! accept/读写 socket，解析出完整报文后经 `vm.invoke_callable` 派发回调。
 
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::{TcpListener, TcpStream};
@@ -343,7 +343,7 @@ pub(crate) fn remove_listener(obj: u32, event: &str, cb: Value) {
 /// 在实例对象上发射事件：依次调用监听器；`error` 事件无监听器时按
 /// EventEmitter 语义抛出（对齐 `events.rs` 与 Go `nodebase.EmitEvent`）。
 pub(crate) fn emit(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> Result<(), VmError> {
-    let Value::Object(r) = target else {
+    let ValueCase::Object(r) = target.case() else {
         return Ok(());
     };
     let cbs = take_listeners(r.0, event);
@@ -439,7 +439,7 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
         for (v, _, args) in g.borrow().iter() {
             out.push(*v);
             for a in args {
-                if matches!(a, Value::Object(_)) {
+                if matches!(a.case(), ValueCase::Object(_)) {
                     out.push(*a);
                 }
             }

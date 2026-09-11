@@ -125,7 +125,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -458,7 +458,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// `cluster.fork()`：child_process.fork 当前脚本 + Worker 包装。
 fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let self_val = current_receiver();
-    if !matches!(self_val, Value::Object(_)) {
+    if !matches!(self_val.case(), ValueCase::Object(_)) {
         return Ok(self_val);
     }
 
@@ -499,7 +499,7 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         env_pairs.push((cluster_ipc::ENV_KEY.to_owned(), key.clone()));
     }
     if let Some(user_env) = args.first().copied() {
-        if let Some(_) = user_env.as_object {
+        if let Some(_) = user_env.as_object() {
             for (k, v) in vm.own_properties(user_env) {
                 env_pairs.push((k, vm.format_value(v)));
             }
@@ -516,7 +516,7 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
 
     let child_val = fork_spawn(vm, script, fork_args, opts)?;
-    let Value::Object(child_ref) = child_val else {
+    let ValueCase::Object(child_ref) = child_val.case() else {
         return Ok(child_val);
     };
 
@@ -634,7 +634,7 @@ fn emit_fork_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 不会重复派发）。
 fn worker_exit_wrapper(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let child = current_receiver();
-    let Value::Object(child_ref) = child else {
+    let ValueCase::Object(child_ref) = child.case() else {
         return Ok(Value::Undefined);
     };
     let entry = with_child_map(|m| m.remove(&child_ref.0));
@@ -696,10 +696,11 @@ fn emit_disconnect(vm: &mut Vm, worker_ref: u32) -> Result<(), VmError> {
     // Node 在 disconnect / exit 两处都做 `= !!值` 归一：初值 `undefined` → `false`；
     // primary 侧 `Worker.prototype.disconnect()` 先置的 `true` 必须保持
     // （实测 p7：primary 发起断连后 `'disconnect'` 处 `ead=true`）。
-    let expected = matches!(
-        vm.get_property(worker_val, "exitedAfterDisconnect"),
-        Ok(Value::Boolean(true))
-    );
+    let expected = vm
+        .get_property(worker_val, "exitedAfterDisconnect")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let _ = vm.set_property(
         worker_val,
         "exitedAfterDisconnect",
@@ -773,7 +774,7 @@ fn remove_worker(vm: &mut Vm, worker_ref: u32) -> Result<(), VmError> {
     if let Ok(id) = vm.get_property(Value::Object(ObjectRef(worker_ref)), "id") {
         let key = vm.format_value(id);
         let workers_val = vm.get_property(module_val, "workers")?;
-        if matches!(workers_val, Value::Object(_)) {
+        if matches!(workers_val.case(), ValueCase::Object(_)) {
             vm.delete_property(workers_val, &key);
         }
     }
@@ -802,9 +803,9 @@ fn primary_worker_disconnect(vm: &mut Vm, worker_ref: u32) -> Result<Value, VmEr
 
 /// primary 侧 `worker.disconnect()` 的方法面（`this` = Worker 包装对象）。
 fn worker_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    match current_receiver() {
-        Value::Object(r) => primary_worker_disconnect(vm, r.0),
-        other => Ok(other),
+    match current_receiver().case() {
+        ValueCase::Object(r) => primary_worker_disconnect(vm, r.0),
+        other => Ok(Value::from(other)),
     }
 }
 
@@ -849,13 +850,13 @@ fn cluster_setup_master(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     set_own(vm, merged, "silent", Value::Boolean(false));
 
     // ② 旧 settings 覆盖默认值。
-    if let Ok(Value::Object(prev)) = vm.get_property(self_val, "settings") {
+    if let Ok(ValueCase::Object(prev)) = vm.get_property(self_val, "settings").map(ValueCase::from) {
         for (k, v) in vm.own_properties(Value::Object(prev)) {
             set_own(vm, merged, &k, v);
         }
     }
     // ③ options 浅合并覆盖（Node 用对象展开，未知键同样保留、undefined 同样覆盖）。
-    if let Some(_) = opts.as_object {
+    if let Some(_) = opts.and_then(|v| v.as_object()) {
         for (k, v) in vm.own_properties(opts.unwrap_or(Value::Undefined)) {
             set_own(vm, merged, &k, v);
         }
@@ -904,7 +905,7 @@ fn cli_args(vm: &mut Vm) -> Vec<Value> {
     let Some(p) = vm.process_object else {
         return Vec::new();
     };
-    let Ok(Value::Object(arr)) = vm.get_property(Value::Object(p), "argv") else {
+    let Ok(ValueCase::Object(arr)) = vm.get_property(Value::Object(p), "argv").map(ValueCase::from) else {
         return Vec::new();
     };
     let Some(HeapObject::Array { elements, .. }) = vm.heap.get(arr.0 as usize) else {
@@ -946,7 +947,7 @@ fn settings_args(vm: &mut Vm, settings: Value) -> Result<Vec<String>, VmError> {
     if matches!(v, Value::Undefined | Value::Null) {
         return Ok(Vec::new());
     }
-    let Value::Object(r) = v else {
+    let ValueCase::Object(r) = v.case() else {
         return Err(args_type_error(vm, v));
     };
     match vm.heap.get(r.0 as usize) {
@@ -978,10 +979,10 @@ fn args_type_error(vm: &mut Vm, v: Value) -> VmError {
 /// `settings.silent`（Node 传入 `child_process.fork` 的 silent；缺省 false）。
 /// 真值 → 管道 stdio（不继承），假值/缺省 → 继承。
 fn read_silent(vm: &mut Vm, settings: Value) -> bool {
-    matches!(
-        vm.get_property(settings, "silent"),
-        Ok(Value::Boolean(true))
-    )
+    vm.get_property(settings, "silent")
+        .ok()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
 }
 
 /// `settings.cwd`（Node 传入 `child_process.fork` 的 cwd；缺省 undefined →
@@ -996,7 +997,7 @@ fn read_cwd(vm: &mut Vm, settings: Value) -> String {
 
 /// 取字符串堆对象的内部值（非字符串返回 None）。
 fn heap_string(vm: &Vm, v: Value) -> Option<String> {
-    let Value::Object(r) = v else {
+    let ValueCase::Object(r) = v.case() else {
         return None;
     };
     match vm.heap.get(r.0 as usize) {
@@ -1011,12 +1012,12 @@ fn heap_string(vm: &Vm, v: Value) -> Option<String> {
 /// `type <typeof> (<inspect 值>)`；数组与一般对象为 `an instance of Array|Object`。
 /// **未覆盖**：函数（Node 作 `Received function <name>`）与其它 exotic 形（登记偏离）。
 fn received_repr(vm: &Vm, v: Value) -> String {
-    match v {
-        Value::Undefined => "undefined".to_owned(),
-        Value::Null => "null".to_owned(),
-        Value::Boolean(b) => format!("type boolean ({b})"),
-        Value::Number(n) => format!("type number ({})", vm.format_value(Value::Number(n))),
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    match v.case() {
+        ValueCase::Undefined => "undefined".to_owned(),
+        ValueCase::Null => "null".to_owned(),
+        ValueCase::Boolean(b) => format!("type boolean ({b})"),
+        ValueCase::Number(n) => format!("type number ({})", vm.format_value(Value::Number(n))),
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::String(s)) => format!("type string ('{s}')"),
             Some(HeapObject::BigInt(s)) => format!("type bigint ({s}n)"),
             Some(HeapObject::Symbol { description, .. }) => {
@@ -1078,7 +1079,7 @@ fn cluster_disconnect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         vm.nexttick_queue.push_back(Value::Object(nt));
     } else {
         for w in worker_vals {
-            let Value::Object(r) = w else {
+            let ValueCase::Object(r) = w.case() else {
                 continue;
             };
             // `worker.isConnected()`：Node 为 `this.process.connected`（通道连通性）。
@@ -1110,7 +1111,7 @@ fn send_worker_message(vm: &mut Vm, worker_id: u64, msg: Value) -> Result<bool, 
 /// Node `Worker.send` 在通道关闭/进程已退出时返回 false）。
 fn worker_send(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if !matches!(receiver, Value::Object(_)) {
+    if !matches!(receiver.case(), ValueCase::Object(_)) {
         return Ok(Value::Boolean(false));
     }
     // worker id：Worker 包装对象自带 `id` 属性。
@@ -1137,7 +1138,7 @@ fn worker_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     if let Ok(child) = vm.get_property(receiver, "process") {
         if let Ok(kill) = vm.get_property(child, "kill") {
-            if matches!(kill, Value::Object(_)) {
+            if matches!(kill.case(), ValueCase::Object(_)) {
                 let _ = vm.invoke_callable(kill, child, &[]);
             }
         }
@@ -1157,8 +1158,8 @@ fn worker_is_dead(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 当前接收者的生命周期状态（`this` 为 Worker 包装对象）。
 fn current_worker_phase() -> Option<WorkerPhase> {
-    match current_receiver() {
-        Value::Object(r) => phase_of(r.0),
+    match current_receiver().case() {
+        ValueCase::Object(r) => phase_of(r.0),
         _ => None,
     }
 }
@@ -1269,10 +1270,11 @@ fn worker_bridge_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 fn worker_bridge_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     if let Some(worker) = worker_self_value() {
         ns_emit(vm, worker, "disconnect", &[])?;
-        let expected = matches!(
-            vm.get_property(worker, "exitedAfterDisconnect"),
-            Ok(Value::Boolean(true))
-        );
+        let expected = vm
+            .get_property(worker, "exitedAfterDisconnect")
+            .ok()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if !expected {
             return crate::builtins::require_aliases::process_exit(vm, &[Value::Number(0.0)]);
         }
@@ -1310,7 +1312,7 @@ fn self_disconnect_nt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 的 `this.process.connected`）。
 fn worker_self_is_connected(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     if let Some(proc) = process_value(vm) {
-        if let Ok(Value::Boolean(b)) = vm.get_property(proc, "connected") {
+        if let Ok(ValueCase::Boolean(b)) = vm.get_property(proc, "connected").map(ValueCase::from) {
             return Ok(Value::Boolean(b));
         }
     }
@@ -1332,7 +1334,7 @@ fn worker_self_is_dead(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// 重复调用（已在 `'disconnecting'`）按 Node 语义为 no-op，仍返回 `this`。
 fn worker_self_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if !matches!(receiver, Value::Object(_)) {
+    if !matches!(receiver.case(), ValueCase::Object(_)) {
         return Ok(receiver);
     }
     let state = vm
@@ -1572,7 +1574,7 @@ pub(crate) fn worker_notify_listening(
     if let Some(module_ref) = vm.builtin_registry.module("cluster") {
         let module_val = Value::Object(module_ref);
         if let Ok(worker_val) = vm.get_property(module_val, "worker") {
-            if matches!(worker_val, Value::Object(_)) {
+            if matches!(worker_val.case(), ValueCase::Object(_)) {
                 if let Ok(state) = vm.get_property(worker_val, "state") {
                     if vm.format_value(state) == "online" {
                         let s = vm.alloc_string("listening".to_owned());
@@ -1796,7 +1798,7 @@ fn dispatch_worker_frame(vm: &mut Vm, worker_id: u64, text: &str) -> Result<(), 
     Ok(())
 }
 fn is_callable(vm: &Vm, val: Value) -> bool {
-    let Value::Object(r) = val else {
+    let ValueCase::Object(r) = val.case() else {
         return false;
     };
     matches!(

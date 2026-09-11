@@ -18,7 +18,7 @@
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("util")` 主模块。
@@ -57,9 +57,9 @@ fn inherits(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let super_ctor = args.get(1).copied().unwrap_or(Value::Undefined);
     let proto = vm.get_property(ctor, "prototype")?;
     let super_proto = vm.get_property(super_ctor, "prototype")?;
-    if let Some(_) = proto.as_object {
-        let sp = match super_proto {
-            Value::Object(r) => Some(r),
+    if let Some(_) = proto.as_object() {
+        let sp = match super_proto.case() {
+            ValueCase::Object(r) => Some(r),
             _ => None,
         };
         vm.set_prototype_of(proto, sp);
@@ -75,7 +75,7 @@ fn build_types(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef,
         VmError::Thrown(Value::Object(msg))
     })?;
     let types_val = vm.get_property(Value::Object(util_mod), "types")?;
-    let Value::Object(types) = types_val else {
+    let ValueCase::Object(types) = types_val.case() else {
         let msg = vm.alloc_string("util.types: types 属性缺失".to_owned());
         return Err(VmError::Thrown(Value::Object(msg)));
     };
@@ -153,8 +153,8 @@ fn format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `%d` 语义：数值先 `Int()` 截断（对齐 Go `numberValue.Int()`），否则按 String()。
 fn format_d(vm: &Vm, v: Value) -> String {
-    match v {
-        Value::Number(n) => format!("{}", n.trunc() as i64),
+    match v.case() {
+        ValueCase::Number(n) => format!("{}", n.trunc() as i64),
         _ => inspect_value(vm, v),
     }
 }
@@ -171,11 +171,11 @@ fn inspect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 值 → Go `String()` 等价的递归紧凑表示。
 fn inspect_value(vm: &Vm, val: Value) -> String {
-    match val {
-        Value::Undefined | Value::Null | Value::Boolean(_) | Value::Number(_) => {
+    match val.case() {
+        Value::Undefined | Value::Null | ValueCase::Boolean(_) | ValueCase::Number(_) => {
             vm.format_value(val)
         }
-        Value::Object(r) => match vm.heap.get(r.index()) {
+        ValueCase::Object(r) => match vm.heap.get(r.index()) {
             Some(HeapObject::String(s)) => s.clone(),
             Some(HeapObject::BigInt(s)) => s.clone(),
             Some(HeapObject::Array { elements, .. }) => {
@@ -235,7 +235,7 @@ fn inspect_value(vm: &Vm, val: Value) -> String {
 /// `util.inspect` 的「条目级」表示：字符串加单引号（对齐 Node 的 `Map(1) { 1 => 'a' }`、
 /// `Set(1) { 's' }`）；其余类型复用紧凑递归表示。
 fn inspect_entry(vm: &Vm, val: Value) -> String {
-    if let Some(r) = val.as_object {
+    if let Some(r) = val.as_object() {
         if let Some(HeapObject::String(s)) = vm.heap.get(r.index()) {
             return format!("'{s}'");
         }
@@ -248,7 +248,7 @@ fn is_array(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let r = matches!(
         args.first().copied().unwrap_or(Value::Undefined),
-        Value::Object(rr) if matches!(vm.heap.get(rr.index()), Some(HeapObject::Array { .. }))
+        ValueCase::Object(rr) if matches!(vm.heap.get(rr.index()), Some(HeapObject::Array { .. }))
     );
     Ok(Value::Boolean(r))
 }
@@ -258,7 +258,7 @@ fn is_string(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let r = matches!(
         args.first().copied().unwrap_or(Value::Undefined),
-        Value::Object(rr) if matches!(vm.heap.get(rr.index()), Some(HeapObject::String(_)))
+        ValueCase::Object(rr) if matches!(vm.heap.get(rr.index()), Some(HeapObject::String(_)))
     );
     Ok(Value::Boolean(r))
 }
@@ -268,7 +268,7 @@ fn is_number(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let r = matches!(
         args.first().copied().unwrap_or(Value::Undefined),
-        Value::Number(_)
+        ValueCase::Number(_)
     );
     Ok(Value::Boolean(r))
 }
@@ -276,8 +276,8 @@ fn is_number(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `util.types.isObject(v)`：对象形态（普通对象/数组等，排除字符串/函数）。
 fn is_object(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
-    let r = match args.first().copied().unwrap_or(Value::Undefined) {
-        Value::Object(rr) => matches!(
+    let r = match args.first().copied().unwrap_or(Value::Undefined).case() {
+        ValueCase::Object(rr) => matches!(
             vm.heap.get(rr.index()),
             Some(
                 HeapObject::Ordinary { .. }

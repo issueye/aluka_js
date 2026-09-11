@@ -34,7 +34,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::Vm;
-use crate::value::{Upvalue, Value};
+use crate::value::{Upvalue, Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// GC 根集（VM 侧）。aluka-core 的 `RootSet` 服务于其自身槽位模型的
@@ -514,7 +514,7 @@ impl Vm {
         let roots = self.build_gc_roots();
         let mut marked = vec![false; self.heap.len()];
         for root in roots.iter() {
-            if let Some(r) = root.as_object {
+            if let Some(r) = root.as_object() {
                 self.mark_all(r.0, &mut marked);
             }
         }
@@ -560,7 +560,7 @@ impl Vm {
         let roots = self.build_gc_roots();
         let mut marked = vec![false; self.heap.len()];
         for root in roots.iter() {
-            if let Some(r) = root.as_object {
+            if let Some(r) = root.as_object() {
                 self.mark_young(r.0, &mut marked);
             }
         }
@@ -681,8 +681,8 @@ impl Vm {
         if !self.gc_is_old(container) {
             return;
         }
-        let young_target = match val {
-            Value::Object(r) => {
+        let young_target = match val.case() {
+            ValueCase::Object(r) => {
                 !self.gc.is_free.get(r.0 as usize).copied().unwrap_or(true)
                     && self
                         .gc

@@ -23,7 +23,7 @@
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("process")` / `require("node:process")`。
@@ -194,7 +194,7 @@ fn process_event_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         return Ok(Value::Undefined);
     };
     let event = match args.first() {
-        Some(v) if !matches!(v, Value::Undefined) => Some(vm.to_property_key(*v)),
+        Some(v) if !matches!(*v, Value::Undefined) => Some(vm.to_property_key(*v)),
         _ => None,
     };
     crate::builtins::child_process::proc_common::emitter_remove_all(id, event.as_deref());
@@ -387,14 +387,14 @@ fn url_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `url.format(obj_or_str)`：对象取 `href` 属性，字符串原样返回。
 fn url_format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let out = match args.first() {
-        Some(Value::Object(r)) => {
+    let out = match args.first().map(|v| v.case()) {
+        Some(ValueCase::Object(r)) => {
             let mut href = String::new();
             if matches!(
                 vm.heap.get(r.index()),
                 Some(crate::heap::HeapObject::Ordinary { .. })
             ) {
-                if let Some(s) = vm.own_value(r.index(), "href").as_object {
+                if let Some(s) = vm.own_value(r.index(), "href").and_then(|v| v.as_object()) {
                     if let Some(crate::heap::HeapObject::String(t)) = vm.heap.get(s.index()) {
                         href = t.clone();
                     }
@@ -402,7 +402,7 @@ fn url_format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             }
             href
         }
-        Some(v) => vm.format_value(*v),
+        Some(v) => vm.format_value(v),
         None => String::new(),
     };
     Ok(Value::Object(vm.alloc_string(out)))

@@ -20,7 +20,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -113,8 +113,8 @@ fn init_stream_state(id: u32, write_fn: Option<Value>, high_water_mark: usize, s
 
 /// 计算 chunk 的字节长度（Buffer/字符串取真实字节；其余类型 0）
 fn chunk_byte_len(vm: &crate::interpreter::Vm, chunk: Value) -> usize {
-    match chunk {
-        Value::Object(_) => crate::builtins::buffer::extract_bytes(vm, chunk)
+    match chunk.case() {
+        ValueCase::Object(_) => crate::builtins::buffer::extract_bytes(vm, chunk)
             .map(|b| b.len())
             .unwrap_or(0),
         _ => 0,
@@ -123,8 +123,8 @@ fn chunk_byte_len(vm: &crate::interpreter::Vm, chunk: Value) -> usize {
 
 /// 从 options 对象读取 highWaterMark（缺省/非法 → 默认水位线）
 fn read_high_water_mark(vm: &mut crate::interpreter::Vm, args: &[Value]) -> usize {
-    if let Some(opts) = args.first().copied().as_object {
-        if let Ok(Value::Number(n)) = vm.get_property(Value::Object(opts), "highWaterMark") {
+    if let Some(opts) = args.first().copied().and_then(|v| v.as_object()) {
+        if let Ok(ValueCase::Number(n)) = vm.get_property(Value::Object(opts), "highWaterMark").map(ValueCase::from) {
             if n.is_finite() && n >= 0.0 {
                 return n as usize;
             }
@@ -209,8 +209,8 @@ fn readable_from_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(web) = args.first().copied() else {
         return Ok(Value::Undefined);
     };
-    let web_id = match &web {
-        Value::Object(r) => r.0,
+    let web_id = match &web.case() {
+        ValueCase::Object(r) => r.0,
         _ => {
             let msg =
                 vm.alloc_string("Readable.fromWeb: stream must be a ReadableStream".to_owned());
@@ -229,8 +229,8 @@ fn readable_to_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(node_val) = args.first().copied() else {
         return Ok(Value::Undefined);
     };
-    let node_id = match node_val {
-        Value::Object(r) => r.0,
+    let node_id = match node_val.case() {
+        ValueCase::Object(r) => r.0,
         _ => {
             let msg = vm.alloc_string("Readable.toWeb: stream must be a Readable".to_owned());
             return Err(VmError::Thrown(Value::Object(msg)));
@@ -254,8 +254,8 @@ fn writable_from_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(web) = args.first().copied() else {
         return Ok(Value::Undefined);
     };
-    let web_id = match &web {
-        Value::Object(r) => r.0,
+    let web_id = match &web.case() {
+        ValueCase::Object(r) => r.0,
         _ => {
             let msg =
                 vm.alloc_string("Writable.fromWeb: stream must be a WritableStream".to_owned());
@@ -276,8 +276,8 @@ fn writable_to_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(node_val) = args.first().copied() else {
         return Ok(Value::Undefined);
     };
-    let node = match node_val {
-        Value::Object(r) => r,
+    let node = match node_val.case() {
+        ValueCase::Object(r) => r,
         _ => {
             let msg = vm.alloc_string("Writable.toWeb: stream must be a Writable".to_owned());
             return Err(VmError::Thrown(Value::Object(msg)));
@@ -290,10 +290,10 @@ fn writable_to_web(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// webSinkWrite 内部处理器：fromWeb 桥的 Node write_fn → web underlyingSink.write。
 fn stream_internal_web_sink_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(fwd_ref) = super::pending_callee() else {
+    let ValueCase::Object(fwd_ref) = super::pending_callee() else {
         return Ok(Value::Undefined);
     };
-    let Some(n) = vm.get_native_fn_property(fwd_ref, "_webId").as_number() else {
+    let Some(n) = vm.get_native_fn_property(fwd_ref, "_webId").and_then(|v| v.as_number()) else {
         return Ok(Value::Undefined);
     };
     let chunk = args.first().copied().unwrap_or(Value::Undefined);
@@ -345,8 +345,8 @@ pub(crate) fn store_roots(out: &mut crate::gc::GcRoots) {
 
 /// 触发流实例的指定事件监听器
 fn emit_event(vm: &mut Vm, stream_val: Value, event: &str, args: &[Value]) -> Result<(), VmError> {
-    let id = match stream_val {
-        Value::Object(r) => r.0,
+    let id = match stream_val.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(()),
     };
     let cbs = with_stream_state(id, |s| s.listeners.get(event).cloned()).flatten();
@@ -394,7 +394,7 @@ fn drain_to_dest(vm: &mut Vm, id: u32, stream_val: Value, dest: Value) -> Result
             s.readable_length = s.readable_length.saturating_sub(blen);
         });
         let ok = write_to_stream(vm, dest, chunk)?;
-        if matches!(ok, Value::Boolean(false)) {
+        if matches!(ok.case(), ValueCase::Boolean(false)) {
             // 目标流背压：源流暂停（剩余块留在缓冲），等 dest 'drain' 后恢复
             with_stream_state(id, |s| {
                 s.flowing = false;
@@ -421,13 +421,13 @@ fn attach_pipe_drain_listener(vm: &mut Vm, src_val: Value) -> Result<(), VmError
 /// pipe 背压恢复 handler：dest 'drain' 后恢复源流排空。
 fn stream_internal_pipe_drain(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let callee = super::pending_callee();
-    let src_val = match callee {
-        Value::Object(r) => vm
+    let src_val = match callee.case() {
+        ValueCase::Object(r) => vm
             .get_native_fn_property(r, "_src")
             .unwrap_or(Value::Undefined),
         _ => Value::Undefined,
     };
-    let Value::Object(r) = src_val else {
+    let ValueCase::Object(r) = src_val.case() else {
         return Ok(Value::Undefined);
     };
     let dest = with_stream_state(r.0, |s| {
@@ -540,8 +540,8 @@ pub fn create_transform_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRe
         "writableHighWaterMark",
         Value::Number(hwm as f64),
     );
-    if let Some(opts) = args.first().copied().as_object {
-        if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(opts), "writableObjectMode")
+    if let Some(opts) = args.first().copied().and_then(|v| v.as_object()) {
+        if let Ok(ValueCase::Boolean(true)) = vm.get_property(Value::Object(opts), "writableObjectMode")
         {
             let _ = vm.set_property(
                 Value::Object(obj),
@@ -603,9 +603,9 @@ pub fn create_writable_instance(vm: &mut Vm, args: &[Value]) -> Result<ObjectRef
     let hwm = read_high_water_mark(vm, args);
     let self_val = Value::Object(obj);
     let mut write_fn = None;
-    if let Some(opts_ref) = args.first().as_object {
-        if let Ok(w) = vm.get_property(Value::Object(*opts_ref), "write") {
-            if matches!(w, Value::Object(_)) {
+    if let Some(opts_ref) = args.first().and_then(|v| v.as_object()) {
+        if let Ok(w) = vm.get_property(Value::Object(opts_ref), "write") {
+            if matches!(w.case(), ValueCase::Object(_)) {
                 write_fn = Some(w);
             }
         }
@@ -825,7 +825,7 @@ fn build_promises(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectR
     if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
         let ok = matches!(
             vm.get_property(Value::Object(obj), "finished"),
-            Ok(Value::Object(_))
+            Ok(ValueCase::Object(_))
         );
         eprintln!("[bisect] build_promises: obj={} readback={ok}", obj.0);
     }
@@ -870,8 +870,8 @@ fn readable_from(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let r_val = Value::Object(r_obj);
 
     if let Some(src) = args.first().copied() {
-        match src {
-            Value::Object(ref_idx) => {
+        match src.case() {
+            ValueCase::Object(ref_idx) => {
                 let idx = ref_idx.0 as usize;
                 if let Some(heap_obj) = vm.heap.get(idx) {
                     match heap_obj {
@@ -931,8 +931,8 @@ fn fulfill_next_awaiter(vm: &mut Vm, id: u32, value: Value, done: bool) -> Resul
 /// 由 `stream_push` 兑现）。
 fn stream_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let state = get_stream_state(id);
@@ -962,8 +962,8 @@ fn stream_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.push(chunk)`：向流推送数据，push(null) 标记结束
 fn stream_push(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Boolean(false)),
     };
     if with_stream_state(id, |s| s.destroyed).unwrap_or(false) {
@@ -1025,8 +1025,8 @@ fn stream_push(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `stream.read([size])`：从流缓冲区读取数据
 fn stream_read(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Null),
     };
     let chunk = with_stream_state(id, |s| {
@@ -1046,12 +1046,12 @@ fn stream_read(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.pipe(destination)`：将可读流管道连接至目标可写流
 fn stream_pipe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
-    let dest = match args.first().copied() {
-        Some(d) if matches!(d, Value::Object(_)) => d,
+    let dest = match args.first().copied().map(|v| v.case()) {
+        Some(d) if matches!(d.case(), ValueCase::Object(_)) => d,
         _ => return Ok(receiver),
     };
     with_stream_state(id, |s| {
@@ -1073,8 +1073,8 @@ fn stream_pipe(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `stream.on(event, callback)`：注册事件监听器
 fn stream_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(receiver),
     };
     let event = args
@@ -1083,7 +1083,7 @@ fn stream_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .unwrap_or_default();
     let cb = args.get(1).copied().unwrap_or(Value::Undefined);
 
-    if matches!(cb, Value::Object(_)) {
+    if matches!(cb.case(), ValueCase::Object(_)) {
         with_stream_state(id, |s| {
             s.listeners.entry(event.clone()).or_default().push(cb);
         });
@@ -1109,7 +1109,7 @@ fn stream_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `stream.pause()`：暂停流动
 fn stream_pause(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         with_stream_state(r.0, |s| s.flowing = false);
     }
     Ok(receiver)
@@ -1118,7 +1118,7 @@ fn stream_pause(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.resume()`：恢复流动
 fn stream_resume(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         with_stream_state(r.0, |s| s.flowing = true);
         drain_buffer_to_data(vm, r.0, receiver)?;
         let state = get_stream_state(r.0);
@@ -1132,8 +1132,8 @@ fn stream_resume(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stream.isPaused()`
 fn stream_is_paused(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let paused = match receiver {
-        Value::Object(r) => with_stream_state(r.0, |s| !s.flowing).unwrap_or(true),
+    let paused = match receiver.case() {
+        ValueCase::Object(r) => with_stream_state(r.0, |s| !s.flowing).unwrap_or(true),
         _ => true,
     };
     Ok(Value::Boolean(paused))
@@ -1143,7 +1143,7 @@ fn stream_is_paused(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// error（携带 err 时）与 close；错误存 errored 供 `stream.errored` 读取。
 fn stream_destroy(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         let already = with_stream_state(r.0, |s| {
             let was = s.destroyed;
             s.destroyed = true;
@@ -1158,7 +1158,7 @@ fn stream_destroy(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             return Ok(receiver);
         }
         if let Some(err) = args.first() {
-            if !matches!(err, Value::Undefined | Value::Null) {
+            if !matches!(*err, Value::Undefined | Value::Null) {
                 with_stream_state(r.0, |s| s.errored = Some(*err));
                 emit_event(vm, receiver, "error", &[*err])?;
             }
@@ -1175,8 +1175,8 @@ fn stream_destroy(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 跌破水位线 → 发 `drain` 事件恢复上游。
 fn stream_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Boolean(false)),
     };
     let Some(chunk) = args.first().copied() else {
@@ -1308,15 +1308,15 @@ fn make_write_callback(vm: &mut Vm, stream_id: u32, chunk_len: usize) -> Value {
 
 /// `write` 完成回调 handler：扣减 writable_length，跌破水位线发 `drain`。
 fn stream_internal_write_cb(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(cb_ref) = super::pending_callee() else {
+    let ValueCase::Object(cb_ref) = super::pending_callee() else {
         return Ok(Value::Undefined);
     };
-    let sid = match vm.get_native_fn_property(cb_ref, "_sid") {
-        Some(Value::Number(n)) => n as u32,
+    let sid = match vm.get_native_fn_property(cb_ref, "_sid").map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as u32,
         _ => return Ok(Value::Undefined),
     };
-    let clen = match vm.get_native_fn_property(cb_ref, "_clen") {
-        Some(Value::Number(n)) => n as usize,
+    let clen = match vm.get_native_fn_property(cb_ref, "_clen").map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as usize,
         _ => 0,
     };
     // 回调携带错误 → 存 errored、级联销毁流并触发 error 事件
@@ -1346,8 +1346,8 @@ fn stream_internal_write_cb(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
 /// `stream.end([chunk][, callback])`：结束可写流
 fn stream_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     if with_stream_state(id, |s| s.destroyed).unwrap_or(false) {
@@ -1381,9 +1381,7 @@ fn stream_pipeline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Err(VmError::Thrown(Value::Object(msg)));
     }
     let (streams, cb) = if let Some(last) = args.last() {
-        if matches!(
-            last,
-            Value::Object(r)
+        if matches!(last.case(), ValueCase::Object(r)
                 if matches!(
                     vm.heap.get(r.0 as usize),
                     Some(HeapObject::Closure { .. })
@@ -1434,12 +1432,12 @@ fn stream_pipeline(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// pipeline 错误级联 handler：销毁除本流外的全部流（destroy(err)），回调
 /// 以同一错误调用一次（_fired 去重，防多流同时报错重复回调）。
 fn stream_internal_pipeline_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(cb_ref) = super::pending_callee() else {
+    let ValueCase::Object(cb_ref) = super::pending_callee() else {
         return Ok(Value::Undefined);
     };
     let fired = matches!(
         vm.get_native_fn_property(cb_ref, "_fired"),
-        Some(Value::Boolean(true))
+        Some(ValueCase::Boolean(true))
     );
     if fired {
         return Ok(Value::Undefined);
@@ -1450,7 +1448,7 @@ fn stream_internal_pipeline_error(vm: &mut Vm, args: &[Value]) -> Result<Value, 
         .unwrap_or(Value::Undefined);
     let all = vm.get_native_fn_property(cb_ref, "_all");
     let err = args.first().copied().unwrap_or(Value::Undefined);
-    if let Some(Value::Object(arr)) = all
+    if let Some(ValueCase::Object(arr)) = all
         && let Some(HeapObject::Array { elements, .. }) = vm.heap.get(arr.0 as usize)
     {
         for sv in elements.clone() {
@@ -1537,8 +1535,8 @@ fn consume_stream_internal(
     mode: ConsumerMode,
 ) -> Result<Value, VmError> {
     let promise = vm.alloc_pending_promise();
-    let id = match stream_val {
-        Value::Object(r) => r.0,
+    let id = match stream_val.case() {
+        ValueCase::Object(r) => r.0,
         _ => {
             let empty = vm.alloc_string(String::new());
             vm.fulfill_promise(promise, Value::Object(empty))?;

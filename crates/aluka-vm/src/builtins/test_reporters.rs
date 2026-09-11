@@ -19,7 +19,7 @@
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -407,7 +407,7 @@ fn new_reporter_instance(vm: &mut Vm, kind: &'static str) -> ObjectRef {
 
 /// 从事件分块（`{type, data}`）提取事件名 / 用例名 / 错误文本。
 fn extract_event_parts(vm: &mut Vm, chunk: Value) -> Option<(String, String, Option<String>)> {
-    let Value::Object(_) = chunk else {
+    let ValueCase::Object(_) = chunk.case() else {
         return None;
     };
     let type_val = vm.get_property(chunk, "type").ok()?;
@@ -439,8 +439,8 @@ fn extract_event_parts(vm: &mut Vm, chunk: Value) -> Option<(String, String, Opt
 ///   的管道消费形态；TAP 首个输出前补 `TAP version 13` 头，`end` 出汇总块）；
 /// - 其余分块：保持既有 `data` 透传，返回 `true`（背压已接受）。
 fn reporter_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let (w, w_id) = match crate::builtins::current_receiver() {
-        Value::Object(r) => (Value::Object(r), r.0),
+    let (w, w_id) = match crate::builtins::current_receiver().case() {
+        ValueCase::Object(r) => (Value::Object(r), r.0),
         _ => return Ok(Value::Boolean(true)),
     };
     let chunk = args.first().copied().unwrap_or(Value::Undefined);
@@ -546,8 +546,8 @@ fn reporter_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `end()`：出汇总块（tap `# tests` / spec `ℹ tests` / dot 失败清单）并触发
 /// `finish` + `close` 事件（既有契约），返回汇总文本。
 fn reporter_end(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let (w, w_id) = match crate::builtins::current_receiver() {
-        Value::Object(r) => (Value::Object(r), r.0),
+    let (w, w_id) = match crate::builtins::current_receiver().case() {
+        ValueCase::Object(r) => (Value::Object(r), r.0),
         _ => return Ok(Value::Undefined),
     };
     let text = {

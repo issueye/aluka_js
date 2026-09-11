@@ -1,7 +1,7 @@
 //! Number 构造器静态方法。
 
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 pub(crate) fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 方法名取自被调函数（`Number.isInteger`），而非 receiver——普通调用
@@ -15,13 +15,13 @@ pub(crate) fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         "isInteger" => {
             let n = to_num(vm, v);
             Ok(Value::Boolean(
-                matches!(v, Value::Number(_)) && n.fract() == 0.0 && n.is_finite(),
+                matches!(v.case(), ValueCase::Number(_)) && n.fract() == 0.0 && n.is_finite(),
             ))
         }
         "isSafeInteger" => {
             let n = to_num(vm, v);
             Ok(Value::Boolean(
-                matches!(v, Value::Number(_))
+                matches!(v.case(), ValueCase::Number(_))
                     && n.fract() == 0.0
                     && n.is_finite()
                     && n.abs() <= 9007199254740991.0,
@@ -30,7 +30,7 @@ pub(crate) fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         "isFinite" => {
             let n = to_num(vm, v);
             Ok(Value::Boolean(
-                matches!(v, Value::Number(_)) && n.is_finite(),
+                matches!(v.case(), ValueCase::Number(_)) && n.is_finite(),
             ))
         }
         "isNaN" => Ok(Value::Boolean(to_num(vm, v).is_nan())),

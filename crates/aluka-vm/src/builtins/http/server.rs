@@ -22,7 +22,7 @@ use crate::builtins::buffer;
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// 创建 Server 实例对象（EventEmitter 表面 + Node 属性），并登记
@@ -152,7 +152,7 @@ pub(crate) fn register_handlers(registry: &mut BuiltinRegistry) {
 /// 实例 `on(event, listener)`（Server/IncomingMessage/ServerResponse 共用）。
 fn instance_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             add_listener(r.0, &name, *cb, false);
@@ -164,7 +164,7 @@ fn instance_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 实例 `once(event, listener)`。
 fn instance_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             add_listener(r.0, &name, *cb, true);
@@ -176,7 +176,7 @@ fn instance_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 实例 `off(event, listener)` / `removeListener`：按回调引用移除首个匹配。
 fn instance_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
@@ -192,7 +192,7 @@ fn instance_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 成功后激活 `"http"` 事件源，并经宏任务异步触发 callback 与 `'listening'`。
 fn server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let port_in = super::int_arg(args, 0, 0);
@@ -282,7 +282,7 @@ fn server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 曾监听过则异步触发 callback，否则同步。事件源随之按需停用。
 fn server_close(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let callback = args.first().copied().filter(|v| super::is_function(vm, *v));
@@ -359,7 +359,7 @@ pub(crate) fn close_all_servers(vm: &mut Vm) {
 /// `server.address()`：未监听返回 `null`，否则 `{address, family, port}`。
 fn server_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Null);
     };
     let addr = read_servers(|servers| {
@@ -384,8 +384,8 @@ fn server_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// callback（Go 同步语义），返回服务器自身。
 fn server_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(n) = args.first().as_number {
-        let _ = vm.set_property(receiver, "timeout", Value::Number(*n));
+    if let Some(n) = args.first().and_then(|v| v.as_number()) {
+        let _ = vm.set_property(receiver, "timeout", Value::Number(n));
     }
     if let Some(cb) = args.get(1) {
         if super::is_function(vm, *cb) {
@@ -415,7 +415,7 @@ fn server_close_all(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 头对象 → `(小写名, 值列表)` 列表（数组值展开，跳过 undefined/null）。
 fn header_entries(vm: &mut Vm, obj: Value) -> Vec<(String, Vec<String>)> {
-    let Value::Object(r) = obj else {
+    let ValueCase::Object(r) = obj.case() else {
         return Vec::new();
     };
     let props: Vec<(String, Value)> = match vm.heap.get(r.0 as usize) {
@@ -434,7 +434,7 @@ fn header_entries(vm: &mut Vm, obj: Value) -> Vec<(String, Vec<String>)> {
 /// 冻结当前头集合为线上头（Go `flushHeadersOnce` 一次性转移语义）。
 fn response_write_head(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let status = super::int_arg(args, 0, 200) as u16;
@@ -462,7 +462,7 @@ fn response_write_head(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `res.write(chunk[, encoding][, callback])`：缓冲响应体，返回 true。
 fn response_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     if let Some(chunk) = args.first() {
@@ -481,11 +481,11 @@ fn response_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 并把 `finish`/`close` 事件排入待发射队列。
 fn response_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(chunk) = args.first() {
-        if !matches!(chunk, Value::Undefined | Value::Null) && !super::is_function(vm, *chunk) {
+        if !matches!(*chunk, Value::Undefined | Value::Null) && !super::is_function(vm, *chunk) {
             let bytes = super::chunk_bytes(vm, *chunk);
             update_response(r.0, |b| {
                 if !b.finished {
@@ -498,8 +498,8 @@ fn response_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let prop_status = vm
         .get_property(receiver, "statusCode")
         .ok()
-        .and_then(|v| match v {
-            Value::Number(n) => Some(n as u16),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some(n as u16),
             _ => None,
         });
     finalize_response(vm, r.0, prop_status)?;
@@ -676,7 +676,7 @@ fn mark_conn_idle(server_obj: u32, conn_id: u64) {
 /// `res.setHeader(name, value)`（小写键；数组值保留为多值）。
 fn response_set_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -693,7 +693,7 @@ fn response_set_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `res.getHeader(name)`：单个值（多值 `", "` 连接）；缺失 `undefined`。
 fn response_get_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let Some(name) = args.first() else {
@@ -715,7 +715,7 @@ fn response_get_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `res.getHeaders()`：`{小写名: 值|数组}` 对象。
 fn response_get_headers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Object(vm.alloc_ordinary()));
     };
     let entries = update_response(r.0, |b| b.live.clone()).unwrap_or_default();
@@ -738,7 +738,7 @@ fn response_get_headers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// `res.hasHeader(name)`。
 fn response_has_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     let Some(name) = args.first() else {
@@ -752,7 +752,7 @@ fn response_has_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `res.removeHeader(name)`（仅活动头；线上头已冻结不受影响——Go 同）。
 fn response_remove_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(name) = args.first() {
@@ -775,7 +775,7 @@ fn response_add_trailers(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// `res.flushHeaders()`：冻结当前头集合（语义等价 `writeHead(status)` 的快照）。
 fn response_flush_headers(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     update_response(r.0, |b| {

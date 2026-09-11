@@ -21,7 +21,7 @@
 use crate::builtins::current_receiver;
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 
@@ -126,8 +126,8 @@ fn build_module_class(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<Obj
         let msg = vm.alloc_string("module 模块尚未初始化".to_owned());
         VmError::Thrown(Value::Object(msg))
     })?;
-    match vm.get_property(Value::Object(module_obj), "Module")? {
-        Value::Object(ctor) => Ok(ctor),
+    match vm.get_property(Value::Object(module_obj), "Module")?.case() {
+        ValueCase::Object(ctor) => Ok(ctor),
         _ => {
             let msg = vm.alloc_string("module.Module 类对象缺失".to_owned());
             Err(VmError::Thrown(Value::Object(msg)))
@@ -283,8 +283,8 @@ fn module_import(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `import.meta.resolve(specifier)`：相对 meta 对象的 `_metaDir` 解析。
 fn import_meta_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let base_dir = match receiver {
-        Value::Object(r) => vm
+    let base_dir = match receiver.case() {
+        ValueCase::Object(r) => vm
             .get_native_fn_property(r, "_metaDir")
             .map(|v| vm.format_value(v))
             .unwrap_or_default(),
@@ -304,7 +304,7 @@ fn import_meta_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 fn create_require(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(arg) = args.first() {
-        if matches!(arg, Value::Object(_)) {
+        if matches!(arg.case(), ValueCase::Object(_)) {
             let href = vm.get_property(*arg, "href")?;
             if !matches!(href, Value::Undefined | Value::Null) {
                 let s = vm.format_value(href);

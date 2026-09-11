@@ -31,7 +31,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{Connection, Statement};
@@ -164,8 +164,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 
 /// 取 JS 字符串堆值(非字符串返回 `None`)。
 fn as_string_value(vm: &Vm, v: Value) -> Option<String> {
-    match v {
-        Value::Object(r) => match vm.heap.get(r.index()) {
+    match v.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.index()) {
             Some(HeapObject::String(s)) => Some(s.clone()),
             _ => None,
         },
@@ -181,7 +181,7 @@ fn database_sync_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         Some(s) => s,
         None => {
             // Buffer/Uint8Array 字节按 UTF-8 无损转换（Node 接受 Uint8Array 路径）。
-            if let Some(_) = raw.as_object {
+            if let Some(_) = raw.as_object() {
                 if let Some(bytes) = crate::builtins::buffer::extract_bytes(vm, raw) {
                     String::from_utf8_lossy(&bytes).into_owned()
                 } else {
@@ -320,7 +320,7 @@ fn db_prepare(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `db.close()`：关闭连接、清理语句并把 `isOpen` 置 false（二次 close 报错）。
 fn db_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let id = r.0;
@@ -360,7 +360,7 @@ fn db_transaction(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 事务包装函数调用：BEGIN → 回调 → COMMIT / ROLLBACK。
 fn txn_call(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let found = TXNS.with(|g| with_map(g, |m| m.get(&r.0).map(|e| (e.db_id, e.callback))));
@@ -423,8 +423,8 @@ fn rollback_quiet(db_id: u32) {
 /// 取当前接收者（DatabaseSync 实例）的句柄索引。
 fn require_db_id(vm: &mut Vm) -> Result<u32, VmError> {
     let receiver = current_receiver();
-    match receiver {
-        Value::Object(r) => Ok(r.0),
+    match receiver.case() {
+        ValueCase::Object(r) => Ok(r.0),
         _ => Err(sqlite_throw(
             vm,
             "node:sqlite: receiver is not a DatabaseSync",
@@ -582,7 +582,7 @@ fn rows_inner(
 /// `iter.next()`：`{ done: false, value: 行对象 }` 或 `{ done: true }`。
 fn iter_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let (next, read_big_ints) = ITERS.with(|g| {
@@ -618,7 +618,7 @@ fn iter_next(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `stmt.setReadBigInts(bool)`：切换 INTEGER 列读取为 bigint。
 fn stmt_set_read_big_ints(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let flag = args.first().copied().unwrap_or(Value::Undefined);
@@ -710,8 +710,8 @@ fn stmt_columns(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// 当前语句实例句柄索引（语句处理器入口共用；非对象接收者属内部不变量破坏）。
 fn current_stmt_key(vm: &mut Vm) -> Result<u32, VmError> {
     let receiver = current_receiver();
-    match receiver {
-        Value::Object(r) => Ok(r.0),
+    match receiver.case() {
+        ValueCase::Object(r) => Ok(r.0),
         _ => Err(sqlite_throw(
             vm,
             "node:sqlite: receiver is not a StatementSync",
@@ -827,7 +827,7 @@ fn bind_plan(stmt: &mut Statement<'_>, plan: &BindPlan) -> Result<(), SqErr> {
 /// - 其余一律位置参数（各值按位绑定，不可绑定值报带序号的 TypeError）。
 fn to_bind_plan(vm: &mut Vm, args: &[Value]) -> Result<BindPlan, VmError> {
     if args.len() == 1 {
-        if let Some(r) = args[0].as_object {
+        if let Some(r) = args[0].as_object() {
             // 可直绑对象：字符串/BigInt/blob 载体（Buffer/TypedArray/ArrayBuffer/
             // DataView）。**Array 除外**——Node 把数组参数按命名参数展开
             // （数字键），extract_bytes 对数组会误判为字节序列。
@@ -873,18 +873,18 @@ fn not_bindable(vm: &mut Vm, param_idx: usize) -> VmError {
 /// JS 值 → 驱动参数（对齐 Node 22 实测：`null` → NULL；`undefined`/布尔/
 /// 普通对象/数组 → TypeError；number 整值入 INTEGER；bigint 超 i64 按文本近似）。
 fn js_to_param(vm: &mut Vm, v: Value, param_idx: usize) -> Result<SqlParam, VmError> {
-    match v {
+    match v.case() {
         Value::Undefined => Err(not_bindable(vm, param_idx)),
         Value::Null => Ok(SqlParam::Null),
-        Value::Boolean(_) => Err(not_bindable(vm, param_idx)),
-        Value::Number(n) => {
+        ValueCase::Boolean(_) => Err(not_bindable(vm, param_idx)),
+        ValueCase::Number(n) => {
             if n.is_finite() && n == n.trunc() && n.abs() <= 9.2e18 {
                 Ok(SqlParam::Int(n as i64))
             } else {
                 Ok(SqlParam::Real(n))
             }
         }
-        Value::Object(r) => {
+        ValueCase::Object(r) => {
             // 字符串优先按文本绑定（先于 Buffer 字节提取）。
             if let Some(HeapObject::String(s)) = vm.heap.get(r.index()) {
                 return Ok(SqlParam::Text(s.clone()));
@@ -1089,7 +1089,7 @@ fn make_error(vm: &mut Vm, name: &str, code: &str, msg: &str, ext: Option<i32>) 
 
 /// 判断值是否可调用（Closure / NativeFn / NativeCtor）。
 fn is_callable_value(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. } | HeapObject::NativeCtor { .. })
     ))

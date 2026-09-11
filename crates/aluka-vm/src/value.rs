@@ -205,6 +205,63 @@ impl Value {
     }
 }
 
+/// 值的**模式匹配镜像**：旧枚举形态的 match 迁移辅助。
+///
+/// `Value` 本体为 NaN-box 机器字（无法被解构模式匹配），需要按变体分支时
+/// 先经 `.case()` 转为本枚举——变体名与旧 `Value` 完全一致，逐位语义等价。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ValueCase {
+    /// undefined
+    Undefined,
+    /// null
+    Null,
+    /// 布尔
+    Boolean(bool),
+    /// 数值
+    Number(f64),
+    /// 堆对象引用
+    Object(ObjectRef),
+}
+
+impl From<&Value> for ValueCase {
+    fn from(v: &Value) -> Self {
+        match v.kind() {
+            ValueKind::Undefined => Self::Undefined,
+            ValueKind::Null => Self::Null,
+            ValueKind::Boolean => Self::Boolean(v.as_bool().unwrap_or(false)),
+            ValueKind::Number => Self::Number(v.as_number().unwrap_or(f64::NAN)),
+            ValueKind::Object => Self::Object(v.as_object().unwrap_or(ObjectRef(u32::MAX))),
+        }
+    }
+}
+
+impl From<Value> for ValueCase {
+    fn from(v: Value) -> Self {
+        Self::from(&v)
+    }
+}
+
+impl Value {
+    /// 解构为模式匹配镜像（`match v.case(){ ValueCase::Object(r) => … }`）。
+    #[must_use]
+    #[inline]
+    pub fn case(&self) -> ValueCase {
+        ValueCase::from(self)
+    }
+}
+
+impl From<ValueCase> for Value {
+    fn from(c: ValueCase) -> Self {
+        match c {
+            ValueCase::Undefined => Self::Undefined,
+            ValueCase::Null => Self::Null,
+            ValueCase::Boolean(b) => Self::Boolean(b),
+            ValueCase::Number(n) => Self::Number(n),
+            ValueCase::Object(r) => Self::Object(r),
+        }
+    }
+}
+
 /// 真值判定位于 `ops::to_boolean(val, heap)` / `Vm::truthy(val)`：
 /// 字符串是堆对象，空字符串必须为 falsy，判定需要堆访问。
 

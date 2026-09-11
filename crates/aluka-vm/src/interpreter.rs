@@ -4,7 +4,7 @@ use crate::exception::{Completion, FinallyOutcome, PHASE_TRY, TryExitOutcome, Tr
 use crate::generator::GeneratorState;
 use crate::heap::HeapObject;
 use crate::ops::{eq, js_number_to_string, parse_js_number, strict_eq, to_boolean, to_number};
-use crate::value::{Upvalue, Value};
+use crate::value::{Upvalue, Value, ValueCase};
 use aluka_bytecode::{ClassTemplate, Constant, FuncTemplate, Instr, Op, TryEntry};
 use aluka_core::{ObjectRef, ShapeTable};
 use std::borrow::Cow;
@@ -262,18 +262,18 @@ impl Vm {
         self.globals.len().hash(&mut h);
         for (k, v) in &self.globals {
             k.hash(&mut h);
-            match v {
+            match v.case() {
                 Value::Undefined => 0u8.hash(&mut h),
                 Value::Null => 1u8.hash(&mut h),
-                Value::Boolean(b) => {
+                ValueCase::Boolean(b) => {
                     2u8.hash(&mut h);
                     b.hash(&mut h);
                 }
-                Value::Number(n) => {
+                ValueCase::Number(n) => {
                     3u8.hash(&mut h);
                     n.to_bits().hash(&mut h);
                 }
-                Value::Object(r) => {
+                ValueCase::Object(r) => {
                     4u8.hash(&mut h);
                     r.0.hash(&mut h);
                 }
@@ -599,7 +599,7 @@ impl Vm {
                 .map(|r| {
                     matches!(
                         vm.get_property(Value::Object(r), "finished"),
-                        Ok(Value::Object(_))
+                        Ok(ValueCase::Object(_))
                     )
                 })
                 .unwrap_or(false);
@@ -623,12 +623,12 @@ impl Vm {
 
     /// 格式化值为字符串（对齐 JS 的 String(...) 与 console.log 输出语义）。
     pub fn format_value(&self, val: Value) -> String {
-        match val {
+        match val.case() {
             Value::Undefined => "undefined".to_owned(),
             Value::Null => "null".to_owned(),
-            Value::Boolean(b) => format!("{b}"),
-            Value::Number(n) => js_number_to_string(n),
-            Value::Object(r) => {
+            ValueCase::Boolean(b) => format!("{b}"),
+            ValueCase::Number(n) => js_number_to_string(n),
+            ValueCase::Object(r) => {
                 let idx = r.0 as usize;
                 // Proxy：格式化透传 target（对齐 String(proxy) 经 get/toString trap 的语义）
                 if let Some(HeapObject::Proxy { target, .. }) = self.heap.get(idx) {
@@ -687,7 +687,7 @@ impl Vm {
     /// 数组呈现为 `[ a, b ]`（空数组 `[]`，元素 `, ` 分隔、递归同规则），
     /// BigInt 呈现为带 `n` 后缀的字面量（例如 `123n`），其余值与 [`Vm::format_value`] 一致。
     pub fn format_console_value(&self, val: Value) -> String {
-        if let Some(r) = val.as_object {
+        if let Some(r) = val.as_object() {
             let idx = r.0 as usize;
             if let Some(obj) = self.heap.get(idx) {
                 match obj {
@@ -715,12 +715,12 @@ impl Vm {
 
     /// JS `typeof` 语义的字符串化。
     fn typeof_value(&self, val: Value) -> String {
-        match val {
+        match val.case() {
             Value::Undefined => "undefined".to_owned(),
             Value::Null => "object".to_owned(),
-            Value::Boolean(_) => "boolean".to_owned(),
-            Value::Number(_) => "number".to_owned(),
-            Value::Object(r) => match self.heap.get(r.0 as usize) {
+            ValueCase::Boolean(_) => "boolean".to_owned(),
+            ValueCase::Number(_) => "number".to_owned(),
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(_)) => "string".to_owned(),
                 Some(HeapObject::BigInt(_)) => "bigint".to_owned(),
                 Some(HeapObject::Symbol { .. }) => "symbol".to_owned(),
@@ -739,7 +739,7 @@ impl Vm {
 
     /// `++` / `--` 的 ToNumeric 递增（BigInt 保持 BigInt，对齐 Go 版 `updateNumeric`）。
     fn update_numeric(&mut self, val: Value, delta: i128) -> Value {
-        if let Some(r) = val.as_object {
+        if let Some(r) = val.as_object() {
             if let Some(HeapObject::BigInt(s)) = self.heap.get(r.0 as usize) {
                 let n: i128 = s.parse().unwrap_or(0);
                 let updated = n + delta;
@@ -1015,7 +1015,7 @@ impl Vm {
         let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
         self.ordinary_define_property(obj, key, Value::Object(desc))?;
         // 登记不可枚举键（for-in 过滤依据）
-        if let Value::Object(r) = obj
+        if let ValueCase::Object(r) = obj
             && let Some(crate::heap::HeapObject::Ordinary { non_enum, .. }) =
                 self.heap.get_mut(r.0 as usize)
         {
@@ -1031,9 +1031,7 @@ impl Vm {
 
     /// 判断值是否为指定名称的原生函数。
     pub(crate) fn is_native_fn(&self, val: Value, name: &str) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(
                     self.heap.get(r.0 as usize),
                     Some(HeapObject::NativeFn { name: n, .. }) if n == name
@@ -1044,9 +1042,7 @@ impl Vm {
     /// Symbol 构造器判定：NativeFn（旧形态）或 NativeCtor 单例（原型面
     /// 补全后形态）名皆为 "Symbol"。
     pub(crate) fn is_symbol_ctor(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(
                     self.heap.get(r.0 as usize),
                     Some(HeapObject::NativeFn { name, .. })
@@ -1059,7 +1055,7 @@ impl Vm {
     /// 堆感知的 ToNumber：堆字符串/BigInt 按内容转数值（裸 `ops::to_number`
     /// 无法读取堆，字符串一律 NaN——真实包大量依赖 `"404"` 参与算术）。
     pub(crate) fn to_number_value(&self, val: Value) -> f64 {
-        if let Some(r) = val.as_object {
+        if let Some(r) = val.as_object() {
             match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => {
                     return parse_js_number(s);
@@ -1082,9 +1078,7 @@ impl Vm {
 
     /// 判断值是否为 BigInt 堆对象。
     pub(crate) fn is_bigint_value(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::BigInt(_)))
         )
     }
@@ -1118,7 +1112,7 @@ impl Vm {
         let mut out = Vec::with_capacity(elems.len());
         for e in elems {
             if depth >= 1.0 {
-                if let Some(ar) = e.as_object {
+                if let Some(ar) = e.as_object() {
                     if let Some(HeapObject::Array { elements, .. }) = self.heap.get(ar.0 as usize) {
                         out.extend(self.flat_array(elements.clone(), depth - 1.0));
                         continue;
@@ -1162,10 +1156,10 @@ impl Vm {
                     .file_name()
                     .map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default();
-                match args.get(1) {
+                match args.get(1).map(|v| v.case()) {
                     None | Some(Value::Undefined) => name,
                     // 第二参为扩展名（字符串对象）：剥离（如 ".txt"）
-                    Some(Value::Object(_)) => name
+                    Some(ValueCase::Object(_)) => name
                         .strip_suffix(&self.format_value(*args.get(1).expect("已确认存在")))
                         .unwrap_or(&name)
                         .to_string(),
@@ -1306,36 +1300,28 @@ impl Vm {
 
     /// 判断值是否为可读流实例。
     pub(crate) fn is_readable_obj(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Readable { .. }))
         )
     }
 
     /// 判断值是否为数组对象。
     pub(crate) fn is_array_value(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Array { .. }))
         )
     }
 
     /// 判断值是否为堆字符串对象。
     pub(crate) fn is_string_value(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         )
     }
 
     /// 判断值是否为正则表达式对象。
     pub(crate) fn is_regexp_obj(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::RegExp { .. }))
         )
     }
@@ -1353,7 +1339,7 @@ impl Vm {
         re: Value,
         subject: &str,
     ) -> Result<Option<Value>, VmError> {
-        let Value::Object(r) = re else {
+        let ValueCase::Object(r) = re.case() else {
             return Err(VmError::LocalOutOfRange);
         };
         let (pattern, flags) = match self.heap.get(r.0 as usize) {
@@ -1419,16 +1405,16 @@ impl Vm {
     /// `new RegExp(pattern[, flags])`（无 new 直调同语义）：RegExp 实参复制
     /// pattern/flags，flags 实参覆盖；经引擎编译校验，非法抛 SyntaxError。
     pub(crate) fn construct_regexp(&mut self, args: &[Value]) -> Result<Value, VmError> {
-        let (pattern, mut flags) = match args.first() {
+        let (pattern, mut flags) = match args.first().map(|v| v.case()) {
             None | Some(Value::Undefined) => (String::new(), String::new()),
-            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::RegExp { pattern, flags }) => (pattern.clone(), flags.clone()),
                 _ => (self.format_value(args[0]), String::new()),
             },
-            Some(v) => (self.format_value(*v), String::new()),
+            Some(v) => (self.format_value(v), String::new()),
         };
         if let Some(f) = args.get(1) {
-            if !matches!(f, Value::Undefined) {
+            if !matches!(*f, Value::Undefined) {
                 flags = self.format_value(*f);
             }
         }
@@ -1461,7 +1447,7 @@ impl Vm {
         re: Value,
         subject: &str,
     ) -> Result<Value, VmError> {
-        let Value::Object(r) = re else {
+        let ValueCase::Object(r) = re.case() else {
             return Err(VmError::LocalOutOfRange);
         };
         let (pattern, flags) = match self.heap.get(r.0 as usize) {
@@ -1504,7 +1490,7 @@ impl Vm {
         re: Value,
         subject: &str,
     ) -> Result<Value, VmError> {
-        let Value::Object(r) = re else {
+        let ValueCase::Object(r) = re.case() else {
             return Err(VmError::LocalOutOfRange);
         };
         let (pattern, flags) = match self.heap.get(r.0 as usize) {
@@ -1533,7 +1519,7 @@ impl Vm {
         subject: &str,
         limit: Option<usize>,
     ) -> Result<Value, VmError> {
-        let Value::Object(r) = re else {
+        let ValueCase::Object(r) = re.case() else {
             return Err(VmError::LocalOutOfRange);
         };
         let (pattern, flags) = match self.heap.get(r.0 as usize) {
@@ -1768,7 +1754,7 @@ impl Vm {
                 Op::Neg => {
                     let top = self.pop()?;
                     // BigInt 取负：按十进制字符串取负生成新 BigInt（数值族走 f64）
-                    if let Some(r) = top.as_object {
+                    if let Some(r) = top.as_object() {
                         if let Some(HeapObject::BigInt(text)) = self.heap.get(r.0 as usize) {
                             let text = text.clone();
                             let neg = if let Some(stripped) = text.strip_prefix('-') {
@@ -2032,9 +2018,7 @@ impl Vm {
                     // 才是 Function.prototype.bind；非函数 receiver 的 bind
                     // 是真实实例方法（dgram.Socket.bind() 等），必须走常规
                     // 方法分派——09-09 一刀切曾把 dgram bind 吞成绑定函数
-                    let receiver_is_fn = matches!(
-                        receiver,
-                        Value::Object(rb)
+                    let receiver_is_fn = matches!(receiver.case(), ValueCase::Object(rb)
                             if matches!(
                                 self.heap.get(rb.0 as usize),
                                 Some(HeapObject::Closure { .. })
@@ -2052,8 +2036,8 @@ impl Vm {
                     }
                     if matches!(method_name.as_ref(), "call" | "apply") {
                         let method_val = self.get_property(receiver, &method_name)?;
-                        let is_reflect_like = match &method_val {
-                            Value::Object(mr) => match self.heap.get(mr.0 as usize) {
+                        let is_reflect_like = match &method_val.case() {
+                            ValueCase::Object(mr) => match self.heap.get(mr.0 as usize) {
                                 Some(HeapObject::NativeFn { name, .. }) => {
                                     name.starts_with("Reflect.") || name.starts_with("Proxy.")
                                 }
@@ -2089,7 +2073,7 @@ impl Vm {
                         pc += 1;
                         continue;
                     }
-                    if let Some(r) = receiver.as_object {
+                    if let Some(r) = receiver.as_object() {
                         let is_reflect_like = match self.heap.get(r.0 as usize) {
                             Some(HeapObject::NativeFn { name, .. }) => {
                                 name.starts_with("Reflect.") || name.starts_with("Proxy.")
@@ -2170,37 +2154,37 @@ impl Vm {
                     } else if method_name == "next" && self.is_generator_obj(receiver) {
                         // 生成器迭代协议：gen.next(v) 驱动到下一个 YIELD/结束
                         let injected = args.first().copied().unwrap_or(Value::Undefined);
-                        let gen_ref = match receiver {
-                            Value::Object(r) => r,
+                        let gen_ref = match receiver.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_generator_obj 已确认 receiver 是对象"),
                         };
                         let result = self.drive_generator(gen_ref, Some(injected))?;
                         self.stack.push(result);
                     } else if method_name == "next" && self.is_array_iterator(receiver) {
                         // 数组迭代协议（for...of）：产出 { value, done } 结果对象
-                        let iter_ref = match receiver {
-                            Value::Object(r) => r,
+                        let iter_ref = match receiver.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_array_iterator 已确认 receiver 是对象"),
                         };
                         let result = self.array_iterator_next(iter_ref)?;
                         self.stack.push(result);
                     } else if method_name == "next" && self.is_string_iterator(receiver) {
-                        let iter_ref = match receiver {
-                            Value::Object(r) => r,
+                        let iter_ref = match receiver.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_string_iterator 已确认 receiver 是对象"),
                         };
                         let result = self.string_iterator_next(iter_ref)?;
                         self.stack.push(result);
                     } else if method_name == "next" && self.is_map_iterator(receiver) {
-                        let iter_ref = match receiver {
-                            Value::Object(r) => r,
+                        let iter_ref = match receiver.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_map_iterator 已确认 receiver 是对象"),
                         };
                         let result = self.map_iterator_next(iter_ref)?;
                         self.stack.push(result);
                     } else if method_name == "next" && self.is_set_iterator(receiver) {
-                        let iter_ref = match receiver {
-                            Value::Object(r) => r,
+                        let iter_ref = match receiver.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_set_iterator 已确认 receiver 是对象"),
                         };
                         let result = self.set_iterator_next(iter_ref)?;
@@ -2208,8 +2192,8 @@ impl Vm {
                     } else if self.is_symbol(receiver)
                         && matches!(method_name.as_ref(), "toString" | "valueOf")
                     {
-                        let sym_ref = match receiver {
-                            Value::Object(r) => r,
+                        let sym_ref = match receiver.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_symbol 已确认 receiver 是对象"),
                         };
                         match self.call_symbol_method(&method_name, sym_ref) {
@@ -2219,8 +2203,8 @@ impl Vm {
                         }
                     } else if self.is_bigint_value(receiver) {
                         // BigInt 原型表面：toString/toLocaleString/valueOf
-                        let text = match &receiver {
-                            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                        let text = match &receiver.case() {
+                            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                                 Some(HeapObject::BigInt(t)) => t.clone(),
                                 _ => String::new(),
                             },
@@ -2252,8 +2236,8 @@ impl Vm {
                         }
                     } else if self.is_string_value(receiver) {
                         // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
-                        let text = match &receiver {
-                            Value::Object(r) => match self.heap.get(r.0 as usize) {
+                        let text = match &receiver.case() {
+                            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                                 Some(HeapObject::String(t)) => t.clone(),
                                 _ => String::new(),
                             },
@@ -2289,11 +2273,11 @@ impl Vm {
                     {
                         // Object.keys(obj)：自有可枚举键（数组为下标键；
                         // 字典序输出保证确定性；Proxy 经 ownKeys/get trap 派发）
-                        let mut keys: Vec<String> = match args.first() {
-                            Some(Value::Object(r)) if self.proxy_parts(*r).is_some() => {
-                                self.proxy_own_keys(*r).unwrap_or_default()
+                        let mut keys: Vec<String> = match args.first().map(|v| v.case()) {
+                            Some(ValueCase::Object(r)) if self.proxy_parts(r).is_some() => {
+                                self.proxy_own_keys(r).unwrap_or_default()
                             }
-                            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+                            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
                                 Some(HeapObject::Ordinary { .. }) => self
                                     .own_entries(r.0 as usize)
                                     .into_iter()
@@ -2343,11 +2327,11 @@ impl Vm {
                     {
                         // Object.getOwnPropertyNames(obj)：自有全部字符串键
                         //（含不可枚举；符号键由 getOwnPropertySymbols 返回）
-                        let keys: Vec<String> = match args.first() {
-                            Some(Value::Object(r)) if self.proxy_parts(*r).is_some() => {
-                                self.proxy_own_keys(*r).unwrap_or_default()
+                        let keys: Vec<String> = match args.first().map(|v| v.case()) {
+                            Some(ValueCase::Object(r)) if self.proxy_parts(r).is_some() => {
+                                self.proxy_own_keys(r).unwrap_or_default()
                             }
-                            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+                            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
                                 Some(HeapObject::Ordinary { .. }) => self
                                     .own_entries(r.0 as usize)
                                     .into_iter()
@@ -2400,8 +2384,8 @@ impl Vm {
                             .is_some_and(|c| receiver == Value::Object(c))
                     {
                         // Object.getOwnPropertySymbols(obj)：符号键还原为符号值
-                        let syms: Vec<Value> = match args.first() {
-                            Some(Value::Object(r)) => match self.heap.get(r.0 as usize) {
+                        let syms: Vec<Value> = match args.first().map(|v| v.case()) {
+                            Some(ValueCase::Object(r)) => match self.heap.get(r.0 as usize) {
                                 Some(HeapObject::Ordinary { .. }) => self
                                     .own_entries(r.0 as usize)
                                     .into_iter()
@@ -2468,9 +2452,7 @@ impl Vm {
                         let c1 = self
                             .process_object
                             .is_some_and(|p| receiver == Value::Object(p));
-                        let c2 = matches!(
-                            receiver,
-                            Value::Object(rr)
+                        let c2 = matches!(receiver.case(), ValueCase::Object(rr)
                                 if matches!(
                                     self.heap.get(rr.0 as usize),
                                     Some(HeapObject::NativeFn { name, .. })
@@ -2485,9 +2467,7 @@ impl Vm {
                         self.nexttick_queue.push_back(cb);
                         self.stack.push(Value::Undefined);
                     } else if matches!(method_name.as_ref(), "then" | "catch" | "finally")
-                        && matches!(
-                            receiver,
-                            Value::Object(rr)
+                        && matches!(receiver.case(), ValueCase::Object(rr)
                                 if matches!(
                                     self.heap.get(rr.0 as usize),
                                     Some(HeapObject::Promise { .. })
@@ -2503,7 +2483,7 @@ impl Vm {
                         } else {
                             Value::Undefined
                         };
-                        if let Some(rr) = receiver.as_object {
+                        if let Some(rr) = receiver.as_object() {
                             let p2 = self.alloc_pending_promise();
                             let res2 = self.alloc_promise_resolver(p2, true);
                             let rej2 = self.alloc_promise_resolver(p2, false);
@@ -2595,9 +2575,7 @@ impl Vm {
                             self.stack.push(receiver);
                         }
                     } else if matches!(method_name.as_ref(), "then" | "catch")
-                        && matches!(
-                            receiver,
-                            Value::Object(rr)
+                        && matches!(receiver.case(), ValueCase::Object(rr)
                                 if matches!(
                                     self.heap.get(rr.0 as usize),
                                     Some(HeapObject::Promise { .. })
@@ -2607,7 +2585,7 @@ impl Vm {
                         // promise.then(onF)：登记处理器，返回自身；已完成时立即调度。
                         // promise.catch(onR)：pending 时登记（reject 简化同 fulfill——
                         // 本引擎无 reject 语义，fulfilled 完成不触发 catch）
-                        if let Some(rr) = receiver.as_object {
+                        if let Some(rr) = receiver.as_object() {
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
                             // then(onF, onR) 的第二参数：rejected 处理器
                             let on_rejected = if method_name == "then" {
@@ -2734,7 +2712,7 @@ impl Vm {
                         // 生成器按 next() 同步驱动（async 生成器在语料中同步产值）
                         let iterable = args.first().copied().unwrap_or(Value::Undefined);
                         let mut elems: Vec<Value> = Vec::new();
-                        if let Some(it) = iterable.as_object {
+                        if let Some(it) = iterable.as_object() {
                             match self.heap.get(it.0 as usize) {
                                 Some(HeapObject::Array { elements, .. }) => {
                                     elems.extend(elements.iter().copied());
@@ -2744,13 +2722,13 @@ impl Vm {
                                     let re = it;
                                     while !done {
                                         let result = self.drive_generator(re, None)?;
-                                        let (val, is_done) = match result {
-                                            Value::Object(res) => {
+                                        let (val, is_done) = match result.case() {
+                                            ValueCase::Object(res) => {
                                                 let v =
                                                     self.get_property(Value::Object(res), "value")?;
                                                 let d =
                                                     self.get_property(Value::Object(res), "done")?;
-                                                (v, matches!(d, Value::Boolean(true)))
+                                                (v, matches!(d.case(), ValueCase::Boolean(true)))
                                             }
                                             _ => (Value::Undefined, true),
                                         };
@@ -2777,8 +2755,8 @@ impl Vm {
                         let mut groups: std::collections::HashMap<String, Vec<Value>> =
                             std::collections::HashMap::new();
                         let elems: Vec<Value> =
-                            match args.first().copied().unwrap_or(Value::Undefined) {
-                                Value::Object(rr) => match self.heap.get(rr.0 as usize) {
+                            match args.first().copied().unwrap_or(Value::Undefined).case() {
+                                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
                                     Some(HeapObject::Array { elements, .. }) => elements.clone(),
                                     _ => Vec::new(),
                                 },
@@ -2808,8 +2786,8 @@ impl Vm {
                         let cb = args.get(1).copied().unwrap_or(Value::Undefined);
                         let mut groups: Vec<(Value, Vec<Value>)> = Vec::new();
                         let elems: Vec<Value> =
-                            match args.first().copied().unwrap_or(Value::Undefined) {
-                                Value::Object(rr) => match self.heap.get(rr.0 as usize) {
+                            match args.first().copied().unwrap_or(Value::Undefined).case() {
+                                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
                                     Some(HeapObject::Array { elements, .. }) => elements.clone(),
                                     _ => Vec::new(),
                                 },
@@ -2849,9 +2827,7 @@ impl Vm {
                             | "values"
                             | "entries"
                             | "forEach"
-                    ) && matches!(
-                        receiver,
-                        Value::Object(rr)
+                    ) && matches!(receiver.case(), ValueCase::Object(rr)
                             if matches!(
                                 self.heap.get(rr.0 as usize),
                                 Some(HeapObject::Map { .. })
@@ -2865,8 +2841,8 @@ impl Vm {
                         // 迭代类方法（keys/values/entries/forEach）先取有序快照
                         // 再分配迭代器（避免与可变借用冲突）
                         let snapshot: Option<Vec<(Value, Value)>> = match method {
-                            "keys" | "values" | "entries" | "forEach" => match receiver {
-                                Value::Object(rr) => match self.heap.get(rr.0 as usize) {
+                            "keys" | "values" | "entries" | "forEach" => match receiver.case() {
+                                ValueCase::Object(rr) => match self.heap.get(rr.0 as usize) {
                                     Some(HeapObject::Map { entries }) => Some(entries.clone()),
                                     _ => None,
                                 },
@@ -2876,7 +2852,7 @@ impl Vm {
                         };
                         if let Some(entries) = snapshot {
                             let is_set = self.is_set_instance(receiver);
-                            if let Some(rr) = receiver.as_object {
+                            if let Some(rr) = receiver.as_object() {
                                 match method {
                                     "keys" => {
                                         if is_set {
@@ -2935,7 +2911,7 @@ impl Vm {
                                     _ => {}
                                 }
                             }
-                        } else if let Some(rr) = receiver.as_object {
+                        } else if let Some(rr) = receiver.as_object() {
                             // SameValueZero 命中下标：先在**不可变**借用下求出，再进入
                             // 可变借用改写——比较需读堆判定字符串内容（本 VM 以堆对象
                             // 表示字符串，句柄不同但内容相同必须视为同键），若在
@@ -3000,16 +2976,14 @@ impl Vm {
                     } else if matches!(
                         method_name.as_ref(),
                         "on" | "once" | "off" | "removeListener" | "emit"
-                    ) && matches!(
-                        receiver,
-                        Value::Object(rr)
+                    ) && matches!(receiver.case(), ValueCase::Object(rr)
                             if matches!(
                                 self.heap.get(rr.0 as usize),
                                 Some(HeapObject::EventEmitter { .. })
                             )
                     ) {
                         // EventEmitter：on/once 注册监听器，emit 触发，off/removeListener 移除
-                        if let Some(rr) = receiver.as_object {
+                        if let Some(rr) = receiver.as_object() {
                             match method_name.as_ref() {
                                 "on" | "once" => {
                                     let name = args
@@ -3085,7 +3059,7 @@ impl Vm {
                             "push" => {
                                 let v = args.first().copied().unwrap_or(Value::Undefined);
                                 let is_end = matches!(v, Value::Null);
-                                let waiting = if let Some(rr) = receiver.as_object {
+                                let waiting = if let Some(rr) = receiver.as_object() {
                                     if let Some(HeapObject::Readable {
                                         buffer,
                                         ended,
@@ -3108,7 +3082,7 @@ impl Vm {
                                     None
                                 };
                                 // 写屏障：老可读流缓冲/等待槽写入新值
-                                if let Some(rr2) = receiver.as_object {
+                                if let Some(rr2) = receiver.as_object() {
                                     self.gc_write_barrier(rr2, v);
                                 }
                                 // 有等待中的 promise：兑现为 {value, done} 结果对象
@@ -3136,7 +3110,7 @@ impl Vm {
                                 // 无条件先建 pending promise（NeedWait 时登记等待；
                                 // Data/Done 时弃用——堆对象无副作用）
                                 let pending_promise = self.alloc_pending_promise();
-                                let action = if let Some(rr) = receiver.as_object {
+                                let action = if let Some(rr) = receiver.as_object() {
                                     match self.heap.get_mut(rr.0 as usize) {
                                         Some(HeapObject::Readable {
                                             buffer,
@@ -3150,7 +3124,7 @@ impl Vm {
                                             } else {
                                                 // 空读未结束：登记等待 promise（挂起等待 push）
                                                 *waiting = Some(pending_promise);
-                                                if let Some(rr2) = receiver.as_object {
+                                                if let Some(rr2) = receiver.as_object() {
                                                     self.gc_write_barrier(
                                                         rr2,
                                                         Value::Object(pending_promise),
@@ -3230,9 +3204,7 @@ impl Vm {
                         let r = self.alloc_string(result);
                         self.stack.push(Value::Object(r));
                     } else if matches!(method_name.as_ref(), "isWellFormed" | "toWellFormed")
-                        && matches!(
-                            receiver,
-                            Value::Object(rr)
+                        && matches!(receiver.case(), ValueCase::Object(rr)
                                 if matches!(
                                     self.heap.get(rr.0 as usize),
                                     Some(HeapObject::String(_))
@@ -3248,13 +3220,11 @@ impl Vm {
                     } else if matches!(
                         method_name.as_ref(),
                         "toSorted" | "toReversed" | "toSpliced" | "with"
-                    ) && matches!(
-                        receiver,
-                        Value::Object(rr)
+                    ) && matches!(receiver.case(), ValueCase::Object(rr)
                             if matches!(self.heap.get(rr.0 as usize), Some(HeapObject::Array { .. }))
                     ) {
                         // ES2023 不可变数组方法：返回新数组
-                        let mut elems: Vec<Value> = if let Some(rr) = receiver.as_object {
+                        let mut elems: Vec<Value> = if let Some(rr) = receiver.as_object() {
                             if let Some(HeapObject::Array { elements, .. }) =
                                 self.heap.get(rr.0 as usize)
                             {
@@ -3296,16 +3266,16 @@ impl Vm {
                             "toSpliced" => {
                                 let start = args
                                     .first()
-                                    .and_then(|v| match v {
-                                        Value::Number(n) => Some(*n as usize),
+                                    .and_then(|v| match v.case() {
+                                        ValueCase::Number(n) => Some(n as usize),
                                         _ => None,
                                     })
                                     .unwrap_or(0)
                                     .min(elems.len());
                                 let del = args
                                     .get(1)
-                                    .and_then(|v| match v {
-                                        Value::Number(n) => Some(*n as usize),
+                                    .and_then(|v| match v.case() {
+                                        ValueCase::Number(n) => Some(n as usize),
                                         _ => None,
                                     })
                                     .unwrap_or(0)
@@ -3316,8 +3286,8 @@ impl Vm {
                                 // with(idx, val)
                                 let idx = args
                                     .first()
-                                    .and_then(|v| match v {
-                                        Value::Number(n) => Some(*n as usize),
+                                    .and_then(|v| match v.case() {
+                                        ValueCase::Number(n) => Some(n as usize),
                                         _ => None,
                                     })
                                     .unwrap_or(0);
@@ -3340,8 +3310,8 @@ impl Vm {
                             args.get(1)
                                 .map(|v| self.to_property_key(*v))
                                 .unwrap_or_default(),
-                        ) {
-                            (Value::Object(rr), key) => match self.heap.get(rr.0 as usize) {
+                        ).case() {
+                            (ValueCase::Object(rr), key) => match self.heap.get(rr.0 as usize) {
                                 Some(HeapObject::Ordinary { .. }) => {
                                     self.has_own_slot(rr.0 as usize, &key)
                                 }
@@ -3384,8 +3354,8 @@ impl Vm {
                     {
                         // Object.create(proto)：以精确原型分配新对象（null → 无原型）
                         let proto_val = args.first().copied().unwrap_or(Value::Undefined);
-                        let proto = match proto_val {
-                            Value::Object(p) => Some(p),
+                        let proto = match proto_val.case() {
+                            ValueCase::Object(p) => Some(p),
                             _ => None,
                         };
                         let obj = self.alloc_ordinary_with_exact_proto(proto);
@@ -3403,7 +3373,7 @@ impl Vm {
                         // TypedArray 构造器静态方法（from/of/isTypedArray）
                         let val = st_res?;
                         self.stack.push(val);
-                    } else if let Some(r) = receiver.as_object {
+                    } else if let Some(r) = receiver.as_object() {
                         let idx = r.0 as usize;
                         if idx < self.heap.len()
                             && matches!(self.heap[idx], HeapObject::Array { .. })
@@ -3620,7 +3590,7 @@ impl Vm {
                                     let arr_obj = Value::Object(ObjectRef(idx as u32));
                                     // 无初始值：累加器取末元素，从倒数第二个起迭代
                                     let (mut acc, start) = match args.get(1) {
-                                        Some(init) if !matches!(init, Value::Undefined) => {
+                                        Some(init) if !matches!(*init, Value::Undefined) => {
                                             (*init, elems.len())
                                         }
                                         _ => match elems.last() {
@@ -3673,8 +3643,8 @@ impl Vm {
                                             Vec::new()
                                         };
                                     let len = elems.len() as i64;
-                                    let start_raw = match args.first() {
-                                        Some(Value::Number(n)) => *n as i64,
+                                    let start_raw = match args.first().map(|v| v.case()) {
+                                        Some(ValueCase::Number(n)) => n as i64,
                                         _ => 0,
                                     };
                                     let start = if start_raw < 0 {
@@ -3682,8 +3652,8 @@ impl Vm {
                                     } else {
                                         start_raw.min(len) as usize
                                     };
-                                    let end = if let Some(n) = args.get(1).as_number {
-                                        let end_raw = *n as i64;
+                                    let end = if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
+                                        let end_raw = n as i64;
                                         if end_raw < 0 {
                                             (len + end_raw).max(0) as usize
                                         } else {
@@ -3739,7 +3709,7 @@ impl Vm {
                                 "concat" => {
                                     let mut elems = self.array_elements(idx);
                                     for a in args {
-                                        if let Some(ar) = a.as_object {
+                                        if let Some(ar) = a.as_object() {
                                             if let Some(HeapObject::Array { elements, .. }) =
                                                 self.heap.get(ar.0 as usize)
                                             {
@@ -3757,8 +3727,8 @@ impl Vm {
                                     let needle = args.first().copied().unwrap_or(Value::Undefined);
                                     let mut from = args
                                         .get(1)
-                                        .and_then(|v| match v {
-                                            Value::Number(n) => Some(*n),
+                                        .and_then(|v| match v.case() {
+                                            ValueCase::Number(n) => Some(n),
                                             _ => None,
                                         })
                                         .unwrap_or(0.0);
@@ -3776,8 +3746,8 @@ impl Vm {
                                     let needle = args.first().copied().unwrap_or(Value::Undefined);
                                     let mut from = args
                                         .get(1)
-                                        .and_then(|v| match v {
-                                            Value::Number(n) => Some(*n),
+                                        .and_then(|v| match v.case() {
+                                            ValueCase::Number(n) => Some(n),
                                             _ => None,
                                         })
                                         .unwrap_or(0.0);
@@ -3933,7 +3903,7 @@ impl Vm {
                                             this_arg,
                                             &[*elem, Value::Number(elem_idx as f64), arr_obj],
                                         )?;
-                                        if let Some(ar) = mapped.as_object {
+                                        if let Some(ar) = mapped.as_object() {
                                             if let Some(HeapObject::Array { elements, .. }) =
                                                 self.heap.get(ar.0 as usize)
                                             {
@@ -4018,7 +3988,7 @@ impl Vm {
                         } else {
                             // 普通对象方法调用
                             let method_val = self.get_property(receiver, &method_name)?;
-                            if let Some(m_ref) = method_val.as_object {
+                            if let Some(m_ref) = method_val.as_object() {
                                 // Promise resolver/rejecter（Promise.withResolvers 的
                                 // resolve/reject 属性）：按解析器标志兑现目标 promise
                                 let resolver = match self.heap.get(m_ref.0 as usize) {
@@ -4104,8 +4074,8 @@ impl Vm {
                         // 走 Number.prototype 面（toString(radix)/toFixed/...）。
                         // 字符串原始值是堆字符串由上面字符串链处理，此处仅
                         // Number/Boolean——缺省仍按 undefined 返回。
-                        match receiver {
-                            Value::Number(_) | Value::Boolean(_) => {
+                        match receiver.case() {
+                            ValueCase::Number(_) | ValueCase::Boolean(_) => {
                                 crate::builtins::set_current_receiver(receiver);
                                 let full = format!("Number.prototype.{method_name}");
                                 crate::builtins::set_pending_native_name(&full);
@@ -4128,8 +4098,8 @@ impl Vm {
                         // 模块专属实例（require_bases 登记过）相对其模块目录
                         // 解析——getter/回调延迟调用仍保持 Node 闭包捕获语义
                         let spec = args.first().copied().unwrap_or(Value::Undefined);
-                        let module_base = match callee {
-                            Value::Object(r) => self.require_bases.get(&r).cloned(),
+                        let module_base = match callee.case() {
+                            ValueCase::Object(r) => self.require_bases.get(&r).cloned(),
                             _ => None,
                         };
                         let exports = match module_base {
@@ -4158,7 +4128,7 @@ impl Vm {
                         // Symbol([description])：唯一符号原语
                         let sym = self.symbol_create(args);
                         self.stack.push(sym);
-                    } else if let Some(r) = callee.as_object {
+                    } else if let Some(r) = callee.as_object() {
                         let callee_ref = r.0 as usize;
                         let resolver = match self.heap.get(callee_ref) {
                             Some(HeapObject::PromiseResolver { promise, resolve }) => {
@@ -4204,8 +4174,8 @@ impl Vm {
                         {
                             let delay = args
                                 .get(1)
-                                .and_then(|v| match v {
-                                    Value::Number(n) => Some(*n as u64),
+                                .and_then(|v| match v.case() {
+                                    ValueCase::Number(n) => Some(n as u64),
                                     _ => None,
                                 })
                                 .unwrap_or(0);
@@ -4241,8 +4211,8 @@ impl Vm {
                         {
                             let id = args
                                 .first()
-                                .and_then(|v| match v {
-                                    Value::Number(n) => Some(*n as u64),
+                                .and_then(|v| match v.case() {
+                                    ValueCase::Number(n) => Some(n as u64),
                                     _ => None,
                                 })
                                 .unwrap_or(0);
@@ -4383,7 +4353,7 @@ impl Vm {
                 Op::ArrayPush => {
                     let val = self.pop()?;
                     let arr_val = self.peek()?;
-                    if let Some(r) = arr_val.as_object {
+                    if let Some(r) = arr_val.as_object() {
                         if let Some(HeapObject::Array { elements, .. }) =
                             self.heap.get_mut(r.0 as usize)
                         {
@@ -4397,7 +4367,7 @@ impl Vm {
                     let target_arr = self.peek()?;
                     // 展开语义：数组/字符串/Map/Set/类型化数组全部按迭代协议物化
                     let to_append = self.collect_iter_values(spread_val)?;
-                    if let Some(t_ref) = target_arr.as_object {
+                    if let Some(t_ref) = target_arr.as_object() {
                         // 写屏障：老数组展开追加年轻元素（borrow 前先屏障）
                         for a in &to_append {
                             self.gc_write_barrier(t_ref, *a);
@@ -4477,7 +4447,7 @@ impl Vm {
                     let key = constant_string(&constants, instr.operand as usize);
                     let fn_val = self.pop()?;
                     let obj = self.peek()?;
-                    if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             getters,
@@ -4494,7 +4464,7 @@ impl Vm {
                     let key = constant_string(&constants, instr.operand as usize);
                     let fn_val = self.pop()?;
                     let obj = self.peek()?;
-                    if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             setters,
@@ -4512,7 +4482,7 @@ impl Vm {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);
                     let obj = self.peek()?;
-                    if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             getters,
@@ -4530,7 +4500,7 @@ impl Vm {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);
                     let obj = self.peek()?;
-                    if let (Value::Object(o_ref), Value::Object(f_ref)) = (obj, fn_val) {
+                    if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) = (obj, fn_val) {
                         let _ = f_ref;
                         if let Some(HeapObject::Ordinary {
                             setters,
@@ -4546,7 +4516,7 @@ impl Vm {
                 Op::DelProp => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let obj = self.pop()?;
-                    if let Some(r) = obj.as_object {
+                    if let Some(r) = obj.as_object() {
                         // 删除不改 shape：清槽 + 记入删除集 + 代数递增（见 delete_property）
                         self.delete_property(Value::Object(r), &key);
                     }
@@ -4556,7 +4526,7 @@ impl Vm {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);
                     let obj = self.pop()?;
-                    if let Some(r) = obj.as_object {
+                    if let Some(r) = obj.as_object() {
                         self.delete_property(Value::Object(r), &key);
                     }
                     self.stack.push(Value::Boolean(true));
@@ -4611,7 +4581,7 @@ impl Vm {
                     let args = call_args.as_slice();
                     let callee = self.pop()?;
                     let this_val = *self.locals.first().unwrap_or(&Value::Undefined);
-                    if let Some(c_ref) = callee.as_object {
+                    if let Some(c_ref) = callee.as_object() {
                         let (f_idx, uvs) =
                             if let Some(HeapObject::Closure {
                                 func_idx, upvalues, ..
@@ -4786,7 +4756,7 @@ impl Vm {
                     // for-in 头部：快照原型链可枚举键为字符串数组（对齐 Go OpEnumKeys）
                     let src = self.pop()?;
                     // Proxy 对象：经 ownKeys trap 快照（trap 异常时按空集降级）
-                    let keys: Vec<String> = if let Some(r) = src.as_object {
+                    let keys: Vec<String> = if let Some(r) = src.as_object() {
                         if self.proxy_parts(r).is_some() {
                             self.proxy_own_keys(r).unwrap_or_default()
                         } else {
@@ -4815,8 +4785,8 @@ impl Vm {
                     // await 是让出点：Node 语义下先把已排队的微任务跑完
                     self.drain_microtasks()?;
                     let awaited = self.pop()?;
-                    let resolved = match awaited {
-                        Value::Object(r) => match self.heap.get(r.0 as usize) {
+                    let resolved = match awaited.case() {
+                        ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                             Some(HeapObject::Promise {
                                 pending: false,
                                 value,
@@ -4853,14 +4823,14 @@ impl Vm {
                         || self.is_string_iterator(val)
                         || self.is_map_iterator(val)
                         || self.is_set_iterator(val)
-                        || matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isReadable"))
+                        || matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isReadable"))
                     {
                         // 生成器/流/四类内建迭代器对象自身即迭代器
                         // （JS 协议：iterator[Symbol.iterator]() === this）
                         self.stack.push(val);
                     } else if self.is_array_value(val) {
                         // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
-                        if let Some(arr) = val.as_object {
+                        if let Some(arr) = val.as_object() {
                             let it = self.alloc_array_iterator(arr);
                             self.stack.push(it);
                         } else {
@@ -4868,7 +4838,7 @@ impl Vm {
                         }
                     } else if self.is_typed_array(val) {
                         // 类型化数组：物化元素快照迭代器（values 形态）
-                        if let Some(ta) = val.as_object {
+                        if let Some(ta) = val.as_object() {
                             let elems = self.ta_to_values(ta)?;
                             let snapshot = self.alloc_array(elems);
                             let it = self.alloc_array_iterator(snapshot);
@@ -4878,7 +4848,7 @@ impl Vm {
                         }
                     } else if self.is_string_value(val) {
                         // 字符串：直接创建逐字符迭代器（避免 Symbol.iterator 查找开销）
-                        if let Some(r) = val.as_object {
+                        if let Some(r) = val.as_object() {
                             let it = self.alloc_string_iterator(r);
                             self.stack.push(it);
                         } else {
@@ -4886,7 +4856,7 @@ impl Vm {
                         }
                     } else if self.is_map_instance(val) {
                         // Map：entries 迭代器（产出 [key, value] 对）
-                        if let Some(r) = val.as_object {
+                        if let Some(r) = val.as_object() {
                             let it = self.alloc_map_iterator(r, "entries");
                             self.stack.push(it);
                         } else {
@@ -4894,7 +4864,7 @@ impl Vm {
                         }
                     } else if self.is_set_instance(val) {
                         // Set：values 迭代器（产出元素）
-                        if let Some(r) = val.as_object {
+                        if let Some(r) = val.as_object() {
                             let it = self.alloc_set_iterator(r, "values");
                             self.stack.push(it);
                         } else {
@@ -4904,15 +4874,13 @@ impl Vm {
                         // 自定义可迭代：读 Symbol.iterator 属性并调用取得迭代器
                         // （JS 协议：iterable[Symbol.iterator]() -> iterator）
                         let iter_sym = self.well_known_symbol("iterator");
-                        let iter_ref = match iter_sym {
-                            Value::Object(r) => r,
+                        let iter_ref = match iter_sym.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("well_known_symbol 返回符号对象"),
                         };
                         let key = crate::symbol::mangled_key(iter_ref);
                         let method = self.get_property(val, &key)?;
-                        let is_closure = matches!(
-                            method,
-                            Value::Object(r)
+                        let is_closure = matches!(method.case(), ValueCase::Object(r)
                                 if matches!(
                                     self.heap.get(r.0 as usize),
                                     Some(HeapObject::Closure { .. })
@@ -4984,7 +4952,7 @@ impl Vm {
     /// 会判为不等（`["a", "b"].includes("b")` 曾因此返回 `false`）。故委托
     /// [`crate::ops::strict_eq`]（`===` 语义，已按内容比对堆字符串）后补 NaN 自等。
     pub(crate) fn values_same_zero(&self, a: Value, b: Value) -> bool {
-        if let (Value::Number(x), Value::Number(y)) = (a, b) {
+        if let (ValueCase::Number(x), ValueCase::Number(y)) = (a, b) {
             if x.is_nan() && y.is_nan() {
                 return true;
             }
@@ -5133,8 +5101,8 @@ fn objproto_has_own_property(vm: &mut Vm, args: &[Value]) -> Result<Value, crate
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_default();
-    let is_own = match receiver {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    let is_own = match receiver.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::Array {
                 elements,
                 properties,

@@ -28,7 +28,7 @@
 
 use crate::builtins::current_receiver;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// 时间值上界（ECMA-262 `TimeClip`：|t| > 8.64e15 → NaN）。
 const MAX_TIME_VALUE: f64 = 8_640_000_000_000_000.0;
@@ -97,7 +97,7 @@ pub(crate) fn date_instance_method(vm: &mut Vm, args: &[Value]) -> Result<Value,
     let receiver = current_receiver();
     let t = date_time_value(vm, receiver);
     // 非 Date 接收者（`Date.prototype.getTime.call({})`）→ TypeError
-    let is_date = matches!(receiver, Value::Object(r) if vm.has_own_slot(r.0 as usize, "_isDate"));
+    let is_date = matches!(receiver.case(), ValueCase::Object(r) if vm.has_own_slot(r.0 as usize, "_isDate"));
     if !is_date {
         let msg = if method == "toJSON" {
             "toISOString is not a function"
@@ -296,9 +296,9 @@ fn vm_string(vm: &mut Vm, s: String) -> Value {
 
 /// 读取接收者的 `_timeValue`（非 Date 接收者 → NaN）。
 fn date_time_value(vm: &Vm, v: Value) -> f64 {
-    match v {
-        Value::Object(r) => match vm.own_value(r.0 as usize, "_timeValue") {
-            Some(Value::Number(n)) => n,
+    match v.case() {
+        ValueCase::Object(r) => match vm.own_value(r.0 as usize, "_timeValue").map(|v| v.case()) {
+            Some(ValueCase::Number(n)) => n,
             _ => f64::NAN,
         },
         _ => f64::NAN,
@@ -307,7 +307,7 @@ fn date_time_value(vm: &Vm, v: Value) -> f64 {
 
 /// 写回接收者的 `_timeValue` 并返回新的时间值（set* 返回值即新时间值）。
 fn set_time_value(vm: &mut Vm, receiver: Value, t: f64) -> f64 {
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         let _ = vm.set_property(Value::Object(r), "_timeValue", Value::Number(t));
     }
     t
@@ -338,20 +338,20 @@ impl Vm {
                 millis,
             )
         } else {
-            match args.first() {
+            match args.first().map(|v| v.case()) {
                 None | Some(Value::Undefined) => date_now_ms(),
-                Some(Value::Number(n)) => time_clip(*n),
+                Some(ValueCase::Number(n)) => time_clip(n),
                 // null / true / false：ToPrimitive 后退化为数值（Node 实测）
                 Some(Value::Null) => 0.0,
-                Some(Value::Boolean(b)) => {
-                    if *b {
+                Some(ValueCase::Boolean(b)) => {
+                    if b {
                         1.0
                     } else {
                         0.0
                     }
                 }
                 Some(other) => {
-                    let text = self.format_value(*other);
+                    let text = self.format_value(other);
                     parse_iso_date(&text).unwrap_or(f64::NAN)
                 }
             }

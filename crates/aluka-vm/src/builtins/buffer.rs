@@ -10,7 +10,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,8 +35,8 @@ fn get_buffer(id: u32) -> Option<Vec<u8>> {
 /// 提取任意 Value 的底层字节序列（支持 Buffer 实例、字符串、数组、
 /// ArrayBuffer/TypedArray/DataView —— 视图按其底层 buffer 字节区间切取）。
 pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
-    match val {
-        Value::Object(r) => {
+    match val.case() {
+        ValueCase::Object(r) => {
             if let Some(bytes) = get_buffer(r.0) {
                 return Some(bytes);
             }
@@ -45,8 +45,8 @@ pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
                 HeapObject::Array { elements, .. } => {
                     let mut bytes = Vec::with_capacity(elements.len());
                     for e in elements {
-                        let b = match e {
-                            Value::Number(n) => (*n as i64 & 0xFF) as u8,
+                        let b = match e.case() {
+                            ValueCase::Number(n) => (n as i64 & 0xFF) as u8,
                             _ => 0,
                         };
                         bytes.push(b);
@@ -57,8 +57,8 @@ pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
                     if vm.has_own_slot(r.0 as usize, "_isBuffer") {
                         let len = vm
                             .own_value(r.0 as usize, "length")
-                            .and_then(|v| match v {
-                                Value::Number(n) => Some(n as usize),
+                            .and_then(|v| match v.case() {
+                                ValueCase::Number(n) => Some(n as usize),
                                 _ => None,
                             })
                             .unwrap_or(0);
@@ -66,8 +66,8 @@ pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
                         for i in 0..len {
                             let b = vm
                                 .own_value(r.0 as usize, &i.to_string())
-                                .and_then(|v| match v {
-                                    Value::Number(n) => Some((n as i64 & 0xFF) as u8),
+                                .and_then(|v| match v.case() {
+                                    ValueCase::Number(n) => Some((n as i64 & 0xFF) as u8),
                                     _ => None,
                                 })
                                 .unwrap_or(0);
@@ -235,8 +235,8 @@ fn build_class(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef,
         VmError::Thrown(Value::Object(msg))
     })?;
     let val = vm.get_property(Value::Object(buffer_mod), "Buffer")?;
-    match val {
-        Value::Object(r) => Ok(r),
+    match val.case() {
+        ValueCase::Object(r) => Ok(r),
         _ => Err(VmError::Thrown(Value::Object(
             vm.alloc_string("Buffer 类缺失".to_owned()),
         ))),
@@ -279,7 +279,7 @@ fn is_buffer(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(val) = args.first() else {
         return Ok(Value::Boolean(false));
     };
-    if let Some(r) = val.as_object {
+    if let Some(r) = val.as_object() {
         if get_buffer(r.0).is_some() {
             return Ok(Value::Boolean(true));
         }
@@ -332,8 +332,8 @@ fn buffer_from(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .map(|v| vm.format_value(*v).to_lowercase())
         .unwrap_or_else(|| "utf8".to_owned());
 
-    match input {
-        Value::Object(r) => {
+    match input.case() {
+        ValueCase::Object(r) => {
             // 字符串实参：按 encoding 解码（extract_bytes 对字符串会退回
             // 原始 UTF-8 字节，绕过 hex/base64 转换，必须先行分流）
             if matches!(vm.heap.get(r.0 as usize), Some(HeapObject::String(_))) {
@@ -364,15 +364,15 @@ fn buffer_from(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn buffer_alloc(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let size = args
         .first()
-        .and_then(|v| match v {
-            Value::Number(n) => Some((*n as i64).max(0) as usize),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some((n as i64).max(0) as usize),
             _ => None,
         })
         .unwrap_or(0);
 
     let fill_byte = if let Some(fill) = args.get(1) {
-        match fill {
-            Value::Number(n) => (*n as i64 & 0xFF) as u8,
+        match fill.case() {
+            ValueCase::Number(n) => (n as i64 & 0xFF) as u8,
             _ => {
                 let s = vm.format_value(*fill);
                 s.as_bytes().first().copied().unwrap_or(0)
@@ -389,7 +389,7 @@ fn buffer_alloc(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `Buffer.concat(list, [totalLength])`
 fn concat(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(arr_ref) = args.first().as_object() else {
+    let Some(arr_ref) = args.first().and_then(|v| v.as_object()) else {
         let inst = create_buffer_instance(vm, Vec::new());
         return Ok(Value::Object(inst));
     };
@@ -406,8 +406,8 @@ fn concat(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
 
-    if let Some(n) = args.get(1).as_number {
-        let total = (*n as i64).max(0) as usize;
+    if let Some(n) = args.get(1).and_then(|v| v.as_number()) {
+        let total = (n as i64).max(0) as usize;
         all_bytes.truncate(total);
     }
 
@@ -445,8 +445,8 @@ fn to_string(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let start = args
         .get(1)
-        .and_then(|v| match v {
-            Value::Number(n) => Some((*n as i64).max(0) as usize),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some((n as i64).max(0) as usize),
             _ => None,
         })
         .unwrap_or(0)
@@ -454,8 +454,8 @@ fn to_string(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let end = args
         .get(2)
-        .and_then(|v| match v {
-            Value::Number(n) => Some((*n as i64).max(0) as usize),
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => Some((n as i64).max(0) as usize),
             _ => None,
         })
         .unwrap_or(bytes.len())
@@ -475,9 +475,9 @@ fn slice(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let start = args
         .first()
-        .and_then(|v| match v {
-            Value::Number(n) => {
-                let n = *n as i64;
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => {
+                let n = n as i64;
                 if n < 0 {
                     Some((len + n).max(0) as usize)
                 } else {
@@ -490,9 +490,9 @@ fn slice(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let end = args
         .get(1)
-        .and_then(|v| match v {
-            Value::Number(n) => {
-                let n = *n as i64;
+        .and_then(|v| match v.case() {
+            ValueCase::Number(n) => {
+                let n = n as i64;
                 if n < 0 {
                     Some((len + n).max(0) as usize)
                 } else {

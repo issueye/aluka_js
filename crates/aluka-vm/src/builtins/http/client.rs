@@ -13,7 +13,7 @@ use crate::builtins::buffer;
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::net::TcpStream;
 
 /// 注册 `http:request` 实例命名空间的分派处理器（模块 build 时调用）。
@@ -115,8 +115,8 @@ pub(crate) fn create_request_object(
                 // （`/echo/aluka42` → `/echo/aluka42/echo/aluka42`）
                 if let Ok(hobj_v) = vm.get_property(*opt, "headers") {
                     if super::is_plain_object(vm, hobj_v) {
-                        let hobj = match hobj_v {
-                            Value::Object(r) => r,
+                        let hobj = match hobj_v.case() {
+                            ValueCase::Object(r) => r,
                             _ => unreachable!("is_plain_object 已判定为 Ordinary"),
                         };
                         let props: Vec<(String, Value)> = match vm.heap.get(hobj.0 as usize) {
@@ -214,7 +214,7 @@ fn split_url(url: &str, proto: &str) -> Option<(String, u16, String, u16)> {
 /// `req.write(chunk)`：累积请求体。
 fn client_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     if let Some(chunk) = args.first() {
@@ -231,12 +231,12 @@ fn client_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.end([chunk])`：追加尾块并把请求转入泵（发送）。
 fn client_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(chunk) = args.first() {
         // Go：仅排除 undefined 与函数（null 会按 "null" 追加，逐字对齐）。
-        if !matches!(chunk, Value::Undefined) && !super::is_function(vm, *chunk) {
+        if !matches!(*chunk, Value::Undefined) && !super::is_function(vm, *chunk) {
             let bytes = super::chunk_bytes(vm, *chunk);
             with_clients(|clients| {
                 if let Some(c) = clients.iter_mut().find(|c| c.obj == r.0) {
@@ -261,7 +261,7 @@ fn client_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.setHeader(name, value)`。
 fn client_set_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -280,7 +280,7 @@ fn client_set_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.getHeader(name)`（精确键匹配，Go map 语义）。
 fn client_get_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let Some(name) = args.first() else {
@@ -302,7 +302,7 @@ fn client_get_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.getHeaders()`：当前请求头对象（精确键）。
 fn client_get_headers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Object(vm.alloc_ordinary()));
     };
     let headers = with_clients(|clients| {
@@ -323,7 +323,7 @@ fn client_get_headers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `req.hasHeader(name)`。
 fn client_has_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     let Some(name) = args.first() else {
@@ -342,7 +342,7 @@ fn client_has_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.removeHeader(name)`。
 fn client_remove_header(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(name) = args.first() {
@@ -399,7 +399,7 @@ fn client_noop_self(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `req.abort()`：置中止标记并触发 `'abort'`（仅首次）。
 fn client_abort(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let first = with_clients(|clients| {
@@ -420,7 +420,7 @@ fn client_abort(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `req.destroy([error])`：等同 abort 并始终发 `'abort'` + `'close'`。
 fn client_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     with_clients(|clients| {
@@ -436,7 +436,7 @@ fn client_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `req.on(event, listener)`。
 fn client_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, false);
@@ -448,7 +448,7 @@ fn client_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.once(event, listener)`。
 fn client_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::add_listener(r.0, &name, *cb, true);
@@ -460,7 +460,7 @@ fn client_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `req.off(event, listener)` / `removeListener`。
 fn client_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         if let (Some(event), Some(cb)) = (args.first(), args.get(1)) {
             let name = vm.format_value(*event);
             state::remove_listener(r.0, &name, *cb);

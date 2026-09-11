@@ -2,7 +2,7 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -31,7 +31,7 @@ impl Vm {
     fn attach_iterator_surface(&mut self, obj: ObjectRef) {
         let next = self.alloc_native_fn("Iterator.prototype.next");
         let _ = self.define_proto_method(Value::Object(obj), "next", Value::Object(next));
-        if let Some(sym_ref) = self.well_known_symbol("iterator").as_object {
+        if let Some(sym_ref) = self.well_known_symbol("iterator").as_object() {
             let key = crate::symbol::mangled_key(sym_ref);
             let f = self.alloc_native_fn("Iterator.prototype.Symbol.iterator");
             let _ = self.define_proto_method(Value::Object(obj), &key, Value::Object(f));
@@ -45,7 +45,7 @@ thread_local! { static ARRAY_ITER_POS: RefCell<HashMap<u32, usize>> = RefCell::n
 
 impl Vm {
     pub(crate) fn is_array_iterator(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isArrayIterator"))
+        matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isArrayIterator"))
     }
 
     pub(crate) fn alloc_array_iterator_kind(&mut self, arr: ObjectRef, kind: &str) -> Value {
@@ -69,8 +69,8 @@ impl Vm {
     pub(crate) fn array_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let arr = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterArray") {
-                    Some(Value::Object(a)) => a,
+                match self.own_value(iter.0 as usize, "_iterArray").map(|v| v.case()) {
+                    Some(ValueCase::Object(a)) => a,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
             }
@@ -102,7 +102,7 @@ thread_local! { static STRING_ITER_POS: RefCell<HashMap<u32, usize>> = RefCell::
 
 impl Vm {
     pub(crate) fn is_string_iterator(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isStrIterator"))
+        matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isStrIterator"))
     }
 
     pub(crate) fn alloc_string_iterator(&mut self, str_ref: ObjectRef) -> Value {
@@ -118,8 +118,8 @@ impl Vm {
     pub(crate) fn string_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let str_ref = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterStr") {
-                    Some(Value::Object(s)) => s,
+                match self.own_value(iter.0 as usize, "_iterStr").map(|v| v.case()) {
+                    Some(ValueCase::Object(s)) => s,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
             }
@@ -161,14 +161,14 @@ impl Vm {
 
     /// 值是否为 Map 实例（`HeapObject::Map` 变体且非 Set 登记）。
     pub(crate) fn is_map_instance(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
             if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Map { .. }))
                 && !SET_HANDLES.with(|c| c.borrow().contains(&r.0)))
     }
 
     /// 值是否为 Set 实例。
     pub(crate) fn is_set_instance(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
             if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Map { .. }))
                 && SET_HANDLES.with(|c| c.borrow().contains(&r.0)))
     }
@@ -180,7 +180,7 @@ thread_local! { static MAP_ITER_POS: RefCell<HashMap<u32, usize>> = RefCell::new
 
 impl Vm {
     pub(crate) fn is_map_iterator(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isMapIterator"))
+        matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isMapIterator"))
     }
 
     pub(crate) fn alloc_map_iterator(&mut self, map_ref: ObjectRef, kind: &str) -> Value {
@@ -201,8 +201,8 @@ impl Vm {
     pub(crate) fn map_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let map_ref = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterMap") {
-                    Some(Value::Object(m)) => m,
+                match self.own_value(iter.0 as usize, "_iterMap").map(|v| v.case()) {
+                    Some(ValueCase::Object(m)) => m,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
             }
@@ -241,7 +241,7 @@ thread_local! { static SET_ITER_POS: RefCell<HashMap<u32, usize>> = RefCell::new
 
 impl Vm {
     pub(crate) fn is_set_iterator(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isSetIterator"))
+        matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isSetIterator"))
     }
 
     pub(crate) fn alloc_set_iterator(&mut self, set_ref: ObjectRef, kind: &str) -> Value {
@@ -262,8 +262,8 @@ impl Vm {
     pub(crate) fn set_iterator_next(&mut self, iter: ObjectRef) -> Result<Value, VmError> {
         let set_ref = match self.heap.get(iter.0 as usize) {
             Some(HeapObject::Ordinary { .. }) => {
-                match self.own_value(iter.0 as usize, "_iterSet") {
-                    Some(Value::Object(s)) => s,
+                match self.own_value(iter.0 as usize, "_iterSet").map(|v| v.case()) {
+                    Some(ValueCase::Object(s)) => s,
                     _ => return self.make_iterator_result(Value::Undefined, true),
                 }
             }
@@ -298,8 +298,8 @@ impl Vm {
 /// 读取迭代器对象的 kind（缺省按调用方类型传入的默认值；此处统一读
 /// `_iterKind` 字符串属性，无则返回调用方兜底值）。
 fn iter_kind(vm: &Vm, iter: ObjectRef) -> String {
-    match vm.own_value(iter.0 as usize, "_iterKind") {
-        Some(Value::Object(k)) => match vm.heap.get(k.0 as usize) {
+    match vm.own_value(iter.0 as usize, "_iterKind").map(|v| v.case()) {
+        Some(ValueCase::Object(k)) => match vm.heap.get(k.0 as usize) {
             Some(HeapObject::String(text)) => text.clone(),
             _ => String::new(),
         },
@@ -321,7 +321,7 @@ impl Vm {
     /// 逐次调用对应的 `*_iterator_next` 并从结果对象的 `done`/`value` 属性取值。
     fn drain_iterator_to_values(&mut self, it: Value) -> Result<Vec<Value>, VmError> {
         let mut out = Vec::new();
-        let Value::Object(obj) = it else {
+        let ValueCase::Object(obj) = it.case() else {
             return Ok(out);
         };
         loop {
@@ -336,10 +336,10 @@ impl Vm {
             } else {
                 break;
             };
-            let Value::Object(ro) = r else { break };
+            let ValueCase::Object(ro) = r.case() else { break };
             if matches!(
                 self.own_value(ro.0 as usize, "done"),
-                Some(Value::Boolean(true))
+                Some(ValueCase::Boolean(true))
             ) {
                 break;
             }
@@ -373,7 +373,7 @@ impl Vm {
             Entries(Vec<(Value, Value)>, bool), // (entries, is_set)
             Text(String),
         }
-        let src = if let Some(r) = val.as_object {
+        let src = if let Some(r) = val.as_object() {
             let is_set = self.is_set_instance(val);
             match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Array { elements, .. }) => Some(Src::Array(elements.clone())),
@@ -414,7 +414,7 @@ impl Vm {
                 }
             }
             None => {
-                if let Value::Object(r) = val
+                if let ValueCase::Object(r) = val
                     && self.is_typed_array(val)
                 {
                     out = self.ta_to_values(r)?;

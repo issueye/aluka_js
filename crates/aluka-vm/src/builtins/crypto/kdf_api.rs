@@ -15,12 +15,12 @@ use super::kdf::{hkdf_key, pbkdf2_key, scrypt_key};
 use crate::builtins::buffer::create_buffer_instance;
 use crate::builtins::register_handler;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// Go `nodebase.IntArg` 对应：第 i 个参数取整（缺失/非数字返回默认值）。
 pub(crate) fn int_arg(args: &[Value], i: usize, default: i64) -> i64 {
-    match args.get(i) {
-        Some(Value::Number(n)) => *n as i64,
+    match args.get(i).map(|v| v.case()).unwrap_or(ValueCase::Undefined) {
+        ValueCase::Number(n) => n as i64,
         _ => default,
     }
 }
@@ -111,9 +111,9 @@ fn parse_scrypt_args(vm: &mut Vm, args: &[Value]) -> Result<ScryptArgs, VmError>
         return Err(throw_error(vm, "scrypt: keylen must be positive"));
     }
     let (mut n, mut r, mut p) = (16384i64, 8i64, 1i64);
-    if let Some(opt_ref) = args.get(3).as_object {
+    if let Some(opt_ref) = args.get(3).and_then(|v| v.as_object()) {
         for (key, dest) in [("N", &mut n), ("r", &mut r), ("p", &mut p)] {
-            if let Ok(Value::Number(num)) = vm.get_property(Value::Object(*opt_ref), key) {
+            if let Ok(ValueCase::Number(num)) = vm.get_property(Value::Object(opt_ref), key).map(ValueCase::from) {
                 *dest = num as i64;
             }
         }

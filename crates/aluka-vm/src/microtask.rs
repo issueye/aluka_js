@@ -8,7 +8,7 @@
 use crate::generator::SuspendedFrame;
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// 微任务载荷：普通回调（携带兑现值）或挂起 async 帧的恢复任务。
@@ -224,8 +224,8 @@ impl Vm {
         resolver: Value,
         reject_resolver: Value,
     ) -> Result<(), VmError> {
-        let adopted = match ret {
-            Value::Object(r) => match self.heap.get(r.0 as usize) {
+        let adopted = match ret.case() {
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Promise {
                     pending,
                     value,

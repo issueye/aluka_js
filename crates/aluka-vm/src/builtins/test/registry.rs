@@ -6,7 +6,7 @@
 //! `ResetTestRegistry`）。suite 函数体在注册时同步执行（Node 语义），
 //! 用例延迟到 `run()` 执行。
 
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -201,19 +201,19 @@ pub struct TestOpts {
 
 /// 从 options 对象读取 skip/todo/only（对齐 Go `applyTestOpts`）。
 pub fn apply_test_opts(vm: &mut crate::interpreter::Vm, o: Value, opts: &mut TestOpts) {
-    if let Ok(Value::Boolean(b)) = vm.get_property(o, "skip") {
+    if let Ok(ValueCase::Boolean(b)) = vm.get_property(o, "skip").map(ValueCase::from) {
         opts.skip = b;
     }
-    if let Ok(Value::Boolean(b)) = vm.get_property(o, "todo") {
+    if let Ok(ValueCase::Boolean(b)) = vm.get_property(o, "todo").map(ValueCase::from) {
         opts.todo = b;
     }
-    if let Ok(Value::Boolean(b)) = vm.get_property(o, "only") {
+    if let Ok(ValueCase::Boolean(b)) = vm.get_property(o, "only").map(ValueCase::from) {
         opts.only = b;
     }
     // concurrency：true 或 ≥2 的数字均视为并发
-    match vm.get_property(o, "concurrency") {
-        Ok(Value::Boolean(b)) if b => opts.concurrency = true,
-        Ok(Value::Number(n)) if n >= 2.0 => opts.concurrency = true,
+    match vm.get_property(o, "concurrency").map(|v| v.case()) {
+        Ok(ValueCase::Boolean(b)) if b => opts.concurrency = true,
+        Ok(ValueCase::Number(n)) if n >= 2.0 => opts.concurrency = true,
         _ => {}
     }
 }
@@ -227,12 +227,12 @@ pub fn test_name_and_fn(vm: &mut crate::interpreter::Vm, args: &[Value]) -> (Str
     if args.len() >= 2 {
         return (vm.format_value(args[0]), args[1]);
     }
-    if let Some(r) = args[0].as_object {
+    if let Some(r) = args[0].as_object() {
         if let Some(crate::heap::HeapObject::String(s)) = vm.heap.get(r.index()) {
             return (s.clone(), Value::Undefined);
         }
     }
-    if let Ok(Value::Object(r)) = vm.get_property(args[0], "name") {
+    if let Ok(ValueCase::Object(r)) = vm.get_property(args[0], "name").map(ValueCase::from) {
         if let Some(crate::heap::HeapObject::String(n)) = vm.heap.get(r.index()) {
             if !n.is_empty() {
                 return (n.clone(), args[0]);

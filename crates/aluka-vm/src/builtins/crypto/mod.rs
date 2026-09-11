@@ -45,7 +45,7 @@ use crate::builtins::buffer::{create_buffer_instance, extract_bytes};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 
@@ -153,7 +153,7 @@ fn get_ciphers(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// 严格 Buffer 字节提取（仅认真实 Buffer 实例；字符串不算，对齐 Go `AsBuffer`）。
 pub(crate) fn strict_buffer_bytes(vm: &Vm, v: Value) -> Option<Vec<u8>> {
-    let Value::Object(r) = v else {
+    let ValueCase::Object(r) = v.case() else {
         return None;
     };
     let is_buffer = match vm.heap.get(r.0 as usize) {
@@ -236,7 +236,7 @@ thread_local! {
 
 /// 实例 `export()`：导出 secret KeyObject 字节为 Buffer。
 fn secret_export(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let Value::Object(r) = crate::builtins::current_receiver() else {
+    let ValueCase::Object(r) = crate::builtins::current_receiver().case() else {
         return Ok(Value::Undefined);
     };
     let bytes = SECRET_KEYS.with(|g| {
@@ -259,16 +259,16 @@ fn check_prime_value(vm: &Vm, args: &[Value]) -> bool {
     let Some(arg) = args.first() else {
         return false;
     };
-    let candidate: i64 = match arg {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    let candidate: i64 = match arg.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::BigInt(text)) => text.trim().parse().unwrap_or(0),
             _ => return false,
         },
-        Value::Number(n) => {
+        ValueCase::Number(n) => {
             if n.fract() != 0.0 {
                 return false;
             }
-            *n as i64
+            n as i64
         }
         _ => return false,
     };
@@ -349,7 +349,7 @@ fn get_random_values(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(arg) = args.first().copied() {
         if let Some(mut bytes) = extract_bytes(vm, arg) {
             random::fill_random(&mut bytes);
-            if let Some(r) = arg.as_object {
+            if let Some(r) = arg.as_object() {
                 crate::builtins::buffer::overwrite_buffer_instance(vm, r, &bytes);
             }
             return Ok(arg);

@@ -94,7 +94,7 @@ fn write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut data = state_bytes(vm);
     if let Some(v) = args.first() {
-        if !matches!(v, Value::Undefined) {
+        if !matches!(*v, Value::Undefined) {
             let chunk = crate::builtins::buffer::extract_bytes(vm, *v)
                 .unwrap_or_else(|| vm.format_value(*v).into_bytes());
             data.extend_from_slice(&chunk);

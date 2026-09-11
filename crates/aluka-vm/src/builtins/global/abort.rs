@@ -1,7 +1,7 @@
 //! AbortController / AbortSignal 全局构造器与实例方法。
 
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 static ABORT_ID_COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
@@ -53,7 +53,7 @@ fn default_abort_error(vm: &mut Vm) -> Value {
 }
 
 pub(crate) fn apply_abort(vm: &mut Vm, signal: Value, reason: Value) -> Result<(), VmError> {
-    if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+    if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
         return Ok(());
     }
     let _ = vm.set_property(signal, "aborted", Value::Boolean(true));
@@ -63,7 +63,7 @@ pub(crate) fn apply_abort(vm: &mut Vm, signal: Value, reason: Value) -> Result<(
         reason
     };
     let _ = vm.set_property(signal, "reason", reason);
-    if let Ok(Value::Object(arr)) = vm.get_property(signal, "_listeners") {
+    if let Ok(ValueCase::Object(arr)) = vm.get_property(signal, "_listeners").map(ValueCase::from) {
         let elements: Vec<Value> = match vm.heap.get(arr.0 as usize) {
             Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
             _ => Vec::new(),
@@ -111,7 +111,7 @@ pub(crate) fn abort_signal_abort_dispatch(vm: &mut Vm, args: &[Value]) -> Result
     let this = crate::builtins::current_receiver();
     let is_signal = matches!(
         vm.get_property(this, "_isAbortSignal"),
-        Ok(Value::Boolean(true))
+        Ok(ValueCase::Boolean(true))
     );
     if is_signal {
         return signal_abort_impl(vm, args);
@@ -124,7 +124,7 @@ pub(crate) fn abort_signal_abort_dispatch(vm: &mut Vm, args: &[Value]) -> Result
 
 pub(crate) fn signal_throw_if_aborted(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = crate::builtins::current_receiver();
-    if let Ok(Value::Boolean(true)) = vm.get_property(this, "aborted") {
+    if let Ok(ValueCase::Boolean(true)) = vm.get_property(this, "aborted").map(ValueCase::from) {
         let reason = match vm.get_property(this, "reason") {
             Ok(r) if !matches!(r, Value::Undefined) => r,
             _ => default_abort_error(vm),
@@ -150,8 +150,8 @@ pub(crate) fn signal_add_event_listener(vm: &mut Vm, args: &[Value]) -> Result<V
     let Some(cb) = args.get(1).copied() else {
         return Ok(Value::Undefined);
     };
-    let arr = match vm.get_property(this, "_listeners") {
-        Ok(Value::Object(r)) => r,
+    let arr = match vm.get_property(this, "_listeners").map(|v| v.case()) {
+        Ok(ValueCase::Object(r)) => r,
         _ => vm.alloc_array(Vec::new()),
     };
     if let Some(crate::heap::HeapObject::Array { elements, .. }) = vm.heap.get_mut(arr.0 as usize) {
@@ -169,7 +169,7 @@ pub(crate) fn signal_remove_event_listener(vm: &mut Vm, args: &[Value]) -> Resul
     let Some(cb) = args.get(1).copied() else {
         return Ok(Value::Undefined);
     };
-    if let Ok(Value::Object(arr)) = vm.get_property(this, "_listeners") {
+    if let Ok(ValueCase::Object(arr)) = vm.get_property(this, "_listeners").map(ValueCase::from) {
         if let Some(crate::heap::HeapObject::Array { elements, .. }) =
             vm.heap.get_mut(arr.0 as usize)
         {

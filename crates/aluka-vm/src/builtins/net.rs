@@ -23,7 +23,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -262,7 +262,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 
 /// 判断值是否为可调用对象（闭包 / 原生函数 / 原生构造器）。
 fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Closure { .. } | HeapObject::NativeFn { .. } | HeapObject::NativeCtor { .. })
     ))
@@ -270,7 +270,7 @@ fn is_function(vm: &Vm, v: Value) -> bool {
 
 /// 判断对象值是否为普通对象（Ordinary 堆对象，用于 options 解析）。
 fn is_plain_object(vm: &Vm, v: Value) -> bool {
-    matches!(v, Value::Object(r) if matches!(
+    matches!(v.case(), ValueCase::Object(r) if matches!(
         vm.heap.get(r.0 as usize),
         Some(HeapObject::Ordinary { .. })
     ))
@@ -406,7 +406,7 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                     }
                 }
             }
-            if let Ok(Value::Number(n)) = vm.get_property(*a, "port") {
+            if let Ok(ValueCase::Number(n)) = vm.get_property(*a, "port").map(ValueCase::from) {
                 port = n as u16;
             }
             // M4.3：options.signal——连接中途 abort → socket 销毁
@@ -415,9 +415,9 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
                     signal_opt = Some(s);
                 }
             }
-        } else if let Some(n) = a.as_number {
-            port = *n as u16;
-        } else if matches!(a, Value::Object(_)) {
+        } else if let Some(n) = a.as_number() {
+            port = n as u16;
+        } else if matches!(a.case(), ValueCase::Object(_)) {
             // 堆字符串参数视作 host（对齐 Go TypeString 分支）。
             host = vm.format_value(*a);
         }
@@ -443,7 +443,7 @@ fn net_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     // M4.3：signal 联动——已 abort 立即销毁；未 abort 挂监听（abort 时销毁）
     if let Some(signal) = signal_opt {
-        if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+        if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
             close_socket_lifecycle(obj.0);
         } else {
             let destroy_fn = vm.alloc_native_fn("net.signalDestroy");
@@ -482,13 +482,13 @@ fn net_is_ip(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `net.isIPv4(input)`。
 fn net_is_ipv4(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let ip = net_is_ip(vm, args)?;
-    Ok(Value::Boolean(matches!(ip, Value::Number(n) if n == 4.0)))
+    Ok(Value::Boolean(matches!(ip.case(), ValueCase::Number(n) if n == 4.0)))
 }
 
 /// `net.isIPv6(input)`。
 fn net_is_ipv6(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let ip = net_is_ip(vm, args)?;
-    Ok(Value::Boolean(matches!(ip, Value::Number(n) if n == 6.0)))
+    Ok(Value::Boolean(matches!(ip.case(), ValueCase::Number(n) if n == 6.0)))
 }
 
 // --- BlockList ------------------------------------------------------------
@@ -557,7 +557,7 @@ fn ipv4_to_u32(ip: IpAddr) -> Option<u32> {
 /// `blocklist.addAddress(addr)`：存原始串（对齐 Go，不校验合法性）。
 fn blocklist_add_address(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(obj) = receiver else {
+    let ValueCase::Object(obj) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(addr) = args.first() {
@@ -576,13 +576,13 @@ fn blocklist_add_address(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
 /// `blocklist.addSubnet(net, prefix)`：解析失败静默忽略（对齐 Go）。
 fn blocklist_add_subnet(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(obj) = receiver else {
+    let ValueCase::Object(obj) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
         let net_text = vm.format_value(args[0]);
-        let prefix = match args[1] {
-            Value::Number(n) if (0.0..=32.0).contains(&n) => n as u32,
+        let prefix = match args[1].case() {
+            ValueCase::Number(n) if (0.0..=32.0).contains(&n) => n as u32,
             _ => return Ok(Value::Object(obj)),
         };
         if let Some(base) = net_text.parse::<IpAddr>().ok().and_then(ipv4_to_u32) {
@@ -602,7 +602,7 @@ fn blocklist_add_subnet(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `blocklist.addRange(from, to)`：两端均可解析为 IPv4 时生效。
 fn blocklist_add_range(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(obj) = receiver else {
+    let ValueCase::Object(obj) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -632,7 +632,7 @@ fn blocklist_add_range(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `blocklist.check(ip)`：精确 → 子网 → 区间（仅 IPv4，对齐 Go）。
 fn blocklist_check(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(obj) = receiver else {
+    let ValueCase::Object(obj) = receiver.case() else {
         return Ok(receiver);
     };
     let Some(arg) = args.first() else {
@@ -681,7 +681,7 @@ fn net_socket_address_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
                 address = vm.format_value(v);
             }
         }
-        if let Ok(Value::Number(n)) = vm.get_property(opts, "port") {
+        if let Ok(ValueCase::Number(n)) = vm.get_property(opts, "port").map(ValueCase::from) {
             port = n;
         }
         if let Ok(v) = vm.get_property(opts, "family") {
@@ -689,7 +689,7 @@ fn net_socket_address_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
                 family = vm.format_value(v).to_lowercase();
             }
         }
-        if let Ok(Value::Number(n)) = vm.get_property(opts, "flowlabel") {
+        if let Ok(ValueCase::Number(n)) = vm.get_property(opts, "flowlabel").map(ValueCase::from) {
             flowlabel = n;
         }
     }
@@ -707,7 +707,7 @@ fn net_socket_address_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
 /// `on(event, listener)` / `addListener`。
 fn net_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -725,7 +725,7 @@ fn net_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `once(event, listener)`。
 fn net_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -754,7 +754,7 @@ fn net_emit_handler(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `off(event, listener)` / `removeListener`（按句柄移除首个匹配）。
 fn net_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() >= 2 {
@@ -774,7 +774,7 @@ fn net_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `listenerCount(event)`。
 fn net_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Number(0.0));
     };
     let Some(event) = args.first().map(|v| vm.format_value(*v)) else {
@@ -786,8 +786,8 @@ fn net_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 监听器移除用的值同一性（对象比句柄；与 events 模块语义一致）。
 fn is_same_value(a: Value, b: Value) -> bool {
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => x == y,
+    match (a, b).case() {
+        (ValueCase::Object(x), ValueCase::Object(y)) => x == y,
         _ => false,
     }
 }
@@ -795,7 +795,7 @@ fn is_same_value(a: Value, b: Value) -> bool {
 /// `socket.write(data[, encoding][, callback])`：同步写出，回调异步触发。
 fn net_socket_write(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Boolean(false));
     };
     let Some(data) = args.first().copied() else {
@@ -846,7 +846,7 @@ fn vm_alloc_error(vm: &mut Vm, message: &str) -> ObjectRef {
 /// `socket.end([data])`：可选写出后关闭（'end'/'close' 异步成对派发）。
 fn net_socket_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(data) = args.first().copied() {
@@ -871,7 +871,7 @@ fn net_socket_end(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `socket.destroy()`：立即关闭并派发生命周期事件。
 fn net_socket_destroy(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         close_socket_lifecycle(r.0);
     }
     Ok(receiver)
@@ -920,7 +920,7 @@ fn drain_listeners(listeners: &mut HashMap<String, Vec<NetListener>>, event: &st
 /// `socket.address()`：本地地址对象（未连接时空对象，对齐 Go）。
 fn net_socket_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let local = with_net(|n| {
@@ -946,11 +946,11 @@ fn net_socket_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `socket.pipe(dest)`：把后续 `'data'` 事件转发到 `dest.write(chunk)`。
 fn net_socket_pipe(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(dest) = args.first().copied() {
-        if matches!(dest, Value::Object(_)) {
+        if matches!(dest.case(), ValueCase::Object(_)) {
             with_net(|n| {
                 if let Some((_, state)) = n.sockets.iter_mut().find(|(id, _)| *id == r.0) {
                     state.pipe_dest = Some(dest);
@@ -972,11 +972,11 @@ fn net_noop_self(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `server.listen(port[, host][, callback])`：同步绑定，事件异步派发。
 fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
-    let port = match args.first() {
-        Some(Value::Number(n)) => *n as u16,
+    let port = match args.first().map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as u16,
         _ => 0,
     };
     let mut host = String::new();
@@ -1061,7 +1061,7 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             vm.activate_event_source("net", net_pump);
             // M4.3：listen signal——已 abort 立即关停；未 abort 挂监听
             if let Some(signal) = signal_opt {
-                if let Ok(Value::Boolean(true)) = vm.get_property(signal, "aborted") {
+                if let Ok(ValueCase::Boolean(true)) = vm.get_property(signal, "aborted").map(ValueCase::from) {
                     let _ = net_server_close(vm, &[]);
                 } else {
                     let close_fn = vm.alloc_native_fn("net.signalCloseServer");
@@ -1101,7 +1101,7 @@ fn net_server_listen(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `server.close([callback])`：停止 accept，close 事件先于回调异步派发。
 fn net_server_close(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let callback = args.first().copied().filter(|v| is_function(vm, *v));
@@ -1199,7 +1199,7 @@ pub(crate) fn close_all_servers(vm: &mut Vm) {
 /// `server.address()`：`{address, port, family}`（未监听时 null，对齐 Go）。
 fn net_server_address(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let bound = with_net(|n| {
@@ -1290,7 +1290,7 @@ fn net_pump(vm: &mut Vm) -> Result<bool, VmError> {
                     });
                     (obj, Some(NetAction::Composite(actions)))
                 });
-                if let (Value::Object(r), Some(cloned)) = (
+                if let (ValueCase::Object(r), Some(cloned)) = (
                     obj_val,
                     with_net(|n| {
                         n.sockets
@@ -1485,7 +1485,7 @@ fn exec_action(vm: &mut Vm, action: NetAction) -> Result<(), VmError> {
 /// 无监听器的 'error' 按未捕获异常上抛（对齐 EventEmitter 语义）；
 /// 'data' 事件在设置 pipe 目标时转发到 `dest.write(chunk)`。
 fn emit_net_event(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> Result<(), VmError> {
-    let Value::Object(r) = target else {
+    let ValueCase::Object(r) = target.case() else {
         return Ok(());
     };
     let listeners = with_listeners(r.0, |ls| {
@@ -1531,7 +1531,7 @@ fn emit_net_event(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> Re
 /// AbortSignal 'abort' → socket 销毁（M4.3 内部；receiver 携带 _socketId）。
 fn net_signal_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Ok(Value::Number(id)) = vm.get_property(receiver, "_socketId") {
+    if let Ok(ValueCase::Number(id)) = vm.get_property(receiver, "_socketId").map(ValueCase::from) {
         close_socket_lifecycle(id as u32);
     }
     Ok(Value::Undefined)
@@ -1540,7 +1540,7 @@ fn net_signal_destroy(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// AbortSignal 'abort' → server 关停（M4.3 内部；receiver 携带 _serverId）。
 fn net_signal_close_server(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Ok(Value::Number(id)) = vm.get_property(receiver, "_serverId") {
+    if let Ok(ValueCase::Number(id)) = vm.get_property(receiver, "_serverId").map(ValueCase::from) {
         // 按 id 找 server 实例并 close（绕过 receiver 形态——_serverId 直查）
         let target = with_net(|n| {
             n.servers

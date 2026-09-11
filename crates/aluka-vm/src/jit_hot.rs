@@ -15,7 +15,7 @@
 #![allow(unsafe_code)]
 
 use crate::interpreter::Vm;
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_bytecode::FuncTemplate;
 use aluka_jit::JittedFn;
 use std::rc::Rc;
@@ -220,7 +220,7 @@ impl Vm {
     /// `invoke_callable` 的通用路径。跳过的是解释器帧建立开销——JIT 侧本就
     /// 不用解释器帧，`current_upvalues` 为空也无需保存恢复。
     pub(crate) fn jit_direct_call(&mut self, callee: Value, args: &[Value]) -> Option<Value> {
-        let Value::Object(r) = callee else {
+        let ValueCase::Object(r) = callee.case() else {
             return None;
         };
         let func_idx = match self.heap.get(r.0 as usize) {

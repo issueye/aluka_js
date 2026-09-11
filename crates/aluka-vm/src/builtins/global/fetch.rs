@@ -3,7 +3,7 @@
 use crate::builtins::current_receiver;
 use crate::builtins::http::wire;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 // ---- 公开 handlers ----
@@ -24,8 +24,8 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     } = input;
 
     // AbortSignal 前置检查
-    if let Some(sig_ref) = signal.as_object {
-        if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
+    if let Some(sig_ref) = signal.as_object() {
+        if let Ok(ValueCase::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted").map(ValueCase::from) {
             let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
                 Ok(r) if !matches!(r, Value::Undefined) => r,
                 _ => default_abort_error(vm),
@@ -109,8 +109,8 @@ pub(crate) fn global_fetch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError
     };
     let (hdr_pairs, _) = parse_response_headers(&headers_text);
 
-    if let Some(sig_ref) = signal.as_object {
-        if let Ok(Value::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted") {
+    if let Some(sig_ref) = signal.as_object() {
+        if let Ok(ValueCase::Boolean(true)) = vm.get_property(Value::Object(sig_ref), "aborted").map(ValueCase::from) {
             let reason = match vm.get_property(Value::Object(sig_ref), "reason") {
                 Ok(r) if !matches!(r, Value::Undefined) => r,
                 _ => default_abort_error(vm),
@@ -243,12 +243,12 @@ pub(crate) fn response_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, V
     } else {
         String::new()
     };
-    let status = match vm.get_property(init, "status") {
-        Ok(Value::Number(n)) => n as u16,
+    let status = match vm.get_property(init, "status").map(|v| v.case()) {
+        Ok(ValueCase::Number(n)) => n as u16,
         _ => 200,
     };
     let mut pairs: Vec<(String, String)> = Vec::new();
-    if let Ok(Value::Object(h)) = vm.get_property(init, "headers") {
+    if let Ok(ValueCase::Object(h)) = vm.get_property(init, "headers").map(ValueCase::from) {
         for (k, v) in vm.own_entries(h.0 as usize) {
             pairs.push((k, vm.format_value(v)));
         }
@@ -284,8 +284,8 @@ pub(crate) fn response_static_redirect(vm: &mut Vm, args: &[Value]) -> Result<Va
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_default();
-    let status = match args.get(1) {
-        Some(Value::Number(n)) => *n as u16,
+    let status = match args.get(1).map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as u16,
         _ => 302,
     };
     let pairs = vec![("location".to_owned(), url)];
@@ -320,7 +320,7 @@ fn response_static_json(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `Response.json(data)` 静态与 `response.json()` 实例按 receiver 分流。
 pub(crate) fn response_json_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
-    if let Ok(Value::Boolean(true)) = vm.get_property(this, "_isResponse") {
+    if let Ok(ValueCase::Boolean(true)) = vm.get_property(this, "_isResponse").map(ValueCase::from) {
         return response_json_handler(vm, args);
     }
     response_static_json(vm, args)
@@ -330,7 +330,7 @@ pub(crate) fn response_json_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Valu
 pub(crate) fn response_clone(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = current_receiver();
     let mut pairs: Vec<(String, String)> = Vec::new();
-    if let Ok(Value::Object(h)) = vm.get_property(this, "headers") {
+    if let Ok(ValueCase::Object(h)) = vm.get_property(this, "headers").map(ValueCase::from) {
         for (k, v) in vm.own_entries(h.0 as usize) {
             if k.starts_with('_') {
                 continue;
@@ -338,8 +338,8 @@ pub(crate) fn response_clone(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmEr
             pairs.push((k, vm.format_value(v)));
         }
     }
-    let status = match vm.get_property(this, "status") {
-        Ok(Value::Number(n)) => n as u16,
+    let status = match vm.get_property(this, "status").map(|v| v.case()) {
+        Ok(ValueCase::Number(n)) => n as u16,
         _ => 200,
     };
     let status_text = vm
@@ -356,7 +356,7 @@ pub(crate) fn response_clone(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmEr
         .unwrap_or_default();
     let redirected = matches!(
         vm.get_property(this, "redirected"),
-        Ok(Value::Boolean(true))
+        Ok(ValueCase::Boolean(true))
     );
     let response = build_response_object(vm, status, "", &pairs, &body_text, redirected, &url)?;
     let st = vm.alloc_string(status_text);
@@ -405,8 +405,8 @@ pub(crate) fn response_array_buffer_handler(
 /// `new Request(input[, options])`。
 pub(crate) fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let input = args.first().copied().unwrap_or(Value::Undefined);
-    let (url, inherited) = if let Some(_) = input.as_object {
-        if let Ok(Value::Boolean(true)) = vm.get_property(input, "_isRequest") {
+    let (url, inherited) = if let Some(_) = input.as_object() {
+        if let Ok(ValueCase::Boolean(true)) = vm.get_property(input, "_isRequest").map(ValueCase::from) {
             (vm.get_property(input, "url")?, Some(input))
         } else {
             (input, None)
@@ -423,11 +423,11 @@ pub(crate) fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
     let method = vm
         .get_property(opts, "method")
         .ok()
-        .filter(|v| !matches!(v, Value::Undefined))
+        .filter(|v| !matches!(*v, Value::Undefined))
         .or_else(|| {
             inherited
                 .and_then(|i| vm.get_property(i, "method").ok())
-                .filter(|v| !matches!(v, Value::Undefined))
+                .filter(|v| !matches!(*v, Value::Undefined))
         })
         .unwrap_or(Value::Undefined);
     let _ = vm.set_property(Value::Object(req), "method", method);
@@ -435,11 +435,11 @@ pub(crate) fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
     let headers_val = vm
         .get_property(opts, "headers")
         .ok()
-        .filter(|v| !matches!(v, Value::Undefined))
+        .filter(|v| !matches!(*v, Value::Undefined))
         .or_else(|| {
             inherited
                 .and_then(|i| vm.get_property(i, "headers").ok())
-                .filter(|v| !matches!(v, Value::Undefined))
+                .filter(|v| !matches!(*v, Value::Undefined))
         })
         .unwrap_or(Value::Undefined);
     let headers_inst = super::headers::build_headers(vm, headers_val);
@@ -448,11 +448,11 @@ pub(crate) fn request_ctor_impl(vm: &mut Vm, args: &[Value]) -> Result<Value, Vm
     let body = vm
         .get_property(opts, "body")
         .ok()
-        .filter(|v| !matches!(v, Value::Undefined | Value::Null))
+        .filter(|v| !matches!(*v, Value::Undefined | Value::Null))
         .or_else(|| {
             inherited
                 .and_then(|i| vm.get_property(i, "body").ok())
-                .filter(|v| !matches!(v, Value::Undefined | Value::Null))
+                .filter(|v| !matches!(*v, Value::Undefined | Value::Null))
         })
         .unwrap_or(Value::Undefined);
     let _ = vm.set_property(Value::Object(req), "body", body);
@@ -550,10 +550,10 @@ pub(crate) fn opt_str(vm: &mut Vm, obj: Value, key: &str) -> Option<String> {
 }
 
 fn parse_fetch_input(vm: &mut Vm, first: Value, opts: Value) -> Result<FetchInput, VmError> {
-    let is_request = matches!(first, Value::Object(_))
+    let is_request = matches!(first.case(), ValueCase::Object(_))
         && matches!(
             vm.get_property(first, "_isRequest"),
-            Ok(Value::Boolean(true))
+            Ok(ValueCase::Boolean(true))
         );
     let url = if is_request {
         opt_str(vm, first, "url").unwrap_or_default()
@@ -570,13 +570,13 @@ fn parse_fetch_input(vm: &mut Vm, first: Value, opts: Value) -> Result<FetchInpu
     }
     let mut headers: Vec<(String, String)> = Vec::new();
     if is_request {
-        if let Ok(Value::Object(ho)) = vm.get_property(first, "headers") {
+        if let Ok(ValueCase::Object(ho)) = vm.get_property(first, "headers").map(ValueCase::from) {
             for (k, v) in vm.own_entries(ho.0 as usize) {
                 headers.push((k, vm.format_value(v)));
             }
         }
     }
-    if let Ok(Value::Object(hdr_obj)) = vm.get_property(opts, "headers") {
+    if let Ok(ValueCase::Object(hdr_obj)) = vm.get_property(opts, "headers").map(ValueCase::from) {
         for (k, v) in vm.own_entries(hdr_obj.0 as usize) {
             if let Some(pos) = headers
                 .iter()
@@ -591,7 +591,7 @@ fn parse_fetch_input(vm: &mut Vm, first: Value, opts: Value) -> Result<FetchInpu
     let mut body = if is_request {
         vm.get_property(first, "body")
             .ok()
-            .filter(|v| !matches!(v, Value::Undefined | Value::Null))
+            .filter(|v| !matches!(*v, Value::Undefined | Value::Null))
     } else {
         None
     };

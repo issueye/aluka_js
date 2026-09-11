@@ -14,7 +14,7 @@ use crate::VmError;
 use crate::builtins::events::{emitter_emit, emitter_on};
 use crate::builtins::{current_receiver, set_current_receiver};
 use crate::interpreter::Vm;
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -73,8 +73,8 @@ fn bc_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 事件参数为 `{ data }`。
 fn bc_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let self_id = match receiver {
-        Value::Object(r) => r.0,
+    let self_id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => return Ok(Value::Undefined),
     };
     let name = channel_name_of(vm, receiver);
@@ -108,7 +108,7 @@ fn bc_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `close()`：退出频道（此后 postMessage 不再广播到本实例）。
 fn bc_close(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         let name = channel_name_of(vm, receiver);
         with_channels(|ch| {
             if let Some(members) = ch.get_mut(&name) {

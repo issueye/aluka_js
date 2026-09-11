@@ -12,7 +12,7 @@
 use crate::exception::TryHandler;
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::{Upvalue, Value};
+use crate::value::{Upvalue, Value, ValueCase};
 use aluka_bytecode::{Constant, FuncTemplate, TryEntry};
 use std::collections::HashMap;
 
@@ -63,9 +63,7 @@ pub(crate) struct GeneratorState {
 impl Vm {
     /// 判断值是否为生成器对象。
     pub(crate) fn is_generator_obj(&self, val: Value) -> bool {
-        matches!(
-            val,
-            Value::Object(r)
+        matches!(val.case(), ValueCase::Object(r)
                 if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Generator))
         )
     }

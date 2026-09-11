@@ -19,7 +19,7 @@
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("tty")` / `require("node:tty")` 主模块。
@@ -71,8 +71,8 @@ fn tty_set_raw_mode(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `tty.isatty(fd)`：fd 是否指向终端（0/1/2 之外恒 false）。
 fn tty_isatty(_vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 非数值 fd 视为 0（对齐 Go `Int()` 失败时的默认值）。
-    let fd = match args.first() {
-        Some(Value::Number(n)) => *n as i64,
+    let fd = match args.first().map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as i64,
         _ => 0,
     };
     Ok(Value::Boolean(is_tty_fd(fd)))
@@ -126,8 +126,8 @@ fn tty_write_stream(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 提取 fd 实参（缺省 -1，非数值 -1——对齐 Go `Int()` 失败时的默认）。
 fn arg_fd(args: &[Value]) -> i64 {
-    match args.first() {
-        Some(Value::Number(n)) => *n as i64,
+    match args.first().map(|v| v.case()) {
+        Some(ValueCase::Number(n)) => n as i64,
         _ => -1,
     }
 }

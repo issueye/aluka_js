@@ -27,7 +27,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -147,8 +147,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// Go 实测 identity: true），无 sandbox / 非 Ordinary 实参新建普通对象；
 /// 两种情况都写 `_builtinNs = "vm:context"` 标记供 `isContext` 判定。
 fn create_context(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let target = match args.first() {
-        Some(v @ Value::Object(_)) if is_ordinary(vm, *v) => *v,
+    let target = match args.first().map(|v| v.case()) {
+        Some(v @ ValueCase::Object(_)) if is_ordinary(vm, v) => v,
         _ => Value::Object(vm.alloc_ordinary()),
     };
     mark_ns(vm, target, NS_CONTEXT);
@@ -296,7 +296,7 @@ fn script_record(vm: &Vm, this: Value) -> Option<ScriptRecord> {
     if own_ns(vm, this).as_deref() != Some(NS_SCRIPT) {
         return None;
     }
-    let Value::Object(r) = this else { return None };
+    let ValueCase::Object(r) = this.case() else { return None };
     SCRIPTS.with(|slot| slot.borrow().get(&r.0).cloned())
 }
 
@@ -370,22 +370,20 @@ fn script_create_cached_data(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmEr
 /// 实参是否为 JS 普通对象（Ordinary 堆对象；字符串/数组等非 Ordinary 值
 /// 按 Go `IsObject` 语义排除——字符串在本 VM 中也是堆对象，需特判）。
 fn is_ordinary(vm: &Vm, val: Value) -> bool {
-    matches!(
-        val,
-        Value::Object(r) if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. }))
+    matches!(val.case(), ValueCase::Object(r) if matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. }))
     )
 }
 
 /// 读对象自有 `_builtinNs` 堆字符串（对齐 `builtins/mod.rs::builtin_ns`，
 /// 但只读自有属性、不沿原型链）。
 fn own_ns(vm: &Vm, val: Value) -> Option<String> {
-    let Value::Object(r) = val else { return None };
+    let ValueCase::Object(r) = val.case() else { return None };
     if !matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. })) {
         return None;
     }
     let s = vm.own_value(r.index(), NS_KEY)?;
-    match s {
-        Value::Object(sr) => match vm.heap.get(sr.index())? {
+    match s.case() {
+        ValueCase::Object(sr) => match vm.heap.get(sr.index())? {
             HeapObject::String(text) => Some(text.clone()),
             _ => None,
         },
@@ -402,7 +400,7 @@ fn mark_ns(vm: &mut Vm, val: Value, ns: &str) {
 /// 文本实参（Go `nodebase.StrArg`）：缺失/null-ish 按空串。
 fn str_arg(vm: &Vm, args: &[Value], i: usize) -> String {
     match args.get(i) {
-        Some(v) if !matches!(v, Value::Undefined | Value::Null) => vm.format_value(*v),
+        Some(v) if !matches!(*v, Value::Undefined | Value::Null) => vm.format_value(*v),
         _ => String::new(),
     }
 }

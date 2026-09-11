@@ -10,7 +10,7 @@
 
 use crate::builtins::{BuiltinRegistry, current_receiver, register_handler};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::io::Read;
@@ -90,7 +90,7 @@ pub(crate) fn register_ns_emitter_handlers(registry: &mut BuiltinRegistry, ns: &
 /// `inst.on(event, cb)` / `addListener`。
 fn inst_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() < 2 {
@@ -104,7 +104,7 @@ fn inst_on(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `inst.once(event, cb)`。
 fn inst_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() < 2 {
@@ -118,7 +118,7 @@ fn inst_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `inst.off(event, cb)` / `removeListener`。
 fn inst_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if args.len() < 2 {
@@ -131,7 +131,7 @@ fn inst_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 监听器回调的同一性比较（同一堆句柄）。
 fn same_object(a: Value, b: Value) -> bool {
-    matches!((a, b), (Value::Object(x), Value::Object(y)) if x == y)
+    matches!((a.case(), b.case()), (ValueCase::Object(x), ValueCase::Object(y)) if x == y)
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ fn same_object(a: Value, b: Value) -> bool {
 
 /// 给实例句柄 `id` 追加一个监听器（非对象回调按 Go 侧事件器语义忽略）。
 pub(crate) fn emitter_add(id: u32, event: &str, cb: Value, once: bool) {
-    if !matches!(cb, Value::Object(_)) {
+    if !matches!(cb.case(), ValueCase::Object(_)) {
         return;
     }
     with_ns_state(id, |s| {
@@ -190,11 +190,11 @@ pub(crate) fn emitter_snapshot(id: u32, event: &str) -> Vec<Value> {
 /// `inst.removeAllListeners([event])`。
 fn inst_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     let event = match args.first() {
-        Some(v) if !matches!(v, Value::Undefined) => Some(vm.to_property_key(*v)),
+        Some(v) if !matches!(*v, Value::Undefined) => Some(vm.to_property_key(*v)),
         _ => None,
     };
     emitter_remove_all(r.0, event.as_deref());
@@ -216,7 +216,7 @@ fn inst_emit(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `inst.listenerCount(event)`。
 fn inst_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Number(0.0));
     };
     let event = args
@@ -261,7 +261,7 @@ pub(crate) fn ns_emit(
     event: &str,
     args: &[Value],
 ) -> Result<(), VmError> {
-    let Value::Object(r) = target else {
+    let ValueCase::Object(r) = target.case() else {
         return Ok(());
     };
     let to_call: Vec<Value> = with_ns_state(r.0, |s| {

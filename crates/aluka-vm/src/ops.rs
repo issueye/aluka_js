@@ -2,17 +2,17 @@
 
 use crate::heap::HeapObject;
 use crate::interpreter::Vm;
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 
 /// 将任意值强制转换为数值。
 #[must_use]
 pub fn to_number(val: Value) -> f64 {
-    match val {
-        Value::Number(n) => n,
-        Value::Boolean(true) => 1.0,
-        Value::Boolean(false) | Value::Null => 0.0,
+    match val.case() {
+        ValueCase::Number(n) => n,
+        ValueCase::Boolean(true) => 1.0,
+        ValueCase::Boolean(false) | Value::Null => 0.0,
         Value::Undefined => f64::NAN,
-        Value::Object(_) => f64::NAN,
+        ValueCase::Object(_) => f64::NAN,
     }
 }
 
@@ -115,11 +115,11 @@ pub fn parse_js_number(s: &str) -> f64 {
 /// 字符串按 truthy 处理（与旧行为一致，JIT 通道另行完善）。
 #[must_use]
 pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
-    match val {
+    match val.case() {
         Value::Undefined | Value::Null => false,
-        Value::Boolean(b) => b,
-        Value::Number(n) => n != 0.0 && !n.is_nan(),
-        Value::Object(r) => match heap.get(r.0 as usize) {
+        ValueCase::Boolean(b) => b,
+        ValueCase::Number(n) => n != 0.0 && !n.is_nan(),
+        ValueCase::Object(r) => match heap.get(r.0 as usize) {
             Some(HeapObject::String(s)) => !s.is_empty(),
             _ => true,
         },
@@ -128,8 +128,8 @@ pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
 
 /// 字符串值相等：两个堆字符串按内容比较（JS 语义；句柄相同或内容相同）。
 pub fn string_values_eq(a: &Value, b: &Value, heap: &[HeapObject]) -> bool {
-    match (a, b) {
-        (Value::Object(x), Value::Object(y)) => {
+    match (a, b).case() {
+        (ValueCase::Object(x), ValueCase::Object(y)) => {
             if x == y {
                 return true;
             }
@@ -165,12 +165,12 @@ pub fn eq(
     heap: &[HeapObject],
     constants: &[aluka_bytecode::Constant],
 ) -> bool {
-    match (left, right) {
-        (Value::Number(a), Value::Number(b)) => a == b,
-        (Value::Boolean(a), Value::Boolean(b)) => a == b,
+    match (left, right).case() {
+        (ValueCase::Number(a), ValueCase::Number(b)) => a == b,
+        (ValueCase::Boolean(a), ValueCase::Boolean(b)) => a == b,
         (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
         (Value::Null, Value::Undefined) | (Value::Undefined, Value::Null) => true,
-        (Value::Number(n), Value::Object(r)) | (Value::Object(r), Value::Number(n)) => {
+        (ValueCase::Number(n), ValueCase::Object(r)) | (ValueCase::Object(r), ValueCase::Number(n)) => {
             if let Some(s) = get_string_repr(r.0 as usize, heap, constants) {
                 if let Ok(sn) = s.trim().parse::<f64>() {
                     return n == sn;
@@ -178,7 +178,7 @@ pub fn eq(
             }
             false
         }
-        (Value::Object(a), Value::Object(b)) => {
+        (ValueCase::Object(a), ValueCase::Object(b)) => {
             if a == b {
                 true
             } else {
@@ -201,11 +201,11 @@ pub fn strict_eq(
     heap: &[HeapObject],
     constants: &[aluka_bytecode::Constant],
 ) -> bool {
-    match (left, right) {
-        (Value::Number(a), Value::Number(b)) => a == b,
-        (Value::Boolean(a), Value::Boolean(b)) => a == b,
+    match (left, right).case() {
+        (ValueCase::Number(a), ValueCase::Number(b)) => a == b,
+        (ValueCase::Boolean(a), ValueCase::Boolean(b)) => a == b,
         (Value::Null, Value::Null) | (Value::Undefined, Value::Undefined) => true,
-        (Value::Object(a), Value::Object(b)) => {
+        (ValueCase::Object(a), ValueCase::Object(b)) => {
             if a == b {
                 true
             } else {
@@ -230,15 +230,15 @@ impl Vm {
 
     /// 执行加法运算（支持数值相加与 ECMAScript 字符串自动拼接）。
     pub fn add_values(&mut self, left: Value, right: Value) -> Value {
-        if let (Value::Number(a), Value::Number(b)) = (left, right) {
+        if let (ValueCase::Number(a), ValueCase::Number(b)) = (left, right) {
             return Value::Number(a + b);
         }
-        let is_left_str = if let Some(r) = left.as_object {
+        let is_left_str = if let Some(r) = left.as_object() {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         } else {
             false
         };
-        let is_right_str = if let Some(r) = right.as_object {
+        let is_right_str = if let Some(r) = right.as_object() {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         } else {
             false
@@ -257,8 +257,8 @@ impl Vm {
         }
         // 双方都不是数值：任一为对象 → ToPrimitive 后字符串拼接
         // （`[] + []` === ""、`[] + {}` === "[object Object]"；生成语料实测）
-        let left_obj = matches!(left, Value::Object(_));
-        let right_obj = matches!(right, Value::Object(_));
+        let left_obj = matches!(left.case(), ValueCase::Object(_));
+        let right_obj = matches!(right.case(), ValueCase::Object(_));
         if left_obj || right_obj {
             let s1 = self.value_as_concat_text(left);
             let s2 = self.value_as_concat_text(right);
@@ -276,7 +276,7 @@ impl Vm {
 
     /// 值是否为 Buffer 实例（`_isBuffer` 标记）。
     fn is_buffer_value(&self, v: Value) -> bool {
-        matches!(v, Value::Object(r) if self.has_own_slot(r.0 as usize, "_isBuffer"))
+        matches!(v.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isBuffer"))
     }
 
     /// ECMAScript 抽象关系比较（`<`）的求值核心。
@@ -309,17 +309,17 @@ impl Vm {
     /// 关系比较用的 **ToPrimitive(hint number)**：对象按其可原始化结果返回
     /// 数值或字符串（决定关系比较走字符串序还是数值序）。
     fn to_cmp_primitive(&self, v: Value) -> CmpPrimitive {
-        match v {
-            Value::Number(n) => CmpPrimitive::Num(n),
-            Value::Boolean(_) | Value::Null | Value::Undefined => CmpPrimitive::Num(to_number(v)),
-            Value::Object(r) => match self.heap.get(r.0 as usize) {
+        match v.case() {
+            ValueCase::Number(n) => CmpPrimitive::Num(n),
+            ValueCase::Boolean(_) | Value::Null | Value::Undefined => CmpPrimitive::Num(to_number(v)),
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => CmpPrimitive::Str(s.clone()),
                 Some(HeapObject::BigInt(b)) => {
                     CmpPrimitive::Num(b.trim().parse::<f64>().unwrap_or(f64::NAN))
                 }
-                _ => match self.own_value(r.0 as usize, "_timeValue") {
+                _ => match self.own_value(r.0 as usize, "_timeValue").map(|v| v.case()) {
                     // Date 实例：valueOf 产原始数值 → 按时间值比较
-                    Some(Value::Number(t)) => CmpPrimitive::Num(t),
+                    Some(ValueCase::Number(t)) => CmpPrimitive::Num(t),
                     // 其余对象：valueOf 不产原始值 → toString（数组 join /
                     // 普通对象 "[object Object]"）
                     _ => CmpPrimitive::Str(self.format_value(v)),

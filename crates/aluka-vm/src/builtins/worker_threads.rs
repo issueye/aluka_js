@@ -31,7 +31,7 @@ use crate::builtins::child_process::proc_common::{
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -168,12 +168,12 @@ fn route_error(vm: &mut Vm, code: &str, message: &str) -> Value {
 /// undefined → `undefined`；null → `null`；布尔 → `type boolean (true)`；
 /// 其余对象按 format_value 回退（登记偏离：复杂对象形态不做完整 inspect 复刻）。
 fn received_inspect(vm: &Vm, v: Value) -> String {
-    match v {
-        Value::Number(_) => format!("type number ({})", vm.format_value(v)),
-        Value::Boolean(_) => format!("type boolean ({})", vm.format_value(v)),
+    match v.case() {
+        ValueCase::Number(_) => format!("type number ({})", vm.format_value(v)),
+        ValueCase::Boolean(_) => format!("type boolean ({})", vm.format_value(v)),
         Value::Undefined => "undefined".to_owned(),
         Value::Null => "null".to_owned(),
-        Value::Object(r) => {
+        ValueCase::Object(r) => {
             if vm.is_string_value(Value::Object(r)) {
                 format!("type string ('{}')", vm.format_value(v))
             } else {
@@ -232,8 +232,8 @@ fn arm_route_timeout(
         timeout_ms,
         crate::builtins::test::mock::FakeApi::SetTimeout,
     )?;
-    Ok(match id_val {
-        Value::Number(n) => Some(n as u64),
+    Ok(match id_val.case() {
+        ValueCase::Number(n) => Some(n as u64),
         _ => None,
     })
 }
@@ -287,12 +287,12 @@ fn emit_worker_message_on_current_thread(
 /// ERR_WORKER_MESSAGING_TIMEOUT 拒绝（ack 已先到的请求不在表中，no-op）。
 fn wt_route_timeout_fire(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let callee = crate::builtins::pending_callee();
-    let Value::Object(r) = callee else {
+    let ValueCase::Object(r) = callee.case() else {
         return Ok(Value::Undefined);
     };
     let read_num = |key: &str| -> Option<u64> {
-        match vm.get_native_fn_property(r, key) {
-            Some(Value::Number(n)) if n >= 0.0 => Some(n as u64),
+        match vm.get_native_fn_property(r, key).map(|v| v.case()) {
+            Some(ValueCase::Number(n)) if n >= 0.0 => Some(n as u64),
             _ => None,
         }
     };
@@ -301,7 +301,7 @@ fn wt_route_timeout_fire(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError>
         read_num("_origin"),
         matches!(
             vm.get_native_fn_property(r, "_main_side"),
-            Some(Value::Boolean(true))
+            Some(ValueCase::Boolean(true))
         ),
     ) else {
         return Ok(Value::Undefined);
@@ -486,8 +486,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     );
 
     // 主线程默认表面（Go：从全局读取 worker 注入值，缺省 true/0/null）。
-    let is_main = match vm.globals.get("isMainThread") {
-        Some(Value::Boolean(b)) => *b,
+    let is_main = match vm.globals.get("isMainThread").map(|v| v.case()) {
+        Some(ValueCase::Boolean(b)) => b,
         _ => true,
     };
     let _ = vm.set_property(Value::Object(obj), "isMainThread", Value::Boolean(is_main));
@@ -528,13 +528,13 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut worker_data: Option<Value> = None;
     let mut eval = false;
     if let Some(opts) = args.get(1).copied() {
-        if let Some(o) = opts.as_object {
+        if let Some(o) = opts.as_object() {
             if let Ok(v) = vm.get_property(opts, "workerData") {
                 if !matches!(v, Value::Undefined) {
                     worker_data = Some(json_roundtrip(vm, v)?);
                 }
             }
-            if let Ok(Value::Boolean(b)) = vm.get_property(Value::Object(o), "eval") {
+            if let Ok(ValueCase::Boolean(b)) = vm.get_property(Value::Object(o), "eval").map(ValueCase::from) {
                 eval = b;
             }
         }
@@ -606,8 +606,8 @@ fn wt_worker_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     });
 
     // 源码串提取（eval 形态：第一参数即源码）。
-    let source_text: Option<String> = match raw_first {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    let source_text: Option<String> = match raw_first.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(crate::heap::HeapObject::String(s)) => Some(s.clone()),
             _ => None,
         },
@@ -921,7 +921,7 @@ fn wt_broadcast_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// （Go 直接 PostTask 主线程，无缓冲，先于 'exit'）。
 fn wt_pp_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     // M5.1 真实线程路径：worker 侧 parentPort → 主线程通道
@@ -948,7 +948,7 @@ fn wt_pp_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 端口 `postMessage`：广播端口发全频道，链接端口发给对端缓冲。
 fn wt_port_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let msg = args.first().copied().unwrap_or(Value::Undefined);
@@ -975,7 +975,7 @@ fn wt_port_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     // 链接端口：发给 _peer（无对端 → 丢弃，Go 语义一致）。
     let peer = vm.get_property(receiver, "_peer")?;
-    if let Some(peer_ref) = peer.as_object {
+    if let Some(peer_ref) = peer.as_object() {
         port_post(vm, Value::Object(peer_ref), msg)?;
     }
     Ok(Value::Undefined)
@@ -985,7 +985,7 @@ fn wt_port_post_message(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 整体搬入派发事件（Go deliverPortMessage 语义：缓冲立即清空，
 /// receiveMessageOnPort 随即取不到）。
 pub(crate) fn port_post(vm: &mut Vm, port: Value, msg: Value) -> Result<(), VmError> {
-    let Value::Object(r) = port else {
+    let ValueCase::Object(r) = port.case() else {
         return Ok(());
     };
     let msg = json_roundtrip(vm, msg)?;
@@ -1027,7 +1027,7 @@ pub(crate) fn port_emit(vm: &mut Vm, port: Value, msg: Value) -> Result<(), VmEr
 /// 端口 `close`：closed 后丢新消息；广播端口同时退订频道。
 fn wt_port_close(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     with_port_state(r.0, |st| {
@@ -1062,7 +1062,7 @@ thread_local! {
 
 /// 写入当前接收者（端口对象）的 ref 状态。
 fn port_set_has_ref(has: bool) {
-    if let Some(r) = crate::builtins::current_receiver().as_object {
+    if let Some(r) = crate::builtins::current_receiver().as_object() {
         PORT_HAS_REF.with(|m| {
             m.borrow_mut().insert(r.0, has);
         });
@@ -1088,8 +1088,8 @@ fn wt_port_start(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 
 /// `port.hasRef()`：是否处于 ref 状态（默认 true，`unref()` 后 false）。
 fn wt_port_has_ref(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    let has = match crate::builtins::current_receiver() {
-        Value::Object(r) => PORT_HAS_REF.with(|m| m.borrow().get(&r.0).copied().unwrap_or(true)),
+    let has = match crate::builtins::current_receiver().case() {
+        ValueCase::Object(r) => PORT_HAS_REF.with(|m| m.borrow().get(&r.0).copied().unwrap_or(true)),
         _ => true,
     };
     Ok(Value::Boolean(has))
@@ -1102,7 +1102,7 @@ fn wt_port_has_ref(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// worker `postMessage(data)`：投递到 worker 端 parentPort 缓冲。
 fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(Value::Undefined);
     };
     let pp = with_worker_pp(|m| m.get(&r.0).copied());
@@ -1142,7 +1142,7 @@ fn wt_worker_post(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// worker `terminate()`：标记关闭（后续消息丢弃；已入队事件照常派发）。
 fn wt_worker_terminate(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = crate::builtins::current_receiver();
-    if let Some(r) = receiver.as_object {
+    if let Some(r) = receiver.as_object() {
         WORKER_CLOSED.with(|g| {
             g.borrow_mut()
                 .get_or_insert_with(Default::default)
@@ -1168,8 +1168,8 @@ fn wt_worker_terminate(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
 /// 登记缓冲句柄——此后出现在 transfer list 时抛 DataCloneError（Node 实测
 /// `Cannot transfer object of unsupported type.`，与二次 transfer 同文本）。
 fn wt_mark_noop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if let Some(r) = args.first().as_object {
-        crate::worker_clone::mark_untransferable(*r);
+    if let Some(r) = args.first().and_then(|v| v.as_object()) {
+        crate::worker_clone::mark_untransferable(r);
     }
     let _ = vm;
     Ok(Value::Undefined)
@@ -1218,15 +1218,15 @@ fn wt_get_env_data(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// 环境数据键序列化（Go workerDataKey：数字 `num:%v`、其余 `str:%s`）。
 fn env_data_key(vm: &Vm, v: Value) -> String {
-    match v {
-        Value::Number(n) => format!("num:{n}"),
+    match v.case() {
+        ValueCase::Number(n) => format!("num:{n}"),
         other => format!("str:{}", vm.format_value(other)),
     }
 }
 
 /// `receiveMessageOnPort(port)`：同步取一条缓冲消息 → `{ message }` 或 undefined。
 fn wt_receive_on_port(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(r) = args.first().copied().as_object() else {
+    let Some(r) = args.first().copied().and_then(|v| v.as_object()) else {
         return Ok(Value::Undefined);
     };
     let msg = with_port_state(r.0, |st| st.queue.pop_front());
@@ -1247,7 +1247,7 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 参数重载：`transferList` 为数字且 `timeout` 未传 → 数字即 timeout
     let mut transfer_arg = args.get(2).copied();
     let mut timeout_arg = args.get(3).copied();
-    if let Some(_) = transfer_arg.as_number {
+    if let Some(_) = transfer_arg.and_then(|v| v.as_number()) {
         if timeout_arg.is_none() {
             timeout_arg = transfer_arg.take();
         }
@@ -1260,14 +1260,14 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     // timeout 校验：validateNumber(timeout, 'timeout', 0)
     if let Some(t) = timeout_arg {
-        let ok = match t {
-            Value::Number(n) if n >= 0.0 => true,
-            Value::Number(_) => false,
+        let ok = match t.case() {
+            ValueCase::Number(n) if n >= 0.0 => true,
+            ValueCase::Number(_) => false,
             _ => false,
         };
         if !ok {
-            let reason = match t {
-                Value::Number(n) => {
+            let reason = match t.case() {
+                ValueCase::Number(n) => {
                     let err = vm.alloc_error_instance(&format!(
                         "The value of \"timeout\" is out of range. It must be >= 0. Received {n}"
                     ));
@@ -1296,7 +1296,7 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
     let current_tid = current_thread_id();
     // 同线程判定：仅数值与当前线程 id 相等才命中（Node `===` 语义）
-    let same_thread = matches!(args.first(), Some(Value::Number(n)) if *n as u64 == current_tid && n.fract() == 0.0);
+    let same_thread = matches!(args.first(), Some(ValueCase::Number(n)) if *n as u64 == current_tid && n.fract() == 0.0);
     if same_thread {
         let err = route_error(
             vm,
@@ -1307,8 +1307,8 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         return Ok(Value::Object(promise));
     }
 
-    let destination = match args.first().copied() {
-        Some(Value::Number(n)) if n >= 0.0 => n as u64,
+    let destination = match args.first().copied().map(|v| v.case()) {
+        Some(ValueCase::Number(n)) if n >= 0.0 => n as u64,
         _ => u64::MAX, // 非数值/负数：无匹配线程 → FAILED 路径
     };
     let msg = args.get(1).copied().unwrap_or(Value::Undefined);
@@ -1321,8 +1321,8 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             let bytes = crate::worker_clone::serialize(vm, msg, &transfer)?;
             let json = b64_encode(&bytes);
             let request_id = crate::worker::next_route_request_id();
-            let timer = match timeout_arg {
-                Some(Value::Number(n)) => {
+            let timer = match timeout_arg.map(|v| v.case()) {
+                Some(ValueCase::Number(n)) => {
                     arm_route_timeout(vm, 0, request_id, n.max(0.0) as u64, true)?
                 }
                 _ => None,
@@ -1361,8 +1361,8 @@ fn wt_post_to_thread(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         let bytes = crate::worker_clone::serialize(vm, msg, &transfer)?;
         let json = b64_encode(&bytes);
         let request_id = crate::worker::next_route_request_id();
-        let timer = match timeout_arg {
-            Some(Value::Number(n)) => {
+        let timer = match timeout_arg.map(|v| v.case()) {
+            Some(ValueCase::Number(n)) => {
                 arm_route_timeout(vm, io.thread_id, request_id, n.max(0.0) as u64, false)?
             }
             _ => None,
@@ -1478,8 +1478,8 @@ fn collect_transfer_list(vm: &mut Vm, v: Option<Value>) -> Result<Vec<Value>, Vm
     if matches!(v, Value::Undefined | Value::Null) {
         return Ok(Vec::new());
     }
-    match v {
-        Value::Object(r) => match vm.heap.get(r.0 as usize) {
+    match v.case() {
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
             Some(HeapObject::Array { elements, .. }) => Ok(elements.clone()),
             _ => Ok(Vec::new()),
         },

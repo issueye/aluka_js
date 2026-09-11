@@ -76,7 +76,7 @@ pub(crate) use crate::microtask::{Job, PendingResume};
 
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -140,8 +140,8 @@ impl Vm {
 /// 查分派表，无需修改 [`try_dispatch`]。
 fn builtin_ns(vm: &Vm, r: ObjectRef) -> Option<String> {
     let v = vm.own_value(r.index(), "_builtinNs")?;
-    match v {
-        Value::Object(s) => match vm.heap.get(s.index()) {
+    match v.case() {
+        ValueCase::Object(s) => match vm.heap.get(s.index()) {
             Some(HeapObject::String(text)) => Some(text.clone()),
             _ => None,
         },
@@ -330,7 +330,7 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
             .map(|r| {
                 matches!(
                     vm.get_property(Value::Object(r), "finished"),
-                    Ok(Value::Object(_))
+                    Ok(ValueCase::Object(_))
                 )
             })
             .unwrap_or(false);
@@ -441,7 +441,7 @@ impl BuiltinRegistry {
     /// 判断值是否为本注册表管理的模块单例。
     #[must_use]
     pub fn is_module_object(&self, val: Value) -> bool {
-        matches!(val, Value::Object(r) if self.modules.values().any(|m| *m == r))
+        matches!(val.case(), ValueCase::Object(r) if self.modules.values().any(|m| *m == r))
     }
 
     /// 全部模块单例句柄（GC 根源登记用）。
@@ -460,7 +460,7 @@ pub fn try_dispatch(
     method: &str,
     args: &[Value],
 ) -> Option<Result<Value, VmError>> {
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return None;
     };
     let key = match &vm.heap[r.index()] {

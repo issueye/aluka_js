@@ -21,7 +21,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -147,17 +147,15 @@ fn current_trigger_id() -> i64 {
 
 /// 当前接收者（实例对象）句柄 id。
 fn receiver_id() -> Option<u32> {
-    match current_receiver() {
-        Value::Object(r) => Some(r.0),
+    match current_receiver().case() {
+        ValueCase::Object(r) => Some(r.0),
         _ => None,
     }
 }
 
 /// 值是否为可调用函数（对齐 Go `Value.IsFunction`）。
 fn is_function(vm: &Vm, v: Value) -> bool {
-    matches!(
-        v,
-        Value::Object(r)
+    matches!(v.case(), ValueCase::Object(r)
             if matches!(
                 vm.heap.get(r.0 as usize),
                 Some(HeapObject::Closure { .. })
@@ -307,7 +305,7 @@ fn create_hook(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         enabled: false,
         callbacks: [None, None, None, None, None],
     };
-    if let Some(r) = args.first().as_object {
+    if let Some(r) = args.first().and_then(|v| v.as_object()) {
         for (idx, key) in [
             (HOOK_INIT, "init"),
             (HOOK_BEFORE, "before"),
@@ -315,7 +313,7 @@ fn create_hook(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             (HOOK_DESTROY, "destroy"),
             (HOOK_PROMISE_RESOLVE, "promiseResolve"),
         ] {
-            if let Ok(v) = vm.get_property(Value::Object(*r), key) {
+            if let Ok(v) = vm.get_property(Value::Object(r), key) {
                 state.callbacks[idx] = Some(v);
             }
         }

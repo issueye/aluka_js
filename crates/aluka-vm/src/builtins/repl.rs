@@ -18,7 +18,7 @@ use crate::builtins::{
 };
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -83,7 +83,7 @@ fn repl_server_method(method: &'static str) -> crate::builtins::BuiltinHandler {
 fn repl_start(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut prompt = "> ".to_owned();
     let mut eval_fn: Option<Value> = None;
-    if let Some(o) = args.first().copied().as_object {
+    if let Some(o) = args.first().copied().and_then(|v| v.as_object()) {
         if let Ok(v) = vm.get_property(Value::Object(o), "prompt") {
             if !matches!(v, Value::Undefined) {
                 prompt = vm.format_value(v);
@@ -154,7 +154,7 @@ fn repl_start(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// 自定义 eval 的回调 `cb(null, result)`：result 非 `undefined` 时打印。
 fn server_callback(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if let Some(v) = args.get(1) {
-        if !matches!(v, Value::Undefined) {
+        if !matches!(*v, Value::Undefined) {
             let mut out = std::io::stdout().lock();
             let _ = writeln!(out, "{}", vm.format_value(*v));
             let _ = out.flush();
@@ -166,7 +166,7 @@ fn server_callback(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `server.setPrompt(prompt)`：更新提示符（链式返回实例）。
 fn server_set_prompt(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let Value::Object(r) = receiver else {
+    let ValueCase::Object(r) = receiver.case() else {
         return Ok(receiver);
     };
     if let Some(v) = args.first() {
@@ -178,8 +178,8 @@ fn server_set_prompt(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `server.getPrompt()`：读取当前提示符。
 fn server_get_prompt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => 0,
     };
     Ok(Value::Object(vm.alloc_string(state_prompt(id))))
@@ -188,8 +188,8 @@ fn server_get_prompt(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 /// `server.displayPrompt()`：输出当前提示符（链式返回实例）。
 fn server_display_prompt(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
-    let id = match receiver {
-        Value::Object(r) => r.0,
+    let id = match receiver.case() {
+        ValueCase::Object(r) => r.0,
         _ => 0,
     };
     print_direct(&state_prompt(id));
