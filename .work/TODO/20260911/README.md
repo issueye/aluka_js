@@ -1079,8 +1079,20 @@ $ cargo test --workspace --all-features          TEST_EXIT=0   （墙钟 262.6s�
 - 本轮 Clippy 首跑命中 `unused_doc_comments`（`thread_local!` 宏前的 `///`）→ 改 `//` 后零告警。
 
 ### 11.8 提交证据
+```text
+$ git commit -F -   # feat(m5.2): worker 侧 process.channel 对象面（ref/unref 保活开关）+ RR 调度决策记录
+[master 61da226] 5 files changed, 471 insertions(+), 4 deletions(-)
+```
 
-（提交后回填）
+只暂存目标文件（`.work/scratch/`、`.workbuddy/` 未入库）。改动文件：
+`cluster_ipc.rs` / `cluster.rs` / `interpreter.rs` / `m52_worker_msg_test.rs` /
+`.work/TODO/20260911/README.md`。
+
+> **范围说明（诚实登记）**：用户点名四项中，本轮落地**项 3（`process.channel`）**并
+> 给出**项 4（RR）的可核验决策记录**；**项 1/2（worker/primary 断连切片）本轮未实施**
+> ——其 oracle 与前置件规格已备全（§11.6），未以半成品入库。并行委托写好的
+> `net`/`http` 批量关闭实现草稿（99 行）已存档于会话 scratch 并 `git checkout` 回退，
+> 以保证本轮树绿（避免 `dead_code` 与 `-D warnings` 冲突）。
 
 **M5.2 剩余缺口（本轮后）**：项 1/2 断连切片（§11.6 已备全条件）、
 `process.channel` 的 `fd` 值与 `Control` 类名/EventEmitter 面（§11.4 偏离）、
