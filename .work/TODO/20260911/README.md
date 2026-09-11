@@ -472,4 +472,16 @@ $ CARGO_INCREMENTAL=0 cargo test --workspace --all-features  # TEST_EXIT=0
   （规避 §7.6 的 rustc ICE）。
 - **构建耗时**：`CARGO_INCREMENTAL=0` 下全量门禁墙钟 5m23s~5m56s。
 
+### 8.8 提交证据
+
+```
+$ git commit -F -   # feat(m5.2): 服务端 Connection 语义——close/keep-alive 判定、落盘后 FIN 与 HTTP/1.0 关连接定界
+[master f6e6bfb] 7 files changed, 685 insertions(+), 40 deletions(-)
+ create mode 100644 crates/aluka-cli/tests/m52_conn_close_test.rs
+```
+
+只暂存目标文件（`.work/scratch/m52-conn-close/`、`.workbuddy/` 未入库）。
+改动文件：`wire.rs` / `state.rs` / `server.rs` / `m52_conn_close_test.rs`（新增）/
+`.work/TODO/README.md` / `.work/TODO/20260911/README.md` / `docs/builtins-manifest.md`。
+
 
