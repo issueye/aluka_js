@@ -877,3 +877,28 @@ $ cargo test --workspace --all-features        TEST_EXIT=0   （墙钟 229.9s）
 `net.rs`/`http/server.rs` 的 listen 路径与 Windows 无 REUSEPORT 的回退分支），
 超出 M5.2 收口范围。**建议**：单独立项评估（与 `process.channel`/句柄传递面一并），
 本轮仅保留登记，不放宽任何断言。
+
+### 10.7 提交证据
+
+```text
+$ git commit -F -   # feat(m5.2): worker 侧 IPC 面——process.on('message') 接收、process.disconnect() 与通道默认保活
+[master eee4114] 10 files changed, 1223 insertions(+), 96 deletions(-)
+ create mode 100644 crates/aluka-cli/tests/m52_worker_msg_test.rs
+```
+
+只暂存目标文件（`.work/scratch/`、`.workbuddy/` 未入库）。改动文件：
+`proc_common.rs` / `require_aliases.rs` / `cluster_ipc.rs` / `cluster.rs` /
+`interpreter.rs` / `modules.rs` / `m52_worker_msg_test.rs`（新增）/
+`.work/TODO/README.md` / `.work/TODO/20260911/README.md` / `docs/builtins-manifest.md`。
+
+**门禁复跑口径（重要）**：本轮门禁以 `NODE=C:\Users\User\AppData\Local\pi-node\current\node.exe`
+（`node --version` = **v22.23.1**）执行——本机 `PATH` 上的 `node` 为 nvmd 的
+**v22.3.0**，不设 `NODE` 时会以较低版本对拍（与本仓声明的权威 Oracle 不符）。
+建议后续门禁固定 `NODE` 指向 v22.23.1（或把该版本放入 `PATH`）。
+
+**提交后剩余 M5.2 缺口**：真 round-robin 调度（§10.6 登记处置建议）、
+`process.channel`（`ref`/`unref`/`hasRef`/`fd`）对象面、worker 侧
+`cluster.worker.disconnect()`、primary `cluster.disconnect()` 的 `{act:'disconnect'}`
+帧路径（§10.5 偏离表）。M5 整体仍为 `[~]`（M5.1 余 `postMessageToThread` 真线程
+分支 / eval worker；M5.3 余 ctor options / 真预编译；M5.4 余 LCOV / 真
+`stream.Transform` 报告器）。
