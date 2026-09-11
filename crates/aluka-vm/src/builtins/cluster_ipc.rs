@@ -17,10 +17,11 @@
 //!   的载荷语义一致，见 `lib/internal/child_process/serialization.js`）：
 //!   `{"t":"m","v":<消息>}` / `{"t":"o"}`（online）/ `{"t":"l",...}`（listening）/
 //!   `{"t":"d"}`（**primary → worker**：Node `{act:'disconnect'}`，worker 侧走
-//!   `_disconnect(true)`）/ `{"t":"e"}`（**worker → primary**：Node
+//!   `_disconnect(true)`）/ `{"t":"e"}`（**双向**：worker → primary 为 Node
 //!   `{act:'exitedAfterDisconnect'}` 的先行上报，primary 侧据此置
-//!   `exitedAfterDisconnect = true`；Node 的 primary → worker **ack 回程本运行时
-//!   未实现**——worker 上报后即本地断连，登记见 cluster 模块文档）；
+//!   `exitedAfterDisconnect = true` 并回**同帧 ack**；primary → worker 方向的
+//!   `{"t":"e"}` 即该 ack——worker 收到后才收尾 `process.disconnect()`（Node
+//!   `{ack: message.seq}` 的无 seq 近似，同通道单在途请求故无歧义）；
 //! - **跨线程边界只传字符串**：VM 堆句柄不可跨线程，inbox 条目一律是
 //!   已解析前的原始行文本，由属主线程（发起 fork/连接的 VM 线程）在泵中
 //!   解析为堆值（与 `proc_common` 的 proc 事件泵同一纪律）；

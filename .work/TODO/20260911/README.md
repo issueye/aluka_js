@@ -27,6 +27,7 @@
 | 3 | 提交与证据回填 | `[x]` | 证据闭环 |
 | 4 | 登记 `core.untrackedCache` 隐患与规避口径 | `[x]` | 工程流程 |
 | 5 | 待办 30 · M5.1 收尾：`postMessageToThread` 真线程分支 + eval worker（§14） | `[x]` | M5.1 |
+| 6 | 待办 31 · M5.2 `{"t":"e"}` ack 回程（§15） | `[x]` | M5.2 |
 
 ---
 
@@ -1581,3 +1582,66 @@ $ git commit -F -   # fix(worker): M5.1 收口——postMessageToThread 真线�
 `tests/conformance/node22/cases/37`/`38`/`39`（差分用例）/
 `.work/TODO/20260911/README.md`。总表同步（`.work/TODO/README.md` M5.1 结项）随
 后续 docs 提交入库。
+
+
+---
+
+## 15. 待办 31 · M5.2 `{"t":"e"}` ack 回程（worker 自发起断连挂起 → primary 回 ack → 收尾断连）
+
+> 触发指令：「继续」。承接 §11 剩余缺口：`{"t":"e"}` 的 primary→worker ack 回程
+> 未实现（worker 上报后即本地断连）。
+
+### 15.1 开工前登记（目标 + 验收标准）
+
+| # | 目标 | 验收标准 | 证据 |
+|---|---|---|---|
+| 1 | primary 侧收到 `{"t":"e"}` 后回 ack | `exitedAfterDisconnect=true` 置位（既有）+ 以同帧 `{"t":"e"}` 回程（Node `{ack: message.seq}` 的无 seq 近似，同通道单在途请求无歧义） | §15.2/§15.3 |
+| 2 | worker 侧上报后**挂起**，收 ack 才收尾断连 | `cluster.worker.disconnect()` 同步返回后 `process.connected` **保持 true**（Node 实测口径：修复前为 false 即偏离点）；收到 ack 才 `process.disconnect()`（`'disconnect'` 事件晚于同步段）；上报失败（通道已断）立即收尾；挂起中重复调用 no-op；对端 EOF 时挂起失效（通道关闭路径自派发 `'disconnect'`） | §15.2/§15.4 |
+| 3 | 既有用例不回归 | `m52_disconnect_test` / `m52_worker_msg_test`(6) / `m52_cluster_events_test`(4) / `m52_settings_test`(7) / `m52_http_cluster_test`(3) / `builtins_phase6_proc_test`(11) + M5 差分门禁 + 门禁三连全绿 | §15.4 |
+
+### 15.2 Oracle 取证（node v22.23.1，探针 `.work/scratch/m52_ack/probe_ack.cjs`）
+
+Node 侧 worker 自发起断连的同步段/异步段时序（实测连跑 2 次稳定）：
+
+```text
+worker:connected-before:true|worker:ead-before:undefined|worker:ret-self:true|
+worker:state:disconnecting|worker:ead-sync:true|worker:connected-sync:true|   ← 关键：ack 未到通道不关
+worker:proc-disc:false
+primary:online|primary:disconnect|primary:exit:0:ead:true
+```
+
+aluka 修复前唯一差异点：`worker:connected-sync:false`（旧实现上报后**立即**
+`process.disconnect()`）。Node 依据：`internal/cluster/child.js` 的
+`_disconnect(false)` = `send({act:'exitedAfterDisconnect'}, () => process.disconnect())`
+——send 回调在 primary ack 后才触发。
+
+### 15.3 实现记录
+
+| 位置 | 内容 |
+|---|---|
+| `crates/aluka-vm/src/builtins/cluster.rs` | ① primary 侧 `dispatch_worker_frame` 的 `"e"` 分支：置 `ead=true` 后 `send_to_worker(worker_id, {"t":"e"})` 回 ack；② worker 侧 `worker_self_disconnect_impl`：自发起时上报成功 → 置 `WORKER_ACK_PENDING` 挂起并**提前返回**（不 `process.disconnect`）；上报失败（通道已断）→ 立即收尾；挂起中重复调用 no-op；③ worker 侧 `dispatch_self_frame` 新增 `"e"` 分支：消费挂起标记（`replace(false)`）→ `process_disconnect` 收尾。`WORKER_ACK_PENDING` 为线程局部 `Cell<bool>`，对端 EOF 时挂起自然失效（通道关闭路径派发 `'disconnect'`） |
+| 文档 | `cluster.rs` 模块头偏离登记改写为已实现；`cluster_ipc.rs` 帧协议文档改 `{"t":"e"}` 为双向语义；`FRAME_EXITED_AFTER_DISCONNECT` 常量注释同步 |
+
+### 15.4 验证与门禁
+
+**探针复跑**（修复后 aluka 与 node 逐字一致，输出见 §15.2）：差异点
+`worker:connected-sync` 由 `false` → `true`，其余 7 行不变。
+
+**新增 e2e**：`m52_disconnect_test.rs` 第 3 例
+`cluster_worker_disconnect_ack_roundtrip_matches_node`（worker 侧同步段
+`connected-sync=true` + 收 ack 后 `proc-disc connected=false`；primary 侧
+`ead=true` + `exit code=0`，两侧与 Node 逐字节对拍）。
+
+**既有 m52 回归**：`m52_disconnect_test`(2→**3**) / `m52_worker_msg_test`(6) /
+`m52_cluster_events_test`(4) / `m52_settings_test`(7) / `m52_http_cluster_test`(3) /
+`builtins_phase6_proc_test`(11) 全绿。
+
+**门禁三连**：
+
+```text
+$ cargo fmt --all --check                → 通过（无输出）
+$ cargo clippy --all-targets --all-features -- -D warnings
+    → 0 error
+$ cargo test --workspace --all-features
+    → passed: 633, failed: 0（632 基线 + 新增 ack e2e 1 例）
+```

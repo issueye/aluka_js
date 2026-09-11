@@ -71,12 +71,15 @@
 //!   「通道连通即保活」实现（与 Node 实测的默认行为等价），故
 //!   `process.channel.ref()`/`unref()` 显式接口、`process.on('message')` 的
 //!   计数式 ref 语义均未接线（含 `process.listeners` 之外的计数差异）；
-//! - **worker 自发起断连的 `{"t":"e"}` ack 回程未实现**：Node 的 worker 侧
-//!   `_disconnect(false)` 先 `send({act:'exitedAfterDisconnect'})`，**等 primary
-//!   的 ack** 后才 `process.disconnect()`；本运行时 worker 写 `{"t":"e"}` 帧后
-//!   立即本地断连（primary 侧仍按 `exitedAfterDisconnect(worker, message)` 置
-//!   `ead = true`，只是不回 ack）。同一 TCP 流有序（写 `e` 帧后才 shutdown 写端），
-//!   primary 必先读到 `e` 帧再读到 EOF，故 `ead=true` 与事件序观测等价（登记偏离）；
+//! - **worker 自发起断连的 `{"t":"e"}` ack 回程（20260911 实现）**：Node 的
+//!   worker 侧 `_disconnect(false)` 先 `send({act:'exitedAfterDisconnect'})`，
+//!   **等 primary 的 ack** 后才 `process.disconnect()`。本运行时 worker 上报
+//!   `{"t":"e"}` 后**挂起**（`process.connected` 保持 `true`——Node 实测口径：
+//!   `disconnect()` 同步返回后 `connected-sync === true`），primary 按
+//!   `exitedAfterDisconnect(worker, message)` 置 `ead = true` 后以同帧
+//!   `{"t":"e"}` 回程（Node 回 `{ack: message.seq}`，本运行时帧无 seq），worker
+//!   收到 ack 才收尾断连；对端 EOF（primary 先死）时挂起失效，通道关闭路径
+//!   自会派发 `'disconnect'`；
 //! - **断连时关闭 worker 内 server**：`cluster.worker.disconnect()` 与收到的
 //!   `{"t":"d"}` 帧都会关闭本进程内**全部监听中的** server（net 与 http 各自的
 //!   线程局部表都要扫）并派发其 `'close'`（Node `_disconnect` 遍历 `handles`
@@ -124,7 +127,7 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
 use aluka_core::ObjectRef;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 
 /// `require("cluster")` / `require("node:cluster")` 模块导出。
@@ -240,8 +243,9 @@ const FRAME_ONLINE: &str = "{\"t\":\"o\"}";
 const FRAME_DISCONNECT: &str = "{\"t\":\"d\"}";
 
 /// worker → primary 的「自发起断连」上报帧（Node `{act:'exitedAfterDisconnect'}`）：
-/// primary 侧据此置 `exitedAfterDisconnect = true`（Node 还回 ack，本运行时未实现
-/// ack 回程，见模块文档的登记）。
+/// primary 侧据此置 `exitedAfterDisconnect = true` 并**回同帧 ack**——worker 收到
+/// 回程才收尾 `process.disconnect()`（Node `{ack: message.seq}` 的无 seq 近似，
+/// 见 `cluster_ipc` 模块文档）。
 const FRAME_EXITED_AFTER_DISCONNECT: &str = "{\"t\":\"e\"}";
 
 /// worker → primary 的消息帧（`t: m`，载荷经 JSON 序列化，对齐 Node 默认
@@ -1356,10 +1360,11 @@ fn worker_self_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError
 ///
 /// ① 与 p8 的 `W after … ead=true` 对应（同一调用栈内可见）；
 /// ② 本运行时按 net / http 两张线程局部表批量关闭并派发 `'close'`；
-/// ③ `primaryInitiated` 时直接断连；worker 自发起时先上报 `{"t":"e"}` 帧再断连
-///    （Node 等 primary 的 ack 回程，本运行时无 ack——同一 TCP 流有序，primary 必
-///    先读到 `e` 帧再读到 EOF，故 primary 侧 `ead=true` 与事件序观测等价，登记见
-///    模块文档）。
+/// ③ `primaryInitiated` 时直接断连；worker 自发起时上报 `{"t":"e"}` 帧后
+///    **挂起**——等 primary 的 ack 回程（同帧 `{"t":"e"}`）才收尾
+///    `process.disconnect()`（Node 的 send 回调口径；可观测差异：`disconnect()`
+///    同步返回后 `process.connected` 仍为 `true`，实测 oracle）。上报失败（通道
+///    已断）则立即收尾，不等待。重复调用在挂起期间为 no-op。
 ///
 /// 非 worker 进程（无 `cluster.worker`）调用时只关 server 并断连——与 Node 的
 /// bootstrap 语义一致（Worker 对象始终存在，此处仅防御性处理）。
@@ -1369,11 +1374,17 @@ fn worker_self_disconnect_impl(vm: &mut Vm, primary_initiated: bool) -> Result<(
     }
     close_worker_servers(vm);
     if !primary_initiated {
-        let _ = cluster_ipc::child_send_line(&format!("{FRAME_EXITED_AFTER_DISCONNECT}\n"));
+        // 已有在途上报：挂起中，不重复发送（对齐 Node `_disconnect` 的
+        // `disconnected` 守卫形态）
+        if WORKER_ACK_PENDING.with(|c| c.get()) {
+            return Ok(());
+        }
+        if cluster_ipc::child_send_line(&format!("{FRAME_EXITED_AFTER_DISCONNECT}\n")) {
+            // ack 回程未到：收尾断连延后到 `dispatch_self_frame` 的 `e` 帧
+            WORKER_ACK_PENDING.with(|c| c.set(true));
+            return Ok(());
+        }
     }
-    // 收尾 `process.disconnect()`：关闭通道并由 nextTick 载体异步派发
-    // `'disconnect'`（`exitedAfterDisconnect` 已为真 → 桥接不强制退出，worker
-    // 由事件循环排空自然以 code 0 退出）。
     process_disconnect(vm, &[])?;
     Ok(())
 }
@@ -1485,7 +1496,10 @@ fn emit_self_disconnect(vm: &mut Vm) -> Result<Value, VmError> {
 /// * `d`（disconnect，primary 发起）：Node `child.js` 的 `onmessage` 对
 ///   `{act:'disconnect'}` 调 `_disconnect(worker, true)`——**不**改
 ///   `cluster.worker.state`（`'disconnecting'` 只由 worker 自发起时写入），
-///   置 `exitedAfterDisconnect = true`、关本进程内 server 后直接 `process.disconnect()`。
+///   置 `exitedAfterDisconnect = true`、关本进程内 server 后直接 `process.disconnect()`；
+/// * `e`（自发起断连的 **ack 回程**）：worker 此前上报 `{"t":"e"}` 后挂起中——
+///   收到即收尾 `process.disconnect()`（Node `send(..., () => process.disconnect())`
+///   口径）。
 fn dispatch_self_frame(vm: &mut Vm, text: &str) -> Result<(), VmError> {
     let Some((kind, frame)) = parse_frame(vm, text)? else {
         return Ok(());
@@ -1493,6 +1507,12 @@ fn dispatch_self_frame(vm: &mut Vm, text: &str) -> Result<(), VmError> {
     match kind.as_str() {
         "d" => {
             worker_self_disconnect_impl(vm, true)?;
+            return Ok(());
+        }
+        "e" => {
+            if WORKER_ACK_PENDING.with(|c| c.replace(false)) {
+                process_disconnect(vm, &[])?;
+            }
             return Ok(());
         }
         "m" => {}
@@ -1762,12 +1782,14 @@ fn dispatch_worker_frame(vm: &mut Vm, worker_id: u64, text: &str) -> Result<(), 
             )?;
         }
         // Node `primary.js` 的 `exitedAfterDisconnect(worker, message)`：worker 自发起
-        // 断连时先上报本帧，primary 置 `exitedAfterDisconnect = true`（Node 随后回
-        // `{ack: message.seq}` 令 worker 收尾断连；本运行时无 ack 回程——worker 已自行
-        // 断连，登记见模块文档）。仅有此帧先于 EOF 到达，`'disconnect'` 处才观测到
-        // `ead=true`（实测 p8）。
+        // 断连时先上报本帧，primary 置 `exitedAfterDisconnect = true`，随后回
+        // ack（Node 回 `{ack: message.seq}`，本运行时帧无 seq，以同帧 `{"t":"e"}`
+        // 回程）——worker 收到 ack 后才收尾 `process.disconnect()`（Node
+        // `child.js` 的 `send(..., () => process.disconnect())` 口径）。仅有此帧
+        // 先于 EOF 到达，`'disconnect'` 处才观测到 `ead=true`（实测 p8）。
         "e" => {
             let _ = vm.set_property(worker_val, "exitedAfterDisconnect", Value::Boolean(true));
+            cluster_ipc::send_to_worker(worker_id, &format!("{FRAME_EXITED_AFTER_DISCONNECT}\n"));
         }
         _ => {}
     }
@@ -1791,6 +1813,14 @@ fn is_callable(vm: &Vm, val: Value) -> bool {
 // 仅本线程 Vm 有效）。
 thread_local! {
     static WORKER_BY_ID: RefCell<Option<HashMap<u64, u32>>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// worker 自发起断连的 ack 挂起标记：`{"t":"e"}` 上报已发出、等 primary
+    /// 回程期间为真——收到回程帧才收尾 `process.disconnect()`（Node `send`
+    /// 回调口径）。对端 EOF（primary 先死）时本标记不再消费：通道关闭路径
+    /// 自会派发 `'disconnect'`，挂起即失效。
+    static WORKER_ACK_PENDING: Cell<bool> = const { Cell::new(false) };
 }
 
 /// 登记 worker id → 对象句柄。

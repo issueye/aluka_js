@@ -262,3 +262,69 @@ if (cluster.isPrimary) {
         "事件序 disconnect(worker) → disconnect(cluster) → exit:\n{out}"
     );
 }
+
+// --- 3：worker 自发起断连的 `{"t":"e"}` ack 回程 ------------------------------
+
+/// ack 回程（20260911 待办 31）：worker 上报 `{"t":"e"}` 后**挂起**——
+/// `disconnect()` 同步返回后 `process.connected` **仍为 true**（Node 22.23.1
+/// 实测口径：ack 未到通道不关），primary 侧置 `ead=true` 后回同帧 ack，
+/// worker 收到才收尾 `process.disconnect()`（`'disconnect'` 事件晚于同步段）。
+/// 两侧输出均收拢后逐字节对拍。
+#[test]
+fn cluster_worker_disconnect_ack_roundtrip_matches_node() {
+    let work = work_dir("worker_ack");
+    write(
+        &work,
+        "probe.js",
+        r#"
+const cluster = require('node:cluster');
+
+if (cluster.isPrimary) {
+  const rec = [];
+  const w = cluster.fork();
+  w.on('disconnect', function () {
+    rec.push('P disconnect ead=' + w.exitedAfterDisconnect);
+  });
+  w.on('exit', function (code) {
+    rec.push('P exit code=' + code);
+    for (const line of rec) console.log(line);
+  });
+} else {
+  const rec = [];
+  rec.push('connected-before=' + process.connected);
+  rec.push('ead-before=' + cluster.worker.exitedAfterDisconnect);
+  const ret = cluster.worker.disconnect();
+  rec.push('ret-is-self=' + (ret === cluster.worker));
+  rec.push('state=' + cluster.worker.state);
+  rec.push('ead-sync=' + cluster.worker.exitedAfterDisconnect);
+  rec.push('connected-sync=' + process.connected);
+  process.on('disconnect', function () {
+    rec.push('proc-disc connected=' + process.connected);
+    for (const line of rec) console.log(line);
+  });
+}
+"#,
+    );
+    let out = common::assert_e2e_matches_node(&work, "probe.js");
+
+    // worker 侧：ack 回程未到前通道保持连通（本项即本轮修复的偏离点）
+    assert!(
+        out.contains("connected-before=true"),
+        "调用前通道连通:\n{out}"
+    );
+    assert!(out.contains("ead-sync=true"), "ead 同步置位:\n{out}");
+    assert!(
+        out.contains("connected-sync=true"),
+        "**ack 回程未到前 process.connected 保持 true**（Node 实测口径；修复前为 false）:\n{out}"
+    );
+    assert!(
+        out.contains("proc-disc connected=false"),
+        "收到 ack 收尾断连后 connected=false:\n{out}"
+    );
+    // primary 侧：ead=true + 优雅退出
+    assert!(
+        out.contains("P disconnect ead=true"),
+        "primary 侧 'disconnect' 时 ead=true:\n{out}"
+    );
+    assert!(out.contains("P exit code=0"), "worker 优雅退出:\n{out}");
+}
