@@ -80,6 +80,10 @@ pub(crate) fn pic_table_new() -> Vec<PropIcEntry> {
 
 /// 方法调用 IC 表槽数（站点数远少于属性读写，取 1/4 容量）。
 const METHOD_IC_SLOTS: usize = 1 << 10;
+/// 方法 IC 组路数（与属性 IC 同构的 4 路组关联）。
+const METHOD_IC_WAYS: usize = 4;
+/// 方法 IC 组数。
+const METHOD_IC_GROUPS: usize = METHOD_IC_SLOTS / METHOD_IC_WAYS;
 
 /// 方法调用 IC 实体：绑定「receiver 隐藏类 → 直接原型上的方法槽位」。
 ///
@@ -279,10 +283,8 @@ impl Vm {
         key: &str,
         site: u64,
     ) -> Result<Value, VmError> {
-        let idx = site as usize & (METHOD_IC_SLOTS - 1);
-        let entry = self.method_ic[idx];
-        if entry.site == site
-            && let Some(r) = receiver.as_object()
+        let base = (site as usize & (METHOD_IC_GROUPS - 1)) * METHOD_IC_WAYS;
+        if let Some(r) = receiver.as_object()
             && let Some(HeapObject::Ordinary {
                 props: OrdinaryProps::Shape { shape, .. },
                 proto,
@@ -290,11 +292,9 @@ impl Vm {
                 has_accessors,
                 ..
             }) = self.heap.get(r.index())
-            && shape.0 == entry.shape
             && *deleted_gen == 0
             && *has_accessors == 0
             && let Some(p) = proto
-            && p.0 == entry.proto
             && let Some(HeapObject::Ordinary {
                 props:
                     OrdinaryProps::Shape {
@@ -305,21 +305,31 @@ impl Vm {
                 has_accessors: p_accessors,
                 ..
             }) = self.heap.get(p.0 as usize)
-            && p_shape.0 == entry.proto_shape
             && *p_deleted == 0
             && *p_accessors == 0
-            && let Some(&b) = slots.get(entry.slot as usize)
         {
-            self.pic_hits = self.pic_hits.wrapping_add(1);
-            return Ok(to_vm_value(b));
+            // 组内线性探测：站点 + receiver shape + 原型 shape 三匹配
+            for way in 0..METHOD_IC_WAYS {
+                let entry = self.method_ic[base + way];
+                if entry.site == site
+                    && entry.shape == shape.0
+                    && entry.proto == p.0
+                    && entry.proto_shape == p_shape.0
+                {
+                    if let Some(&b) = slots.get(entry.slot as usize) {
+                        self.pic_hits = self.pic_hits.wrapping_add(1);
+                        return Ok(to_vm_value(b));
+                    }
+                }
+            }
         }
         let val = self.get_property(receiver, key)?;
-        self.method_ic_writeback(receiver, key, site, idx);
+        self.method_ic_writeback(receiver, key, site, base);
         Ok(val)
     }
 
     /// 方法 IC 写回：receiver 自身不含键且键落在**直接原型**槽位时才缓存。
-    fn method_ic_writeback(&mut self, receiver: Value, key: &str, site: u64, idx: usize) {
+    fn method_ic_writeback(&mut self, receiver: Value, key: &str, site: u64, base: usize) {
         if MAGIC_KEYS.contains(&key) {
             return;
         }
@@ -383,13 +393,28 @@ impl Vm {
             && slot <= u32::MAX as usize
             && slot < slots.len()
         {
-            self.method_ic[idx] = MethodIcEntry {
+            // 组内写回：同 (site, shape) 已登记 → 无操作；空路 → 插入；
+            // 组满 → 驱逐组首
+            let entry = MethodIcEntry {
                 site,
                 shape: shape.0,
                 proto: p_ref.0,
                 proto_shape: p_shape.0,
                 slot: slot as u32,
             };
+            for way in 0..METHOD_IC_WAYS {
+                let e = self.method_ic[base + way];
+                if e.site == site && e.shape == shape.0 && e.proto == p_ref.0 {
+                    return;
+                }
+            }
+            for way in 0..METHOD_IC_WAYS {
+                if self.method_ic[base + way].site == 0 {
+                    self.method_ic[base + way] = entry;
+                    return;
+                }
+            }
+            self.method_ic[base] = entry;
         }
     }
 }
@@ -648,5 +673,37 @@ mod poly_tests {
                 assert_eq!(v.as_number(), Some(*want), "round {round} key {key}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod poly_method_tests {
+    use super::*;
+    use crate::interpreter::Vm;
+
+    /// 多态方法站点：3 个不同 receiver shape（各自原型）交替调用，
+    /// 4 路组内全命中且值正确。
+    #[test]
+    fn polymorphic_method_site_all_hit() {
+        let mut vm = Vm::new(0);
+        let site = vm.pic_site(41);
+        let mut cases = Vec::new();
+        for i in 0..3u32 {
+            let proto_ref = vm.alloc_ordinary();
+            let proto = Value::Object(proto_ref);
+            let m = Value::Object(vm.alloc_native_fn(&format!("m{i}")));
+            let _ = vm.set_property(proto, "go", m);
+            let child = vm.alloc_ordinary();
+            vm.set_prototype_of(Value::Object(child), Some(proto_ref));
+            cases.push((Value::Object(child), m));
+        }
+        // 两轮：首轮冷登记，次轮组内全命中
+        for round in 0..2 {
+            for (child, m) in &cases {
+                let v = vm.get_method_ic(*child, "go", site).unwrap();
+                assert_eq!(&v, m, "round {round}");
+            }
+        }
+        assert!(vm.pic_hits >= 3, "次轮组内命中");
     }
 }

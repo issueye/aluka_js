@@ -459,3 +459,11 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   更重，多态方法站点较少，按登记后续）；
 - 新增 2 测试（4 态全命中 + 5 态驱逐正确性），PIC 套件 13/13；
 - 门禁：workspace 651/0、test262 154/154、GC 压力 214/0、clippy 0 全绿。
+
+## 18. 方法 IC 多态化（20260912 续）
+
+- `get_method_ic`/`method_ic_writeback` 升级 4 路组关联（与属性 IC 同构）：
+  组内线性探测按「站点 + receiver shape + 原型 ObjectRef + 原型 shape」
+  四元匹配；写回 = 同四元组无操作 / 空路插入 / 组满驱逐组首；
+- 新增多态方法站点测试（3 shape 交替全命中），PIC 套件 14/14；
+- 门禁：workspace 652/0、test262 154/154、clippy 0 全绿。
