@@ -462,8 +462,11 @@
     M6.3 PIC/JIT 全链协同后对 Node.js 22 跨线；jitbench 保守门禁 3/3
     （JIT ≥ 解释器）；M6.3 验收原文「密集计算与循环调用基准显著超越
     解释器基线」达成（fib30 JIT 机器码 ~21ms vs 解释器 824ms ≈ 39x）。
+  - ✅ 多态桩（20260912，17e2498）：属性 IC 升级 4 路组关联——同站点
+    2~4 个 shape 绑定共存线性探测，写回按 (site,shape) 对独立存储；
+    PIC 套件 13/13、workspace 651/0、GC 压力 214/0 全绿。
   - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure 机器
-    直调、生成器（Yield/Await）/Try 族展开协议、多态桩（2~4 shape）。
+    直调、生成器（Yield/Await）/Try 族展开协议、方法 IC 多态化。
 
 ---
 
