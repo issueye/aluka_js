@@ -145,6 +145,12 @@ impl<'src> Lexer<'src> {
     /// 跳过空白字符与注释（单行 // 与多行 /* */）。
     fn skip_whitespace_and_comments(&mut self) {
         let bytes = self.src.as_bytes();
+        // hashbang（`#!...` 仅允许源码首）：标准语法，此前被 `#`+`!` 误析
+        if self.pos == 0 && bytes.len() >= 2 && bytes[0] == b'#' && bytes[1] == b'!' {
+            while self.pos < bytes.len() && bytes[self.pos] != b'\n' {
+                self.pos += 1;
+            }
+        }
         while self.pos < bytes.len() {
             // 空白字符
             if bytes[self.pos].is_ascii_whitespace() {

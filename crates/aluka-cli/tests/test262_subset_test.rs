@@ -95,6 +95,26 @@ fn strip_frontmatter(code: &str) -> String {
 /// `try_wait` + `sleep(25ms)` 轮询：Windows 定时器粒度 15.6ms，实测 `sleep(25ms)`
 /// 真实睡眠 ≈30ms，而 alukac/aluvm 单次分别只需约 5ms / 19ms——每个子进程都要
 /// 白等一个定时器周期；本套件 154 例 × 最多 2 个子进程，这份白等原样计入门禁墙钟。
+/// PATH 上查找可执行（node oracle 发现；找不到返回 None）
+fn which_node(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let cand = dir.join(name);
+        if cand.is_file() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+        #[cfg(windows)]
+        if dir.join(format!("{name}.exe")).is_file() {
+            return Some(
+                dir.join(format!("{name}.exe"))
+                    .to_string_lossy()
+                    .into_owned(),
+            );
+        }
+    }
+    None
+}
+
 fn run_with_timeout(cmd: &mut Command, wait: Duration) -> (Option<i32>, Vec<u8>, bool) {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("命令可执行");
@@ -165,13 +185,16 @@ struct CaseResult {
     reason: String,
     /// aluvm 退出码（未执行时为 None）
     code: Option<i32>,
+    /// node 侧有效性：oracle 无法建立预期（正向 node 失败 / 负向 node
+    /// 通过）时不计入通过或失败——对齐 node22 conformance 的 M1 防假阳性口径
+    invalid: bool,
 }
 
 /// 跑单个用例：写临时用例 → alukac 编译 → aluvm 执行 → 判定。
 ///
 /// 纯函数式（不打印、不累加计数），以便并行执行后按序汇总输出；临时产物名由
 /// 用例名唯一推导，故多线程并行不冲突。
-fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str) -> CaseResult {
+fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str, node: Option<&str>) -> CaseResult {
     let name = case
         .file_name()
         .expect("有文件名")
@@ -182,6 +205,29 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str) -> CaseResult {
     // harness + 剥离 frontmatter 的用例体
     let js = tmp.join(format!("{name}.js"));
     std::fs::write(&js, format!("{HARNESS}\n{}", strip_frontmatter(&src))).expect("写临时用例");
+
+    // node 侧 oracle 校验（M1 防假阳性口径）：正向用例 node 必须 rc=0，
+    // 负向用例 node 必须非 0——node 与用例预期相悖时判 INVALID（不计入
+    // 通过或失败；Sputnik 老用例含 getClass 等现实引擎皆无的 API）
+    if let Some(node) = node {
+        let mut node_cmd = Command::new(node);
+        node_cmd.arg(&js).current_dir(tmp);
+        let (node_code, _node_out, node_timeout) = run_with_timeout(&mut node_cmd, CASE_WAIT);
+        let node_ok = if node_timeout {
+            None
+        } else {
+            Some(node_code.is_some_and(|c| if negative.is_some() { c != 0 } else { c == 0 }))
+        };
+        if node_ok == Some(false) {
+            return CaseResult {
+                name,
+                ok: false,
+                reason: "INVALID：node 侧与用例预期相悖".to_owned(),
+                code: node_code,
+                invalid: true,
+            };
+        }
+    }
 
     // 编译（parse 负例允许编译失败——错误输出参与判定）
     let bc = tmp.join(format!("{name}.bc"));
@@ -203,6 +249,7 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str) -> CaseResult {
             ok,
             reason,
             code: None,
+            invalid: false,
         };
     }
     let mut vm_cmd = Command::new(aluvm);
@@ -214,6 +261,7 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str) -> CaseResult {
             ok: false,
             reason: format!("aluvm 超时（{CASE_WAIT:?}），疑似事件循环挂死"),
             code: vm_code,
+            invalid: false,
         };
     }
     let (ok, reason) = eval_result(negative.as_ref(), vm_code, &vm_out, None);
@@ -222,6 +270,7 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str) -> CaseResult {
         ok,
         reason,
         code: vm_code,
+        invalid: false,
     }
 }
 
@@ -231,13 +280,14 @@ fn run_cases_ordered(
     tmp: &Path,
     alukac: &str,
     aluvm: &str,
+    node: Option<&str>,
     jobs: usize,
 ) -> Vec<CaseResult> {
     let jobs = jobs.clamp(1, files.len().max(1));
     if jobs <= 1 {
         return files
             .iter()
-            .map(|case| run_case(case, tmp, alukac, aluvm))
+            .map(|case| run_case(case, tmp, alukac, aluvm, node))
             .collect();
     }
     let next = std::sync::atomic::AtomicUsize::new(0);
@@ -252,7 +302,7 @@ fn run_cases_ordered(
                     let Some(case) = files.get(i) else {
                         break;
                     };
-                    let result = run_case(case, tmp, alukac, aluvm);
+                    let result = run_case(case, tmp, alukac, aluvm, node);
                     *slots[i].lock().expect("槽位锁未中毒") = Some(result);
                 }
             });
@@ -354,6 +404,11 @@ fn test262_subset_conformance() {
     };
     let alukac = env!("CARGO_BIN_EXE_alukac");
     let aluvm = env!("CARGO_BIN_EXE_aluvm");
+    // node oracle（M1 防假阳性校验用；缺席时跳过校验，全量仍跑）
+    let node = std::env::var("NODE")
+        .ok()
+        .unwrap_or_else(|| "node".to_owned());
+    let node = which_node(&node);
     let filter = std::env::var("ALUKA_T262_FILTER").ok();
 
     let tmp = std::env::temp_dir().join(format!("aluka_t262_{}", std::process::id()));
@@ -379,14 +434,18 @@ fn test262_subset_conformance() {
         .collect();
     let jobs = t262_jobs();
     eprintln!("[t262] 共 {} 例（jobs={jobs}）", targets.len());
-    let results = run_cases_ordered(&targets, &tmp, alukac, aluvm, jobs);
+    let results = run_cases_ordered(&targets, &tmp, alukac, aluvm, node.as_deref(), jobs);
 
     let mut pass = 0usize;
     let mut failures: Vec<String> = Vec::new();
+    let mut invalid = 0usize;
     for r in results {
         if r.ok {
             eprintln!("PASS {}", r.name);
             pass += 1;
+        } else if r.invalid {
+            eprintln!("INV  {} (vm_rc={:?}) {}", r.name, r.code, r.reason);
+            invalid += 1;
         } else {
             eprintln!("FAIL {} (vm_rc={:?}) {}", r.name, r.code, r.reason);
             failures.push(format!("{}: {}", r.name, r.reason));
@@ -395,7 +454,11 @@ fn test262_subset_conformance() {
 
     let _ = std::fs::remove_dir_all(&tmp);
     eprintln!("----------------------------------------");
-    eprintln!("test262 subset: {pass}/{} passed", pass + failures.len());
+    eprintln!(
+        "test262 subset: {pass}/{} passed（{} invalid）",
+        pass + failures.len() + invalid,
+        invalid
+    );
     // M7.2 双层门禁：
     // - 手写回归语料（非 m72- 前缀）：**硬性全过**——任何失败即回归；
     // - 官方 test262 导入语料（m72- 前缀，tools_m72_import.py 生成）：
