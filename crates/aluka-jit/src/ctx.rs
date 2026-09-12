@@ -211,6 +211,14 @@ pub type NewArrayFn = unsafe extern "C" fn(ctx: *mut JitCtx, vals_ptr: *const u6
 /// `ARRAY_PUSH`：追加元素（含写屏障）。
 pub type ArrayPushFn = unsafe extern "C" fn(ctx: *mut JitCtx, arr: u64, val: u64) -> u64;
 
+/// 位运算族（`BIT_AND/OR/XOR/SHL/SHR/USHR/NOT`）：ToNumber + i32 位语义。
+/// `op`：0=And 1=Or 2=Xor 3=Shl 4=Shr 5=UShr 6=Not。
+pub type BitOpFn = unsafe extern "C" fn(ctx: *mut JitCtx, a: u64, b: u64, op: u32) -> u64;
+/// `STORE_GLOBAL`：CJS 注入名进模块作用域，其余进全局表。
+pub type StoreGlobalFn = unsafe extern "C" fn(ctx: *mut JitCtx, name_idx: u32, val: u64) -> u64;
+/// `DEL_ELEM`：动态键删除。
+pub type DelElemFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, key: u64) -> u64;
+
 /// helper 函数指针表（由 aluka-vm 每次调用时填充）。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -265,6 +273,12 @@ pub struct JitVtable {
     pub new_array: NewArrayFn,
     /// `ARRAY_PUSH`
     pub array_push: ArrayPushFn,
+    /// 位运算族（op 选择）
+    pub bitop: BitOpFn,
+    /// `STORE_GLOBAL`
+    pub store_global: StoreGlobalFn,
+    /// `DEL_ELEM`
+    pub del_elem: DelElemFn,
 }
 
 /// 对象布局偏移（PIC 快速路径用；由 aluka-vm 按实际布局填充）。

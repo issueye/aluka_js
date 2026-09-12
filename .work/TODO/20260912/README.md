@@ -482,3 +482,30 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   非索引键删自有属性表。修复后 bisect/jitops 双引擎输出逐字节一致；
 - `unsupported_opcode_marks_rejected_once` 更新为仍子集外的 Yield；
 - 门禁：workspace 652/0、test262 154/154、GC 压力 215/0、clippy 0 全绿。
+
+## 20. 指令流扩容第二批 + 词法器缺陷修复（20260912 续）
+
+### 20.1 指令流第二批（12 操作码，覆盖 66 → 78/106）
+
+- ReturnUndef（无 try 表函数 = 返回 undefined，编译资格保证）、DelElem、
+  BitAnd/BitOr/BitXor/Shl/Shr/UShr/BitNot（单 helper `jit_bitop` 带 op
+  选择子：ToNumber + i32 位语义，USHR 按 u32 位型右移——与解释器逐位
+  一致，含负数位型用例）、StoreGlobal（CJS 注入名进模块作用域/其余进
+  全局表；`jit_run` 补 `current_func_idx` 维护）；
+- e2e：位运算哈希链 + 全局赋值 + DelElem 负数位型用例，双引擎逐字节一致。
+
+### 20.2 连带发现并修复词法器缺陷（引擎级）
+
+`multi_puncts` 缺失 `|=`/`&=`/`^=` 三个复合赋值 token——被切成单字符
+`|`/`&`/`^` + `=`，复合赋值静默退化为裸位运算表达式（赋值丢失）。
+`&&=`/`||=`/`??=`/`>>>=` 在表中而 `&=`/`|=`/`^=` 缺失的不对称是笔误。
+补齐后 bisect 微用例与 e2e 全部与 node 逐字节一致。
+
+### 20.3 门禁（真实输出）
+
+```text
+$ cargo test --workspace --all-features          → 652 passed, 0 failed
+$ cargo test -p aluka-cli --test test262_subset_test → 154/154
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm       → 215 passed, 0 failed
+$ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
+```

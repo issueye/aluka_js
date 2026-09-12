@@ -183,6 +183,7 @@ impl Vm {
         let globals_gen = self.globals_epoch32();
         let frames_ptr = &mut self.jit_frames as *mut u32;
         let ctx_box = self.jit_ctx.as_mut().expect("上一步已初始化");
+        let old_func_idx = std::mem::replace(&mut self.current_func_idx, func_idx as i64);
         let saved = (
             ctx_box.vm,
             ctx_box.consts_ptr,
@@ -215,6 +216,7 @@ impl Vm {
             ctx_box.upvals_ptr = saved.4;
             ctx_box.upvals_len = saved.5;
         }
+        self.current_func_idx = old_func_idx;
 
         self.current_upvalues = self.gc_saved_frames.pop().unwrap_or_default().upvalues;
         self.current_constants = old_constants;

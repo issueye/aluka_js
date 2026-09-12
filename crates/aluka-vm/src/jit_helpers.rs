@@ -282,6 +282,9 @@ impl Vm {
                 in_: jit_in,
                 new_array: jit_new_array,
                 array_push: jit_array_push,
+                bitop: jit_bitop,
+                store_global: jit_store_global,
+                del_elem: jit_del_elem,
             },
             upvals_ptr: std::ptr::null(),
             upvals_len: 0,
@@ -904,6 +907,64 @@ pub unsafe extern "C" fn jit_array_push(ctx: *mut JitCtx, arr: u64, val: u64) ->
     }
     refresh_heap(ctx, vm);
     val
+}
+
+/// 位运算族（`BIT_AND/OR/XOR/SHL/SHR/USHR/NOT`）：ToNumber + i32 位语义
+/// （与解释器逐位一致；USHR 按 u32 位型右移）。
+///
+/// `op`：0=And 1=Or 2=Xor 3=Shl 4=Shr 5=UShr 6=Not（单目，读 `a`）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_bitop(ctx: *mut JitCtx, a: u64, b: u64, op: u32) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let x = vm.to_number_value(to_vm_value(a)) as i32;
+    let y = vm.to_number_value(to_vm_value(b)) as i32;
+    let res: i32 = match op {
+        0 => x & y,
+        1 => x | y,
+        2 => x ^ y,
+        3 => x.wrapping_shl((y & 0x1f) as u32),
+        4 => x.wrapping_shr((y & 0x1f) as u32),
+        5 => (x as u32).wrapping_shr((y & 0x1f) as u32) as i32,
+        _ => !x,
+    };
+    from_vm_value(Value::Number(f64::from(res)))
+}
+
+/// `STORE_GLOBAL`：全局赋值（CJS 注入名进模块作用域，其余进全局表——
+/// 与解释器 `Op::StoreGlobal` 单源同语义；依赖 `current_func_idx` 由
+/// `jit_run` 维护）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_store_global(ctx: *mut JitCtx, name_idx: u32, val: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let name = key_str(ctx, name_idx);
+    let v = to_vm_value(val);
+    if crate::modules::CJS_INJECTED_NAMES.contains(&name)
+        && let Some(si) = vm.module_scope_of(vm.current_func_idx)
+        && let Some(scope) = vm.module_scopes.get_mut(si)
+    {
+        scope.vars.insert(name.to_owned(), v);
+    } else {
+        vm.globals.insert(name.to_owned(), v);
+    }
+    val
+}
+
+/// `DEL_ELEM`：动态键删除（`to_property_key` + `delete_property`）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_del_elem(ctx: *mut JitCtx, obj: u64, key: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let k = vm.to_property_key(to_vm_value(key));
+    vm.delete_property(to_vm_value(obj), &k);
+    from_vm_value(Value::Boolean(true))
 }
 
 #[cfg(test)]

@@ -91,6 +91,9 @@ pub(crate) const HELPER_INSTANCEOF: &str = "aluka_jit.instanceof";
 pub(crate) const HELPER_IN: &str = "aluka_jit.in";
 pub(crate) const HELPER_NEW_ARRAY: &str = "aluka_jit.new_array";
 pub(crate) const HELPER_ARRAY_PUSH: &str = "aluka_jit.array_push";
+pub(crate) const HELPER_BITOP: &str = "aluka_jit.bitop";
+pub(crate) const HELPER_STORE_GLOBAL: &str = "aluka_jit.store_global";
+pub(crate) const HELPER_DEL_ELEM: &str = "aluka_jit.del_elem";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
 
@@ -1121,6 +1124,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_IN => Some(v.in_ as *const u8),
             HELPER_NEW_ARRAY => Some(v.new_array as *const u8),
             HELPER_ARRAY_PUSH => Some(v.array_push as *const u8),
+            HELPER_BITOP => Some(v.bitop as *const u8),
+            HELPER_STORE_GLOBAL => Some(v.store_global as *const u8),
+            HELPER_DEL_ELEM => Some(v.del_elem as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
             _ => None,
@@ -1197,6 +1203,10 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let id_in = decl(&mut module, HELPER_IN, &sig_ivv)?;
     let id_new_array = decl(&mut module, HELPER_NEW_ARRAY, &sig_ipi)?;
     let id_array_push = decl(&mut module, HELPER_ARRAY_PUSH, &sig_ivv)?;
+    let sig_ivvu = mk_sig(&[ptr_type, types::I64, types::I64, types::I32]);
+    let id_bitop = decl(&mut module, HELPER_BITOP, &sig_ivvu)?;
+    let id_store_global = decl(&mut module, HELPER_STORE_GLOBAL, &sig_idx)?;
+    let id_del_elem = decl(&mut module, HELPER_DEL_ELEM, &sig_ivv)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
 
@@ -1232,6 +1242,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_in = module.declare_func_in_func(id_in, cg.fb.func);
     let fref_new_array = module.declare_func_in_func(id_new_array, cg.fb.func);
     let fref_array_push = module.declare_func_in_func(id_array_push, cg.fb.func);
+    let fref_bitop = module.declare_func_in_func(id_bitop, cg.fb.func);
+    let fref_store_global = module.declare_func_in_func(id_store_global, cg.fb.func);
+    let fref_del_elem = module.declare_func_in_func(id_del_elem, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
     // JIT→JIT 直调的间接调用签名引用（被调签名与本函数同形）
@@ -1929,6 +1942,66 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     .last()
                     .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
                 emit_helper(&mut cg, fref_array_push, ctx_val, &[arr, val]);
+            }
+            Op::ReturnUndef => {
+                // 无 try 表的函数（编译资格保证）：返回 undefined
+                cg.bump_frames(ctx_val, ptr_type, -1);
+                let undef = cg.fb.ins().iconst(types::I64, UNDEFINED as i64);
+                cg.fb.ins().return_(&[undef]);
+                terminated = true;
+            }
+            Op::DelElem => {
+                // 栈序 [..., obj, key]
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_del_elem, ctx_val, &[obj, key]);
+                value_stack.push(r);
+            }
+            Op::BitAnd | Op::BitOr | Op::BitXor | Op::Shl | Op::Shr | Op::UShr => {
+                const AND: i64 = 0;
+                const OR: i64 = 1;
+                const XOR: i64 = 2;
+                const SHL: i64 = 3;
+                const SHR: i64 = 4;
+                const USHR: i64 = 5;
+                let op = match instr.op {
+                    Op::BitAnd => AND,
+                    Op::BitOr => OR,
+                    Op::BitXor => XOR,
+                    Op::Shl => SHL,
+                    Op::Shr => SHR,
+                    _ => USHR,
+                };
+                let right = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let left = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let op_val = cg.fb.ins().iconst(types::I32, op);
+                let r = emit_helper(&mut cg, fref_bitop, ctx_val, &[left, right, op_val]);
+                value_stack.push(r);
+            }
+            Op::BitNot => {
+                let a = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let op_val = cg.fb.ins().iconst(types::I32, 6);
+                let undef = cg.fb.ins().iconst(types::I64, UNDEFINED as i64);
+                let r = emit_helper(&mut cg, fref_bitop, ctx_val, &[a, undef, op_val]);
+                value_stack.push(r);
+            }
+            Op::StoreGlobal => {
+                let name_idx = instr.operand;
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let idx_val = cg.fb.ins().iconst(types::I32, i64::from(name_idx));
+                emit_helper(&mut cg, fref_store_global, ctx_val, &[idx_val, val]);
             }
             Op::NewObject => {
                 if instr.operand != 0 {
