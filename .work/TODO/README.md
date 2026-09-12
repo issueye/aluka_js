@@ -483,8 +483,12 @@
     写屏障）——操作码覆盖 86 → 89/106。
   - ✅ 指令流扩容第五批（20260912）：SetPropComputedObj/CallMethodArgs/
     MakeRegexp——操作码覆盖 89 → 92/106。
+  - ✅ 指令流扩容第六批（20260912，112196c）：GetIterator/GetAsyncIterator
+    接入——迭代器分派链抽取为 get_iterator_dispatch 单源；for-of 数组/
+    Set/字符串码点热函数 e2e 双引擎一致（15595）。
   - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure/MakeClass
-    机器直调、生成器（Yield/Await）/Try 族展开协议、GetIterator 抽取。
+    机器直调、生成器（Yield/Await）/Try 族展开协议、ForInNext/End
+    （解释器侧未实现，需先补解释器）。
 
 ---
 
