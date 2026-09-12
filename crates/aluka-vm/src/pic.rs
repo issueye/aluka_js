@@ -1,8 +1,10 @@
-//! 解释器属性访问内联缓存（PIC，M6.3 切片一：读取路径）。
+//! 解释器属性访问内联缓存（PIC，M6.3 切片一/二 + 多态桩）。
 //!
-//! **直接映射（direct-mapped）站点缓存**：`(当前函数 idx, pc)` 唯一确定一个
-//! 属性访问点位，每点位缓存单一 `shape → 槽位` 绑定。命中时跳过
-//! `shape_table.shape(id).lookup(key)` 的名字查表，直读槽位。
+//! **4 路组关联（4-way set-associative）站点缓存**：`(当前函数 idx, pc)`
+//! 唯一确定一个属性访问点位，每站点缓存至多 4 个 `shape → 槽位` 绑定
+//! （2~4 态多态站点全命中，不再互挤逐出；5 态以上退化为随机驱逐，
+//! 语义仍正确）。命中时跳过 `shape_table.shape(id).lookup(key)` 的名字
+//! 查表，直读槽位。
 //!
 //! # 命中前提（与慢路径语义逐条对齐，缺一即回退慢路径）
 //!
@@ -27,9 +29,12 @@ use crate::interpreter::Vm;
 use crate::jit_helpers::{from_vm_value, to_vm_value};
 use crate::value::Value;
 
-/// 直接映射槽位数（2 的幂）。同下标站点互挤时整体逐出——多态热点表现为
-/// 持续 miss 回慢路径（语义仍正确），单态热点（绝大多数）零冲突。
+/// 总槽数（2 的幂），划分为 [`PIC_WAYS`] 路一组。
 const PIC_SLOTS: usize = 1 << 12;
+/// 每组路数：同站点可缓存的不同 shape 绑定数（2~4 态多态站点全命中）。
+const PIC_WAYS: usize = 4;
+/// 组数。
+const PIC_GROUPS: usize = PIC_SLOTS / PIC_WAYS;
 
 /// 单点位缓存实体（16 字节，`site == 0` 表示空）。
 #[derive(Debug, Clone, Copy)]
@@ -128,31 +133,38 @@ impl Vm {
         key: &str,
         site: u64,
     ) -> Result<Value, VmError> {
-        let idx = site as usize & (PIC_SLOTS - 1);
-        let entry = self.prop_ic[idx];
-        if entry.site == site
-            && let Some(r) = obj.as_object()
+        let base = (site as usize & (PIC_GROUPS - 1)) * PIC_WAYS;
+        if let Some(r) = obj.as_object()
             && let Some(HeapObject::Ordinary {
                 props: OrdinaryProps::Shape { shape, slots, .. },
                 deleted_gen,
                 has_accessors,
                 ..
             }) = self.heap.get(r.index())
-            && shape.0 == entry.shape
             && *deleted_gen == 0
             && *has_accessors == 0
-            && let Some(&b) = slots.get(entry.slot as usize)
         {
-            self.pic_hits = self.pic_hits.wrapping_add(1);
-            return Ok(to_vm_value(b));
+            // 组内线性探测：站点 + shape 双匹配即命中
+            for way in 0..PIC_WAYS {
+                let entry = self.prop_ic[base + way];
+                if entry.site == site && entry.shape == shape.0 {
+                    if let Some(&b) = slots.get(entry.slot as usize) {
+                        self.pic_hits = self.pic_hits.wrapping_add(1);
+                        return Ok(to_vm_value(b));
+                    }
+                }
+            }
         }
         let val = self.get_property(obj, key)?;
-        self.pic_writeback(obj, key, site, idx);
+        self.pic_writeback(obj, key, site, base);
         Ok(val)
     }
 
     /// 慢路径写回：仅缓存「可安全直读」的解析结果（资格见模块注释）。
-    fn pic_writeback(&mut self, obj: Value, key: &str, site: u64, idx: usize) {
+    /// 组内策略：同 `(site, shape)` 已存在 → 无操作；组内有同 site 旧形状
+    /// → 原位更新；有空槽 → 插入；组满 → 驱逐组首（4 态以上站点退化为
+    /// 随机驱逐，语义仍正确）。
+    fn pic_writeback(&mut self, obj: Value, key: &str, site: u64, base: usize) {
         if !self.pic_writeback_eligible(obj, key) {
             return;
         }
@@ -166,11 +178,27 @@ impl Vm {
             if let Some(slot) = slot
                 && slot <= u32::MAX as usize
             {
-                self.prop_ic[idx] = PropIcEntry {
+                let entry = PropIcEntry {
                     site,
                     shape: shape.0,
                     slot: slot as u32,
                 };
+                // 同 (site, shape) 已登记 → 无操作
+                for way in 0..PIC_WAYS {
+                    let e = self.prop_ic[base + way];
+                    if e.site == site && e.shape == shape.0 {
+                        return;
+                    }
+                }
+                // 空槽插入（多态站点：同 site 的不同 shape 各占一路）
+                for way in 0..PIC_WAYS {
+                    if self.prop_ic[base + way].site == 0 {
+                        self.prop_ic[base + way] = entry;
+                        return;
+                    }
+                }
+                // 组满 → 驱逐组首（5 态以上站点退化为随机驱逐，语义仍正确）
+                self.prop_ic[base] = entry;
             }
         }
     }
@@ -213,26 +241,29 @@ impl Vm {
         val: Value,
         site: u64,
     ) -> Result<(), VmError> {
-        let idx = site as usize & (PIC_SLOTS - 1);
-        let entry = self.prop_ic[idx];
-        if entry.site == site
-            && let Some(r) = obj.as_object()
+        let base = (site as usize & (PIC_GROUPS - 1)) * PIC_WAYS;
+        if let Some(r) = obj.as_object()
             && let Some(HeapObject::Ordinary {
-                props: OrdinaryProps::Shape { shape, slots, .. },
+                props: OrdinaryProps::Shape { shape, slots },
                 deleted_gen,
                 has_accessors,
                 ..
             }) = self.heap.get_mut(r.index())
-            && shape.0 == entry.shape
             && *deleted_gen == 0
             && *has_accessors == 0
-            && let Some(b) = slots.get_mut(entry.slot as usize)
         {
-            *b = from_vm_value(val);
-            return Ok(());
+            for way in 0..PIC_WAYS {
+                let entry = self.prop_ic[base + way];
+                if entry.site == site && entry.shape == shape.0 {
+                    if let Some(b) = slots.get_mut(entry.slot as usize) {
+                        *b = from_vm_value(val);
+                        return Ok(());
+                    }
+                }
+            }
         }
         self.set_property(obj, key, val)?;
-        self.pic_writeback(obj, key, site, idx);
+        self.pic_writeback(obj, key, site, base);
         Ok(())
     }
 
@@ -567,5 +598,55 @@ mod slice2_tests {
         // 互挤后再读：值仍各自正确
         let va2 = vm.get_method_ic(Value::Object(a), "go", site).unwrap();
         assert_eq!(va2, pm);
+    }
+}
+
+#[cfg(test)]
+mod poly_tests {
+    use super::*;
+    use crate::interpreter::Vm;
+
+    /// 4 态多态站点：4 路组内全命中（不再互挤逐出）。
+    #[test]
+    fn quad_polymorphic_site_all_hit() {
+        let mut vm = Vm::new(0);
+        let site = vm.pic_site(31);
+        let mut objs = Vec::new();
+        for i in 0..4u32 {
+            let o = vm.alloc_ordinary();
+            let key = format!("p{i}");
+            let _ = vm.set_property(Value::Object(o), &key, Value::Number(f64::from(i)));
+            objs.push((o, key, f64::from(i)));
+        }
+        // 两轮预热 + 断言：每对象命中自身 shape 槽位
+        for _ in 0..2 {
+            for (o, key, want) in &objs {
+                let v = vm.get_property_ic(Value::Object(*o), key, site).unwrap();
+                assert_eq!(v.as_number(), Some(*want));
+            }
+        }
+        assert_eq!(vm.pic_hits, 4, "第二轮 4 个 shape 全部命中");
+    }
+
+    /// 4 路写回的原位替换：同站点某 shape 的槽位变化（属性重写不变 shape，
+    /// 但 shape transition 场景）仍读正确值。
+    #[test]
+    fn quad_group_eviction_stays_correct() {
+        let mut vm = Vm::new(0);
+        let site = vm.pic_site(32);
+        let mut objs = Vec::new();
+        for i in 0..5u32 {
+            let o = vm.alloc_ordinary();
+            let key = format!("e{i}");
+            let _ = vm.set_property(Value::Object(o), &key, Value::Number(f64::from(i)));
+            objs.push((o, key, f64::from(i)));
+        }
+        // 5 态 > 4 路：第 5 个驱逐组首，全部读值仍正确
+        for round in 0..3 {
+            for (o, key, want) in &objs {
+                let v = vm.get_property_ic(Value::Object(*o), key, site).unwrap();
+                assert_eq!(v.as_number(), Some(*want), "round {round} key {key}");
+            }
+        }
     }
 }
