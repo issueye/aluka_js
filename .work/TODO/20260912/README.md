@@ -328,3 +328,24 @@ $ cargo fmt --all --check / clippy -D warnings     → 通过 / 0 error
 - 该发现直接改写「1.5x 复合验收」的实质：端到端瓶颈不在解释器微加速
   （切片一~三的 1.03~1.06x），而在 JIT 递归回退——先修 P1，复合验收
   才有意义；已列为切片四首项。
+
+### 13.3 P1 根因确诊（诊断插桩 + 二分复现，插桩已移除、防护注释固化）
+
+```text
+探针（examples/jit_fib_probe.rs，fib30.bc，JIT 开启）：
+  修复尝试前 fallbacks=2,692,464（≈全部 269 万次调用）compiled=1
+  writeback 失配原因打印 → 「upvalues=1」——Go 前端顶层函数声明
+  恒捕获 1 个模块环境单元格，被 upvalues.is_empty() 资格判定永久排除
+放宽「闭包未捕获」→「机器码不读上值（uses_upvalues=false）」后：
+  fib30 fallbacks 269 万 → 144，端到端 2224ms → 1.9ms（1167x），输出正确
+但 source 前端 fib(10)（.work/scratch/calc.js）debug+release 均 NaN：
+  trace 显示 jit_run 入口实参与返回逐点正确（基例 1/0 正确），
+  首个错值出现在「cell FAST 后的机器级直调」——emit_call 快路径
+  只换装常量池，未复刻 jit_run 的上值表/帧寄存器换装——机器级
+  直调跳过 jit_run 的帧状态管理返回错值
+结论：放宽不安全，已回退（is_empty 守卫恢复 + 防护注释固化）；
+正确的修复 = emit_call 快路径补全 jit_run 等价的帧状态换装
+（上值表安装需机器可寻址的上值表表示——即调用约定协同本身），
+列为切片四首项，诊断资产（探针 + jit_compiled_count/jit_slot_summary）
+已入库可复现。
+```

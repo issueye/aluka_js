@@ -223,6 +223,9 @@ impl Vm {
         let ValueCase::Object(r) = callee.case() else {
             return None;
         };
+        // 注意：直调只换常量池，**不换装上值表/帧寄存器**（jit_run 才做），
+        // 因此被调必须是「体不读上值且闭包未捕获单元格」——放宽捕获条件
+        // 会触发机器级直调错值（fib10 NaN，见 20260912 §13 诊断）
         let func_idx = match self.heap.get(r.0 as usize) {
             Some(crate::heap::HeapObject::Closure {
                 func_idx, upvalues, ..
@@ -254,6 +257,26 @@ impl Vm {
     #[must_use]
     pub fn jit_call_fallbacks(&self) -> u64 {
         self.jit_call_fallbacks
+    }
+
+    /// 已编译函数数（诊断用：切片四 P1 直调覆盖率定位）。
+    #[must_use]
+    pub fn jit_compiled_count(&self) -> usize {
+        self.jit_slots
+            .iter()
+            .filter(|s| matches!(s, JitSlot::Compiled(_)))
+            .count()
+    }
+
+    /// 指定函数的 JitSlot 形态摘要（诊断用）。
+    #[must_use]
+    pub fn jit_slot_summary(&self, func_idx: usize) -> &'static str {
+        match self.jit_slots.get(func_idx) {
+            None => "none",
+            Some(JitSlot::Cold) => "cold",
+            Some(JitSlot::Rejected) => "rejected",
+            Some(JitSlot::Compiled(_)) => "compiled",
+        }
     }
 
     /// 已编译函数的机器码入口地址（调用 IC 登记用；未编译返回 `None`）。
