@@ -550,7 +550,10 @@ impl Vm {
                         return Ok(Value::Number(elements.len() as f64));
                     }
                     if let Ok(i) = key.parse::<usize>() {
-                        return Ok(elements.get(i).copied().unwrap_or(Value::Undefined));
+                        if let Some(v) = elements.get(i) {
+                            return Ok(*v);
+                        }
+                        // 界外索引键：落入自有属性表（写路径把超大下标存此处）
                     }
                     if let Some(v) = properties.get(key) {
                         return Ok(*v);
@@ -991,10 +994,19 @@ impl Vm {
                         ..
                     } => {
                         if let Ok(i) = key.parse::<usize>() {
-                            if i >= elements.len() {
-                                elements.resize(i + 1, Value::Undefined);
+                            // 规范口径：数组索引 < 2^32-1；且本表示为密集
+                            // Vec——超限或超大下标一律落入自有属性表
+                            //（稀疏位不分配；M7.2 修复：`a[4294967295]=…`
+                            // 曾触发 2^32×8 字节分配直接 OOM）
+                            const DENSE_CAP: usize = 10_000_000;
+                            if i < DENSE_CAP.min(4294967295) {
+                                if i >= elements.len() {
+                                    elements.resize(i + 1, Value::Undefined);
+                                }
+                                elements[i] = val;
+                            } else {
+                                properties.insert(key.to_owned(), val);
                             }
-                            elements[i] = val;
                         } else if key != "length" {
                             properties.insert(key.to_owned(), val);
                         }

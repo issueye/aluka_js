@@ -1,6 +1,6 @@
 //! 函数调用管理、帧上下文隔离与模块执行入口。
 
-use crate::heap::HeapObject;
+use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::{Vm, VmError};
 use crate::value::{Upvalue, Value, ValueCase};
 use std::cell::RefCell;
@@ -423,15 +423,89 @@ impl Vm {
                     "URL" => return Ok(self.url_constructor(args)),
                     "Proxy" => return self.construct_proxy(args),
                     "Function" => return self.construct_function(args),
+                    // 包装对象（`new Boolean(v)` / `new Number(v)`）：Ordinary
+                    // 实例挂对应原型 + `_primData` 私有槽（M7.2 修复：此前
+                    // 与无 new 直调共用原始值分支，包装对象从未存在）。
+                    // 无 new 直调的原始值语义在 `invoke_callable` 的
+                    // NativeCtor 分支另行处理，两路径于此分离。
                     "Number" => {
-                        return Ok(Value::Number(self.to_number_value(
-                            args.first().copied().unwrap_or(Value::Undefined),
-                        )));
+                        let proto = match self.get_property(callee, "prototype").map(|v| v.case()) {
+                            Ok(ValueCase::Object(p)) => Some(p),
+                            _ => self.num_proto,
+                        };
+                        let inst = self.alloc_ordinary_with_proto(proto);
+                        let v =
+                            self.to_number_value(args.first().copied().unwrap_or(Value::Undefined));
+                        // 数据槽直接以 Dict 模式承载（eq/方法分派的纯堆读取面）
+                        if let Some(HeapObject::Ordinary { props, .. }) =
+                            self.heap.get_mut(inst.0 as usize)
+                        {
+                            *props = OrdinaryProps::Dict {
+                                properties: vec![("[[NumberValue]]".to_owned(), Value::Number(v))],
+                                index: std::collections::HashMap::from([(
+                                    "[[NumberValue]]".to_owned(),
+                                    0usize,
+                                )]),
+                            };
+                        }
+                        return Ok(Value::Object(inst));
                     }
                     "Boolean" => {
-                        return Ok(Value::Boolean(
-                            self.truthy(args.first().copied().unwrap_or(Value::Undefined)),
-                        ));
+                        let proto = match self.get_property(callee, "prototype").map(|v| v.case()) {
+                            Ok(ValueCase::Object(p)) => Some(p),
+                            _ => self.bool_proto,
+                        };
+                        let inst = self.alloc_ordinary_with_proto(proto);
+                        let v = self.truthy(args.first().copied().unwrap_or(Value::Undefined));
+                        if let Some(HeapObject::Ordinary { props, .. }) =
+                            self.heap.get_mut(inst.0 as usize)
+                        {
+                            *props = OrdinaryProps::Dict {
+                                properties: vec![(
+                                    "[[BooleanValue]]".to_owned(),
+                                    Value::Boolean(v),
+                                )],
+                                index: std::collections::HashMap::from([(
+                                    "[[BooleanValue]]".to_owned(),
+                                    0usize,
+                                )]),
+                            };
+                        }
+                        return Ok(Value::Object(inst));
+                    }
+                    // `new String(v)`：包装实例 + `[[StringValue]]` 数据槽
+                    // + length/索引自有属性（真实 String 包装的读取面）
+                    "String" => {
+                        let proto = match self.get_property(callee, "prototype").map(|v| v.case()) {
+                            Ok(ValueCase::Object(p)) => Some(p),
+                            _ => None,
+                        };
+                        let inst = self.alloc_ordinary_with_proto(proto);
+                        let text =
+                            self.format_value(args.first().copied().unwrap_or(Value::Undefined));
+                        let s_val = Value::Object(self.alloc_string(text.clone()));
+                        // 数据槽 Dict 模式直载（eq 纯堆读取面）
+                        if let Some(HeapObject::Ordinary { props, .. }) =
+                            self.heap.get_mut(inst.0 as usize)
+                        {
+                            *props = OrdinaryProps::Dict {
+                                properties: vec![("[[StringValue]]".to_owned(), s_val)],
+                                index: std::collections::HashMap::from([(
+                                    "[[StringValue]]".to_owned(),
+                                    0usize,
+                                )]),
+                            };
+                        }
+                        let _ = self.set_property(
+                            Value::Object(inst),
+                            "length",
+                            Value::Number(text.chars().count() as f64),
+                        );
+                        for (i, ch) in text.chars().enumerate() {
+                            let ch_val = Value::Object(self.alloc_string(ch.to_string()));
+                            let _ = self.set_property(Value::Object(inst), &i.to_string(), ch_val);
+                        }
+                        return Ok(Value::Object(inst));
                     }
                     "Date" => return self.construct_date(args),
                     "ArrayBuffer" => return self.construct_array_buffer(args, false),

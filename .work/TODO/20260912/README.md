@@ -650,3 +650,18 @@ $ M7.1 验证组（见 §26.2）                        → 全部通过
 （atan2/asin/acos/clz32 等，~18）、OOM（Array 超长构造应 RangeError，6）、
 BigInt mul/div/cmp 覆盖、其余零散——每桶为独立修复轮，按总表登记推进。
 M7.3（npm Top 50 签核）未启动。
+
+### 26.8 M7.2 分桶修复轮一：包装对象 + Math 缺口 + 数组大下标（20260912 续）
+
+| 修复 | 内容 |
+|---|---|
+| **包装对象（全缺失）** | `new Boolean/Number/String(v)` 此前返回原始值或裸对象——do_construct 与无 new 直调共用分支。新增三包装构造臂：Ordinary 实例挂对应原型 + 数据槽（`[[BooleanValue]]`/`[[NumberValue]]`/`[[StringValue]]`，Dict 模式直载）+ String 包装 length/索引属性；`String(new String("hi"))` 经 format_value 透传 |
+| **Boolean.prototype 方法分派** | 此前无 handler（`Boolean.prototype.toString()` 报 TypeError）——新增 `bool_method_dispatch`（receiver 取值序：原始布尔→自身 / 实例数据槽 / 原型自身→规范缺省 false）+ 注册 |
+| **宽松相等解包** | `new Number(5) == 5` / `true == new Boolean(true)` / `new String("hi") == "hi"` 曾全 false——eq 增 wrapper_data 纯堆解包（Number/Boolean 臂 + Object/Object 臂解包一层递归）；strict_eq 不受影响 |
+| **Math 方法缺口** | atan/atan2/asin/acos/sinh/cosh/tanh/asinh/acosh/atanh/clz32/fround/imul/expm1/log1p 共 15 个方法接入（imul 按 ToUint32 规范实现） |
+| **数组大下标 OOM** | `a[4294967295]=…` 曾触发 2^32×8 字节分配直接 abort——索引键规范上限（<2^32-1）+ 密集容量上限 1e7，超限落自有属性表；读取面 elements.get → properties 回退 |
+| **notSameValue** | runner 最小 harness 补官方 assert.notSameValue |
+
+效果：test262 基线 642 → **656/1154**（not-a-function 桶 113→65、Math 桶清零、OOM 桶清零）；node22 conformance 差分 877/878 的 gen-coerce-matrix-0034 回归由宽松相等解包修复（现全绿）。
+
+门禁：workspace 652/0、GC 压力 215/0、clippy 0、test262 手写 154 硬门禁 ✓、conformance 差分 ✓、jitbench 3/3。

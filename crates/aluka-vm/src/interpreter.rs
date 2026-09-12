@@ -654,6 +654,15 @@ impl Vm {
                         HeapObject::Symbol { description, .. } => {
                             crate::symbol::symbol_display(description)
                         }
+                        // String 包装实例（[[StringValue]] 数据槽）：格式化
+                        // 透传内容（`String(new String("hi"))` → "hi"）
+                        HeapObject::Ordinary { .. }
+                            if self.has_own_slot(idx, "[[StringValue]]") =>
+                        {
+                            self.own_value(idx, "[[StringValue]]")
+                                .map(|v| self.format_value(v))
+                                .unwrap_or_else(|| "[object Object]".to_owned())
+                        }
                         HeapObject::Ordinary { .. }
                         | HeapObject::Generator
                         | HeapObject::Promise { .. }
@@ -1854,6 +1863,21 @@ impl Vm {
                     | "log2"
                     | "log10"
                     | "exp"
+                    | "atan"
+                    | "atan2"
+                    | "asin"
+                    | "acos"
+                    | "sinh"
+                    | "cosh"
+                    | "tanh"
+                    | "asinh"
+                    | "acosh"
+                    | "atanh"
+                    | "clz32"
+                    | "fround"
+                    | "imul"
+                    | "expm1"
+                    | "log1p"
                     | "random"
             )
         {
@@ -4948,6 +4972,31 @@ fn math_method(method: &str, args: &[Value]) -> Value {
         "hypot" => nums.iter().map(|n| n * n).sum::<f64>().sqrt(),
         "log" => nums.first().map(|n| n.ln()).unwrap_or(f64::NAN),
         "log2" => nums.first().map(|n| n.log2()).unwrap_or(f64::NAN),
+        "atan" => nums.first().map(|n| n.atan()).unwrap_or(f64::NAN),
+        "atan2" => match (nums.first(), nums.get(1)) {
+            (Some(y), Some(x)) => y.atan2(*x),
+            _ => f64::NAN,
+        },
+        "asin" => nums.first().map(|n| n.asin()).unwrap_or(f64::NAN),
+        "acos" => nums.first().map(|n| n.acos()).unwrap_or(f64::NAN),
+        "sinh" => nums.first().map(|n| n.sinh()).unwrap_or(f64::NAN),
+        "cosh" => nums.first().map(|n| n.cosh()).unwrap_or(f64::NAN),
+        "tanh" => nums.first().map(|n| n.tanh()).unwrap_or(f64::NAN),
+        "asinh" => nums.first().map(|n| n.asinh()).unwrap_or(f64::NAN),
+        "acosh" => nums.first().map(|n| n.acosh()).unwrap_or(f64::NAN),
+        "atanh" => nums.first().map(|n| n.atanh()).unwrap_or(f64::NAN),
+        "clz32" => nums
+            .first()
+            .map(|n| (*n as u32).leading_zeros() as f64)
+            .unwrap_or(f64::NAN),
+        "fround" => nums.first().map(|n| *n as f32 as f64).unwrap_or(f64::NAN),
+        "imul" => match (nums.first(), nums.get(1)) {
+            // 规范：ToUint32 后相乘取低 32 位按有符号解释
+            (Some(a), Some(b)) => f64::from(((*a as u32).wrapping_mul(*b as u32)) as i32),
+            _ => f64::from(0i32),
+        },
+        "expm1" => nums.first().map(|n| n.exp_m1()).unwrap_or(f64::NAN),
+        "log1p" => nums.first().map(|n| n.ln_1p()).unwrap_or(f64::NAN),
         "log10" => nums.first().map(|n| n.log10()).unwrap_or(f64::NAN),
         "exp" => nums.first().map(|n| n.exp()).unwrap_or(f64::NAN),
         "random" => {

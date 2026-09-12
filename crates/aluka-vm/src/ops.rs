@@ -1,6 +1,6 @@
 //! 算术、位运算与类型强制转换逻辑。
 
-use crate::heap::HeapObject;
+use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::Vm;
 use crate::value::{Value, ValueCase};
 
@@ -142,6 +142,23 @@ pub fn string_values_eq(a: &Value, b: &Value, heap: &[HeapObject]) -> bool {
     }
 }
 
+/// 包装实例数据槽读取（eq 纯堆面）：Ordinary + Dict 模式下的
+/// `[[NumberValue]]`/`[[BooleanValue]]`/`[[StringValue]]`。
+fn wrapper_data(heap: &[HeapObject], r: u32) -> Option<&Value> {
+    match heap.get(r as usize) {
+        Some(HeapObject::Ordinary {
+            props: OrdinaryProps::Dict { properties, .. },
+            ..
+        }) => properties
+            .iter()
+            .find(|(k, _)| {
+                k == "[[NumberValue]]" || k == "[[BooleanValue]]" || k == "[[StringValue]]"
+            })
+            .map(|(_, v)| v),
+        _ => None,
+    }
+}
+
 fn get_string_repr<'a>(
     idx: usize,
     heap: &'a [HeapObject],
@@ -172,6 +189,14 @@ pub fn eq(
         (ValueCase::Null, ValueCase::Undefined) | (ValueCase::Undefined, ValueCase::Null) => true,
         (ValueCase::Number(n), ValueCase::Object(r))
         | (ValueCase::Object(r), ValueCase::Number(n)) => {
+            // 包装实例（[[NumberValue]]/[[BooleanValue]] 数据槽）：解包比较
+            if let Some(w) = wrapper_data(heap, r.0) {
+                return match w.case() {
+                    ValueCase::Number(w2) => n == w2,
+                    ValueCase::Boolean(b) => n == f64::from(u8::from(b)),
+                    _ => false,
+                };
+            }
             if let Some(s) = get_string_repr(r.0 as usize, heap, constants) {
                 if let Ok(sn) = s.trim().parse::<f64>() {
                     return n == sn;
@@ -179,9 +204,28 @@ pub fn eq(
             }
             false
         }
+        (ValueCase::Boolean(b), ValueCase::Object(r))
+        | (ValueCase::Object(r), ValueCase::Boolean(b)) => {
+            // `true == new Boolean(true)`：包装解包后比较
+            if let Some(w) = wrapper_data(heap, r.0) {
+                return match w.case() {
+                    ValueCase::Number(n2) => f64::from(u8::from(b)) == n2,
+                    ValueCase::Boolean(b2) => b == b2,
+                    _ => false,
+                };
+            }
+            false
+        }
         (ValueCase::Object(a), ValueCase::Object(b)) => {
             if a == b {
                 true
+            }
+            // 包装实例解包一层后递归（`new String("hi") == "hi"`：
+            // [[StringValue]] 持堆字符串 → 与另一侧 repr 比较）
+            else if let Some(w) = wrapper_data(heap, a.0) {
+                eq(*w, right, heap, constants)
+            } else if let Some(w) = wrapper_data(heap, b.0) {
+                eq(left, *w, heap, constants)
             } else {
                 let s_a = get_string_repr(a.0 as usize, heap, constants);
                 let s_b = get_string_repr(b.0 as usize, heap, constants);

@@ -177,6 +177,7 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
     for m in ["toString", "valueOf"] {
         let f = vm.alloc_native_fn(&format!("Boolean.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(bool_p), m, Value::Object(f));
+        register_handler(registry, "Boolean.prototype", m, bool_method_dispatch);
     }
     let num_p = num_proto(vm);
     for m in [
@@ -638,6 +639,44 @@ fn str_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `Number.prototype.X.call(num, ...)` 形态分派（真实包大量 `len.toString(16)`、
 /// `(n).toFixed(2)` 等）。receiver 为原始值或 Number 包装对象。
+/// `Boolean.prototype.{toString,valueOf}` 分派（M7.2：此前 Boolean 方法
+/// 无 handler——`Boolean.prototype.toString()` 报 TypeError）。
+///
+/// receiver 取值序：原始布尔 → 自身；包装实例 → `[[BooleanValue]]` 槽；
+/// `Boolean.prototype` 自身（无 BooleanData）→ 规范缺省 `false`。
+pub(crate) fn bool_method_dispatch(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let full = super::pending_native_name();
+    let name = full
+        .rsplit("Boolean.prototype.")
+        .next()
+        .unwrap_or(&full)
+        .to_owned();
+    let this = super::current_receiver();
+    let v = match this.case() {
+        ValueCase::Boolean(b) => b,
+        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
+            Some(HeapObject::Ordinary { .. }) => vm
+                .own_value(r.0 as usize, "[[BooleanValue]]")
+                .and_then(|v| match v.case() {
+                    ValueCase::Boolean(b) => Some(b),
+                    _ => None,
+                })
+                .unwrap_or(false),
+            _ => false,
+        },
+        _ => false,
+    };
+    match name.as_str() {
+        "toString" => Ok(Value::Object(
+            vm.alloc_string(if v { "true" } else { "false" }.to_owned()),
+        )),
+        "valueOf" => Ok(Value::Boolean(v)),
+        _ => Err(VmError::Thrown(Value::Object(vm.alloc_string(format!(
+            "Boolean.prototype.{name} is not a function"
+        ))))),
+    }
+}
+
 pub(crate) fn num_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let full = super::pending_native_name();
     let name = full

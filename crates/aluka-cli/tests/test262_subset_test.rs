@@ -28,6 +28,11 @@ var assert = {
   },
   isTrue: function(v, msg) { if (v !== true) throw new Error("assert.isTrue" + (msg ? ": " + msg : "")); },
   isFalse: function(v, msg) { if (v !== false) throw new Error("assert.isFalse" + (msg ? ": " + msg : "")); },
+  notSameValue: function(actual, expected, msg) {
+    if (actual === expected) {
+      throw new Error("assert.notSameValue: expected not to be " + expected + (msg ? " (" + msg + ")" : ""));
+    }
+  },
   sameType: function(a, b, msg) {
     if (typeof a !== typeof b) throw new Error("assert.sameType: " + typeof a + " vs " + typeof b + (msg ? ": " + msg : ""));
   },
