@@ -438,8 +438,15 @@
     被吞（错误传播缺失）当场修复，154/154 恢复全绿；648 测试 + GC 压力
     454 + conformance 差分 + jitbench 3/3 全绿；fib_bench 812.9→793.5ms
     （**M6.2 以来累计 1.059x**）。
-    剩余：多态桩（2~4 shape 计数数组）；JIT 扩容至调用/闭包/生成器/Try
-    全指令流（≈2~3 天，涉及调用约定与 GC 栈映射协同）——后续专项轮次继续。
+  - ✅ 切片三（20260912，ba320c2 + f305c00）：**CallMethod 分派链语义单源 +
+    JIT 接入方法调用**——2000 行内联分派链原样提取为
+    `Vm::call_method_dispatch`（解释器与 JIT 共用），JIT 编译器新增
+    `Op::CallMethod` 臂（vtable 通道 `jit_call_method`，实参 marshaling +
+    方法 IC 复用）；648 测试 + GC 压力 + test262 154 + conformance 差分 +
+    jitbench 3/3 全绿；当前窗口同条件配对 928.8→901.2ms（1.031x），
+    上午静默窗口 1.059x——口径修正登记于 20260912 §11。
+    剩余：JIT 调用族补全（New/MakeClosure/CallArgs 族）+ 多态桩；
+    生成器/Try 展开协议（切片四，多日）；1.5x 复合验收未达成，如实结转。
 
 ---
 
