@@ -354,6 +354,13 @@ fn call_ic_writeback(
         // SAFETY: cell 由 JIT 提供、单线程独占、本次调用存活
         unsafe { (*cell).state = aluka_jit::ctx::CallCell::NO_FAST }
     };
+    // NO_FAST 短路：同站点同被调已永久判定不可直调（机器守卫按位比对
+    // callee，被调变化时位不同自然重判），避免每次调用重复完整判定
+    //（递归调用密集负载上 writeback 本身是每调用开销）
+    // SAFETY: 同上
+    if unsafe { (*cell).state } == aluka_jit::ctx::CallCell::NO_FAST {
+        return;
+    }
     let ValueCase::Object(r) = to_vm_value(callee).case() else {
         return no_fast(cell);
     };

@@ -382,3 +382,16 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
 - 多态桩（2~4 shape 计数数组）；
 - 1.5x 复合验收：proptest 引擎口径 3.16x 达成、fib30 口径待上表机器直调
   修通后复核——如实结转。
+
+## 15. 切片四续：NO_FAST 短路微优化（20260912 续）
+
+- `call_ic_writeback` 增加 NO_FAST 短路：同站点同被调已判定不可直调后，
+  不再每次调用重复完整资格判定（heap 读 + jit_entry_for + 模板查表）——
+  递归调用密集负载上 writeback 是每调用开销；fib30 探针 2224→2049ms（~8%）；
+- e2e fib(10)=55 保持；workspace 649/0、test262 154/154、GC 压力 212/0、
+  clippy 0 全绿；
+- 剩余大头（结构性）：uses_upvalues=true 的机器级 cell 直调需要
+  ①CallCell 扩展 upvals_ptr/upvals_len + 闭包代数字段（HeapObject::Closure
+  增加分配代数，防堆槽复用陈旧指针）②emit_call 快路径换装上值表指针
+  ③jit_load_upvalue 改从 ctx 机器可寻址表读——完整方案与根因链已登记
+  （§13/§14），需独立会话以真实证据闭环实施。
