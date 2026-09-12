@@ -13,7 +13,7 @@ use crate::lexer::{Lexer, Token, TokenKind};
 pub struct Parser<'src> {
     tokens: Vec<Token>,
     pos: usize,
-    _src: &'src str,
+    src: &'src str,
     /// 行号游标：已统计到 `line_pos` 字节处，对应 `line_no` 行（LCOV 行覆盖）。
     line_pos: usize,
     line_no: u32,
@@ -66,7 +66,7 @@ impl<'src> Parser<'src> {
         Self {
             tokens,
             pos: 0,
-            _src: src,
+            src,
             line_pos: 0,
             line_no: 1,
             errors: Vec::new(),
@@ -77,7 +77,7 @@ impl<'src> Parser<'src> {
     fn cur_line(&mut self) -> u32 {
         let start = self.peek().start;
         if start >= self.line_pos {
-            let nl = self._src[self.line_pos..start]
+            let nl = self.src[self.line_pos..start]
                 .bytes()
                 .filter(|b| *b == 0x0A)
                 .count() as u32;
@@ -209,6 +209,28 @@ impl<'src> Parser<'src> {
     }
 
     /// 跳过可选的分号
+    /// 下一 token 之前是否出现行终止符（ASI 判定用：扫描上一 token 结束
+    /// 到当前 token 起点之间的源码间隙）。
+    fn nl_before_current(&self) -> bool {
+        if self.pos == 0 || self.pos >= self.tokens.len() {
+            return false;
+        }
+        let prev = &self.tokens[self.pos - 1];
+        let cur = &self.tokens[self.pos];
+        let prev_end = prev.start + prev.text.len();
+        if prev_end > cur.start {
+            return false; // LexError 等跨界载体，保守按无换行
+        }
+        self.src[prev_end..cur.start].contains(['\n', '\r', '\u{2028}', '\u{2029}'])
+    }
+
+    /// 语句收尾分号：**宽松吞掉可选 `;`**。
+    ///
+    /// 严格 ASI（限换行/`}`/EOF 三情形）在 20260912 轮三实测净负：
+    /// 误伤 > 修复（hashbang 未剥离、`/` 除法-正则歧义、空文本 token 等
+    /// 前置缺陷被暴露为误报，t262 基线 657→642）。回退宽松态；严格化
+    /// 需先补齐 hashbang 剥离与语句模型清理后再启用（nl_before_current
+    /// 助手保留备用）。
     fn eat_semi(&mut self) {
         self.match_punct(";");
     }
@@ -468,6 +490,10 @@ impl<'src> Parser<'src> {
         }
 
         if self.match_keyword("throw") {
+            // 受限产生式：throw 与表达式之间不得出现行终止符
+            if self.nl_before_current() {
+                self.record_error("SyntaxError: throw 与表达式之间不允许换行".to_owned());
+            }
             let expr = self.parse_expr();
             self.eat_semi();
             return Self::at(line, Stmt::Throw(expr));
@@ -483,7 +509,7 @@ impl<'src> Parser<'src> {
                 || self.check_punct("}")
                 || self.peek().kind == TokenKind::Eof
                 || (self.pos < self.tokens.len()
-                    && self._src[kw_start..self.peek().start].contains('\n'));
+                    && self.src[kw_start..self.peek().start].contains('\n'));
             let expr = if terminated {
                 None
             } else {
@@ -603,8 +629,10 @@ impl<'src> Parser<'src> {
             );
         }
 
-        // 默认作为表达式语句
-        let expr = self.parse_expr();
+        // 默认作为表达式语句（逗号运算符序列：`a = 1, b = 2;` 是单个
+        // 逗号表达式——此前 parse_expr 停在逗号、宽松 eat_semi 以
+        // 「拆成多条语句」掩盖，ASI 严格化后必须整串解析）
+        let expr = self.parse_expr_sequence();
         self.eat_semi();
         Self::at(line, Stmt::Expr(expr))
     }
@@ -1746,7 +1774,7 @@ impl<'src> Parser<'src> {
     fn parse_regexp_literal(&mut self) -> Option<Expr> {
         let tok = self.peek();
         let start = tok.start;
-        let bytes = self._src.as_bytes();
+        let bytes = self.src.as_bytes();
         if start >= bytes.len() || bytes[start] != b'/' {
             return None;
         }
@@ -1780,14 +1808,14 @@ impl<'src> Parser<'src> {
             return None;
         }
 
-        let pattern = self._src[start + 1..idx].to_owned();
+        let pattern = self.src[start + 1..idx].to_owned();
         idx += 1; // 消耗闭合 '/'
 
         let flags_start = idx;
         while idx < bytes.len() && bytes[idx].is_ascii_alphabetic() {
             idx += 1;
         }
-        let flags = self._src[flags_start..idx].to_owned();
+        let flags = self.src[flags_start..idx].to_owned();
 
         // 推进 tokens 游标至 idx 之后
         while self.pos < self.tokens.len() && self.tokens[self.pos].start < idx {

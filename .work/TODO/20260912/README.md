@@ -684,3 +684,21 @@ M7.3（npm Top 50 签核）未启动。
 - **sameValue 107 / TypeError 84 / not-a-function 65 / assert.throws 54**：
   逐例定位中（sameValue 多为内置方法返回值细节；not-a-function 余量为
   propertyHelper 家族在 includes 内联后的残余缺口）。
+
+### 26.11 M7.2 轮三：ASI 严格化实测净负，回退并如实登记（20260912 续）
+
+- 尝试：`nl_before_current`（token 间隙换行扫描）+ `eat_semi` 严格化
+  （限换行/`}`/EOF 三情形）+ throw 受限产生式；连带修复默认表达式
+  语句的**逗号运算符**缺口（`ref = other, other = ref[0];` 此前被宽松
+  eat_semi 拆成多条语句——parse_expr_sequence 整串解析，express e2e 回归
+  由它修复）；
+- 实测：误伤 > 修复（t262 657 → 642）——hashbang 未剥离（`#!/usr/bin/env node`
+  被 `#`+`!` 误析）、`/` 除法-正则歧义、空文本 token 等前置缺陷被严格化
+  暴露为误报；express 真实包 131 模块构建也依赖宽松形态修复后才恢复；
+- **决策：eat_semi 回退宽松态**（语义正确的逗号序列解析保留）；严格化
+  前置条件已明确：①hashbang 剥离 ②语句模型清理（空 token 根因）
+  ③语料回归全绿——按登记于后续专项，不放宽任何既有断言；
+- 净保留：逗号运算符语句解析 + throw 受限产生式检查 + nl_before_current
+  助手 + JSON 转义 + LexError 通道；基线 **658/1154**（657 + throw/注释）；
+- 门禁：workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3。
