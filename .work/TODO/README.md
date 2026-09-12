@@ -475,8 +475,12 @@
     位运算族（7）/StoreGlobal 接入 JIT——操作码覆盖 66 → 78/106；
     连带修复词法器缺失 |=/&=/^= 复合赋值 token 的引擎级缺陷
     （复合赋值被静默退化为裸位运算）。
+  - ✅ 指令流扩容第三批（20260912）：StoreUpvalue（机器可寻址上值表
+    直写，单元格共享语义保持）/CloseUpvalues（安全无操作）/访问器注册
+    4 变体/SpreadObject/EnumKeys——操作码覆盖 78 → 86/106。
   - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure 机器
-    直调、生成器（Yield/Await）/Try 族展开协议。
+    直调、生成器（Yield/Await）/Try 族展开协议、OptionalJump/JmpNullishKeep
+    栈模型分歧处理。
 
 ---
 
