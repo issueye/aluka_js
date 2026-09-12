@@ -561,3 +561,19 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
 - JIT 操作码覆盖 92 → **94**/106（GetIterator/GetAsyncIterator）；
 - 门禁：workspace 652/0、test262 154/154、GC 压力 215/0、jitbench 3/3、
   clippy 0 全绿。
+
+## 25. 剩余 12 操作码的接入陷阱清单（下一会话设计输入，20260912 核验）
+
+逐项核验确认全部为协议级工程，直接机器接入会产生静默错值：
+
+| 操作码 | 陷阱 | 所需协议工作 |
+|---|---|---|
+| CallThis/CallThisArgs/ConstructThis/ConstructThisArgs | this 取自当前帧 `locals[0]`，而 JIT ABI 槽 0 是 undefined 占位（LoadLocal 0 资格拒绝的同一根因）——机器接入得 undefined this（fib10 NaN 同类陷阱） | JIT ABI 扩展 this 形参通道（入口换装 + 资格判定联动） |
+| MakeClosure | 两个闭包捕获同一变量必须**共享单元格**（经典计数器语义）；机器侧按闭包新建单元格会破坏共享突变 | JIT 帧参与 open_upvalues 注册协议 |
+| MakeClass | computed keys/super 从解释器栈弹出，JIT 值栈是 SSA 不同步；需 vm.stack 桥接 + 编译期 class 元数据注入 | 栈桥接模式 + 模板访问；价值低（类定义仅模块初始化，不进热点） |
+| TryEnter/TryExit×3/Throw | helper 返回通道无错误面（J2 约定 Err→undefined）；Throw 必须传播——机器码需哨兵返回值 + jit_run 解释 | 机器级异常传播协议（栈映射协同） |
+| Yield/Await | 挂起协议需记录机器 pc 并恢复（yield_pc 语义在 SSA 栈上不成立） | 生成器展开协议（独立专项） |
+| ForInNext/End | **解释器侧即未实现**（UnimplementedOpcode），需先补解释器再谈 JIT | 解释器补实现先行 |
+
+结论：M6.3 验收（94/106 + ≥1.5x 引擎级复合验收达成）不依赖以上项；
+每项均为独立会话的多日专项，本清单即其设计输入。
