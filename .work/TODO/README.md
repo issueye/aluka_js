@@ -471,6 +471,10 @@
     array_push/unary_plus 共 12 操作码接入 JIT（vtable helper 单源）——
     操作码覆盖 52 → 66/106；连带修复 delete_property 缺 Array 分支的
     既有引擎缺陷（delete arr[i] 静默无效），双引擎 e2e 逐字节一致。
+  - ✅ 指令流扩容第二批（20260912，c767993）：ReturnUndef/DelElem/
+    位运算族（7）/StoreGlobal 接入 JIT——操作码覆盖 66 → 78/106；
+    连带修复词法器缺失 |=/&=/^= 复合赋值 token 的引擎级缺陷
+    （复合赋值被静默退化为裸位运算）。
   - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure 机器
     直调、生成器（Yield/Await）/Try 族展开协议。
 
