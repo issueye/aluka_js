@@ -845,3 +845,14 @@ $ cargo test -p aluka-jit --release --test jitbench
   当前正确，但 join 空串形态需复核）。
 - 临时探针已全部移除；workspace 652/0、GC 压力 215/0、clippy 0、
   test262 手写 154 硬门禁 ✓。
+
+## 27. M7.2 轮十一：数组方法面 fallback 落原型链（20260913）
+
+- CALL_METHOD 数组方法面大 match 的 `_ => Ok(Undefined)` 改为
+  `get_method_ic` + `invoke_callable`——未内置的数组方法（用户对
+  Array.prototype 的扩展如 `foo`、被覆盖的 `toString`）落到原型链
+  解析并调用，不再吞成 undefined；
+- e2e：`Array.prototype.foo`/`toString` 覆盖（FOO/OVR ✓）、
+  Object.prototype.constructor 调用、`Object()` 直调全通；
+- 门禁：workspace 652/0、conformance 差分 833/878→含 invalid 全一致、
+  GC 压力 215/0、jitbench 3/3、clippy 0 全绿。

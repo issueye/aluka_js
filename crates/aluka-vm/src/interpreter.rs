@@ -3661,19 +3661,16 @@ impl Vm {
                         let iter = self.alloc_array_iterator_kind(ObjectRef(idx as u32), kind);
                         Ok(iter)
                     }
-                    "toString" | "toLocaleString" => {
-                        let elems = self.array_elements(idx);
-                        let items: Vec<String> = elems
-                            .iter()
-                            .map(|e| match e {
-                                e if e.is_undefined() || e.is_null() => String::new(),
-                                v => self.format_value(*v),
-                            })
-                            .collect();
-                        let s = self.alloc_string(items.join(","));
-                        Ok(Value::Object(s))
+                    // "toString"/"toLocaleString" 不在此内置：落到原型链
+                    // （Array.prototype.toString 占位 → join 语义；用户覆盖
+                    // 后经 get_method_ic 原型链解析取新函数）
+                    _ => {
+                        // 内置数组方法未命中：原型链解析方法值并调用
+                        //（M7.2 修复——此前吞成 undefined，Array.prototype
+                        // 用户扩展全部失效）
+                        let m = self.get_method_ic(receiver, method_name, site)?;
+                        Ok(self.invoke_callable(m, receiver, args)?)
                     }
-                    _ => Ok(Value::Undefined),
                 }
             } else {
                 // 普通对象方法调用（原型方法绑定 IC）
