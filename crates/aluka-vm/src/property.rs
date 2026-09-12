@@ -326,7 +326,21 @@ impl Vm {
     }
 
     /// 读取属性（含原型链查找、getter 触发与数组元素读取）。
+    /// 属性读取（调试包装：ALUKA_GETPROP_DEBUG 时打印 key 与结果）。
     pub fn get_property(&mut self, obj: Value, key: &str) -> Result<Value, VmError> {
+        let __dbg = std::env::var("ALUKA_GETPROP_DEBUG").is_ok();
+        let r = self.get_property_inner(obj, key);
+        if __dbg {
+            let v = match &r {
+                Ok(v) => format!("{v:?}"),
+                Err(e) => format!("Err {e:?}"),
+            };
+            eprintln!("[getprop] key={key} -> {v}");
+        }
+        r
+    }
+
+    pub(crate) fn get_property_inner(&mut self, obj: Value, key: &str) -> Result<Value, VmError> {
         // Proxy 对象：经 get trap 派发（含 revoked 校验与 target 回退）
         if let Some(r) = obj.as_object() {
             if self.proxy_parts(r).is_some() {

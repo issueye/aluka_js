@@ -830,3 +830,18 @@ $ cargo test -p aluka-jit --release --test jitbench
 - parse 负例大桶（async-function early errors / ASI 严格化 / 行终结符）——
   按登记推进，不在本轮声称完成。
 
+
+### 26.18 轮十遗留项登记：CALL_METHOD toString 覆盖路径追踪（下一轮首项）
+
+- 现象确认：`Array.prototype.toString = Object.prototype.toString; x.toString()`
+  node → [object Array]，aluka → ""（空串，内置 join 语义）；
+- 探针证据：ALUKA_METHOD_IC_DEBUG 探针置于 get_method_ic 慢路径**无输出**——
+  CALL_METHOD 走到了分派链更早的某个 toString 臂（非数组原型 IC 通道），
+  或 CALL_METHOD 的 GetProp+Call 分解形态未经过预期路径；
+- 下一轮动作：①以 CALL_METHOD 分派链逐臂断点定位 toString 实际执行臂；
+  ②在该臂补覆盖检测（属性值 native name ≠ "Array.prototype.toString"
+  时走通用 invoke）；③同步给 Object.prototype.toString 补 Array this 的
+  IsArray 分支（`Object.prototype.toString.call([1,2])` → [object Array]
+  当前正确，但 join 空串形态需复核）。
+- 临时探针已全部移除；workspace 652/0、GC 压力 215/0、clippy 0、
+  test262 手写 154 硬门禁 ✓。

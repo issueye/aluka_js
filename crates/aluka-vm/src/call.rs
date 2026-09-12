@@ -173,6 +173,14 @@ impl Vm {
                 Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
                 _ => None,
             };
+            if std::env::var("ALUKA_CALL_DEBUG").is_ok() {
+                let nm = match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::NativeFn { name, .. })
+                    | Some(HeapObject::NativeCtor { name, .. }) => name.clone(),
+                    _ => "<non-native>".to_owned(),
+                };
+                eprintln!("[call-dbg] invoke_callable receiver-fn name={nm}");
+            }
             if ctor_name.as_deref() == Some("RegExp") {
                 return self.construct_regexp(args);
             }
