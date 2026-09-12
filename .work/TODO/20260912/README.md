@@ -349,3 +349,36 @@ $ cargo fmt --all --check / clippy -D warnings     → 通过 / 0 error
 列为切片四首项，诊断资产（探针 + jit_compiled_count/jit_slot_summary）
 已入库可复现。
 ```
+
+## 14. 切片四首项实施：直调资格语义修正 + 统一快速分派（20260912 续）
+
+### 14.1 实现
+
+| 项 | 内容 |
+|---|---|
+| 资格语义修正 | 直调资格从「闭包未捕获单元格」（is_empty）修正为「**编译产物不读上值**」（uses_upvalues=false，jit_entry_for 既有守卫）——闭包捕获单元格（Go/Rust 前端顶层函数声明恒捕获模块环境）与机器码是否读上值是两件事；`jit_call` 与 `call_ic_writeback` 两处同步修正 |
+| 统一快速分派 | `jit_direct_call` 对**所有已编译闭包**生效：携带闭包真实上值表进 jit_run（帧语义完备：SavedFrameState 保存恢复 + GC 根保持）——uses_upvalues=true 的被调（递归自引用等体读外层绑定）由此安全直达机器码，省去 try_dispatch/FrameGuard/调用链登记 |
+| 测试更新 | 旧不变量测试更新为 `callee_with_unread_upvalues_direct_called_after_first`（fallbacks==1：首轮登记后机器直调）；新增 `callee_reading_upvalues_stays_on_helper`（uses_upvalues=true → 每轮 helper 换装真实上值表，结果 7*Σi 正确）——新旧安全面双向覆盖 |
+
+### 14.2 验证（真实输出）
+
+```text
+$ e2e fib(10)（debug + release 双构建）           → 55（修复前 NaN）
+$ cargo test --workspace --all-features          → 649 passed, 0 failed
+$ cargo test -p aluka-jit --test regression      → 25 passed（含新增 2 例）
+$ cargo test -p aluka-cli --test test262_subset_test → 154/154
+$ cargo test -p aluka-cli --test conformance_node22_test → 1 passed（28.57s）
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm       → 212 passed, 0 failed
+$ cargo test -p aluka-jit --release --test jitbench → 3/3
+$ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
+```
+
+### 14.3 剩余（如实）
+
+- uses_upvalues=true 函数（如源码前端递归 fib）的 cell 机器直调仍被正确排除
+  （fib30.js 端到端 ~2.2s）——需要 CallCell 扩展机器可寻址上值表指针
+  + 闭包代数守卫（防堆槽复用后的陈旧指针），即调用约定协同的实质工程；
+- super 族 / MakeClosure / 生成器（Yield/Await）/ Try 族展开协议；
+- 多态桩（2~4 shape 计数数组）；
+- 1.5x 复合验收：proptest 引擎口径 3.16x 达成、fib30 口径待上表机器直调
+  修通后复核——如实结转。

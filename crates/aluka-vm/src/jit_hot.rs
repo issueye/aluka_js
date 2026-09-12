@@ -223,13 +223,19 @@ impl Vm {
         let ValueCase::Object(r) = callee.case() else {
             return None;
         };
-        // 注意：直调只换常量池，**不换装上值表/帧寄存器**（jit_run 才做），
-        // 因此被调必须是「体不读上值且闭包未捕获单元格」——放宽捕获条件
-        // 会触发机器级直调错值（fib10 NaN，见 20260912 §13 诊断）
-        let func_idx = match self.heap.get(r.0 as usize) {
+        // 切片四 P1（20260912 §14）：统一快速分派——**所有已编译闭包**
+        // 均经 jit_run 直达机器码，并把闭包捕获的**真实上值表**随调用
+        // 换装（jit_run 帧语义：SavedFrameState 保存/恢复 + GC 根保持）。
+        // - uses_upvalues=false：机器码不读上值，表内容无关——空表亦可；
+        // - uses_upvalues=true：体读外层绑定（如递归自引用），必须换装
+        //   真实单元格，传空表读到 undefined（fib10 NaN 教训——20260912
+        //   §13 曾因传空表 + 放宽资格产生错值，本处按真实上值修复）。
+        // 相比 invoke_callable 路径，省去 try_dispatch 尝试、FrameGuard、
+        // 调用链登记与函数查表——递归调用密集负载的主要回退开销。
+        let (func_idx, upvalues) = match self.heap.get(r.0 as usize) {
             Some(crate::heap::HeapObject::Closure {
                 func_idx, upvalues, ..
-            }) if upvalues.is_empty() => *func_idx,
+            }) => (*func_idx, upvalues.clone()),
             _ => return None,
         };
         let jit = match self.jit_slots.get(func_idx) {
@@ -238,7 +244,7 @@ impl Vm {
             _ => return None,
         };
         let num_params = self.module_functions.get(func_idx)?.num_params as usize;
-        Some(self.jit_run(func_idx, &jit, args, num_params, Vec::new()))
+        Some(self.jit_run(func_idx, &jit, args, num_params, upvalues))
     }
 
     /// 活跃 JIT 帧数（`0` = 不在 JIT 帧内，GC 可正常回收）。

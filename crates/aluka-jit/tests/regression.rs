@@ -717,10 +717,14 @@ fn uncompiled_callee_stays_on_helper_path() {
     );
 }
 
-/// 带上值的被调闭包：不得原生直调（直调不建帧、无处安装上值表），
-/// 全程走 helper 且结果正确。
+/// 带上值（但体不读上值，uses_upvalues=false）的被调闭包：切片四 P1 后
+/// 首轮回退 helper 登记 CallCell，其余轮次机器直调——机器码不含
+/// LoadUpvalue，不会碰调用方安装的上值表，结果仍逐位正确。
+///
+/// （旧不变量「捕获即禁直调」由 P1 修复取代：闭包捕获单元格与
+/// 机器码是否读上值是两件事，见 20260912 §13/§14 诊断。）
 #[test]
-fn callee_with_upvalues_never_direct_called() {
+fn callee_with_unread_upvalues_direct_called_after_first() {
     use aluka_bytecode::BytecodeModule;
     let rounds = 100.0;
     let caller = call_loop(rounds);
@@ -753,8 +757,63 @@ fn callee_with_upvalues_never_direct_called() {
         "带上值被调结果仍正确"
     );
     assert_eq!(
+        fallbacks, 1,
+        "首轮登记 CallCell 后其余轮次机器直调，实际 {fallbacks}"
+    );
+}
+
+/// 体真读上值（uses_upvalues=true）的被调：机器直调会读到调用方上值表
+/// ——必须每轮回退 helper，经 invoke_function 换装真实上值表（切片四
+/// P1 的 fib10 NaN 教训的安全面），结果仍正确。
+#[test]
+fn callee_reading_upvalues_stays_on_helper() {
+    use aluka_bytecode::BytecodeModule;
+    let rounds = 100.0;
+    let caller = call_loop(rounds);
+    // 被调 `g(n) { return upval * n }`：含 LoadUpvalue → uses_upvalues=true
+    let callee = func(
+        "g",
+        vec![
+            Instr::new(Op::LoadUpvalue, 0),
+            Instr::new(Op::LoadLocal, 1),
+            Instr::new(Op::Mul, 0),
+            Instr::new(Op::Return, 0),
+        ],
+        vec![],
+        2,
+        1,
+    );
+    let module = BytecodeModule {
+        header_extras: Vec::new(),
+        version: 30,
+        functions: vec![caller.clone(), callee],
+        classes: Vec::new(),
+    };
+    let mut vm = Vm::new(0);
+    vm.load_module_for_test(&module);
+    let uv = aluka_vm::Upvalue(std::rc::Rc::new(std::cell::RefCell::new(
+        aluka_vm::Value::Number(7.0),
+    )));
+    let g = vm.alloc_closure_with_upvalues(1, vec![uv]);
+    vm.globals
+        .insert("g".to_owned(), aluka_vm::Value::Object(g));
+    warm_up(&mut vm, 1);
+
+    let consts = Rc::new(caller.constants.clone());
+    let mut ctx = vm.build_jit_ctx(&consts);
+    let j = jit_compile(&caller, &ctx.vtable).expect("编译 call_loop");
+    let before = vm.jit_call_fallbacks();
+    let r = j.call_ctx(&mut ctx, &[]);
+    let fallbacks = vm.jit_call_fallbacks() - before;
+    // upval=7 → Σ 7*i = 7 * rounds*(rounds+1)/2
+    assert_eq!(
+        aluka_jit::valbox::unbox_number(r),
+        3.5 * rounds * (rounds + 1.0),
+        "读上值被调经真实上值表结果正确"
+    );
+    assert_eq!(
         fallbacks, rounds as u64,
-        "带上值闭包每轮都必须走 helper，实际 {fallbacks}"
+        "读上值被调每轮都必须走 helper 换装上值表，实际 {fallbacks}"
     );
 }
 

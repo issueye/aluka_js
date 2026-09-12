@@ -357,14 +357,16 @@ fn call_ic_writeback(
     let ValueCase::Object(r) = to_vm_value(callee).case() else {
         return no_fast(cell);
     };
+    // 直调资格 = 编译产物不读上值（jit_entry_for 的 uses_upvalues 守卫）；
+    // 闭包捕获了哪些单元格无关——机器码不含 LoadUpvalue 就不会碰调用方
+    // 安装的上值表（切片四 P1：upvalues.is_empty() 判定曾把 Go/Rust 前端
+    // 顶层函数全部排除在直调之外，fib30 269 万次调用全走 helper 回退）
     let func_idx = match vm.heap.get(r.0 as usize) {
-        Some(HeapObject::Closure {
-            func_idx, upvalues, ..
-        }) if upvalues.is_empty() => *func_idx,
+        Some(HeapObject::Closure { func_idx, .. }) => *func_idx,
         _ => return no_fast(cell),
     };
     let Some(entry) = vm.jit_entry_for(func_idx) else {
-        // 尚未编译（或已被拒）：本次不登记；被调升级后下次 CALL 再判定
+        // 尚未编译（或已被拒 / 编译产物读上值）：本次不登记
         return no_fast(cell);
     };
     let Some(tmpl) = vm.module_functions.get(func_idx) else {
