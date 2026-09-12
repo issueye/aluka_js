@@ -481,9 +481,10 @@
   - ✅ 指令流扩容第四批（20260912）：OptionalJump（`?.` 短路，select 合并
     无编译期分歧）/JmpNullishKeep（`??` 短路）/ArraySpread（迭代物化 +
     写屏障）——操作码覆盖 86 → 89/106。
-  - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure 机器
-    直调、生成器（Yield/Await）/Try 族展开协议、MakeClass/MakeRegexp 等
-    零散操作码。
+  - ✅ 指令流扩容第五批（20260912）：SetPropComputedObj/CallMethodArgs/
+    MakeRegexp——操作码覆盖 89 → 92/106。
+  - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure/MakeClass
+    机器直调、生成器（Yield/Await）/Try 族展开协议、GetIterator 抽取。
 
 ---
 
