@@ -234,6 +234,13 @@ impl Vm {
         if let (ValueCase::Number(a), ValueCase::Number(b)) = (left.case(), right.case()) {
             return Value::Number(a + b);
         }
+        // BigInt + BigInt：十进制大数加法（M7.2 修复：此前落入对象拼接，
+        // `1n + 2n` 得 "12"——字符串连接而非算术）
+        if let (Some(lb), Some(rb)) = (self.bigint_text(&left), self.bigint_text(&right)) {
+            let dec = crate::bigdec::bigint_dec_add(&lb, &rb);
+            let b_ref = self.alloc_bigint(dec);
+            return Value::Object(b_ref);
+        }
         let is_left_str = if let Some(r) = left.as_object() {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         } else {
@@ -273,6 +280,17 @@ impl Vm {
         // `null + 1` → NaN（Node 1）——布尔/null 参与算术的常见写法全错。
         // `undefined + 1` 仍为 NaN（规范如此）。
         Value::Number(self.to_number_value(left) + self.to_number_value(right))
+    }
+
+    /// 值为 BigInt 堆对象时取其十进制文本。
+    fn bigint_text(&self, v: &Value) -> Option<String> {
+        match v.case() {
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::BigInt(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// 值是否为 Buffer 实例（`_isBuffer` 标记）。

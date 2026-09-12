@@ -3718,7 +3718,8 @@ impl Vm {
                             self.stack.push(Value::Object(s_ref));
                         }
                         Constant::BigInt(b) => {
-                            let b_ref = self.alloc_bigint(b.clone());
+                            let b_ref =
+                                self.alloc_bigint(crate::bigdec::normalize_bigint_literal(b));
                             self.stack.push(Value::Object(b_ref));
                         }
                         Constant::Bool(b) => {

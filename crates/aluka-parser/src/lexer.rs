@@ -504,6 +504,22 @@ impl<'src> Lexer<'src> {
                     .chars()
                     .filter(|&c| c != '_')
                     .collect();
+                // BigInt 后缀（`0xFFn`）：进制数字循环按 alphanumeric 吞字，
+                // 后缀 `n`/`N` 落在 raw_digits 尾部（十六进制下 n 非法数字位，
+                // 二/八进制同）——剥后缀并以 `0x` 形态整串作 BigInt 载荷；
+                // VM 物化 Constant::BigInt 时经 BigNat 归一化十进制
+                //（M7.2 修复：此前 i64 溢出得 0，大十六进制 BigInt 全损坏）
+                let bigint_payload = raw_digits
+                    .strip_suffix('n')
+                    .or_else(|| raw_digits.strip_suffix('N'))
+                    .map(|digits| format!("0{}{digits}", radix_char as char));
+                if let Some(payload) = bigint_payload {
+                    return Token {
+                        kind: TokenKind::BigInt(payload),
+                        text: self.src[start..self.pos].to_owned(),
+                        start,
+                    };
+                }
                 let val = match radix_char {
                     b'x' | b'X' => i64::from_str_radix(&raw_digits, 16),
                     b'b' | b'B' => i64::from_str_radix(&raw_digits, 2),

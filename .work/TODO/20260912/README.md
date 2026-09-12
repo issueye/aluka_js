@@ -610,3 +610,43 @@ $ 分层流水线不变：
 - ⏳ 跨平台执行验证：Windows 验证通过；Linux/macOS 需 CI 矩阵
   （本环境无交叉工具链与远端 CI 工作流），**登记为待 CI 补验项**，
   不在本机声称跨平台完成。
+
+### 26.4 M7.2 启动：官方 test262 语料导入 + 基线（20260912 续）
+
+| 项 | 内容 |
+|---|---|
+| 导入器 | `tools_m72_import.py`：从浅克隆官方 test262（tc39，5.7 万文件）按 50 个选域（语言核心 types/expressions/literals/statements + 内建 Math/JSON/Number/Object/Array/String/Symbol/RegExp/Map/Set/Promise 等）导入 **1000 例**（m72- 前缀；跳过 module/raw/async/worker/CanBlock/动态 includes 形态）；每例内联官方 harness（assert/sta/propertyHelper/compareArray/fnGlobalObject/deepEqual/isConstructor）+ isTrue/isFalse 兼容垫片；`M72_PRELOAD` 环境变量门控预载 |
+| 语料规模 | **1154 例**（手写 154 + 官方导入 1000）——达成 M7.2 「≥1000 例」规模指标 |
+| 首轮基线 | **642/1154**（无预载口径；预载口径 607——官方 assert.js 语义与 runner 最小 harness 尚有冲突，如 assert.throws 的 instanceof 严格化） |
+| 双层门禁 | test262 runner 改为分层断言：手写语料 154 例**硬性全过**（回归门禁）；官方导入语料断言基线下限 480/1000，随引擎修复逐级上调至 100%（M7.2 验收线） |
+
+### 26.5 连带发现并修复的两个 BigInt 引擎缺陷（官方语料首轮暴露）
+
+1. **进制 BigInt 字面量损坏**：`0xFFn`/`0b1010n`/`0o777n` 全部求值为 0——
+   进制数字循环按 alphanumeric 吞掉 `n` 后缀，且 i64 溢出静默得 0；
+   修复：剥 `n`/`N` 后缀、整串 `0x…` 载荷下发、VM 物化时经 BigNat
+   （base-2^32）按 radix 折叠为十进制归一化；
+2. **BigInt 加法是字符串拼接**：`1n + 2n` → "12"——add_values 无 BigInt
+   分支，落入「对象 → ToPrimitive 拼接」；修复：BigNat 补
+   add_small/add_big/sub_big/cmp_big，新增 `bigint_dec_add`
+   （同号相加/异号相减取大符），`add_values` 增 BigInt+BigInt 分支；
+   此前官方语料中 654 基线的部分「通过」实为 0===0 假阳性——真语义
+   落地后基线如实回落至 642。
+
+### 26.6 门禁（真实输出）
+
+```text
+$ cargo test --workspace --all-features          → 652 passed, 0 failed
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm       → 215 passed, 0 failed
+$ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
+$ cargo test -p aluka-cli --test test262_subset_test → 642/1154（手写 154/154 硬门禁 ✓）
+$ M7.1 验证组（见 §26.2）                        → 全部通过
+```
+
+### 26.7 M7.2 剩余（如实）
+
+512 例官方语料失败分桶：SyntaxError（解析器缺口，~100）、not-a-function
+（预载 harness 语义冲突与 verify* 家族，~113）、Math 缺口
+（atan2/asin/acos/clz32 等，~18）、OOM（Array 超长构造应 RangeError，6）、
+BigInt mul/div/cmp 覆盖、其余零散——每桶为独立修复轮，按总表登记推进。
+M7.3（npm Top 50 签核）未启动。

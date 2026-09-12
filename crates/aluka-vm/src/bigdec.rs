@@ -27,14 +27,14 @@ const DEC_CHUNK: u32 = 1_000_000_000;
 
 /// 基 2^32 小端无符号大整数（仅本模块所需的极简实现，非通用大数库）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct BigNat {
+pub(crate) struct BigNat {
     /// 小端 32 位字；规范化为「最高字非零」（零值为空表）。
     words: Vec<u32>,
 }
 
 impl BigNat {
     /// 由 `u64` 构造。
-    fn from_u64(v: u64) -> Self {
+    pub(crate) fn from_u64(v: u64) -> Self {
         let mut words = vec![v as u32];
         if v >> 32 != 0 {
             words.push((v >> 32) as u32);
@@ -43,12 +43,12 @@ impl BigNat {
     }
 
     /// 是否为零。
-    fn is_zero(&self) -> bool {
+    pub(crate) fn is_zero(&self) -> bool {
         self.words.is_empty()
     }
 
     /// `self *= m`（`m` 为单字乘数，逐字 64 位累加）。
-    fn mul_small(&mut self, m: u32) {
+    pub(crate) fn mul_small(&mut self, m: u32) {
         let mut carry: u64 = 0;
         for w in &mut self.words {
             let v = u64::from(*w) * u64::from(m) + carry;
@@ -87,7 +87,7 @@ impl BigNat {
     }
 
     /// `self /= d`（`d != 0`），返回余数；商就地规范化（去高位零字）。
-    fn divmod_small(&mut self, d: u32) -> u32 {
+    pub(crate) fn divmod_small(&mut self, d: u32) -> u32 {
         let mut rem: u64 = 0;
         for w in self.words.iter_mut().rev() {
             let cur = (rem << 32) | u64::from(*w);
@@ -101,7 +101,7 @@ impl BigNat {
     }
 
     /// 十进制字符串（无前导零；零值 → `"0"`）：反复 `divmod_small(10^9)` 取块。
-    fn to_decimal_string(&self) -> String {
+    pub(crate) fn to_decimal_string(&self) -> String {
         if self.is_zero() {
             return "0".to_owned();
         }
@@ -117,6 +117,161 @@ impl BigNat {
         }
         out
     }
+
+    /// `self += d`（`d < 32` 单字加数——十进制按位折叠用）。
+    pub(crate) fn add_small(&mut self, d: u32) {
+        let mut carry = d;
+        for w in &mut self.words {
+            let v = u64::from(*w) + u64::from(carry);
+            *w = v as u32;
+            carry = (v >> 32) as u32;
+            if carry == 0 {
+                return;
+            }
+        }
+        if carry != 0 {
+            self.words.push(carry);
+        }
+    }
+
+    /// `self += other`（逐字加 + 进位）。
+    pub(crate) fn add_big(&mut self, other: &BigNat) {
+        let n = self.words.len().max(other.words.len());
+        let mut carry: u64 = 0;
+        for i in 0..n {
+            let a = u64::from(self.words.get(i).copied().unwrap_or(0));
+            let b = u64::from(other.words.get(i).copied().unwrap_or(0));
+            let v = a + b + carry;
+            if i < self.words.len() {
+                self.words[i] = v as u32;
+            } else {
+                self.words.push(v as u32);
+            }
+            carry = v >> 32;
+        }
+        if carry != 0 {
+            self.words.push(carry as u32);
+        }
+    }
+
+    /// `self -= other`（要求 `self >= other`，借位逐字传播后规范化）。
+    pub(crate) fn sub_big(&mut self, other: &BigNat) {
+        let mut borrow: i64 = 0;
+        for i in 0..self.words.len() {
+            let a = i64::from(self.words[i]);
+            let b = i64::from(other.words.get(i).copied().unwrap_or(0));
+            let mut v = a - b - borrow;
+            if v < 0 {
+                v += 1 << 32;
+                borrow = 1;
+            } else {
+                borrow = 0;
+            }
+            self.words[i] = v as u32;
+        }
+        while self.words.last() == Some(&0) {
+            self.words.pop();
+        }
+    }
+
+    /// 绝对值比较：`Greater` = `self > other`。
+    pub(crate) fn cmp_big(a: &BigNat, b: &BigNat) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
+        match a.words.len().cmp(&b.words.len()) {
+            Ordering::Equal => {}
+            o => return o,
+        }
+        for i in (0..a.words.len()).rev() {
+            match a.words[i].cmp(&b.words[i]) {
+                Ordering::Equal => {}
+                o => return o,
+            }
+        }
+        Ordering::Equal
+    }
+}
+
+/// BigInt 字面量载荷归一化：进制前缀（`0x`/`0b`/`0o` + 可选负号）→
+/// 十进制串；已是十进制的原样返回（`alloc_bigint` 堆表示约定为十进制）。
+pub(crate) fn normalize_bigint_literal(s: &str) -> String {
+    let (neg, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, s),
+    };
+    let (radix, digits) =
+        if let Some(d) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+            (16u32, d)
+        } else if let Some(d) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+            (2u32, d)
+        } else if let Some(d) = rest.strip_prefix("0o").or_else(|| rest.strip_prefix("0O")) {
+            (8u32, d)
+        } else {
+            return s.to_owned();
+        };
+    let mut acc = BigNat::default();
+    for ch in digits.chars() {
+        if let Some(d) = ch.to_digit(radix) {
+            acc.mul_small(radix);
+            acc.add_small(d);
+        }
+    }
+    if neg && !acc.is_zero() {
+        format!("-{}", acc.to_decimal_string())
+    } else {
+        acc.to_decimal_string()
+    }
+}
+
+/// 十进制字符串加法（BigInt 运行时运算；支持可选负号——同号相加/异号
+/// 相减取大符；结果零规范为 "0"）。
+pub(crate) fn bigint_dec_add(a: &str, b: &str) -> String {
+    let (neg_a, mag_a) = strip_sign(a);
+    let (neg_b, mag_b) = strip_sign(b);
+    let mut x = dec_to_bignat(mag_a);
+    let mut y = dec_to_bignat(mag_b);
+    let neg = match (neg_a, neg_b) {
+        (false, false) => false,
+        (true, true) => true,
+        (false, true) | (true, false) => {
+            // 异号：|大| - |小|，符号随大者
+            match BigNat::cmp_big(&x, &y) {
+                std::cmp::Ordering::Equal => return "0".to_owned(),
+                std::cmp::Ordering::Greater => neg_a,
+                std::cmp::Ordering::Less => {
+                    std::mem::swap(&mut x, &mut y);
+                    neg_b
+                }
+            }
+        }
+    };
+    if neg_a == neg_b {
+        x.add_big(&y);
+    } else {
+        x.sub_big(&y);
+    }
+    if neg && !x.is_zero() {
+        format!("-{}", x.to_decimal_string())
+    } else {
+        x.to_decimal_string()
+    }
+}
+
+fn strip_sign(s: &str) -> (bool, &str) {
+    match s.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    }
+}
+
+fn dec_to_bignat(s: &str) -> BigNat {
+    let mut acc = BigNat::default();
+    for ch in s.chars() {
+        if let Some(d) = ch.to_digit(10) {
+            acc.mul_small(10);
+            acc.add_small(d);
+        }
+    }
+    acc
 }
 
 /// double 的**精确**十进制展开：`值 = ±0.digits × 10^point`。
