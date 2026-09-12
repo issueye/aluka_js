@@ -3663,6 +3663,15 @@ impl Vm {
                                 let ret = self.invoke_function(fi, receiver, args, uvs)?;
                                 Ok(ret)
                             } else {
+                                // NativeCtor 方法值（`Object.prototype.
+                                // constructor()` 等）：无 new 调用语义
+                                // 等价构造（Object()/Array() 等）
+                                if matches!(
+                                    self.heap.get(m_ref.0 as usize),
+                                    Some(HeapObject::NativeCtor { .. })
+                                ) {
+                                    return self.invoke_callable(method_val, receiver, args);
+                                }
                                 // 方法值不可解析为函数：按 JS 语义抛
                                 // TypeError（此前静默 undefined 掩盖缺陷）
                                 let desc = self.format_value(method_val);

@@ -236,6 +236,11 @@ impl Vm {
             if ctor_name.as_deref() == Some("Function") {
                 return self.construct_function(args);
             }
+            // Object()/Array() 无 new 直调语义等价 new（M7.2 修复：此前
+            // `Object()` 报 [function Function] is not a function——S15.2.1.1 族）
+            if matches!(ctor_name.as_deref(), Some("Object") | Some("Array")) {
+                return self.do_construct(callee, args);
+            }
             // `revoke()`：捕获的撤销闭包面（自有属性 `_revokes` 存 proxy 句柄；
             // 处理器签名无法拿到自身 fn 对象，故在此特判）
             if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {

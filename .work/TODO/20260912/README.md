@@ -711,3 +711,12 @@ M7.3（npm Top 50 签核）未启动。
 | **BigInt 字面量校验** | 进制分支：数字位必须属于进制（`0b2n`/`0o8n` 判死——此前 `to_digit().unwrap_or(0)` 静默容错）、分隔符不得居首/居尾/连续（`0b_1n`/`1__0n`）；十进制分支：指数+n 判死（`1e3n`——此前被当 "1e3" 字符串入堆）、传统八进制形态（`01n`）判死、分隔符位置同上 |
 | 效果 | test262 基线 653 → **680/1154**（+27：use-strict 族 ~24 + bigint 负例 ~10，部分负例此前被 node 校验划 INVALID） |
 | 门禁 | workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、express e2e ✓、jitbench 3/3 |
+
+### 26.14 M7.2 分桶修复轮六：Object/Array 无 new 直调 + NativeCtor 方法值路由（20260912 续）
+
+| 修复 | 内容 |
+|---|---|
+| **Object()/Array() 无 new 直调** | invoke_callable 的 NativeCtor 分支缺 Object/Array——`Object()` 报 [function Function] is not a function（heap 索引被误用作函数模板下标调用错函数）；补 do_construct 路由 |
+| **NativeCtor 方法值路由** | 分派链尾兜底不识别 NativeCtor 方法值——`Object.prototype.constructor()` 报错；补 NativeCtor → invoke_callable（无 new 构造语义） |
+| 效果 | test262 基线 680 → **687/1154**（S15.2.1.1 Object 族 ~7 例）；C 形态 `Object()()` 双引擎一致报错 |
+| 门禁 | workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、express e2e ✓、jitbench 3/3 |
