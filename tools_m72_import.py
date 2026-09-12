@@ -187,7 +187,11 @@ def main():
                 with open("tests/conformance/test262/harness_compat_shim.js", encoding="utf-8") as sf:
                     compat_shim = sf.read()
                 parts = [text]
-                extra = [load_harness(h) for h in DEFAULT_HARNESS] if os.environ.get("M72_PRELOAD") else []
+                extra = (
+                    [load_harness(h) for h in DEFAULT_HARNESS]
+                    if os.environ.get("M72_PRELOAD") != "0"
+                    else []
+                )
                 extra += [load_harness(inc) for inc in incs]
                 if extra:
                     # 内联在 frontmatter 之后（runner 剥 frontmatter 后先

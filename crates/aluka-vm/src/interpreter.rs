@@ -844,6 +844,14 @@ impl Vm {
         // 错误实例 instanceof TypeError 沿链命中——曾为 None 致 prototype 缺失）
         let proto = self.error_prototype;
         let c = self.alloc_native_ctor(name, proto);
+        // prototype.constructor 挂接：官方 assert.throws 用
+        // `thrown.constructor !== ExpectedCtor` 判定错误类型——缺此属性
+        // 会误判（M7.2 语料 JSON.parse 桶实测）
+        let _ = self.set_property(
+            Value::Object(proto.unwrap()),
+            "constructor",
+            Value::Object(c),
+        );
         self.ctor_cache.insert(name.to_owned(), c);
         Value::Object(c)
     }

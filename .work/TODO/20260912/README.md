@@ -856,3 +856,19 @@ $ cargo test -p aluka-jit --release --test jitbench
   Object.prototype.constructor 调用、`Object()` 直调全通；
 - 门禁：workspace 652/0、conformance 差分 833/878→含 invalid 全一致、
   GC 压力 215/0、jitbench 3/3、clippy 0 全绿。
+
+### 26.20 M7.2 分桶修复轮十二：Error 子类 prototype.constructor 挂接（20260913）
+
+- **根因**：`error_subclass_ctor`（SyntaxError/TypeError/RangeError 等
+  惰性单例）创建后未在 prototype 上挂 `constructor`——官方
+  assert.throws 用 `thrown.constructor !== ExpectedCtor` 判定错误类型，
+  JSON.parse 语法错误实例的 constructor 沿链找到 Error 构造器 → 判
+  "Expected a SyntaxError but got a Error" → Test262Error → 官方语料
+  JSON/assert.throws 桶全失败；
+- 修复：error_subclass_ctor 创建 ctor 后补
+  `prototype.constructor = ctor`；连带 syntax_error 错误实例挂
+  SyntaxError.prototype（instanceof 语义）；
+- 效果：test262 基线 793 → **824/1154**（JSON.parse 桶 15 例 +
+  assert.throws 相关批量转绿）；
+- 门禁：workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、
+  jitbench 3/3、express e2e ✓。

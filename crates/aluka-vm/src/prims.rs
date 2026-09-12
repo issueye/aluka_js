@@ -611,10 +611,19 @@ impl Vm {
     }
 
     /// 构造 `name === "SyntaxError"` 的错误实例并包装为 Thrown。
+    ///
+    /// 原型挂 `SyntaxError.prototype`（经 error_subclass_ctor 惰性单例）——
+    /// `e instanceof SyntaxError` 语义（M7.2 语料 JSON.parse 桶：曾挂
+    /// Error.prototype 致 instanceof 失败）。
     fn syntax_error(&mut self, msg: &str) -> VmError {
+        let ctor = self.error_subclass_ctor("SyntaxError");
         let err = self.alloc_error_instance(msg);
         let name = self.alloc_string("SyntaxError".to_owned());
         let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        let proto = self.get_property(ctor, "prototype").ok();
+        if let Some(ValueCase::Object(p)) = proto.map(|v| v.case()) {
+            self.set_prototype_of(Value::Object(err), Some(p));
+        }
         VmError::Thrown(Value::Object(err))
     }
 
