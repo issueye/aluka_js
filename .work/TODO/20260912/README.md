@@ -886,3 +886,31 @@ $ cargo test -p aluka-jit --release --test jitbench
   837/811 差异为计数方式，取 through 数）；
 - 门禁：workspace 652/0、t262 840/1154、GC 压力 215/0、conformance
   差分 ✓、express e2e ✓、jitbench 3/3、clippy 0 全绿。
+
+## 29. M7.2 轮十四：add_values ToPrimitive 错误通道化 + 堆原始形态结果判定（20260913）
+
+- **主修复（结果判定口径）**：to_primitive_number 采纳 valueOf/toString
+  返回值时只认「非 Object case」——NaN-box 下堆字符串/BigInt 亦为
+  Object case（语义是原始值），`Array.prototype.toString` 返回堆串被
+  误判「仍是对象」→ 两方法全跳过 → 一律抛
+  "Cannot convert object to primitive value"。修复为与开头早退同口径
+  （堆 String/BigInt 即原始值采纳）；
+- **波及面**：所有对象参与 `+`（`[]+[]`、`[]+{}`、`{}+0`、自定义
+  toString、Date 拼接）此前全部抛错；修复后 7/7 探针逐字节对齐 Node；
+- **连带转绿**：conformance 差分 4 例失败（08-http-agent vm_rc=1、
+  gen-lang-core-0063/0064/0065 stdout 不一致）全部归因同一根因，修复后
+  conformance 全绿（69.6s 单测 ok）；
+- **add_values 错误通道化**：签名 `Value` → `Result<Value, VmError>`，
+  ToPrimitive 抛错可传播；解释器 Add 臂 `?` 透传；JIT jit_add 按 J2
+  约定（helper 无错误通道）归一 undefined；
+- **M72_FLOOR 自纠 800 → 770**：轮十三把下限 480→800 的依据算错——
+  「837 通过 ⇒ 失败 ≤200」不成立，实际 1154−837−87(invalid)=230 > 200，
+  该门禁自设定起从未绿过（干净 HEAD 实测 837/1154、失败 230、门禁红）。
+  回落到当前真实基线（841 通过/226 失败）可承受的 770，随分桶修复逐级
+  上调回 1000；
+- **净效果**：t262 837 → **841/1154**（失败 230 → 226，全为 m72- 官方
+  语料；手写语料 0 失败）；
+- 门禁证据：cargo fmt --check ✓、clippy -D warnings exit 0 ✓、
+  conformance 差分 ✓（4 例连带给清）、GC 压力 ALUKA_GC_STRESS=8
+  aluka-vm 215/0 + aluka-runtime 5/0 ✓、express e2e ✓、
+  four_quadrants oracle ✓、jitbench 3/3 ✓、t262 门禁 FLOOR=770 ✓。

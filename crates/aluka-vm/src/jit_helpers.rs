@@ -195,7 +195,11 @@ pub unsafe extern "C" fn jit_alloc_ordinary(ctx: *mut JitCtx) -> u64 {
 pub unsafe extern "C" fn jit_add(ctx: *mut JitCtx, a: u64, b: u64) -> u64 {
     // SAFETY: 见模块文档
     let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
-    let r = vm.add_values(to_vm_value(a), to_vm_value(b));
+    let r = match vm.add_values(to_vm_value(a), to_vm_value(b)) {
+        Ok(v) => v,
+        // J2 错误约定：helper 无错误通道，抛错归一 undefined
+        Err(_) => Value::Undefined,
+    };
     refresh_heap(ctx, vm);
     from_vm_value(r)
 }

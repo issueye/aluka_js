@@ -1,5 +1,6 @@
 //! 算术、位运算与类型强制转换逻辑。
 
+use crate::VmError;
 use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::Vm;
 use crate::value::{Value, ValueCase};
@@ -289,20 +290,24 @@ impl Vm {
     }
 
     /// 执行加法运算（支持数值相加与 ECMAScript 字符串自动拼接）。
-    pub fn add_values(&mut self, left: Value, right: Value) -> Value {
+    pub fn add_values(&mut self, left: Value, right: Value) -> Result<Value, VmError> {
         // ToPrimitive 快路径：包装对象（`new Boolean/Number/String`）与 Date
         // 先解包为原始值，再走下方原始值/字符串拼接逻辑
         let left = self.wrapper_primitive(left).unwrap_or(left);
         let right = self.wrapper_primitive(right).unwrap_or(right);
+        // ToPrimitive(hint number)：普通对象按 valueOf → toString 序解包
+        //（M7.2 语料 `{valueOf:()=>1} + 1 === 2` 算术五则族）
+        let left = self.to_primitive_number(left)?;
+        let right = self.to_primitive_number(right)?;
         if let (ValueCase::Number(a), ValueCase::Number(b)) = (left.case(), right.case()) {
-            return Value::Number(a + b);
+            return Ok(Value::Number(a + b));
         }
         // BigInt + BigInt：十进制大数加法（M7.2 修复：此前落入对象拼接，
         // `1n + 2n` 得 "12"——字符串连接而非算术）
         if let (Some(lb), Some(rb)) = (self.bigint_text(&left), self.bigint_text(&right)) {
             let dec = crate::bigdec::bigint_dec_add(&lb, &rb);
             let b_ref = self.alloc_bigint(dec);
-            return Value::Object(b_ref);
+            return Ok(Value::Object(b_ref));
         }
         let is_left_str = if let Some(r) = left.as_object() {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
@@ -324,7 +329,7 @@ impl Vm {
             let s2 = self.value_as_concat_text(right);
             let combined = format!("{s1}{s2}");
             let s_ref = self.alloc_string(combined);
-            return Value::Object(s_ref);
+            return Ok(Value::Object(s_ref));
         }
         // 双方都不是数值：任一为对象 → ToPrimitive 后字符串拼接
         // （`[] + []` === ""、`[] + {}` === "[object Object]"；生成语料实测）
@@ -334,7 +339,7 @@ impl Vm {
             let s1 = self.value_as_concat_text(left);
             let s2 = self.value_as_concat_text(right);
             let s_ref = self.alloc_string(format!("{s1}{s2}"));
-            return Value::Object(s_ref);
+            return Ok(Value::Object(s_ref));
         }
 
         // 双方皆原始值且非字符串 → **数值相加**（规范 `+` 的最后一步：
@@ -342,7 +347,66 @@ impl Vm {
         // `true + 1` → NaN（Node 2）、`true + true` → NaN（Node 2）、
         // `null + 1` → NaN（Node 1）——布尔/null 参与算术的常见写法全错。
         // `undefined + 1` 仍为 NaN（规范如此）。
-        Value::Number(self.to_number_value(left) + self.to_number_value(right))
+        Ok(Value::Number(
+            self.to_number_value(left) + self.to_number_value(right),
+        ))
+    }
+
+    /// ToPrimitive(hint number)：对象按 valueOf → toString 序解包出原始值；
+    /// Date 实例 toString 优先（规范 hint string 特例）；皆非原始 → TypeError。
+    /// 堆字符串/BigInt 虽为 Object case（NaN-box 堆形态），但语义是原始值——
+    /// 直接返回（否则对堆字符串调 valueOf 会误触 String 原型占位）。
+    ///
+    /// 命名偏离 to_* 惯例以规避 wrong_self_convention（&mut self 为必需）。
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn to_primitive_number(&mut self, v: Value) -> Result<Value, VmError> {
+        if let Some(r) = v.as_object() {
+            if matches!(
+                self.heap.get(r.0 as usize),
+                Some(HeapObject::String(_)) | Some(HeapObject::BigInt(_))
+            ) {
+                return Ok(v);
+            }
+        }
+        if !matches!(v.case(), ValueCase::Object(_)) {
+            return Ok(v);
+        }
+        let r = v.as_object().expect("原始值早退后必为堆对象");
+        let is_date = self.has_own_slot(r.0 as usize, "_isDate");
+        let (first, second) = if is_date {
+            ("toString", "valueOf")
+        } else {
+            ("valueOf", "toString")
+        };
+        for m in [first, second] {
+            let mv = self.get_property(v, m)?;
+            let callable = mv.as_object().is_some_and(|f| {
+                matches!(
+                    self.heap.get(f.0 as usize),
+                    Some(HeapObject::Closure { .. })
+                        | Some(HeapObject::NativeFn { .. })
+                        | Some(HeapObject::NativeCtor { .. })
+                )
+            });
+            if callable {
+                let res = self.invoke_callable(mv, v, &[])?;
+                // 结果是原始值即采纳；NaN-box 下堆字符串/BigInt 亦为 Object
+                // case（语义是原始值），须与开头的早退口径一致
+                let res_primitive = match res.case() {
+                    ValueCase::Object(r) => matches!(
+                        self.heap.get(r.0 as usize),
+                        Some(HeapObject::String(_)) | Some(HeapObject::BigInt(_))
+                    ),
+                    _ => true,
+                };
+                if res_primitive {
+                    return Ok(res);
+                }
+            }
+        }
+        Err(VmError::Thrown(Value::Object(self.alloc_error_instance(
+            "Cannot convert object to primitive value",
+        ))))
     }
 
     /// 值为 BigInt 堆对象时取其十进制文本。

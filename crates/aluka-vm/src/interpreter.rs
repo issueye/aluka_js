@@ -3851,7 +3851,7 @@ impl Vm {
                 Op::Add => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res = self.add_values(left, right);
+                    let res = self.add_values(left, right)?;
                     self.stack.push(res);
                 }
                 Op::Sub => {
