@@ -731,3 +731,12 @@ M7.3（npm Top 50 签核）未启动。
   双引擎一致；
 - 门禁：workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、
   express e2e ✓、jitbench 3/3。
+
+### 26.16 M7.2 分桶修复轮八：Unicode 空白集扩展（20260912 续）
+
+- lexer 空白集补齐规范 WhiteSpace：<VT> (0x0B，Rust is_ascii_whitespace
+  不含)、NBSP (U+00A0)、ZWNBSP (U+FEFF)、USP 面（U+1680/U+2000..3000/
+  U+202F/U+205F/U+3000）——S11.6.1 算术五则的 `eval("1\u000B+…")` 系列
+  全依赖（check#2/5/8/10 等 VT+NBSP 形态）；
+- 效果：test262 基线 697 → **703/1154**（+6 算术五则族）；
+- 门禁：workspace 652/0、GC 压力 215/0、clippy 0 全绿。

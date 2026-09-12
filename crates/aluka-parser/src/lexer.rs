@@ -162,7 +162,9 @@ impl<'src> Lexer<'src> {
         }
         while self.pos < bytes.len() {
             // 空白字符
-            if bytes[self.pos].is_ascii_whitespace() {
+            if bytes[self.pos].is_ascii_whitespace() || bytes[self.pos] == 0x0B {
+                // 0x0B = <VT> 垂直制表：规范 WhiteSpace（Rust 的
+                // is_ascii_whitespace 不含它——S11.6.1 语料实测暴露）
                 self.pos += 1;
                 continue;
             }
@@ -175,6 +177,38 @@ impl<'src> Lexer<'src> {
             {
                 self.pos += 3;
                 continue;
+            }
+            // Unicode 空白（规范 WhiteSpace 的 USP 面）：NBSP (C2 A0)、
+            // ZWNBSP (EF BB BF)、U+1680/U+2000..200A/U+202F/U+205F/U+3000
+            //（多字节 UTF-8 前缀 E1/E2/E3 起始的三字节形态）
+            if bytes[self.pos] == 0xC2 && self.pos + 1 < bytes.len() && bytes[self.pos + 1] == 0xA0
+            {
+                self.pos += 2;
+                continue;
+            }
+            if bytes[self.pos] == 0xEF
+                && self.pos + 2 < bytes.len()
+                && bytes[self.pos + 1] == 0xBB
+                && bytes[self.pos + 2] == 0xBF
+            {
+                self.pos += 3;
+                continue;
+            }
+            if matches!(bytes[self.pos], 0xE1..=0xE3)
+                && self.pos + 2 < bytes.len()
+                && matches!(
+                    u32::from_le_bytes([0, bytes[self.pos + 1], bytes[self.pos + 2], 0]),
+                    _
+                )
+            {
+                // 三字节形态统一按码点解码后判 USP
+                let cp = ((u32::from(bytes[self.pos] & 0x0F)) << 12)
+                    | ((u32::from(bytes[self.pos + 1] & 0x3F)) << 6)
+                    | (u32::from(bytes[self.pos + 2] & 0x3F));
+                if matches!(cp, 0x1680 | 0x2000..=0x3000) {
+                    self.pos += 3;
+                    continue;
+                }
             }
             // 单行注释 //
             if self.pos + 1 < bytes.len() && bytes[self.pos] == b'/' && bytes[self.pos + 1] == b'/'
