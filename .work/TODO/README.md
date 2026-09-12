@@ -447,8 +447,14 @@
     上午静默窗口 1.059x——口径修正登记于 20260912 §11。
   - ✅ 切片三 C（20260912，e43e1ce）：调用族补全——NEW/NEW_ARGS/CALL_ARGS/
     CALL_WITH_THIS/CALL_WITH_THIS_ARGS 接入 JIT 编译（用户侧调用族 6/8）。
-    剩余：多态桩；super 族 + MakeClosure + 生成器/Try 展开协议（切片四，
-    多日，需调用约定与 GC 栈映射协同）；1.5x 复合验收未达成，如实结转。
+  - ✅ 切片四首项（20260912，d640f4c）：**直调资格语义修正**——从「闭包
+    未捕获单元格」修正为「编译产物不读上值（uses_upvalues）」，解除对
+    前端顶层函数的系统性排除；`jit_direct_call` 统一快速分派携带真实
+    上值表（uses_upvalues=true 被调安全直达机器码）；双回归测试覆盖新
+    旧安全面；649 测试 + test262 154 + conformance 差分 + GC 压力 +
+    jitbench 3/3 全绿。剩余：uses_upvalues=true 函数的机器级 cell 直调
+    （需 CallCell 扩展机器可寻址上值表 + 闭包代数守卫）；多态桩；
+    super/MakeClosure/生成器/Try；1.5x 复合验收未达成，如实结转。
 
 ---
 
