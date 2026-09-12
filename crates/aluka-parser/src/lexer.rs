@@ -166,6 +166,16 @@ impl<'src> Lexer<'src> {
                 self.pos += 1;
                 continue;
             }
+            // U+2028（行分隔符）/ U+2029（段分隔符）：规范行终结符，
+            // 同空白字符处理（M7.2 语料：`1 +1` 等 ~85 例依赖）
+            if bytes[self.pos] == 0xE2
+                && self.pos + 2 < bytes.len()
+                && bytes[self.pos + 1] == 0x80
+                && matches!(bytes[self.pos + 2], 0xA8 | 0xA9)
+            {
+                self.pos += 3;
+                continue;
+            }
             // 单行注释 //
             if self.pos + 1 < bytes.len() && bytes[self.pos] == b'/' && bytes[self.pos + 1] == b'/'
             {

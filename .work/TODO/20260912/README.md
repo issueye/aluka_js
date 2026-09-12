@@ -720,3 +720,14 @@ M7.3（npm Top 50 签核）未启动。
 | **NativeCtor 方法值路由** | 分派链尾兜底不识别 NativeCtor 方法值——`Object.prototype.constructor()` 报错；补 NativeCtor → invoke_callable（无 new 构造语义） |
 | 效果 | test262 基线 680 → **687/1154**（S15.2.1.1 Object 族 ~7 例）；C 形态 `Object()()` 双引擎一致报错 |
 | 门禁 | workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、express e2e ✓、jitbench 3/3 |
+
+### 26.15 M7.2 分桶修复轮七：U+2028/U+2029 行终结符（20260912 续）
+
+- lexer 空白跳过补 U+2028（行分隔符）/U+2029（段分隔符）——规范行终结符
+  一直被当垃圾字节（`1\u2029+1` 解析失败、`var\u2028x` 报缺变量名）；
+  算术五则 ~76 例 + line-terminators 族 ~9 例 + var 声明 8 例共同根因；
+- 效果：test262 基线 687 → **697/1154**（+10 净修复——部分同根因用例
+  计入 invalid）；e2e `eval("1\u2029+1")===2` 与 `"a\u2028b".length===3`
+  双引擎一致；
+- 门禁：workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3。
