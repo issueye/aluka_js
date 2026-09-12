@@ -263,3 +263,35 @@ $ cargo run --release -p aluka-cli --example fib_bench（连续复测）
   JIT 侧接入调用族 helper；生成器（Yield/Await）与 Try 族需独立的
   展开协议（栈映射与 try_stack 协同）——两项均为多日专项，按总表登记
   于后续轮次，不在本窗口内声称完成。
+
+## 11. M6.3 切片三：分派链提取（A）+ JIT 调用族首块（B）
+
+### 11.1 实现
+
+| 步 | 内容 |
+|---|---|
+| A（ba320c2） | `Op::CallMethod` 内联链（约 2000 行/50 分支/101 处 stack.push）**原样提取**为 `Vm::call_method_dispatch(receiver, method_name, args, site) -> Result<Value, VmError>`：字符串感知括号配平的机械转换（push→return Ok、4 对 `pc+=1;continue` 删除——与循环底部 `pc+=1` 语义等价、`method_name.as_ref()`→`&str` 直用 33 处、EventEmitter if-let 补 unreachable else）；Op::CallMethod 臂收敛为「collect args → pop receiver → pic_site → dispatch → push」 |
+| B | **JIT 接入 `Op::CallMethod`**：新 vtable 通道 `CallMethodFn`（jit_helpers `jit_call_method`：常量名解析 + 实参表 marshaling + `call_method_dispatch(u64::MAX 站点)`——JIT 站点键空间与解释器不相交，单态热点即享方法 IC）；编译臂复用 `call_args_slot` 暂存实参后单次 helper call。**语义单源达成**：内建分派链只有一份，解释器与 JIT 共用 |
+
+### 11.2 门禁（真实输出）
+
+```text
+$ cargo test --workspace --all-features            → 648 passed, 0 failed
+$ cargo test -p aluka-cli --test test262_subset_test → 154/154
+$ cargo test -p aluka-cli --test conformance_node22_test → 1 passed（35.90s）
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm         → 212 passed, 0 failed
+$ cargo test -p aluka-jit --release --test jitbench → 3/3
+$ cargo fmt --all --check / clippy -D warnings     → 通过 / 0 error
+```
+
+### 11.3 性能配对口径修正与当前结论（如实）
+
+- 本日午后机器持续高负载后进入低速态（同机同构建较上午慢约 13%）——
+  跨窗口绝对值不可比。**当前窗口同条件配对**（间隔数分钟）：
+  master(7b8a631) 928.8ms vs 切片三后 901.2ms = **1.031x**；
+  上午静默窗口配对为 1.059x（840.4 vs 793.5）。fib 热函数仅含 Op::Call
+  （本就支持），切片三 B 的 CallMethod 编译面向其它工作负载（属性方法
+  密集型）开放，fib 单项数值不因本切片变化；
+- **1.5x 复合验收仍未达成**（两口径均 <1.2x）——剩余依赖：JIT 调用族
+  补全（New/MakeClosure/CallArgs 族）、多态桩、生成器/Try 展开协议
+  （切片四，多日）。如实结转，不在未达成状态下声称完成。

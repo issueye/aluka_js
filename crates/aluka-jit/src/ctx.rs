@@ -41,6 +41,16 @@ impl PicCell {
     }
 }
 
+/// 方法调用（`CALL_METHOD`）：receiver+方法名+实参表 → 解释器统一分派链
+/// （`call_method_dispatch`，与解释器 `Op::CallMethod` 单源同语义）。
+pub type CallMethodFn = unsafe extern "C" fn(
+    ctx: *mut JitCtx,
+    receiver: u64,
+    name_idx: u32,
+    args_ptr: *const u64,
+    argc: u32,
+) -> u64;
+
 /// 全局读取内联缓存：仅缓存 `vm.globals` 中已经存在的键。
 ///
 /// 内建动态全局（`Math`、`URL`、`JSON` 等）继续走 helper，因为解析本身可能
@@ -175,6 +185,8 @@ pub struct JitVtable {
     pub to_boolean: ToBooleanFn,
     /// `CALL`（含闭包调用；语义由解释器 `invoke_callable` 决定）
     pub call: CallFn,
+    /// `CALL_METHOD`（全语义经解释器统一分派链）
+    pub call_method: CallMethodFn,
     /// `LOAD_GLOBAL`
     pub load_global: LoadGlobalFn,
     /// `LOAD_UPVALUE`

@@ -73,6 +73,7 @@ pub(crate) const HELPER_STRICT_EQ: &str = "aluka_jit.strict_eq";
 pub(crate) const HELPER_TO_NUMBER: &str = "aluka_jit.to_number";
 pub(crate) const HELPER_TO_BOOLEAN: &str = "aluka_jit.to_boolean";
 pub(crate) const HELPER_CALL: &str = "aluka_jit.call";
+pub(crate) const HELPER_CALL_METHOD: &str = "aluka_jit.call_method";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
 
@@ -1026,6 +1027,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_TO_NUMBER => Some(v.to_number as *const u8),
             HELPER_TO_BOOLEAN => Some(v.to_boolean as *const u8),
             HELPER_CALL => Some(v.call as *const u8),
+            HELPER_CALL_METHOD => Some(v.call_method as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
             _ => None,
@@ -1080,6 +1082,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let sig_global = mk_sig(&[ptr_type, types::I32, ptr_type]);
     let sig_idx = mk_sig(&[ptr_type, types::I32]);
     let id_call = decl(&mut module, HELPER_CALL, &sig_call)?;
+    // (ctx, receiver, name_idx, args_ptr, argc) -> u64
+    let sig_callm = mk_sig(&[ptr_type, types::I64, types::I32, ptr_type, types::I32]);
+    let id_call_method = decl(&mut module, HELPER_CALL_METHOD, &sig_callm)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
 
@@ -1101,6 +1106,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_tonum = module.declare_func_in_func(id_tonum, cg.fb.func);
     let fref_tobool = module.declare_func_in_func(id_tobool, cg.fb.func);
     let fref_call = module.declare_func_in_func(id_call, cg.fb.func);
+    let fref_call_method = module.declare_func_in_func(id_call_method, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
     // JIT→JIT 直调的间接调用签名引用（被调签名与本函数同形）
@@ -1513,6 +1519,40 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                 if instr.op == Op::SetProp {
                     value_stack.push(r);
                 }
+            }
+            Op::CallMethod => {
+                // 操作数 = argc<<16 | name_idx；栈序 [..., receiver, arg1..argN]
+                let argc = (instr.operand >> 16) as usize;
+                let name_idx = (instr.operand & 0xFFFF) as usize;
+                if value_stack.len() < argc + 1 {
+                    return Err(JitError::Codegen("栈下溢".into()));
+                }
+                let mut vals = Vec::with_capacity(argc);
+                for _ in 0..argc {
+                    vals.push(
+                        value_stack
+                            .pop()
+                            .ok_or_else(|| JitError::Codegen("栈下溢".into()))?,
+                    );
+                }
+                vals.reverse();
+                let receiver = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let args_base = cg.fb.ins().stack_addr(ptr_type, call_args_slot, 0);
+                for (i, v) in vals.iter().enumerate() {
+                    cg.fb
+                        .ins()
+                        .store(MemFlags::new(), *v, args_base, (i * 8) as i32);
+                }
+                let argc_val = cg.fb.ins().iconst(types::I32, argc as i64);
+                let name_idx_val = cg.fb.ins().iconst(types::I32, name_idx as i64);
+                // 全语义经解释器统一分派链（call_method_dispatch 单源）
+                let inst = cg.fb.ins().call(
+                    fref_call_method,
+                    &[ctx_val, receiver, name_idx_val, args_base, argc_val],
+                );
+                value_stack.push(cg.fb.inst_results(inst)[0]);
             }
             Op::NewObject => {
                 if instr.operand != 0 {

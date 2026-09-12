@@ -1658,7 +1658,7 @@ impl Vm {
     /// 解释器 `Op::CallMethod` 与 JIT 调用族 helper 共用本入口，内建分派链
     /// 语义单源；`site` 为方法 IC 站点键（解释器传 `pic_site(pc)`，JIT 传
     /// 无效站点禁用命中、仅写回）。
-    fn call_method_dispatch(
+    pub(crate) fn call_method_dispatch(
         &mut self,
         receiver: Value,
         method_name: &str,

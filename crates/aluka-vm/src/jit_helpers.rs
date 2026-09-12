@@ -257,6 +257,7 @@ impl Vm {
             jit_gen: self.jit_gen,
             layout: pic_layout(),
             vtable: aluka_jit::ctx::JitVtable {
+                call_method: jit_call_method,
                 get_property: jit_get_property,
                 set_property: jit_set_property,
                 alloc_ordinary: jit_alloc_ordinary,
@@ -521,6 +522,53 @@ fn measure_pic_layout() -> aluka_jit::ctx::JitLayout {
         has_accessors_off,
         disc_shape,
     }
+}
+
+/// `CALL_METHOD`：receiver+方法名+实参 → 解释器统一分派链
+/// （`call_method_dispatch`，内建内联分派与解释器 `Op::CallMethod` 单源）。
+///
+/// 偏离登记（J2 既有约定，与 [`jit_call`] 一致）：helper 返回通道无错误面，
+/// 分派内抛错归一为 undefined。
+///
+/// # Safety
+/// 见模块文档：`ctx` 由 JIT 同步传入且独占当前 `Vm`，`args_ptr` 指向
+/// `argc` 个连续 NaN-box 机器字。
+pub unsafe extern "C" fn jit_call_method(
+    ctx: *mut JitCtx,
+    receiver: u64,
+    name_idx: u32,
+    args_ptr: *const u64,
+    argc: u32,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let name = key_str(ctx, name_idx);
+    let mut inline = [Value::Undefined; 8];
+    let n = argc as usize;
+    let heap_args: Vec<Value>;
+    let args: &[Value] = if n <= 8 {
+        for (i, slot) in inline.iter_mut().enumerate().take(n) {
+            // SAFETY: 调用方保证 args_ptr 指向 argc 个连续 u64
+            *slot = to_vm_value(unsafe { *args_ptr.add(i) });
+        }
+        &inline[..n]
+    } else {
+        heap_args = (0..n)
+            .map(|i| {
+                // SAFETY: 同上
+                to_vm_value(unsafe { *args_ptr.add(i) })
+            })
+            .collect();
+        &heap_args
+    };
+    // 方法 IC：JIT 站点共享固定站点键 u64::MAX（与解释器站点键空间不相交；
+    // 单态热点即享原型绑定缓存，多态互挤回退慢路径，语义仍正确）
+    let r = match vm.call_method_dispatch(to_vm_value(receiver), name, args, u64::MAX) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
 }
 
 #[cfg(test)]
