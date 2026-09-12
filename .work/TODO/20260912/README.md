@@ -914,3 +914,9 @@ $ cargo test -p aluka-jit --release --test jitbench
   conformance 差分 ✓（4 例连带给清）、GC 压力 ALUKA_GC_STRESS=8
   aluka-vm 215/0 + aluka-runtime 5/0 ✓、express e2e ✓、
   four_quadrants oracle ✓、jitbench 3/3 ✓、t262 门禁 FLOOR=770 ✓。
+
+### 29.1 提交证据
+
+- commit f43e430（fix(m7.2): 轮十四——add_values ToPrimitive 错误通道化
+  + 堆原始形态结果判定修复），5 files changed, 108 insertions(+), 9
+  deletions(-)。
