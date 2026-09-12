@@ -74,6 +74,9 @@ pub(crate) const HELPER_TO_NUMBER: &str = "aluka_jit.to_number";
 pub(crate) const HELPER_TO_BOOLEAN: &str = "aluka_jit.to_boolean";
 pub(crate) const HELPER_CALL: &str = "aluka_jit.call";
 pub(crate) const HELPER_CALL_METHOD: &str = "aluka_jit.call_method";
+pub(crate) const HELPER_CONSTRUCT: &str = "aluka_jit.construct";
+pub(crate) const HELPER_CALL_ARGS: &str = "aluka_jit.call_args";
+pub(crate) const HELPER_CALL_THIS: &str = "aluka_jit.call_this";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
 
@@ -1028,6 +1031,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_TO_BOOLEAN => Some(v.to_boolean as *const u8),
             HELPER_CALL => Some(v.call as *const u8),
             HELPER_CALL_METHOD => Some(v.call_method as *const u8),
+            HELPER_CONSTRUCT => Some(v.construct as *const u8),
+            HELPER_CALL_ARGS => Some(v.call_args as *const u8),
+            HELPER_CALL_THIS => Some(v.call_this as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
             _ => None,
@@ -1085,6 +1091,13 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     // (ctx, receiver, name_idx, args_ptr, argc) -> u64
     let sig_callm = mk_sig(&[ptr_type, types::I64, types::I32, ptr_type, types::I32]);
     let id_call_method = decl(&mut module, HELPER_CALL_METHOD, &sig_callm)?;
+    let id_construct = decl(&mut module, HELPER_CONSTRUCT, &sig_callm)?;
+    // (ctx, callee, args_array) -> u64
+    let sig_ivv2 = mk_sig(&[ptr_type, types::I64, types::I64]);
+    let id_call_args = decl(&mut module, HELPER_CALL_ARGS, &sig_ivv2)?;
+    // (ctx, callee, this, args_ptr_or_array, argc) -> u64
+    let sig_call_this = mk_sig(&[ptr_type, types::I64, types::I64, types::I64, types::I32]);
+    let id_call_this = decl(&mut module, HELPER_CALL_THIS, &sig_call_this)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
 
@@ -1107,6 +1120,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_tobool = module.declare_func_in_func(id_tobool, cg.fb.func);
     let fref_call = module.declare_func_in_func(id_call, cg.fb.func);
     let fref_call_method = module.declare_func_in_func(id_call_method, cg.fb.func);
+    let fref_construct = module.declare_func_in_func(id_construct, cg.fb.func);
+    let fref_call_args = module.declare_func_in_func(id_call_args, cg.fb.func);
+    let fref_call_this = module.declare_func_in_func(id_call_this, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
     // JIT→JIT 直调的间接调用签名引用（被调签名与本函数同形）
@@ -1519,6 +1535,110 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                 if instr.op == Op::SetProp {
                     value_stack.push(r);
                 }
+            }
+            Op::New => {
+                // 操作数 = argc；栈序 [..., callee, arg1..argN] → do_construct
+                let argc = instr.operand as usize;
+                if value_stack.len() < argc + 1 {
+                    return Err(JitError::Codegen("栈下溢".into()));
+                }
+                let mut vals = Vec::with_capacity(argc);
+                for _ in 0..argc {
+                    vals.push(
+                        value_stack
+                            .pop()
+                            .ok_or_else(|| JitError::Codegen("栈下溢".into()))?,
+                    );
+                }
+                vals.reverse();
+                let callee = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let args_base = cg.fb.ins().stack_addr(ptr_type, call_args_slot, 0);
+                for (i, v) in vals.iter().enumerate() {
+                    cg.fb
+                        .ins()
+                        .store(MemFlags::new(), *v, args_base, (i * 8) as i32);
+                }
+                let argc_val = cg.fb.ins().iconst(types::I32, argc as i64);
+                let inst = cg
+                    .fb
+                    .ins()
+                    .call(fref_construct, &[ctx_val, callee, args_base, argc_val]);
+                value_stack.push(cg.fb.inst_results(inst)[0]);
+            }
+            Op::CallArgs | Op::NewArgs => {
+                // 栈序 [..., callee, argsArray]：实参数组展开
+                if value_stack.len() < 2 {
+                    return Err(JitError::Codegen("栈下溢".into()));
+                }
+                let args_array = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let callee = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let inst = cg
+                    .fb
+                    .ins()
+                    .call(fref_call_args, &[ctx_val, callee, args_array]);
+                value_stack.push(cg.fb.inst_results(inst)[0]);
+            }
+            Op::CallWithThis => {
+                // 操作数 = argc；栈序 [..., callee, this, arg1..argN]
+                let argc = instr.operand as usize;
+                if value_stack.len() < argc + 2 {
+                    return Err(JitError::Codegen("栈下溢".into()));
+                }
+                let mut vals = Vec::with_capacity(argc);
+                for _ in 0..argc {
+                    vals.push(
+                        value_stack
+                            .pop()
+                            .ok_or_else(|| JitError::Codegen("栈下溢".into()))?,
+                    );
+                }
+                vals.reverse();
+                let this_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let callee = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let args_base = cg.fb.ins().stack_addr(ptr_type, call_args_slot, 0);
+                for (i, v) in vals.iter().enumerate() {
+                    cg.fb
+                        .ins()
+                        .store(MemFlags::new(), *v, args_base, (i * 8) as i32);
+                }
+                let argc_val = cg.fb.ins().iconst(types::I32, argc as i64);
+                let args_base_i64 = cg.fb.ins().bitcast(types::I64, MemFlags::new(), args_base);
+                let inst = cg.fb.ins().call(
+                    fref_call_this,
+                    &[ctx_val, callee, this_val, args_base_i64, argc_val],
+                );
+                value_stack.push(cg.fb.inst_results(inst)[0]);
+            }
+            Op::CallWithThisArgs => {
+                // 栈序 [..., callee, this, argsArray]；argc==0 约定第三实参按数组值解释
+                if value_stack.len() < 3 {
+                    return Err(JitError::Codegen("栈下溢".into()));
+                }
+                let args_array = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let this_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let callee = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let argc_val = cg.fb.ins().iconst(types::I32, 0);
+                let inst = cg.fb.ins().call(
+                    fref_call_this,
+                    &[ctx_val, callee, this_val, args_array, argc_val],
+                );
+                value_stack.push(cg.fb.inst_results(inst)[0]);
             }
             Op::CallMethod => {
                 // 操作数 = argc<<16 | name_idx；栈序 [..., receiver, arg1..argN]

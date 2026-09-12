@@ -258,6 +258,9 @@ impl Vm {
             layout: pic_layout(),
             vtable: aluka_jit::ctx::JitVtable {
                 call_method: jit_call_method,
+                construct: jit_construct,
+                call_args: jit_call_args,
+                call_this: jit_call_this,
                 get_property: jit_get_property,
                 set_property: jit_set_property,
                 alloc_ordinary: jit_alloc_ordinary,
@@ -524,6 +527,64 @@ fn measure_pic_layout() -> aluka_jit::ctx::JitLayout {
     }
 }
 
+/// `NEW`：callee+实参表 → 解释器 `do_construct`。
+///
+/// 偏离登记（J2 既有约定，与 [`jit_call`] 一致）：helper 返回通道无错误面，
+/// 构造内抛错归一为 undefined。
+///
+/// # Safety
+/// 见模块文档：`ctx` 由 JIT 同步传入且独占当前 `Vm`，`args_ptr` 指向
+/// `argc` 个连续 NaN-box 机器字。
+pub unsafe extern "C" fn jit_construct(
+    ctx: *mut JitCtx,
+    callee: u64,
+    args_ptr: *const u64,
+    argc: u32,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let mut inline = [Value::Undefined; 8];
+    let n = argc as usize;
+    let heap_args: Vec<Value>;
+    let args: &[Value] = if n <= 8 {
+        for (i, slot) in inline.iter_mut().enumerate().take(n) {
+            // SAFETY: 调用方保证 args_ptr 指向 argc 个连续 u64
+            *slot = to_vm_value(unsafe { *args_ptr.add(i) });
+        }
+        &inline[..n]
+    } else {
+        heap_args = (0..n)
+            .map(|i| {
+                // SAFETY: 同上
+                to_vm_value(unsafe { *args_ptr.add(i) })
+            })
+            .collect();
+        &heap_args
+    };
+    let r = match vm.do_construct(to_vm_value(callee), args) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `CALL_ARGS`/`NEW_ARGS`：实参数组值 → 解释器展开（`to_array_values`）。
+///
+/// # Safety
+/// 见模块文档：`ctx` 由 JIT 同步传入且独占当前 `Vm`。
+pub unsafe extern "C" fn jit_call_args(ctx: *mut JitCtx, callee: u64, args_array: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let args = vm.to_array_values(to_vm_value(args_array));
+    let r = match vm.invoke_callable(to_vm_value(callee), Value::Undefined, &args) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
 /// `CALL_METHOD`：receiver+方法名+实参 → 解释器统一分派链
 /// （`call_method_dispatch`，内建内联分派与解释器 `Op::CallMethod` 单源）。
 ///
@@ -564,6 +625,56 @@ pub unsafe extern "C" fn jit_call_method(
     // 方法 IC：JIT 站点共享固定站点键 u64::MAX（与解释器站点键空间不相交；
     // 单态热点即享原型绑定缓存，多态互挤回退慢路径，语义仍正确）
     let r = match vm.call_method_dispatch(to_vm_value(receiver), name, args, u64::MAX) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `CALL_WITH_THIS`/`CALL_WITH_THIS_ARGS`：显式 this 调用。
+///
+/// 两变体共用一个 helper：`argc > 0` 时 `args_ptr_or_array` 按实参表指针
+/// 解释（`argc` 个连续机器字）；`argc == 0` 时按数组值解释（展开）。
+///
+/// # Safety
+/// 见模块文档：`ctx` 由 JIT 同步传入且独占当前 `Vm`。
+pub unsafe extern "C" fn jit_call_this(
+    ctx: *mut JitCtx,
+    callee: u64,
+    this_val: u64,
+    args_ptr_or_array: u64,
+    argc: u32,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let n = argc as usize;
+    let ret = if n > 0 {
+        // SAFETY: argc>0 约定下该参数为 JIT 传入的实参表指针
+        let ptr = args_ptr_or_array as *const u64;
+        let mut inline = [Value::Undefined; 8];
+        let heap_args: Vec<Value>;
+        let args: &[Value] = if n <= 8 {
+            for (i, slot) in inline.iter_mut().enumerate().take(n) {
+                // SAFETY: 调用方保证指针指向 argc 个连续 u64
+                *slot = to_vm_value(unsafe { *ptr.add(i) });
+            }
+            &inline[..n]
+        } else {
+            heap_args = (0..n)
+                .map(|i| {
+                    // SAFETY: 同上
+                    to_vm_value(unsafe { *ptr.add(i) })
+                })
+                .collect();
+            &heap_args
+        };
+        vm.invoke_callable(to_vm_value(callee), to_vm_value(this_val), args)
+    } else {
+        let arr = vm.to_array_values(to_vm_value(args_ptr_or_array));
+        vm.invoke_callable(to_vm_value(callee), to_vm_value(this_val), &arr)
+    };
+    let r = match ret {
         Ok(v) => v,
         Err(_) => Value::Undefined,
     };

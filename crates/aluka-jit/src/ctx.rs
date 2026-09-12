@@ -51,6 +51,23 @@ pub type CallMethodFn = unsafe extern "C" fn(
     argc: u32,
 ) -> u64;
 
+/// 构造调用（`NEW`）：实参表 → 解释器 `do_construct`。
+pub type ConstructFn =
+    unsafe extern "C" fn(ctx: *mut JitCtx, callee: u64, args_ptr: *const u64, argc: u32) -> u64;
+
+/// 数组实参调用族（`CALL_ARGS`/`NEW_ARGS`）：实参数组值 → 解释器展开。
+pub type CallArgsFn = unsafe extern "C" fn(ctx: *mut JitCtx, callee: u64, args_array: u64) -> u64;
+
+/// this 绑定调用族（`CALL_WITH_THIS`/`CALL_WITH_THIS_ARGS`）：
+/// 显式 this + 实参（表指针或数组值，由 `argc` 区分）→ 解释器 `invoke_callable`。
+pub type CallThisFn = unsafe extern "C" fn(
+    ctx: *mut JitCtx,
+    callee: u64,
+    this_val: u64,
+    args_ptr_or_array: u64,
+    argc: u32,
+) -> u64;
+
 /// 全局读取内联缓存：仅缓存 `vm.globals` 中已经存在的键。
 ///
 /// 内建动态全局（`Math`、`URL`、`JSON` 等）继续走 helper，因为解析本身可能
@@ -187,6 +204,12 @@ pub struct JitVtable {
     pub call: CallFn,
     /// `CALL_METHOD`（全语义经解释器统一分派链）
     pub call_method: CallMethodFn,
+    /// `NEW`（语义由解释器 `do_construct` 决定）
+    pub construct: ConstructFn,
+    /// `CALL_ARGS`/`NEW_ARGS`（实参数组展开）
+    pub call_args: CallArgsFn,
+    /// `CALL_WITH_THIS`/`CALL_WITH_THIS_ARGS`（this 绑定，两变体共用）
+    pub call_this: CallThisFn,
     /// `LOAD_GLOBAL`
     pub load_global: LoadGlobalFn,
     /// `LOAD_UPVALUE`
