@@ -285,6 +285,10 @@ impl Vm {
                 bitop: jit_bitop,
                 store_global: jit_store_global,
                 del_elem: jit_del_elem,
+                set_accessor: jit_set_accessor,
+                store_upvalue: jit_store_upvalue,
+                spread_object: jit_spread_object,
+                enum_keys: jit_enum_keys,
             },
             upvals_ptr: std::ptr::null(),
             upvals_len: 0,
@@ -907,6 +911,107 @@ pub unsafe extern "C" fn jit_array_push(ctx: *mut JitCtx, arr: u64, val: u64) ->
     }
     refresh_heap(ctx, vm);
     val
+}
+
+/// `STORE_UPVALUE`：写当前帧上值表单元格（机器可寻址表）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_store_upvalue(ctx: *mut JitCtx, uv_idx: u32, val: u64) -> u64 {
+    // SAFETY: ctx 由 JIT 同步传入（见模块文档），字段读取需显式 unsafe 块
+    let (ptr, len) = unsafe { ((*ctx).upvals_ptr, (*ctx).upvals_len) };
+    let idx = uv_idx as usize;
+    if !ptr.is_null() && idx < len {
+        // SAFETY: 表在调用期间存活（单元格由被调闭包持有），单线程独占
+        let uv = unsafe { &*(ptr as *const Upvalue).add(idx) };
+        *uv.0.borrow_mut() = to_vm_value(val);
+    }
+    val
+}
+
+/// `SET_GETTER_OBJ`/`SET_SETTER_OBJ`（及 Computed 变体共用）：注册访问器。
+///
+/// 与解释器同语义：仅 Ordinary 对象可注册（fn 必须为对象值）；
+/// `has_accessors` 粘性置 1（PIC 守卫依据）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_set_accessor(
+    ctx: *mut JitCtx,
+    obj: u64,
+    key: u64,
+    fn_val: u64,
+    is_setter: bool,
+    key_is_box: bool,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    // String 统一两种来源（常量名 idx / 动态键盒）
+    let key_str_owned: String = if key_is_box {
+        vm.to_property_key(to_vm_value(key))
+    } else {
+        key_str(ctx, key as u32).to_owned()
+    };
+    let fv = to_vm_value(fn_val);
+    let ov = to_vm_value(obj);
+    if let (Some(f_ref), Some(o_ref)) = (fv.as_object(), ov.as_object()) {
+        let _ = f_ref;
+        if let Some(HeapObject::Ordinary {
+            getters,
+            setters,
+            has_accessors,
+            ..
+        }) = vm.heap.get_mut(o_ref.0 as usize)
+        {
+            if is_setter {
+                setters.insert(key_str_owned, fv);
+            } else {
+                getters.insert(key_str_owned, fv);
+            }
+            *has_accessors = 1;
+        }
+    }
+    obj
+}
+
+/// `SPREAD_OBJECT`：`{ ...src }` 自有属性逐个写入 dst。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_spread_object(ctx: *mut JitCtx, src: u64, dst: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    for (k, v) in vm.own_properties(to_vm_value(src)) {
+        let _ = vm.set_property(to_vm_value(dst), &k, v);
+    }
+    refresh_heap(ctx, vm);
+    dst
+}
+
+/// `ENUM_KEYS`：for-in 键快照（Proxy 走 ownKeys trap，异常降级空集）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_enum_keys(ctx: *mut JitCtx, src: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let sv = to_vm_value(src);
+    let keys: Vec<String> = if let Some(r) = sv.as_object() {
+        if vm.proxy_parts(r).is_some() {
+            vm.proxy_own_keys(r).unwrap_or_default()
+        } else {
+            vm.enumerate_for_in_keys(sv)
+        }
+    } else {
+        vm.enumerate_for_in_keys(sv)
+    };
+    let key_refs: Vec<Value> = keys
+        .into_iter()
+        .map(|k| Value::Object(vm.alloc_string(k)))
+        .collect();
+    let r = Value::Object(vm.alloc_array(key_refs));
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
 }
 
 /// 位运算族（`BIT_AND/OR/XOR/SHL/SHR/USHR/NOT`）：ToNumber + i32 位语义

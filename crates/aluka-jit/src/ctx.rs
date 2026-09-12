@@ -218,6 +218,22 @@ pub type BitOpFn = unsafe extern "C" fn(ctx: *mut JitCtx, a: u64, b: u64, op: u3
 pub type StoreGlobalFn = unsafe extern "C" fn(ctx: *mut JitCtx, name_idx: u32, val: u64) -> u64;
 /// `DEL_ELEM`：动态键删除。
 pub type DelElemFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, key: u64) -> u64;
+/// 访问器注册（`SET_GETTER_OBJ`/`SET_SETTER_OBJ` 及 Computed 变体共用）：
+/// `key_is_box` 区分常量名 idx 与动态键盒。
+pub type SetAccessorFn = unsafe extern "C" fn(
+    ctx: *mut JitCtx,
+    obj: u64,
+    key: u64,
+    fn_val: u64,
+    is_setter: bool,
+    key_is_box: bool,
+) -> u64;
+/// `STORE_UPVALUE`：写当前帧上值表单元格。
+pub type StoreUpvalueFn = unsafe extern "C" fn(ctx: *mut JitCtx, uv_idx: u32, val: u64) -> u64;
+/// `SPREAD_OBJECT`。
+pub type SpreadObjectFn = unsafe extern "C" fn(ctx: *mut JitCtx, src: u64, dst: u64) -> u64;
+/// `ENUM_KEYS`：for-in 键快照。
+pub type EnumKeysFn = unsafe extern "C" fn(ctx: *mut JitCtx, src: u64) -> u64;
 
 /// helper 函数指针表（由 aluka-vm 每次调用时填充）。
 #[repr(C)]
@@ -279,6 +295,14 @@ pub struct JitVtable {
     pub store_global: StoreGlobalFn,
     /// `DEL_ELEM`
     pub del_elem: DelElemFn,
+    /// 访问器注册（Getter/Setter 及 Computed 变体共用）
+    pub set_accessor: SetAccessorFn,
+    /// `STORE_UPVALUE`（写机器可寻址上值表单元格）
+    pub store_upvalue: StoreUpvalueFn,
+    /// `SPREAD_OBJECT`
+    pub spread_object: SpreadObjectFn,
+    /// `ENUM_KEYS`
+    pub enum_keys: EnumKeysFn,
 }
 
 /// 对象布局偏移（PIC 快速路径用；由 aluka-vm 按实际布局填充）。

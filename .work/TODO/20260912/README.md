@@ -509,3 +509,18 @@ $ cargo test -p aluka-cli --test test262_subset_test → 154/154
 $ ALUKA_GC_STRESS=8 cargo test -p aluka-vm       → 215 passed, 0 failed
 $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
 ```
+
+## 21. 指令流扩容第三批：8 操作码接入（20260912 续）
+
+- StoreUpvalue（**机器可寻址上值表直写**——闭包共享单元格语义保持：
+  经 ctx.upvals_ptr 写入被调闭包的真实单元格，Load/StoreUpvalue 混用
+  计数器模式双引擎一致）、CloseUpvalues（机器帧不创建 open 单元格，
+  安全无操作）、SetGetterObj/SetSetterObj/SetGetterComputedObj/
+  SetSetterComputedObj（统一 `jit_set_accessor`：Ordinary 限定 +
+  has_accessors 粘性，与解释器同语义）、SpreadObject（own_properties
+  逐键写入）、EnumKeys（Proxy ownKeys trap 降级 + for-in 键快照）；
+- JIT 操作码覆盖 78 → **86**/106；
+- e2e：闭包计数器（Load/StoreUpvalue 混用，20000 ✓）、spread/for-in/
+  getter（750/42 ✓）双引擎逐字节一致；
+- 门禁：workspace 652/0、test262 154/154、GC 压力 215/0、jitbench 3/3、
+  clippy 0 全绿。

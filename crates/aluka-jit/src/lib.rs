@@ -94,6 +94,10 @@ pub(crate) const HELPER_ARRAY_PUSH: &str = "aluka_jit.array_push";
 pub(crate) const HELPER_BITOP: &str = "aluka_jit.bitop";
 pub(crate) const HELPER_STORE_GLOBAL: &str = "aluka_jit.store_global";
 pub(crate) const HELPER_DEL_ELEM: &str = "aluka_jit.del_elem";
+pub(crate) const HELPER_SET_ACCESSOR: &str = "aluka_jit.set_accessor";
+pub(crate) const HELPER_STORE_UPVALUE: &str = "aluka_jit.store_upvalue";
+pub(crate) const HELPER_SPREAD_OBJECT: &str = "aluka_jit.spread_object";
+pub(crate) const HELPER_ENUM_KEYS: &str = "aluka_jit.enum_keys";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
 
@@ -1127,6 +1131,10 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_BITOP => Some(v.bitop as *const u8),
             HELPER_STORE_GLOBAL => Some(v.store_global as *const u8),
             HELPER_DEL_ELEM => Some(v.del_elem as *const u8),
+            HELPER_SET_ACCESSOR => Some(v.set_accessor as *const u8),
+            HELPER_STORE_UPVALUE => Some(v.store_upvalue as *const u8),
+            HELPER_SPREAD_OBJECT => Some(v.spread_object as *const u8),
+            HELPER_ENUM_KEYS => Some(v.enum_keys as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
             _ => None,
@@ -1207,6 +1215,20 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let id_bitop = decl(&mut module, HELPER_BITOP, &sig_ivvu)?;
     let id_store_global = decl(&mut module, HELPER_STORE_GLOBAL, &sig_idx)?;
     let id_del_elem = decl(&mut module, HELPER_DEL_ELEM, &sig_ivv)?;
+    let sig_set_acc = mk_sig(&[
+        ptr_type,
+        types::I64,
+        types::I64,
+        types::I64,
+        types::I32,
+        types::I32,
+    ]);
+    let id_set_accessor = decl(&mut module, HELPER_SET_ACCESSOR, &sig_set_acc)?;
+    let sig_iui = mk_sig(&[ptr_type, types::I32, types::I64]);
+    let id_store_upvalue = decl(&mut module, HELPER_STORE_UPVALUE, &sig_iui)?;
+    let sig_ivv2b = mk_sig(&[ptr_type, types::I64, types::I64]);
+    let id_spread_object = decl(&mut module, HELPER_SPREAD_OBJECT, &sig_ivv2b)?;
+    let id_enum_keys = decl(&mut module, HELPER_ENUM_KEYS, &sig_i)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
 
@@ -1245,6 +1267,10 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_bitop = module.declare_func_in_func(id_bitop, cg.fb.func);
     let fref_store_global = module.declare_func_in_func(id_store_global, cg.fb.func);
     let fref_del_elem = module.declare_func_in_func(id_del_elem, cg.fb.func);
+    let fref_set_accessor = module.declare_func_in_func(id_set_accessor, cg.fb.func);
+    let fref_store_upvalue = module.declare_func_in_func(id_store_upvalue, cg.fb.func);
+    let fref_spread_object = module.declare_func_in_func(id_spread_object, cg.fb.func);
+    let fref_enum_keys = module.declare_func_in_func(id_enum_keys, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
     // JIT→JIT 直调的间接调用签名引用（被调签名与本函数同形）
@@ -2002,6 +2028,77 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
                 let idx_val = cg.fb.ins().iconst(types::I32, i64::from(name_idx));
                 emit_helper(&mut cg, fref_store_global, ctx_val, &[idx_val, val]);
+            }
+            Op::StoreUpvalue => {
+                // 操作数 = 上值下标；净栈效果 -1（机器可寻址表直写）
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let idx_val = cg.fb.ins().iconst(types::I32, i64::from(instr.operand));
+                emit_helper(&mut cg, fref_store_upvalue, ctx_val, &[idx_val, val]);
+                uses_upvalues = true;
+            }
+            Op::CloseUpvalues => {
+                // 机器帧不创建 open 单元格（MakeClosure 未接入前无 open 态），
+                // 且 open_upvalues 的生命周期由解释器帧管理——机器侧无操作
+            }
+            Op::SetGetterObj | Op::SetSetterObj => {
+                // 操作数 = 名字常量下标；peek obj、pop fn
+                let name_idx = instr.operand;
+                let fn_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let is_setter = matches!(instr.op, Op::SetSetterObj);
+                let key_arg = cg.fb.ins().iconst(types::I64, i64::from(name_idx));
+                let setter_arg = cg.fb.ins().iconst(types::I32, i64::from(is_setter));
+                let box_arg = cg.fb.ins().iconst(types::I32, 0);
+                emit_helper(
+                    &mut cg,
+                    fref_set_accessor,
+                    ctx_val,
+                    &[obj, key_arg, fn_val, setter_arg, box_arg],
+                );
+            }
+            Op::SetGetterComputedObj | Op::SetSetterComputedObj => {
+                // 栈序 [..., obj, key, fn]；peek obj
+                let fn_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let is_setter = matches!(instr.op, Op::SetSetterComputedObj);
+                let setter_arg = cg.fb.ins().iconst(types::I32, i64::from(is_setter));
+                let box_arg = cg.fb.ins().iconst(types::I32, 1);
+                emit_helper(
+                    &mut cg,
+                    fref_set_accessor,
+                    ctx_val,
+                    &[obj, key, fn_val, setter_arg, box_arg],
+                );
+            }
+            Op::SpreadObject => {
+                // 栈序 [..., dst, src]；dst 保留
+                let src = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let dst = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                emit_helper(&mut cg, fref_spread_object, ctx_val, &[src, dst]);
+            }
+            Op::EnumKeys => {
+                let src = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_enum_keys, ctx_val, &[src]);
+                value_stack.push(r);
             }
             Op::NewObject => {
                 if instr.operand != 0 {
