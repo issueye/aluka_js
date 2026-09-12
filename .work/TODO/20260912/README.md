@@ -702,3 +702,12 @@ M7.3（npm Top 50 签核）未启动。
   助手 + JSON 转义 + LexError 通道；基线 **658/1154**（657 + throw/注释）；
 - 门禁：workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、
   express e2e ✓、jitbench 3/3。
+
+### 26.13 M7.2 分桶修复轮五：非简单参数 use-strict 判死 + BigInt 字面量校验（20260912 续）
+
+| 修复 | 内容 |
+|---|---|
+| **use strict + 非简单参数** | 解构/默认/剩余参数的函数体含 "use strict" 指令 → SyntaxError（规范 14.6.2；官方语料 async-function/async-generator 语法族 ~28 例）——parse_function_def 检测 prologue 非空（解构+默认注入标志）/is_var_args，扫描指令序言 |
+| **BigInt 字面量校验** | 进制分支：数字位必须属于进制（`0b2n`/`0o8n` 判死——此前 `to_digit().unwrap_or(0)` 静默容错）、分隔符不得居首/居尾/连续（`0b_1n`/`1__0n`）；十进制分支：指数+n 判死（`1e3n`——此前被当 "1e3" 字符串入堆）、传统八进制形态（`01n`）判死、分隔符位置同上 |
+| 效果 | test262 基线 653 → **680/1154**（+27：use-strict 族 ~24 + bigint 负例 ~10，部分负例此前被 node 校验划 INVALID） |
+| 门禁 | workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、express e2e ✓、jitbench 3/3 |

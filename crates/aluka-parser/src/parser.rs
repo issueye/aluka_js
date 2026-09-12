@@ -231,6 +231,11 @@ impl<'src> Parser<'src> {
     /// 前置缺陷被暴露为误报，t262 基线 657→642）。回退宽松态；严格化
     /// 需先补齐 hashbang 剥离与语句模型清理后再启用（nl_before_current
     /// 助手保留备用）。
+    /// 指令序言形态判定：`Stmt::Expr(字符串字面量)`。
+    fn is_directive(s: &SpannedStmt) -> bool {
+        matches!(s.stmt, Stmt::Expr(Expr::String(_)))
+    }
+
     fn eat_semi(&mut self) {
         self.match_punct(";");
     }
@@ -845,6 +850,23 @@ impl<'src> Parser<'src> {
             } => stmts,
             other => vec![other],
         };
+        // 规范：非简单参数列表（解构/默认/剩余）的函数体不得含
+        // "use strict" 指令（SyntaxError；M7.2 官方语料 async-function
+        // 语法族 ~28 例）
+        let non_simple = !prologue_stmts.is_empty() || is_var_args;
+        if non_simple {
+            let has_use_strict = body.iter().take_while(|s| Self::is_directive(s)).any(|s| {
+                matches!(
+                    &s.stmt,
+                    Stmt::Expr(Expr::String(d)) if d == "use strict"
+                )
+            });
+            if has_use_strict {
+                self.record_error(
+                    "SyntaxError: 非简单参数列表的函数体不允许 use strict 指令".to_owned(),
+                );
+            }
+        }
         if !prologue_stmts.is_empty() {
             prologue_stmts.append(&mut body);
             body = prologue_stmts;

@@ -70,6 +70,15 @@ pub struct Lexer<'src> {
     pending_lex_error: Option<String>,
 }
 
+/// 进制字符 → 进制基数（BigInt 校验用）。
+fn radix_from_char(c: u8) -> u32 {
+    match c {
+        b'x' | b'X' => 16,
+        b'b' | b'B' => 2,
+        _ => 8,
+    }
+}
+
 const KEYWORDS: &[&str] = &[
     "let",
     "const",
@@ -550,8 +559,29 @@ impl<'src> Lexer<'src> {
                 let bigint_payload = raw_digits
                     .strip_suffix('n')
                     .or_else(|| raw_digits.strip_suffix('N'))
-                    .map(|digits| format!("0{}{digits}", radix_char as char));
-                if let Some(payload) = bigint_payload {
+                    .map(|digits| (digits, format!("0{}{digits}", radix_char as char)));
+                if let Some((digits, payload)) = bigint_payload {
+                    // 合法性（M7.2 语料）：数字位必须属于该进制；分隔符不得
+                    // 位于首尾或连续
+                    if digits
+                        .chars()
+                        .any(|ch| ch != '_' && ch.to_digit(radix_from_char(radix_char)).is_none())
+                    {
+                        return Token {
+                            kind: TokenKind::LexError("BigInt 字面量含无效进制数字".to_owned()),
+                            text: self.src[start..self.pos].to_owned(),
+                            start,
+                        };
+                    }
+                    if digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+                        return Token {
+                            kind: TokenKind::LexError(
+                                "BigInt 字面量的数字分隔符位置非法".to_owned(),
+                            ),
+                            text: self.src[start..self.pos].to_owned(),
+                            start,
+                        };
+                    }
                     return Token {
                         kind: TokenKind::BigInt(payload),
                         text: self.src[start..self.pos].to_owned(),
@@ -593,11 +623,35 @@ impl<'src> Lexer<'src> {
                 }
             }
             if self.pos < bytes.len() && bytes[self.pos] == b'n' {
-                let raw_digits: String = self.src[start..self.pos]
-                    .chars()
-                    .filter(|&c| c != '_')
-                    .collect();
+                let raw_with_sep: String = self.src[start..self.pos].to_owned();
+                let raw_digits: String = raw_with_sep.chars().filter(|&c| c != '_').collect();
                 self.pos += 1;
+                // 合法性（M7.2 语料）：不得含指数；传统八进制形态（前导 0
+                // 且多位）不得作 BigInt；分隔符不得居首/居尾/连续
+                if raw_digits.contains(['e', 'E']) {
+                    return Token {
+                        kind: TokenKind::LexError("BigInt 字面量不支持指数".to_owned()),
+                        text: self.src[start..self.pos].to_owned(),
+                        start,
+                    };
+                }
+                if raw_digits.len() > 1 && raw_digits.starts_with('0') {
+                    return Token {
+                        kind: TokenKind::LexError("传统八进制形态不能作 BigInt 字面量".to_owned()),
+                        text: self.src[start..self.pos].to_owned(),
+                        start,
+                    };
+                }
+                if raw_with_sep.starts_with('_')
+                    || raw_with_sep.ends_with('_')
+                    || raw_with_sep.contains("__")
+                {
+                    return Token {
+                        kind: TokenKind::LexError("BigInt 字面量的数字分隔符位置非法".to_owned()),
+                        text: self.src[start..self.pos].to_owned(),
+                        start,
+                    };
+                }
                 return Token {
                     kind: TokenKind::BigInt(raw_digits),
                     text: self.src[start..self.pos].to_owned(),
