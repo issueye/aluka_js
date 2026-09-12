@@ -58,7 +58,7 @@
 | **M3** | **核心内置模块生产级闭环** | Stream 规范背压状态机、纯 Rust TLS 1.3 握手、HTTP 1.1 生产级长连接与连接池（http2 表面）、异步 DNS 递归查询 | `[x]`（M3.1–M3.4 全部达成；M3.4b resolve 家族真实递归查询已闭环，见 §M3.4，20260909 结项登记） |
 | **M4** | **现代 Web API 标准对齐** | 规范级 Fetch API、Web Streams 与 Node Streams 原生互通、`AbortController` 全系统级联动中断 | `[x]` |
 | **M5** | **多线程并发与进阶能力** | `worker_threads` 真实跨物理线程 Worker、`cluster` 进程池、`node:sqlite` 原生数据库支持 | `[~]` → **M5 全部子项达成（20260912 结项）**：M5.1 ✅ / M5.2 ✅（RR 调度按架构级偏离结项）/ M5.3 ✅ / M5.4 ✅（LCOV + 真 Transform 报告器闭环）；登记偏离见 §M5 各行与 20260912/README.md |
-| **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[ ]` |
+| **M6** | **生产级 GC 与高性能引擎** | 分代标记-清除 GC 正式合入主流程、8 字节 NaN-boxing 切换、多态内联缓存（PIC）与 JIT 全指令流扩容 | `[x]`（20260912 结项：M6.1 gcPressure 1.25~1.31x / M6.2 NaN-boxing / M6.3 PIC+JIT 94/106，引擎级 fib30 1.55x / proptest 3.13x） |
 | **M7** | **终局合并与全面验收** | `alukac` 与 `aluvm` 合并为统一 `aluka` 单二进制（流程不变）、Node.js 22 官方套件 ≥1000 例全绿通过 | `[ ]` |
 
 ---
@@ -493,11 +493,16 @@
 ---
 
 ### M7 · 终局合并与全面验收 (Node.js 22 全面对齐)
-- [ ] **M7.1 运行时程序合并（流程不变）**
-  - 将 `alukac` 与 `aluvm` 合并为统一的 `aluka` 单二进制发布形态；
-  - 提供 `aluka run <file>`（自动先编译/校验再执行）与 `aluka build`（打包）统一 CLI 交互体验；
-  - 严格保持内部源码 → 字节码校验 → VM 解释执行的分层流水线不变；
-  - 验收：单二进制独立分发与跨平台执行验证通过。
+- [~] **M7.1 运行时程序合并（流程不变）**（20260912 验收验证通过，跨平台待 CI）
+  - ✅ 统一单二进制形态已存在：`aluka`（run = 编译/校验/执行一体、build =
+    依赖树打包）；`alukac`/`aluvm` 独立前后端并存且与统一入口共用
+    `aluka_runtime::execute_bc` 同一装配（分层流水线不变——
+    alukac compile → aluvm run / aluka build → aluvm run / aluka run .bc
+    全链实测 fib(15)=610 一致）；
+  - ✅ 单二进制独立分发（Windows：仅 aluka.exe 单文件于任意目录运行
+    require 内置模块脚本）；
+  - ⏳ 跨平台执行验证：Linux/macOS 需 CI 矩阵补验（本环境无交叉工具链），
+    如实登记待补；
 - [ ] **M7.2 Node.js 22 官方 Conformance 规模化通过**
   - 扩容 Node.js 22 LTS 官方对拍语料库至 ≥1000 个核心用例；
   - 自动化差分对拍达到 100% 预期一致性；
