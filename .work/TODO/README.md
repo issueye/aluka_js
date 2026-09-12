@@ -466,6 +466,11 @@
     4 路组关联——同站点 2~4 个 shape 绑定共存线性探测，写回按
     (site,shape) 对独立存储；PIC 套件 14/14、workspace 652/0、
     GC 压力 214/0 全绿。
+  - ✅ 指令流扩容第一批（20260912，9915714）：typeof/typeof_global/
+    get_elem/set_elem/del_prop/get_proto/instanceof/in/new_array/build_array/
+    array_push/unary_plus 共 12 操作码接入 JIT（vtable helper 单源）——
+    操作码覆盖 52 → 66/106；连带修复 delete_property 缺 Array 分支的
+    既有引擎缺陷（delete arr[i] 静默无效），双引擎 e2e 逐字节一致。
   - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure 机器
     直调、生成器（Yield/Await）/Try 族展开协议。
 
