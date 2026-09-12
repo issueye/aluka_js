@@ -101,6 +101,7 @@ pub(crate) const HELPER_ENUM_KEYS: &str = "aluka_jit.enum_keys";
 pub(crate) const HELPER_SET_PROP_COMPUTED: &str = "aluka_jit.set_prop_computed";
 pub(crate) const HELPER_CALL_METHOD_ARGS: &str = "aluka_jit.call_method_args";
 pub(crate) const HELPER_MAKE_REGEXP: &str = "aluka_jit.make_regexp";
+pub(crate) const HELPER_GET_ITERATOR: &str = "aluka_jit.get_iterator";
 pub(crate) const HELPER_ARRAY_SPREAD: &str = "aluka_jit.array_spread";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
@@ -1142,6 +1143,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_SET_PROP_COMPUTED => Some(v.set_prop_computed as *const u8),
             HELPER_CALL_METHOD_ARGS => Some(v.call_method_args as *const u8),
             HELPER_MAKE_REGEXP => Some(v.make_regexp as *const u8),
+            HELPER_GET_ITERATOR => Some(v.get_iterator as *const u8),
             HELPER_ARRAY_SPREAD => Some(v.array_spread as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
@@ -1242,6 +1244,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let sig_riiv = mk_sig(&[ptr_type, types::I64, types::I32, types::I64]);
     let id_call_method_args = decl(&mut module, HELPER_CALL_METHOD_ARGS, &sig_riiv)?;
     let id_make_regexp = decl(&mut module, HELPER_MAKE_REGEXP, &sig_ivv)?;
+    let id_get_iterator = decl(&mut module, HELPER_GET_ITERATOR, &sig_i)?;
     let id_array_spread = decl(&mut module, HELPER_ARRAY_SPREAD, &sig_ivv)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
@@ -1288,6 +1291,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_set_prop_computed = module.declare_func_in_func(id_set_prop_computed, cg.fb.func);
     let fref_call_method_args = module.declare_func_in_func(id_call_method_args, cg.fb.func);
     let fref_make_regexp = module.declare_func_in_func(id_make_regexp, cg.fb.func);
+    let fref_get_iterator = module.declare_func_in_func(id_get_iterator, cg.fb.func);
     let fref_array_spread = module.declare_func_in_func(id_array_spread, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
@@ -2217,6 +2221,13 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     .pop()
                     .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
                 let r = emit_helper(&mut cg, fref_make_regexp, ctx_val, &[pattern, flags]);
+                value_stack.push(r);
+            }
+            Op::GetIterator | Op::GetAsyncIterator => {
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_get_iterator, ctx_val, &[val]);
                 value_stack.push(r);
             }
             Op::NewObject => {

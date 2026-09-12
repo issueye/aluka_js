@@ -548,3 +548,16 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   双引擎逐字节一致；
 - JIT 操作码覆盖 89 → **92**/106；门禁：workspace 652/0、test262 154/154、
   GC 压力 215/0、jitbench 3/3、clippy 0 全绿。
+
+## 24. 指令流扩容第六批：GetIterator/GetAsyncIterator 接入（20260912 续）
+
+- `Op::GetIterator | Op::GetAsyncIterator` 臂（约 90 行迭代器分派链：
+  生成器/流/数组/类型化数组/字符串/Map/Set/自定义 Symbol.iterator）
+  **原样抽取**为 `Vm::get_iterator_dispatch(val)`（12 处 push → return Ok），
+  解释器臂与 JIT helper `jit_get_iterator` 共用单源；
+- 实施中的双重弹栈回归（dispatch 内残留 pop）被 iter_protocol e2e
+  当场捕获（StackUnderflow），修正后 5/5 恢复；
+- e2e：for-of 数组/Set/字符串码点迭代热函数（15595 ✓）双引擎一致；
+- JIT 操作码覆盖 92 → **94**/106（GetIterator/GetAsyncIterator）；
+- 门禁：workspace 652/0、test262 154/154、GC 压力 215/0、jitbench 3/3、
+  clippy 0 全绿。

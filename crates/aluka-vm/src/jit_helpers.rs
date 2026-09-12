@@ -293,6 +293,7 @@ impl Vm {
                 set_prop_computed: jit_set_prop_computed,
                 call_method_args: jit_call_method_args,
                 make_regexp: jit_make_regexp,
+                get_iterator: jit_get_iterator,
             },
             upvals_ptr: std::ptr::null(),
             upvals_len: 0,
@@ -1158,6 +1159,22 @@ pub unsafe extern "C" fn jit_make_regexp(ctx: *mut JitCtx, pattern: u64, flags: 
     let idx = vm.push_object(regexp);
     refresh_heap(ctx, vm);
     from_vm_value(Value::Object(idx))
+}
+
+/// `GET_ITERATOR`/`GET_ASYNC_ITERATOR`：迭代器获取分派
+/// （`get_iterator_dispatch` 解释器单源；J2 错误约定降级 undefined）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_get_iterator(ctx: *mut JitCtx, val: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let r = match vm.get_iterator_dispatch(to_vm_value(val)) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
 }
 
 #[cfg(test)]

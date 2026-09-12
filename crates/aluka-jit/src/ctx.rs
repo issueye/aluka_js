@@ -244,6 +244,8 @@ pub type CallMethodArgsFn =
     unsafe extern "C" fn(ctx: *mut JitCtx, receiver: u64, name_idx: u32, args_array: u64) -> u64;
 /// `MAKE_REGEXP`：正则字面量对象。
 pub type MakeRegexpFn = unsafe extern "C" fn(ctx: *mut JitCtx, pattern: u64, flags: u64) -> u64;
+/// `GET_ITERATOR`/`GET_ASYNC_ITERATOR`：迭代器获取分派（解释器单源）。
+pub type GetIteratorFn = unsafe extern "C" fn(ctx: *mut JitCtx, val: u64) -> u64;
 
 /// helper 函数指针表（由 aluka-vm 每次调用时填充）。
 #[repr(C)]
@@ -321,6 +323,8 @@ pub struct JitVtable {
     pub call_method_args: CallMethodArgsFn,
     /// `MAKE_REGEXP`：正则字面量对象。
     pub make_regexp: MakeRegexpFn,
+    /// `GET_ITERATOR`/`GET_ASYNC_ITERATOR`
+    pub get_iterator: GetIteratorFn,
 }
 
 /// 对象布局偏移（PIC 快速路径用；由 aluka-vm 按实际布局填充）。

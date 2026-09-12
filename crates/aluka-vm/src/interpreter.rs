@@ -1658,6 +1658,87 @@ impl Vm {
     /// 解释器 `Op::CallMethod` 与 JIT 调用族 helper 共用本入口，内建分派链
     /// 语义单源；`site` 为方法 IC 站点键（解释器传 `pic_site(pc)`，JIT 传
     /// 无效站点禁用命中、仅写回）。
+    /// 迭代器获取分派（`Op::GetIterator`/`GetAsyncIterator` 共用；切片四抽取）。
+    pub(crate) fn get_iterator_dispatch(&mut self, val: Value) -> Result<Value, VmError> {
+        if self.is_generator_obj(val)
+            || self.is_readable_obj(val)
+            || self.is_array_iterator(val)
+            || self.is_string_iterator(val)
+            || self.is_map_iterator(val)
+            || self.is_set_iterator(val)
+            || matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isReadable"))
+        {
+            // 生成器/流/四类内建迭代器对象自身即迭代器
+            // （JS 协议：iterator[Symbol.iterator]() === this）
+            Ok(val)
+        } else if self.is_array_value(val) {
+            // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
+            if let Some(arr) = val.as_object() {
+                let it = self.alloc_array_iterator(arr);
+                Ok(it)
+            } else {
+                Ok(val)
+            }
+        } else if self.is_typed_array(val) {
+            // 类型化数组：物化元素快照迭代器（values 形态）
+            if let Some(ta) = val.as_object() {
+                let elems = self.ta_to_values(ta)?;
+                let snapshot = self.alloc_array(elems);
+                let it = self.alloc_array_iterator(snapshot);
+                Ok(it)
+            } else {
+                Ok(val)
+            }
+        } else if self.is_string_value(val) {
+            // 字符串：直接创建逐字符迭代器（避免 Symbol.iterator 查找开销）
+            if let Some(r) = val.as_object() {
+                let it = self.alloc_string_iterator(r);
+                Ok(it)
+            } else {
+                Ok(val)
+            }
+        } else if self.is_map_instance(val) {
+            // Map：entries 迭代器（产出 [key, value] 对）
+            if let Some(r) = val.as_object() {
+                let it = self.alloc_map_iterator(r, "entries");
+                Ok(it)
+            } else {
+                Ok(val)
+            }
+        } else if self.is_set_instance(val) {
+            // Set：values 迭代器（产出元素）
+            if let Some(r) = val.as_object() {
+                let it = self.alloc_set_iterator(r, "values");
+                Ok(it)
+            } else {
+                Ok(val)
+            }
+        } else {
+            // 自定义可迭代：读 Symbol.iterator 属性并调用取得迭代器
+            // （JS 协议：iterable[Symbol.iterator]() -> iterator）
+            let iter_sym = self.well_known_symbol("iterator");
+            let iter_ref = match iter_sym.case() {
+                ValueCase::Object(r) => r,
+                _ => unreachable!("well_known_symbol 返回符号对象"),
+            };
+            let key = crate::symbol::mangled_key(iter_ref);
+            let method = self.get_property(val, &key)?;
+            let is_closure = matches!(method.case(), ValueCase::Object(r)
+                    if matches!(
+                        self.heap.get(r.0 as usize),
+                        Some(HeapObject::Closure { .. })
+                    )
+            );
+            if is_closure {
+                let it = self.invoke_callable(method, val, &[])?;
+                Ok(it)
+            } else {
+                let msg = self.alloc_string("TypeError: value is not iterable".to_owned());
+                Err(VmError::Thrown(Value::Object(msg)))
+            }
+        }
+    }
+
     pub(crate) fn call_method_dispatch(
         &mut self,
         receiver: Value,
@@ -4707,85 +4788,10 @@ impl Vm {
                 }
                 Op::GetIterator | Op::GetAsyncIterator => {
                     let val = self.pop()?;
-                    if self.is_generator_obj(val)
-                        || self.is_readable_obj(val)
-                        || self.is_array_iterator(val)
-                        || self.is_string_iterator(val)
-                        || self.is_map_iterator(val)
-                        || self.is_set_iterator(val)
-                        || matches!(val.case(), ValueCase::Object(r) if self.has_own_slot(r.0 as usize, "_isReadable"))
-                    {
-                        // 生成器/流/四类内建迭代器对象自身即迭代器
-                        // （JS 协议：iterator[Symbol.iterator]() === this）
-                        self.stack.push(val);
-                    } else if self.is_array_value(val) {
-                        // 数组：物化下标迭代器（`for...of` / `for await...of` 共用）
-                        if let Some(arr) = val.as_object() {
-                            let it = self.alloc_array_iterator(arr);
-                            self.stack.push(it);
-                        } else {
-                            self.stack.push(val);
-                        }
-                    } else if self.is_typed_array(val) {
-                        // 类型化数组：物化元素快照迭代器（values 形态）
-                        if let Some(ta) = val.as_object() {
-                            let elems = self.ta_to_values(ta)?;
-                            let snapshot = self.alloc_array(elems);
-                            let it = self.alloc_array_iterator(snapshot);
-                            self.stack.push(it);
-                        } else {
-                            self.stack.push(val);
-                        }
-                    } else if self.is_string_value(val) {
-                        // 字符串：直接创建逐字符迭代器（避免 Symbol.iterator 查找开销）
-                        if let Some(r) = val.as_object() {
-                            let it = self.alloc_string_iterator(r);
-                            self.stack.push(it);
-                        } else {
-                            self.stack.push(val);
-                        }
-                    } else if self.is_map_instance(val) {
-                        // Map：entries 迭代器（产出 [key, value] 对）
-                        if let Some(r) = val.as_object() {
-                            let it = self.alloc_map_iterator(r, "entries");
-                            self.stack.push(it);
-                        } else {
-                            self.stack.push(val);
-                        }
-                    } else if self.is_set_instance(val) {
-                        // Set：values 迭代器（产出元素）
-                        if let Some(r) = val.as_object() {
-                            let it = self.alloc_set_iterator(r, "values");
-                            self.stack.push(it);
-                        } else {
-                            self.stack.push(val);
-                        }
-                    } else {
-                        // 自定义可迭代：读 Symbol.iterator 属性并调用取得迭代器
-                        // （JS 协议：iterable[Symbol.iterator]() -> iterator）
-                        let iter_sym = self.well_known_symbol("iterator");
-                        let iter_ref = match iter_sym.case() {
-                            ValueCase::Object(r) => r,
-                            _ => unreachable!("well_known_symbol 返回符号对象"),
-                        };
-                        let key = crate::symbol::mangled_key(iter_ref);
-                        let method = self.get_property(val, &key)?;
-                        let is_closure = matches!(method.case(), ValueCase::Object(r)
-                                if matches!(
-                                    self.heap.get(r.0 as usize),
-                                    Some(HeapObject::Closure { .. })
-                                )
-                        );
-                        if is_closure {
-                            let it = self.invoke_callable(method, val, &[])?;
-                            self.stack.push(it);
-                        } else {
-                            let msg =
-                                self.alloc_string("TypeError: value is not iterable".to_owned());
-                            return Err(VmError::Thrown(Value::Object(msg)));
-                        }
-                    }
+                    let it = self.get_iterator_dispatch(val)?;
+                    self.stack.push(it);
                 }
+
                 Op::MakeRegexp => {
                     // 正则字面量：弹 flags + pattern，构造 RegExp 对象（对齐 Go OpMakeRegexp）
                     let flags_val = self.pop()?;
