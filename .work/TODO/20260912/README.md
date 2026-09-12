@@ -467,3 +467,18 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   四元匹配；写回 = 同四元组无操作 / 空路插入 / 组满驱逐组首；
 - 新增多态方法站点测试（3 shape 交替全命中），PIC 套件 14/14；
 - 门禁：workspace 652/0、test262 154/154、clippy 0 全绿。
+
+## 19. JIT 指令流扩容第一批：12 操作码接入（20260912 续）
+
+- 新增 helper：`jit_typeof`/`jit_typeof_global`/`jit_get_elem`/`jit_set_elem`/
+  `jit_del_prop`/`jit_get_proto`/`jit_instanceof`/`jit_in`/`jit_new_array`/
+  `jit_array_push`（语义经解释器单源方法），编译臂：PushNull（纯常量）/
+  UnaryPlus（复用 to_number 通道）/Typeof/TypeofGlobal/GetElem/SetElem/
+  SetElemTop/DelProp/GetProto/Instanceof/In/NewArray|BuildArray/ArrayPush；
+- JIT 操作码覆盖 52 → **66**/106；
+- **连带发现并修复引擎既有缺陷**：`delete_property` 无 Array 分支——
+  `delete arr[i]` 静默无效（node 读 undefined，aluka 仍读原值）。补 Array
+  分支：索引键置 undefined（length 不变；`idx in arr` 恒真为已知近似），
+  非索引键删自有属性表。修复后 bisect/jitops 双引擎输出逐字节一致；
+- `unsupported_opcode_marks_rejected_once` 更新为仍子集外的 Yield；
+- 门禁：workspace 652/0、test262 154/154、GC 压力 215/0、clippy 0 全绿。

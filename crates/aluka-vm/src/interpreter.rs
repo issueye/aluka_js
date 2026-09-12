@@ -721,7 +721,7 @@ impl Vm {
     }
 
     /// JS `typeof` 语义的字符串化。
-    fn typeof_value(&self, val: Value) -> String {
+    pub(crate) fn typeof_value(&self, val: Value) -> String {
         match val.case() {
             ValueCase::Undefined => "undefined".to_owned(),
             ValueCase::Null => "object".to_owned(),

@@ -190,6 +190,27 @@ pub type LoadGlobalFn =
 /// 上值读取（`LOAD_UPVALUE`）：读当前帧上值表（由 `jit_run` 安装）。
 pub type LoadUpvalueFn = unsafe extern "C" fn(ctx: *mut JitCtx, uv_idx: u32) -> u64;
 
+/// `TYPEOF`：typeof 语义（解释器 `typeof_value` 单源），返回字符串对象盒。
+pub type TypeofFn = unsafe extern "C" fn(ctx: *mut JitCtx, v: u64) -> u64;
+/// `TYPEOF_GLOBAL`：全局 typeof（动态解析不缓存）。
+pub type TypeofGlobalFn = unsafe extern "C" fn(ctx: *mut JitCtx, name_idx: u32) -> u64;
+/// `GET_ELEM`：动态键属性读取。
+pub type GetElemFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, key: u64) -> u64;
+/// `SET_ELEM`：动态键属性写入，返回被写值。
+pub type SetElemFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, key: u64, val: u64) -> u64;
+/// `DEL_PROP`：属性删除。
+pub type DelPropFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, name_idx: u32) -> u64;
+/// `GET_PROTO`：`[[Prototype]]` 读取。
+pub type GetProtoFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64) -> u64;
+/// `INSTANCEOF`。
+pub type InstanceofFn = unsafe extern "C" fn(ctx: *mut JitCtx, l: u64, r: u64) -> u64;
+/// `IN`。
+pub type InFn = unsafe extern "C" fn(ctx: *mut JitCtx, key: u64, obj: u64) -> u64;
+/// `NEW_ARRAY`/`BUILD_ARRAY`：n 个盒 → 数组对象。
+pub type NewArrayFn = unsafe extern "C" fn(ctx: *mut JitCtx, vals_ptr: *const u64, n: u32) -> u64;
+/// `ARRAY_PUSH`：追加元素（含写屏障）。
+pub type ArrayPushFn = unsafe extern "C" fn(ctx: *mut JitCtx, arr: u64, val: u64) -> u64;
+
 /// helper 函数指针表（由 aluka-vm 每次调用时填充）。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -224,6 +245,26 @@ pub struct JitVtable {
     pub load_global: LoadGlobalFn,
     /// `LOAD_UPVALUE`
     pub load_upvalue: LoadUpvalueFn,
+    /// `TYPEOF`
+    pub typeof_: TypeofFn,
+    /// `TYPEOF_GLOBAL`
+    pub typeof_global: TypeofGlobalFn,
+    /// `GET_ELEM`
+    pub get_elem: GetElemFn,
+    /// `SET_ELEM`
+    pub set_elem: SetElemFn,
+    /// `DEL_PROP`
+    pub del_prop: DelPropFn,
+    /// `GET_PROTO`
+    pub get_proto: GetProtoFn,
+    /// `INSTANCEOF`
+    pub instanceof: InstanceofFn,
+    /// `IN`
+    pub in_: InFn,
+    /// `NEW_ARRAY`/`BUILD_ARRAY`
+    pub new_array: NewArrayFn,
+    /// `ARRAY_PUSH`
+    pub array_push: ArrayPushFn,
 }
 
 /// 对象布局偏移（PIC 快速路径用；由 aluka-vm 按实际布局填充）。

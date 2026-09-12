@@ -81,6 +81,16 @@ pub(crate) const HELPER_CALL_METHOD: &str = "aluka_jit.call_method";
 pub(crate) const HELPER_CONSTRUCT: &str = "aluka_jit.construct";
 pub(crate) const HELPER_CALL_ARGS: &str = "aluka_jit.call_args";
 pub(crate) const HELPER_CALL_THIS: &str = "aluka_jit.call_this";
+pub(crate) const HELPER_TYPEOF: &str = "aluka_jit.typeof";
+pub(crate) const HELPER_TYPEOF_GLOBAL: &str = "aluka_jit.typeof_global";
+pub(crate) const HELPER_GET_ELEM: &str = "aluka_jit.get_elem";
+pub(crate) const HELPER_SET_ELEM: &str = "aluka_jit.set_elem";
+pub(crate) const HELPER_DEL_PROP: &str = "aluka_jit.del_prop";
+pub(crate) const HELPER_GET_PROTO: &str = "aluka_jit.get_proto";
+pub(crate) const HELPER_INSTANCEOF: &str = "aluka_jit.instanceof";
+pub(crate) const HELPER_IN: &str = "aluka_jit.in";
+pub(crate) const HELPER_NEW_ARRAY: &str = "aluka_jit.new_array";
+pub(crate) const HELPER_ARRAY_PUSH: &str = "aluka_jit.array_push";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
 
@@ -1101,6 +1111,16 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_CONSTRUCT => Some(v.construct as *const u8),
             HELPER_CALL_ARGS => Some(v.call_args as *const u8),
             HELPER_CALL_THIS => Some(v.call_this as *const u8),
+            HELPER_TYPEOF => Some(v.typeof_ as *const u8),
+            HELPER_TYPEOF_GLOBAL => Some(v.typeof_global as *const u8),
+            HELPER_GET_ELEM => Some(v.get_elem as *const u8),
+            HELPER_SET_ELEM => Some(v.set_elem as *const u8),
+            HELPER_DEL_PROP => Some(v.del_prop as *const u8),
+            HELPER_GET_PROTO => Some(v.get_proto as *const u8),
+            HELPER_INSTANCEOF => Some(v.instanceof as *const u8),
+            HELPER_IN => Some(v.in_ as *const u8),
+            HELPER_NEW_ARRAY => Some(v.new_array as *const u8),
+            HELPER_ARRAY_PUSH => Some(v.array_push as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
             _ => None,
@@ -1165,6 +1185,18 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     // (ctx, callee, this, args_ptr_or_array, argc) -> u64
     let sig_call_this = mk_sig(&[ptr_type, types::I64, types::I64, types::I64, types::I32]);
     let id_call_this = decl(&mut module, HELPER_CALL_THIS, &sig_call_this)?;
+    let sig_ivvv = mk_sig(&[ptr_type, types::I64, types::I64, types::I64]);
+    let sig_ipi = mk_sig(&[ptr_type, ptr_type, types::I32]);
+    let id_typeof = decl(&mut module, HELPER_TYPEOF, &sig_i)?;
+    let id_typeof_global = decl(&mut module, HELPER_TYPEOF_GLOBAL, &sig_idx)?;
+    let id_get_elem = decl(&mut module, HELPER_GET_ELEM, &sig_ivv)?;
+    let id_set_elem = decl(&mut module, HELPER_SET_ELEM, &sig_ivvv)?;
+    let id_del_prop = decl(&mut module, HELPER_DEL_PROP, &sig_idx)?;
+    let id_get_proto = decl(&mut module, HELPER_GET_PROTO, &sig_i)?;
+    let id_instanceof = decl(&mut module, HELPER_INSTANCEOF, &sig_ivv)?;
+    let id_in = decl(&mut module, HELPER_IN, &sig_ivv)?;
+    let id_new_array = decl(&mut module, HELPER_NEW_ARRAY, &sig_ipi)?;
+    let id_array_push = decl(&mut module, HELPER_ARRAY_PUSH, &sig_ivv)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
 
@@ -1190,6 +1222,16 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_construct = module.declare_func_in_func(id_construct, cg.fb.func);
     let fref_call_args = module.declare_func_in_func(id_call_args, cg.fb.func);
     let fref_call_this = module.declare_func_in_func(id_call_this, cg.fb.func);
+    let fref_typeof = module.declare_func_in_func(id_typeof, cg.fb.func);
+    let fref_typeof_global = module.declare_func_in_func(id_typeof_global, cg.fb.func);
+    let fref_get_elem = module.declare_func_in_func(id_get_elem, cg.fb.func);
+    let fref_set_elem = module.declare_func_in_func(id_set_elem, cg.fb.func);
+    let fref_del_prop = module.declare_func_in_func(id_del_prop, cg.fb.func);
+    let fref_get_proto = module.declare_func_in_func(id_get_proto, cg.fb.func);
+    let fref_instanceof = module.declare_func_in_func(id_instanceof, cg.fb.func);
+    let fref_in = module.declare_func_in_func(id_in, cg.fb.func);
+    let fref_new_array = module.declare_func_in_func(id_new_array, cg.fb.func);
+    let fref_array_push = module.declare_func_in_func(id_array_push, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
     // JIT→JIT 直调的间接调用签名引用（被调签名与本函数同形）
@@ -1753,6 +1795,140 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     &[ctx_val, receiver, name_idx_val, args_base, argc_val],
                 );
                 value_stack.push(cg.fb.inst_results(inst)[0]);
+            }
+            Op::PushNull => {
+                value_stack.push(cg.fb.ins().iconst(types::I64, NULL as i64));
+            }
+            Op::UnaryPlus => {
+                let v = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_tonum, ctx_val, &[v]);
+                value_stack.push(r);
+            }
+            Op::Typeof => {
+                let v = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_typeof, ctx_val, &[v]);
+                value_stack.push(r);
+            }
+            Op::TypeofGlobal => {
+                let name_idx = instr.operand;
+                let idx_val = cg.fb.ins().iconst(types::I32, i64::from(name_idx));
+                let r = emit_helper(&mut cg, fref_typeof_global, ctx_val, &[idx_val]);
+                value_stack.push(r);
+            }
+            Op::GetElem => {
+                // 栈序 [..., obj, key]
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_get_elem, ctx_val, &[obj, key]);
+                value_stack.push(r);
+            }
+            Op::SetElem => {
+                // 栈序 [..., obj, key, val]；写后压回被写值
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_set_elem, ctx_val, &[obj, key, val]);
+                value_stack.push(r);
+            }
+            Op::SetElemTop => {
+                // 栈序 [..., val, obj, key]；不压回
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                emit_helper(&mut cg, fref_set_elem, ctx_val, &[obj, key, val]);
+            }
+            Op::DelProp => {
+                let name_idx = instr.operand;
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let idx_val = cg.fb.ins().iconst(types::I32, i64::from(name_idx));
+                let r = emit_helper(&mut cg, fref_del_prop, ctx_val, &[obj, idx_val]);
+                value_stack.push(r);
+            }
+            Op::GetProto => {
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_get_proto, ctx_val, &[obj]);
+                value_stack.push(r);
+            }
+            Op::Instanceof => {
+                // 栈序 [..., l, r]
+                let r_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let l = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let res = emit_helper(&mut cg, fref_instanceof, ctx_val, &[l, r_val]);
+                value_stack.push(res);
+            }
+            Op::In => {
+                // 栈序 [..., key, obj]
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let res = emit_helper(&mut cg, fref_in, ctx_val, &[key, obj]);
+                value_stack.push(res);
+            }
+            Op::NewArray | Op::BuildArray => {
+                // 操作数 = 元素数；栈序 [..., e1..eN]（栈顶为末元素）
+                let n = instr.operand as usize;
+                if value_stack.len() < n {
+                    return Err(JitError::Codegen("栈下溢".into()));
+                }
+                let mut vals = Vec::with_capacity(n);
+                for _ in 0..n {
+                    vals.push(
+                        value_stack
+                            .pop()
+                            .ok_or_else(|| JitError::Codegen("栈下溢".into()))?,
+                    );
+                }
+                vals.reverse();
+                let arr_base = cg.fb.ins().stack_addr(ptr_type, call_args_slot, 0);
+                for (i, v) in vals.iter().enumerate() {
+                    cg.fb
+                        .ins()
+                        .store(MemFlags::new(), *v, arr_base, (i * 8) as i32);
+                }
+                let n_val = cg.fb.ins().iconst(types::I32, n as i64);
+                let r = emit_helper(&mut cg, fref_new_array, ctx_val, &[arr_base, n_val]);
+                value_stack.push(r);
+            }
+            Op::ArrayPush => {
+                // 栈序 [..., arr, val]；peek arr、pop val，追加后不压
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let arr = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                emit_helper(&mut cg, fref_array_push, ctx_val, &[arr, val]);
             }
             Op::NewObject => {
                 if instr.operand != 0 {

@@ -463,8 +463,8 @@ mod tests {
     #[test]
     fn unsupported_opcode_marks_rejected_once() {
         let mut callee = double_plus_one();
-        // 插入一个子集外操作码（TypeOf）使编译失败
-        callee.code.insert(0, Instr::new(Op::Typeof, 0));
+        // 插入一个仍属子集外的操作码（Yield：生成器挂起协议未编译）使编译失败
+        callee.code.insert(0, Instr::new(Op::Yield, 0));
         callee.code.insert(0, Instr::new(Op::PushUndefined, 0));
         let module = BytecodeModule {
             header_extras: Vec::new(),

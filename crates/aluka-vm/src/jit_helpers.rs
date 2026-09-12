@@ -272,6 +272,16 @@ impl Vm {
                 call: jit_call,
                 load_global: jit_load_global,
                 load_upvalue: jit_load_upvalue,
+                typeof_: jit_typeof,
+                typeof_global: jit_typeof_global,
+                get_elem: jit_get_elem,
+                set_elem: jit_set_elem,
+                del_prop: jit_del_prop,
+                get_proto: jit_get_proto,
+                instanceof: jit_instanceof,
+                in_: jit_in,
+                new_array: jit_new_array,
+                array_push: jit_array_push,
             },
             upvals_ptr: std::ptr::null(),
             upvals_len: 0,
@@ -751,6 +761,149 @@ pub unsafe extern "C" fn jit_call_this(
     };
     refresh_heap(ctx, vm);
     from_vm_value(r)
+}
+
+/// `TYPEOF`：typeof 语义（解释器 `typeof_value` 单源），返回字符串对象盒。
+///
+/// # Safety
+/// 见模块文档：`ctx` 由 JIT 同步传入且独占当前 `Vm`。
+pub unsafe extern "C" fn jit_typeof(ctx: *mut JitCtx, v: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let s = vm.typeof_value(to_vm_value(v));
+    let r = Value::Object(vm.alloc_string(s));
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `TYPEOF_GLOBAL`：全局 typeof（动态解析不缓存）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_typeof_global(ctx: *mut JitCtx, name_idx: u32) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let name = key_str(ctx, name_idx);
+    let v = vm.resolve_global(name);
+    let s = vm.typeof_value(v);
+    let r = Value::Object(vm.alloc_string(s));
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `GET_ELEM`：动态键属性读取（`to_property_key` + `get_property` 全语义）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_get_elem(ctx: *mut JitCtx, obj: u64, key: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let k = vm.to_property_key(to_vm_value(key));
+    let r = match vm.get_property(to_vm_value(obj), &k) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `SET_ELEM`：动态键属性写入，返回被写值。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_set_elem(ctx: *mut JitCtx, obj: u64, key: u64, val: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let k = vm.to_property_key(to_vm_value(key));
+    let _ = vm.set_property(to_vm_value(obj), &k, to_vm_value(val));
+    refresh_heap(ctx, vm);
+    val
+}
+
+/// `DEL_PROP`：自有属性删除（push `true` 面）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_del_prop(ctx: *mut JitCtx, obj: u64, name_idx: u32) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let name = key_str(ctx, name_idx);
+    vm.delete_property(to_vm_value(obj), name);
+    from_vm_value(Value::Boolean(true))
+}
+
+/// `GET_PROTO`：`[[Prototype]]` 读取（无原型返回 null）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_get_proto(ctx: *mut JitCtx, obj: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let r = match vm.get_prototype(to_vm_value(obj)) {
+        Some(p) => Value::Object(p),
+        None => Value::Null,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `INSTANCEOF`：`check_instanceof` 全语义（bool 盒）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_instanceof(ctx: *mut JitCtx, l: u64, r: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let b = vm.check_instanceof(to_vm_value(l), to_vm_value(r));
+    from_vm_value(Value::Boolean(b))
+}
+
+/// `IN`：`key in obj`（`has_property` 全语义，bool 盒）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_in(ctx: *mut JitCtx, key: u64, obj: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let k = vm.to_property_key(to_vm_value(key));
+    let b = vm.has_property(to_vm_value(obj), &k);
+    from_vm_value(Value::Boolean(b))
+}
+
+/// `NEW_ARRAY`/`BUILD_ARRAY`：n 个盒（栈数组）→ 数组对象。
+///
+/// # Safety
+/// 见模块文档：`vals_ptr` 指向 `n` 个连续 u64 盒。
+pub unsafe extern "C" fn jit_new_array(ctx: *mut JitCtx, vals_ptr: *const u64, n: u32) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let elements = (0..n as usize)
+        .map(|i| {
+            // SAFETY: 调用方保证 vals_ptr 指向 n 个连续 u64
+            to_vm_value(unsafe { *vals_ptr.add(i) })
+        })
+        .collect();
+    let r = Value::Object(vm.alloc_array(elements));
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `ARRAY_PUSH`：追加元素到数组对象（含写屏障），返回被追加值。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_array_push(ctx: *mut JitCtx, arr: u64, val: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let v = to_vm_value(val);
+    if let Some(r) = to_vm_value(arr).as_object() {
+        if let Some(HeapObject::Array { elements, .. }) = vm.heap.get_mut(r.0 as usize) {
+            elements.push(v);
+        }
+        vm.gc_write_barrier(r, v);
+    }
+    refresh_heap(ctx, vm);
+    val
 }
 
 #[cfg(test)]

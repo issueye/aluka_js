@@ -192,6 +192,27 @@ impl Vm {
                 return;
             }
         }
+        // 数组对象：索引键 → 元素置 undefined（本表示无空洞，读面与 Node
+        // 一致——length 不变、读到 undefined；`idx in arr` 恒真为已知近似）；
+        // 非索引键 → 删自有属性表
+        if let Some(r) = obj.as_object() {
+            if let Some(HeapObject::Array {
+                elements,
+                properties,
+                ..
+            }) = self.heap.get_mut(r.0 as usize)
+            {
+                match key.parse::<usize>() {
+                    Ok(i) if i < elements.len() => {
+                        elements[i] = Value::Undefined;
+                    }
+                    _ => {
+                        properties.remove(key);
+                    }
+                }
+                return;
+            }
+        }
         if let Some(r) = obj.as_object() {
             if let Some(HeapObject::Ordinary {
                 props,
