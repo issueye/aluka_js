@@ -537,3 +537,14 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   双引擎逐字节一致；
 - JIT 操作码覆盖 86 → **89**/106；门禁：workspace 652/0、test262 154/154、
   GC 压力 215/0、clippy 0 全绿。
+
+## 23. 指令流扩容第五批：3 操作码接入（20260912 续）
+
+- **SetPropComputedObj**（动态键写入，obj 保留）、**CallMethodArgs**
+  （方法 IC + 实参数组调用，helper `jit_call_method_args` 复用
+  `get_method_ic` + `invoke_callable` 单源语义）、**MakeRegexp**
+  （pattern/flags 盒 → RegExp 堆对象）；
+- e2e：正则字面量 + 动态键写入（200 ✓）、方法数组实参调用（11625 ✓）
+  双引擎逐字节一致；
+- JIT 操作码覆盖 89 → **92**/106；门禁：workspace 652/0、test262 154/154、
+  GC 压力 215/0、jitbench 3/3、clippy 0 全绿。

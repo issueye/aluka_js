@@ -98,6 +98,9 @@ pub(crate) const HELPER_SET_ACCESSOR: &str = "aluka_jit.set_accessor";
 pub(crate) const HELPER_STORE_UPVALUE: &str = "aluka_jit.store_upvalue";
 pub(crate) const HELPER_SPREAD_OBJECT: &str = "aluka_jit.spread_object";
 pub(crate) const HELPER_ENUM_KEYS: &str = "aluka_jit.enum_keys";
+pub(crate) const HELPER_SET_PROP_COMPUTED: &str = "aluka_jit.set_prop_computed";
+pub(crate) const HELPER_CALL_METHOD_ARGS: &str = "aluka_jit.call_method_args";
+pub(crate) const HELPER_MAKE_REGEXP: &str = "aluka_jit.make_regexp";
 pub(crate) const HELPER_ARRAY_SPREAD: &str = "aluka_jit.array_spread";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
@@ -1136,6 +1139,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_STORE_UPVALUE => Some(v.store_upvalue as *const u8),
             HELPER_SPREAD_OBJECT => Some(v.spread_object as *const u8),
             HELPER_ENUM_KEYS => Some(v.enum_keys as *const u8),
+            HELPER_SET_PROP_COMPUTED => Some(v.set_prop_computed as *const u8),
+            HELPER_CALL_METHOD_ARGS => Some(v.call_method_args as *const u8),
+            HELPER_MAKE_REGEXP => Some(v.make_regexp as *const u8),
             HELPER_ARRAY_SPREAD => Some(v.array_spread as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
@@ -1231,6 +1237,11 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let sig_ivv2b = mk_sig(&[ptr_type, types::I64, types::I64]);
     let id_spread_object = decl(&mut module, HELPER_SPREAD_OBJECT, &sig_ivv2b)?;
     let id_enum_keys = decl(&mut module, HELPER_ENUM_KEYS, &sig_i)?;
+    let sig_ivvv2 = mk_sig(&[ptr_type, types::I64, types::I64, types::I64]);
+    let id_set_prop_computed = decl(&mut module, HELPER_SET_PROP_COMPUTED, &sig_ivvv2)?;
+    let sig_riiv = mk_sig(&[ptr_type, types::I64, types::I32, types::I64]);
+    let id_call_method_args = decl(&mut module, HELPER_CALL_METHOD_ARGS, &sig_riiv)?;
+    let id_make_regexp = decl(&mut module, HELPER_MAKE_REGEXP, &sig_ivv)?;
     let id_array_spread = decl(&mut module, HELPER_ARRAY_SPREAD, &sig_ivv)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
@@ -1274,6 +1285,9 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_store_upvalue = module.declare_func_in_func(id_store_upvalue, cg.fb.func);
     let fref_spread_object = module.declare_func_in_func(id_spread_object, cg.fb.func);
     let fref_enum_keys = module.declare_func_in_func(id_enum_keys, cg.fb.func);
+    let fref_set_prop_computed = module.declare_func_in_func(id_set_prop_computed, cg.fb.func);
+    let fref_call_method_args = module.declare_func_in_func(id_call_method_args, cg.fb.func);
+    let fref_make_regexp = module.declare_func_in_func(id_make_regexp, cg.fb.func);
     let fref_array_spread = module.declare_func_in_func(id_array_spread, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
@@ -2162,6 +2176,48 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     .last()
                     .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
                 emit_helper(&mut cg, fref_array_spread, ctx_val, &[arr, spread_val]);
+            }
+            Op::SetPropComputedObj => {
+                // 栈序 [..., obj, key, val]；peek obj、写入后不压
+                let val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let key = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                emit_helper(&mut cg, fref_set_prop_computed, ctx_val, &[obj, key, val]);
+            }
+            Op::CallMethodArgs => {
+                // 栈序 [..., receiver, argsArray]；操作数 = 方法名常量索引
+                let args_arr = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let receiver = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let name_idx = instr.operand;
+                let name_val = cg.fb.ins().iconst(types::I32, i64::from(name_idx));
+                let r = emit_helper(
+                    &mut cg,
+                    fref_call_method_args,
+                    ctx_val,
+                    &[receiver, name_val, args_arr],
+                );
+                value_stack.push(r);
+            }
+            Op::MakeRegexp => {
+                // 栈序 [..., pattern, flags]
+                let flags = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let pattern = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let r = emit_helper(&mut cg, fref_make_regexp, ctx_val, &[pattern, flags]);
+                value_stack.push(r);
             }
             Op::NewObject => {
                 if instr.operand != 0 {

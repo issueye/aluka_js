@@ -290,6 +290,9 @@ impl Vm {
                 spread_object: jit_spread_object,
                 enum_keys: jit_enum_keys,
                 array_spread: jit_array_spread,
+                set_prop_computed: jit_set_prop_computed,
+                call_method_args: jit_call_method_args,
+                make_regexp: jit_make_regexp,
             },
             upvals_ptr: std::ptr::null(),
             upvals_len: 0,
@@ -1098,6 +1101,63 @@ pub unsafe extern "C" fn jit_del_elem(ctx: *mut JitCtx, obj: u64, key: u64) -> u
     let k = vm.to_property_key(to_vm_value(key));
     vm.delete_property(to_vm_value(obj), &k);
     from_vm_value(Value::Boolean(true))
+}
+
+/// `SET_PROP_COMPUTED_OBJ`：动态键属性写入（栈顶 obj 保留）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_set_prop_computed(ctx: *mut JitCtx, obj: u64, key: u64, val: u64) {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let k = vm.to_property_key(to_vm_value(key));
+    let _ = vm.set_property(to_vm_value(obj), &k, to_vm_value(val));
+    refresh_heap(ctx, vm);
+}
+
+/// `CALL_METHOD_ARGS`：receiver + 实参数组的方法调用（方法 IC + 全语义分派）。
+///
+/// 偏离登记（J2 约定）：helper 无错误通道，分派内抛错归一 undefined。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_call_method_args(
+    ctx: *mut JitCtx,
+    receiver: u64,
+    name_idx: u32,
+    args_array: u64,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let name = key_str(ctx, name_idx);
+    let args = vm.to_array_values(to_vm_value(args_array));
+    // 方法 IC：JIT 站点共享固定站点键 u64::MAX（与解释器站点键空间不相交）
+    let method = match vm.get_method_ic(to_vm_value(receiver), name, u64::MAX) {
+        Ok(m) => m,
+        Err(_) => Value::Undefined,
+    };
+    let r = match vm.invoke_callable(method, to_vm_value(receiver), &args) {
+        Ok(v) => v,
+        Err(_) => Value::Undefined,
+    };
+    refresh_heap(ctx, vm);
+    from_vm_value(r)
+}
+
+/// `MAKE_REGEXP`：正则字面量对象（pattern/flags 盒 → RegExp 堆对象）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_make_regexp(ctx: *mut JitCtx, pattern: u64, flags: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let regexp = HeapObject::RegExp {
+        pattern: vm.format_value(to_vm_value(pattern)),
+        flags: vm.to_property_key(to_vm_value(flags)),
+    };
+    let idx = vm.push_object(regexp);
+    refresh_heap(ctx, vm);
+    from_vm_value(Value::Object(idx))
 }
 
 #[cfg(test)]
