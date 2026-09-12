@@ -577,3 +577,36 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
 
 结论：M6.3 验收（94/106 + ≥1.5x 引擎级复合验收达成）不依赖以上项；
 每项均为独立会话的多日专项，本清单即其设计输入。
+
+## 26. M7 启动：M7.1 运行时程序合并验收验证（20260912 续）
+
+### 26.1 现状盘点
+
+- 三二进制并存：`alukac`（独立前端：compile/disasm/build 依赖树）、
+  `aluvm`（独立 VM：加载 → Verifier → 解释执行）、`aluka`（统一入口：
+  `run` = 编译/校验/执行一体，`build` = 依赖树打包）——**统一单二进制
+  形态已存在**，`aluvm` 装配注释已登记与 `aluka` 共用
+  `aluka_runtime::execute_bc` 同一流程（M7.1 口径先行）。
+
+### 26.2 验收验证（真实输出）
+
+```text
+$ 独立分发：/tmp/m71_dist 仅含 aluka.exe + hello.js（无仓库其它文件）
+  ./aluka.exe run hello.js（require("os") + 算术）
+    → hello from standalone: win32 3        → 单文件自足 ✓
+$ 分层流水线不变：
+  ./alukac compile mod.js -o mod.bc → 363 字节（函数: 2）
+  ./aluvm run mod.bc                → fib(15) = 610   ✓（前端/后端分离）
+  ./alukac build mod.js → aluka_build/mod.bc
+  ./aluvm run aluka_build/mod.bc    → fib(15) = 610   ✓（依赖树构建）
+  ./aluka run mod.bc                → fib(15) = 610   ✓（统一入口直跑 .bc）
+```
+
+### 26.3 验收口径（如实）
+
+- ✅ 统一单二进制（`aluka` = run/build 统一交互；内部 源码→字节码校验→
+  VM 解释 分层流水线保持不变——独立前后端仍可全程复现）；
+- ✅ 单二进制独立分发（Windows 本机验证）；
+- ⏳ 跨平台执行验证：Windows 验证通过；Linux/macOS 需 CI 矩阵
+  （本环境无交叉工具链与远端 CI 工作流），**登记为待 CI 补验项**，
+  不在本机声称跨平台完成。
