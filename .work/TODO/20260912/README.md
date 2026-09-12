@@ -309,3 +309,22 @@ $ cargo fmt --all --check / clippy -D warnings     → 通过 / 0 error
 - 门禁：workspace 648/0、test262 154/154、jitbench 3/3、clippy 0、
   GC 压力 vm 212/0 全绿（真实输出同 §11 口径）。
 
+
+## 13. 切片四前置发现：引擎级端到端测量（20260912 续）
+
+### 13.1 测量（node v22.23.1 vs aluka，JIT 默认开启，输出均已校验一致）
+
+| 负载 | node | aluka | 结论 |
+|---|---|---|---|
+| fib30.js（递归调用密集） | 67.2ms | **2224.4ms** | **较 node 慢 33x；较本仓解释器（824ms，fib_bench 口径）还慢 2.7x——JIT 通路对递归调用密集函数存在真实回退** |
+| proptest.js（方法/构造/闭包混合） | 50.9ms | 17.5ms | 快 2.92x（毫秒级冷启动 + 方法调用 JIT 生效） |
+
+### 13.2 定性（切片四 P1 修复项）
+
+- jitbench 微基准（hot_loop/prop_sum/closure_call）全部通过，但 fib30 的
+  270 万次自递归调用暴露 **JIT 递归调用通路回退**——直调 IC（CallCell）在
+  同函数深递归下的行为需要插桩定位（疑点：helper 回退路径占比、
+  call_ic_writeback 每调用执行、递归深度下的 cell 复用）；
+- 该发现直接改写「1.5x 复合验收」的实质：端到端瓶颈不在解释器微加速
+  （切片一~三的 1.03~1.06x），而在 JIT 递归回退——先修 P1，复合验收
+  才有意义；已列为切片四首项。
