@@ -236,8 +236,21 @@ impl<'src> Parser<'src> {
         matches!(s.stmt, Stmt::Expr(Expr::String(_)))
     }
 
+    /// 语句收尾分号：显式 `;`，或 ASI 三情形（下一 token 前有换行 /
+    /// `}` / EOF）自动补。其余形态记录错误——轮十三重启严格化：
+    /// hashbang/U+2028 前置已解除，实测净效应见 t262 基线。
     fn eat_semi(&mut self) {
-        self.match_punct(";");
+        if self.match_punct(";") {
+            return;
+        }
+        let asi_ok =
+            self.peek().kind == TokenKind::Eof || self.check_punct("}") || self.nl_before_current();
+        if !asi_ok {
+            let text = self.peek().text.clone();
+            self.record_error(format!(
+                "SyntaxError: 预期 ';'，同行遇到 '{text}'（自动分号插入不适用）"
+            ));
+        }
     }
 
     /// 跳过 TypeScript 类型注解（例如 `: number`, `: Array<string>`, `: (x: number) => void` 等）
@@ -649,7 +662,14 @@ impl<'src> Parser<'src> {
         // 逗号表达式——此前 parse_expr 停在逗号、宽松 eat_semi 以
         // 「拆成多条语句」掩盖，ASI 严格化后必须整串解析）
         let expr = self.parse_expr_sequence();
-        self.eat_semi();
+        // 裸 Ident 表达式语句：宽松吞分号（TS `declare enum` 等 strip-only
+        // 豁免形态依赖；同一行跟 `enum` 等关键字不应误报 ASI 错误）
+        let bare_ident = matches!(&expr, Expr::Ident(_));
+        if bare_ident {
+            self.match_punct(";");
+        } else {
+            self.eat_semi();
+        }
         Self::at(line, Stmt::Expr(expr))
     }
 

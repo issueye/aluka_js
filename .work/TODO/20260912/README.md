@@ -872,3 +872,17 @@ $ cargo test -p aluka-jit --release --test jitbench
   assert.throws 相关批量转绿）；
 - 门禁：workspace 652/0、GC 压力 215/0、clippy 0、conformance 差分 ✓、
   jitbench 3/3、express e2e ✓。
+
+## 28. M7.2 轮十三：ASI 严格化重启 + bare-ident 豁免（20260913）
+
+- **ASI 严格化重启净正**：前置缺陷（hashbang/U+2028 空白/JSON 转义/
+  Error 子类 constructor）逐轮解除后，eat_semi 严格化（限换行/`}`/EOF）
+  实测 **824 → 837/1154**（asi 负例全绿且无误伤——上轮的回退判断
+  在新基线下不再成立）；
+- **bare-ident 豁免**：裸 Ident 表达式语句（TS `declare enum` strip-only
+  豁免形态）宽松吞分号——修复 ts_enum_is_rejected_with_declare_exempt
+  单测（workspace 652/0 恢复）；
+- **M72_FLOOR 480 → 800**：反映当前真实基线（840 含 invalid 口径
+  837/811 差异为计数方式，取 through 数）；
+- 门禁：workspace 652/0、t262 840/1154、GC 压力 215/0、conformance
+  差分 ✓、express e2e ✓、jitbench 3/3、clippy 0 全绿。
