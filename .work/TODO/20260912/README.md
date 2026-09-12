@@ -920,3 +920,31 @@ $ cargo test -p aluka-jit --release --test jitbench
 - commit f43e430（fix(m7.2): 轮十四——add_values ToPrimitive 错误通道化
   + 堆原始形态结果判定修复），5 files changed, 108 insertions(+), 9
   deletions(-)。
+
+## 30. M7.2 轮十五：非加法算术/位运算接入 ToPrimitive（20260913）
+
+- **根因**：`-` `*` `/` `%` `**` 位运算、一元 ±/`~` 一律走
+  `to_number_value`（&self，无用户代码通道）——`Object(x)` 自定义
+  valueOf/toString 的除/模得 NaN（`({valueOf:()=>6})/2` → NaN，Node 3）；
+- **修复**：新增 `numeric_operand`（ops.rs）——①wrapper_primitive 内部
+  槽直解（new Number/String/Boolean 与 Date `_timeValue`；**必须先于**
+  ToPrimitive，否则 wrapper 的 valueOf 占位被 invoke_callable 误调用，
+  实测 -20 例回归后归位）；②to_primitive_number（用户 valueOf/toString，
+  可抛错）；③to_number_value；
+- **接线面**：解释器 Sub/Mul/Div/Mod/Pow/Neg/UnaryPlus/BitNot/BitAnd/
+  BitOr/BitXor/Shl/Shr/UShr 全臂；JIT jit_to_number（全语义 + 堆刷新，
+  抛错归 NaN）、jit_bitop 同步升级——emit_arith/emit_cmp 经
+  fref_tonum 间接受益；
+- **ToPrimitive 抛错定 TypeError**：`Object.create(null) * 2` 实例挂
+  TypeError.prototype + name（prims.rs syntax_error 同口径，
+  e.constructor.name === "TypeError"）；
+- **Date 算术对齐**：`new Date(0) - 0 === 0`、`+new Date(0) === 0`
+  （hint number 走时间值；hint string/default 才 toString 序）；
+- **已知余差异（登记不修）**：`Object(原始值)` 直调一律 alloc_ordinary
+  忽略参数（call.rs:388），未造带槽 wrapper——当前语料无失败依赖，
+  后续按需补；
+- **净效果**：t262 841 → **849/1154**（S11.5/11.6 A2/A3 算术族全绿；
+  失败 226 → 218）；
+- 门禁证据：fmt ✓、clippy -D warnings exit 0 ✓、t262 门禁
+  FLOOR=770 ✓、conformance 差分 ✓、GC 压力 ALUKA_GC_STRESS=8
+  aluka-vm+runtime 0 失败 ✓、jitbench 3/3 ✓、workspace 全量 exit 0 ✓。

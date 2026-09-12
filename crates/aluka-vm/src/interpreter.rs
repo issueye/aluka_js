@@ -3857,37 +3857,37 @@ impl Vm {
                 Op::Sub => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack.push(Value::Number(
-                        self.to_number_value(left) - self.to_number_value(right),
-                    ));
+                    let a = self.numeric_operand(left)?;
+                    let b = self.numeric_operand(right)?;
+                    self.stack.push(Value::Number(a - b));
                 }
                 Op::Mul => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack.push(Value::Number(
-                        self.to_number_value(left) * self.to_number_value(right),
-                    ));
+                    let a = self.numeric_operand(left)?;
+                    let b = self.numeric_operand(right)?;
+                    self.stack.push(Value::Number(a * b));
                 }
                 Op::Div => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack.push(Value::Number(
-                        self.to_number_value(left) / self.to_number_value(right),
-                    ));
+                    let a = self.numeric_operand(left)?;
+                    let b = self.numeric_operand(right)?;
+                    self.stack.push(Value::Number(a / b));
                 }
                 Op::Mod => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack.push(Value::Number(
-                        self.to_number_value(left) % self.to_number_value(right),
-                    ));
+                    let a = self.numeric_operand(left)?;
+                    let b = self.numeric_operand(right)?;
+                    self.stack.push(Value::Number(a % b));
                 }
                 Op::Pow => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    self.stack.push(Value::Number(
-                        self.to_number_value(left).powf(self.to_number_value(right)),
-                    ));
+                    let a = self.numeric_operand(left)?;
+                    let b = self.numeric_operand(right)?;
+                    self.stack.push(Value::Number(a.powf(b)));
                 }
                 Op::Neg => {
                     let top = self.pop()?;
@@ -3906,11 +3906,13 @@ impl Vm {
                             continue;
                         }
                     }
-                    self.stack.push(Value::Number(-self.to_number_value(top)));
+                    let n = self.numeric_operand(top)?;
+                    self.stack.push(Value::Number(-n));
                 }
                 Op::UnaryPlus => {
                     let top = self.pop()?;
-                    self.stack.push(Value::Number(self.to_number_value(top)));
+                    let n = self.numeric_operand(top)?;
+                    self.stack.push(Value::Number(n));
                 }
                 Op::Inc => {
                     let top = self.pop()?;
@@ -3933,51 +3935,56 @@ impl Vm {
                     let top = self.pop()?;
                     // 位运算走**字符串感知**的 ToNumber（`~"5"` → -6）：
                     // 此前用自由函数 `to_number`（字符串一律 NaN → 0）
-                    let n = self.to_number_value(top) as i32;
+                    let n = self.numeric_operand(top)? as i32;
                     self.stack.push(Value::Number(f64::from(!n)));
                 }
                 Op::BitAnd => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res =
-                        (self.to_number_value(left) as i32) & (self.to_number_value(right) as i32);
+                    let a = self.numeric_operand(left)? as i32;
+                    let b = self.numeric_operand(right)? as i32;
+                    let res = a & b;
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::BitOr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res =
-                        (self.to_number_value(left) as i32) | (self.to_number_value(right) as i32);
+                    let a = self.numeric_operand(left)? as i32;
+                    let b = self.numeric_operand(right)? as i32;
+                    let res = a | b;
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::BitXor => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let res =
-                        (self.to_number_value(left) as i32) ^ (self.to_number_value(right) as i32);
+                    let a = self.numeric_operand(left)? as i32;
+                    let b = self.numeric_operand(right)? as i32;
+                    let res = a ^ b;
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::Shl => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (self.to_number_value(right) as i32) & 0x1f;
-                    let res = (self.to_number_value(left) as i32).wrapping_shl(shift as u32);
+                    let a = self.numeric_operand(left)? as i32;
+                    let shift = (self.numeric_operand(right)? as i32) & 0x1f;
+                    let res = a.wrapping_shl(shift as u32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::Shr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (self.to_number_value(right) as i32) & 0x1f;
-                    let res = (self.to_number_value(left) as i32).wrapping_shr(shift as u32);
+                    let a = self.numeric_operand(left)? as i32;
+                    let shift = (self.numeric_operand(right)? as i32) & 0x1f;
+                    let res = a.wrapping_shr(shift as u32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::UShr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (self.to_number_value(right) as i32) & 0x1f;
+                    let shift = (self.numeric_operand(right)? as i32) & 0x1f;
                     // 负数先按 i32 位型再解释为 u32（直接 `as u32` 会被
                     // Rust 的饱和转换把负数压成 0——`-16 >>> 28` 实测暴露）
-                    let left = (self.to_number_value(left) as i32) as u32;
+                    let left = (self.numeric_operand(left)? as i32) as u32;
                     let res = (left.wrapping_shr(shift as u32)) as f64;
                     self.stack.push(Value::Number(res));
                 }

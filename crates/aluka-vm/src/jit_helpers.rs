@@ -226,12 +226,17 @@ pub unsafe extern "C" fn jit_strict_eq(ctx: *mut JitCtx, a: u64, b: u64) -> u64 
     from_vm_value(Value::Boolean(r))
 }
 
-/// `ToNumber`（全语义）。
+/// `ToNumber`（全语义：对象走 ToPrimitive——用户 valueOf/toString 可
+/// 触发调用与 GC，故带堆刷新；抛错按 J2 约定归一 NaN）。
 ///
 /// # Safety
 /// 见模块文档。
-pub unsafe extern "C" fn jit_to_number(_ctx: *mut JitCtx, a: u64) -> u64 {
-    valbox::box_number(ops::to_number(to_vm_value(a)))
+pub unsafe extern "C" fn jit_to_number(ctx: *mut JitCtx, a: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let n = vm.numeric_operand(to_vm_value(a)).unwrap_or(f64::NAN);
+    refresh_heap(ctx, vm);
+    valbox::box_number(n)
 }
 
 /// `ToBoolean`（全语义）。
@@ -1060,8 +1065,10 @@ pub unsafe extern "C" fn jit_array_spread(
 pub unsafe extern "C" fn jit_bitop(ctx: *mut JitCtx, a: u64, b: u64, op: u32) -> u64 {
     // SAFETY: 见模块文档
     let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
-    let x = vm.to_number_value(to_vm_value(a)) as i32;
-    let y = vm.to_number_value(to_vm_value(b)) as i32;
+    // ToPrimitive 全语义（对象 valueOf/toString 可触发调用与 GC）
+    let x = vm.numeric_operand(to_vm_value(a)).unwrap_or(f64::NAN) as i32;
+    let y = vm.numeric_operand(to_vm_value(b)).unwrap_or(f64::NAN) as i32;
+    refresh_heap(ctx, vm);
     let res: i32 = match op {
         0 => x & y,
         1 => x | y,

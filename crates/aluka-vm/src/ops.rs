@@ -404,9 +404,35 @@ impl Vm {
                 }
             }
         }
-        Err(VmError::Thrown(Value::Object(self.alloc_error_instance(
-            "Cannot convert object to primitive value",
-        ))))
+        // 规范 TypeError（V8 同文案）：实例挂 TypeError.prototype +
+        // name（prims.rs syntax_error 同口径，instanceof/constructor 判型）
+        let ctor = self.error_subclass_ctor("TypeError");
+        let err = self.alloc_error_instance("Cannot convert object to primitive value");
+        let name = self.alloc_string("TypeError".to_owned());
+        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        if let Some(ValueCase::Object(p)) =
+            self.get_property(ctor, "prototype").ok().map(|v| v.case())
+        {
+            self.set_prototype_of(Value::Object(err), Some(p));
+        }
+        Err(VmError::Thrown(Value::Object(err)))
+    }
+
+    /// 二元/一元数值算子（`-` `*` `/` `%` `**` 位运算、一元 ±）的操作数
+    /// 准备：先解包装对象/Date 内部槽（与 add_values 快路径同序——须在
+    /// ToPrimitive 之前，否则 wrapper 的 valueOf 占位会被误调用），再
+    /// ToPrimitive(hint number)（用户 valueOf/toString 可抛错，故带错误
+    /// 通道），最后取数值。
+    ///
+    /// 命名偏离 to_* 惯例以规避 wrong_self_convention（&mut self 为必需）。
+    pub(crate) fn numeric_operand(&mut self, v: Value) -> Result<f64, VmError> {
+        // 包装对象（new Number/String/Boolean）与 Date：内部槽直解
+        //（含 _timeValue——Date 算术 hint number 即时间值）
+        if let Some(w) = self.wrapper_primitive(v) {
+            return Ok(self.to_number_value(w));
+        }
+        let p = self.to_primitive_number(v)?;
+        Ok(self.to_number_value(p))
     }
 
     /// 值为 BigInt 堆对象时取其十进制文本。
