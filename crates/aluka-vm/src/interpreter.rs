@@ -431,8 +431,37 @@ impl Vm {
                 let _ = vm.set_property(Value::Object(ap), m, Value::Object(fn_ref));
             }
         }
-        // Math 内置对象
+        // Math 内置对象（常量 + 全部标准方法挂为属性：方法调用经
+        // `call_method_dispatch` 的 Math 分支单源求值，属性面供
+        // `typeof Math.x === "function"` 与解引用；M7.2 轮九补全）
         vm.math_object = Some(vm.alloc_ordinary());
+        if let Some(mo) = vm.math_object {
+            // 构建窗口挂起回收：原生函数句柄在挂接为属性前不在任何根集合，
+            // GC 压力模式下中途回收会让槽位被后续对象复用（属性指向新对象）
+            vm.gc_suspend();
+            for (key, value) in [
+                ("E", std::f64::consts::E),
+                ("LN10", std::f64::consts::LN_10),
+                ("LN2", std::f64::consts::LN_2),
+                ("LOG10E", std::f64::consts::LOG10_E),
+                ("LOG2E", std::f64::consts::LOG2_E),
+                ("PI", std::f64::consts::PI),
+                ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
+                ("SQRT2", std::f64::consts::SQRT_2),
+            ] {
+                let _ = vm.set_property(Value::Object(mo), key, Value::Number(value));
+            }
+            for method in [
+                "abs", "acos", "acosh", "asin", "asinh", "atan", "atanh", "atan2", "cbrt", "ceil",
+                "clz32", "cos", "cosh", "exp", "expm1", "floor", "fround", "hypot", "imul", "log",
+                "log10", "log1p", "log2", "max", "min", "pow", "random", "round", "sign", "sin",
+                "sinh", "sqrt", "tan", "tanh", "trunc",
+            ] {
+                let f = vm.alloc_native_fn(&format!("Math.{method}"));
+                let _ = vm.set_property(Value::Object(mo), method, Value::Object(f));
+            }
+            vm.gc_resume();
+        }
         // fs 内置对象
         vm.fs_object = Some(vm.alloc_ordinary());
         // 三个原生构造器（`new` 由解释器拦截求值；instanceof 经 prototype 属性判定）
@@ -768,7 +797,7 @@ impl Vm {
     /// 解析全局名：全局变量表优先，其次内置对象，未知名返回 `undefined`。
     /// 全局解析的 JIT 入口（`resolve_global` 为私有；helper 需跨模块调用）。
     pub(crate) fn resolve_global_for_jit(&mut self, name: &str) -> Value {
-        self.resolve_global(name)
+        self.resolve_global(name).unwrap_or(Value::Undefined)
     }
 
     /// `Function` 构造器单例（惰性构建：NativeCtor + prototype 函数对象面；
@@ -839,14 +868,16 @@ impl Vm {
         self.module_scopes.get(si)?.vars.get(name).copied()
     }
 
-    pub(crate) fn resolve_global(&mut self, name: &str) -> Value {
+    /// 全局名解析：`None` 表示该标识符**不可解析**（未声明的全局读取——
+    /// 调用方按 `LoadGlobal` 抛 ReferenceError / `typeof` 返回 "undefined"）。
+    pub(crate) fn resolve_global(&mut self, name: &str) -> Option<Value> {
         if let Some(v) = self.resolve_cjs_injected(name) {
-            return v;
+            return Some(v);
         }
         if let Some(v) = self.globals.get(name) {
-            return *v;
+            return Some(*v);
         }
-        match name {
+        Some(match name {
             "undefined" => Value::Undefined,
             // 全局数值常量（`typeof NaN` 实测暴露缺失——一律 "undefined"）
             "NaN" => Value::Number(f64::NAN),
@@ -921,6 +952,14 @@ impl Vm {
                 .unwrap_or(Value::Undefined),
             "process" => self
                 .process_object
+                .map(Value::Object)
+                .unwrap_or(Value::Undefined),
+            // Node 全局 console（`require('console')` 同一模块对象；此前
+            // 靠 `CALL_METHOD` 的 `method_name == "log"` 兜底，`typeof console`
+            // 恒 undefined——轮九 ReferenceError 落地后必须显式解析）
+            "console" => self
+                .builtin_registry
+                .module("console")
                 .map(Value::Object)
                 .unwrap_or(Value::Undefined),
             "os" => self
@@ -1011,8 +1050,8 @@ impl Vm {
                         .unwrap_or_else(|| std::path::PathBuf::from(".")),
                 ),
             ),
-            _ => Value::Undefined,
-        }
+            _ => return None,
+        })
     }
 
     /// 原型方法挂载：不可枚举数据属性（JS 原型方法语义——`for...in` 不
@@ -1070,7 +1109,29 @@ impl Vm {
 
     /// 堆感知的 ToNumber：堆字符串/BigInt 按内容转数值（裸 `ops::to_number`
     /// 无法读取堆，字符串一律 NaN——真实包大量依赖 `"404"` 参与算术）。
+    /// 包装对象 / Date 的 ToPrimitive 快路径解包：返回 `[[NumberValue]]` /
+    /// `[[BooleanValue]]` / `[[StringValue]]` 数据槽值，或 Date 的
+    /// `_timeValue`；非包装对象返回 None（M7.2 轮九：`new Boolean(true) + 1`
+    /// 等此前落 `[object Object]` 拼接 / NaN）。
+    pub(crate) fn wrapper_primitive(&self, val: Value) -> Option<Value> {
+        let r = val.as_object()?;
+        for key in [
+            "[[NumberValue]]",
+            "[[BooleanValue]]",
+            "[[StringValue]]",
+            "_timeValue",
+        ] {
+            if let Some(w) = self.own_value(r.0 as usize, key) {
+                return Some(w);
+            }
+        }
+        None
+    }
+
     pub(crate) fn to_number_value(&self, val: Value) -> f64 {
+        if let Some(w) = self.wrapper_primitive(val) {
+            return self.to_number_value(w);
+        }
         if let Some(r) = val.as_object() {
             match self.heap.get(r.0 as usize) {
                 Some(HeapObject::String(s)) => {
@@ -1863,6 +1924,9 @@ impl Vm {
                     | "log2"
                     | "log10"
                     | "exp"
+                    | "sin"
+                    | "cos"
+                    | "tan"
                     | "atan"
                     | "atan2"
                     | "asin"
@@ -4005,8 +4069,17 @@ impl Vm {
                 Op::LoadGlobal => {
                     // 操作数是常量池索引，解引用出全局对象名（对齐 Go 版 OpLoadGlobal）
                     let name = constant_string(&constants, instr.operand as usize);
-                    let val = self.resolve_global(&name);
-                    self.stack.push(val);
+                    match self.resolve_global(&name) {
+                        Some(val) => self.stack.push(val),
+                        // 未声明标识符读取：规范 ReferenceError（`typeof` 走
+                        // TypeofGlobal 通道不受影响）
+                        None => {
+                            let err = self.alloc_error_instance(&format!("{name} is not defined"));
+                            let n = self.alloc_string("ReferenceError".to_owned());
+                            let _ = self.set_property(Value::Object(err), "name", Value::Object(n));
+                            return Err(VmError::Thrown(Value::Object(err)));
+                        }
+                    }
                 }
 
                 // 7. 控制流跳转
@@ -4679,6 +4752,8 @@ impl Vm {
                         && let Some(scope) = self.module_scopes.get_mut(si)
                     {
                         scope.vars.insert(name.into_owned(), val);
+                    } else if matches!(name.as_ref(), "Infinity" | "NaN" | "undefined") {
+                        // 只读全局（不可写、不可配置）：sloppy 赋值静默忽略
                     } else {
                         self.globals.insert(name.into_owned(), val);
                     }
@@ -4698,7 +4773,7 @@ impl Vm {
                 }
                 Op::TypeofGlobal => {
                     let name = constant_string(&constants, instr.operand as usize);
-                    let v = self.resolve_global(&name);
+                    let v = self.resolve_global(&name).unwrap_or(Value::Undefined);
                     let s = self.typeof_value(v);
                     let r = self.alloc_string(s);
                     self.stack.push(Value::Object(r));
@@ -5008,6 +5083,9 @@ fn math_method(method: &str, args: &[Value]) -> Value {
         "log1p" => nums.first().map(|n| n.ln_1p()).unwrap_or(f64::NAN),
         "log10" => nums.first().map(|n| n.log10()).unwrap_or(f64::NAN),
         "exp" => nums.first().map(|n| n.exp()).unwrap_or(f64::NAN),
+        "sin" => nums.first().map(|n| n.sin()).unwrap_or(f64::NAN),
+        "cos" => nums.first().map(|n| n.cos()).unwrap_or(f64::NAN),
+        "tan" => nums.first().map(|n| n.tan()).unwrap_or(f64::NAN),
         "random" => {
             use std::time::{SystemTime, UNIX_EPOCH};
             let nanos = SystemTime::now()

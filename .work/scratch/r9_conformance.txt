@@ -1,0 +1,56 @@
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_core-05dzip9okdp9f\s-hm7f6m7ml7-1jm95ob-working`
+
+warning: `aluka-core` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_bytecode-0n8i9y61d462p\s-hm7f6mrsvj-0nt0u5u-working`
+
+warning: `aluka-bytecode` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_module-3pf1u0ji4dynm\s-hm7f6ms8du-12qkz5e-working`
+
+warning: `aluka-module` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_jit-0pwv013axcuti\s-hm7qf2ebps-0xixo7y-working`
+
+warning: `aluka-jit` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_regex-1702n5wpdnzwq\s-hm7f6ms4d4-0hh6ypt-working`
+
+warning: `aluka-regex` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_vm-1i01z1aquzl05\s-hm87g9ewmk-0w0b5xg-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_parser-02ktxhq935jcc\s-hm87ccgfdl-0wjo4ne-working`
+
+warning: `aluka-vm` (lib) generated 1 warning
+warning: `aluka-parser` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_compiler-3jdqfro1alwek\s-hm87ccoc3b-16pt87p-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_builtins-1xigqfd2p3im1\s-hm87gbk90e-048s2vb-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_webapi-37tw0k1fbkcr0\s-hm87gbkffs-070trpf-working`
+
+warning: `aluka-compiler` (lib) generated 1 warning
+warning: `aluka-builtins` (lib) generated 1 warning
+warning: `aluka-webapi` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_runtime-36e9q6ru5qydc\s-hm87gbpcl0-1cwl0at-working`
+
+warning: `aluka-runtime` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_npm-2rp9azo79cb77\s-hm7ckfz1c3-072dahx-working`
+
+warning: `aluka-npm` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\alukac-1ltmfwr2brz6w\s-hm87gswbu5-1jbio25-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluvm-2exg9mr5k1jlw\s-hm87gyka0z-0opv8l0-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka-0orimce7iqb7h\s-hm87gh5b8y-1iufevo-working`
+
+warning: `aluka-cli` (bin "alukac") generated 1 warning
+warning: `aluka-cli` (bin "aluvm") generated 1 warning
+warning: `aluka-cli` (bin "aluka") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\conformance_node22_test-0i9eyuehoznrh\s-hm87ggwbfl-1xttlyg-working`
+
+warning: `aluka-cli` (test "conformance_node22_test") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+     Running tests\conformance_node22_test.rs (target\debug\deps\conformance_node22_test-410d60d8bc502736.exe)
+
+running 1 test
+test node22_conformance_matches_node_stdout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 37.51s
+

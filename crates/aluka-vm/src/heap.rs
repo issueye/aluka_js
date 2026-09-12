@@ -249,7 +249,7 @@ impl Vm {
                 self.collect_major_gc();
             } else if minor_hit {
                 self.collect_minor_gc();
-            } else if crate::gc::gc_stress_due(self.gc.allocated) {
+            } else if crate::gc::gc_stress_due(self.gc.allocated, self.gc.stress_base) {
                 // 压力验证模式（ALUKA_GC_STRESS=<N>）：漏登记的根/写屏障
                 // 确定性暴露为悬垂复用——全量套件在该模式下跑绿即审计闭环。
                 // ALUKA_GC_MODE=major|minor 可单跑一路（诊断分代 bug 用）。

@@ -175,6 +175,14 @@ fn get_string_repr<'a>(
     None
 }
 
+/// BigInt 堆对象 → 归一化十进制文本（`===` 按数值内容比较，非对象句柄）。
+fn get_bigint_repr(idx: usize, heap: &[HeapObject]) -> Option<&str> {
+    match heap.get(idx) {
+        Some(HeapObject::BigInt(s)) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
 /// 判定非严格相等（==）。
 pub fn eq(
     left: Value,
@@ -254,6 +262,13 @@ pub fn strict_eq(
             if a == b {
                 true
             } else {
+                // BigInt 按归一化十进制内容比较（`0b0_1n === 0b01n`）
+                if let (Some(ba), Some(bb)) = (
+                    get_bigint_repr(a.0 as usize, heap),
+                    get_bigint_repr(b.0 as usize, heap),
+                ) {
+                    return ba == bb;
+                }
                 let s_a = get_string_repr(a.0 as usize, heap, constants);
                 let s_b = get_string_repr(b.0 as usize, heap, constants);
                 match (s_a, s_b) {
@@ -275,6 +290,10 @@ impl Vm {
 
     /// 执行加法运算（支持数值相加与 ECMAScript 字符串自动拼接）。
     pub fn add_values(&mut self, left: Value, right: Value) -> Value {
+        // ToPrimitive 快路径：包装对象（`new Boolean/Number/String`）与 Date
+        // 先解包为原始值，再走下方原始值/字符串拼接逻辑
+        let left = self.wrapper_primitive(left).unwrap_or(left);
+        let right = self.wrapper_primitive(right).unwrap_or(right);
         if let (ValueCase::Number(a), ValueCase::Number(b)) = (left.case(), right.case()) {
             return Value::Number(a + b);
         }

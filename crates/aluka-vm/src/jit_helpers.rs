@@ -796,7 +796,7 @@ pub unsafe extern "C" fn jit_typeof_global(ctx: *mut JitCtx, name_idx: u32) -> u
     // SAFETY: 见模块文档
     let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
     let name = key_str(ctx, name_idx);
-    let v = vm.resolve_global(name);
+    let v = vm.resolve_global(name).unwrap_or(Value::Undefined);
     let s = vm.typeof_value(v);
     let r = Value::Object(vm.alloc_string(s));
     refresh_heap(ctx, vm);
@@ -1086,6 +1086,8 @@ pub unsafe extern "C" fn jit_store_global(ctx: *mut JitCtx, name_idx: u32, val: 
         && let Some(scope) = vm.module_scopes.get_mut(si)
     {
         scope.vars.insert(name.to_owned(), v);
+    } else if matches!(name, "Infinity" | "NaN" | "undefined") {
+        // 只读全局：赋值静默忽略
     } else {
         vm.globals.insert(name.to_owned(), v);
     }

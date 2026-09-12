@@ -352,6 +352,17 @@ impl<'src> Parser<'src> {
             return Self::at(line, Stmt::Block(stmts));
         }
 
+        // 标签语句：`Identifier : Statement`（`{length: 3000}` 块内为标签而非
+        // 对象属性——此前无标签支持，`length` 被当表达式求值致 ReferenceError）
+        if let TokenKind::Ident(label) = self.peek().kind.clone() {
+            if self.peek_ahead(1).is_punct(":") {
+                self.advance();
+                self.advance();
+                let body = Box::new(self.parse_stmt());
+                return Self::at(line, Stmt::Labeled { label, body });
+            }
+        }
+
         if self.match_keyword("if") {
             let _ = self.expect_punct("(");
             let cond = self.parse_expr();
@@ -1594,7 +1605,17 @@ impl<'src> Parser<'src> {
             TokenKind::Punct(p) if p == "[" => {
                 self.advance();
                 let mut elements = Vec::new();
-                while !self.check_punct("]") && self.peek().kind != TokenKind::Eof {
+                loop {
+                    if self.check_punct("]") || self.peek().kind == TokenKind::Eof {
+                        break;
+                    }
+                    // 数组 elision（`[,,,1,2]` / `[1,2,,4,5]`）：逗号直接
+                    // 产生一个空洞元素；尾随逗号（`[1,]`）在解析元素后由
+                    // 下方 `]` 判定终止，不产生空洞
+                    if self.match_punct(",") {
+                        elements.push(Expr::Undefined);
+                        continue;
+                    }
                     if self.match_punct("...") {
                         let sub = self.parse_expr();
                         elements.push(Expr::Spread(Box::new(sub)));

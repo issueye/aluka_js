@@ -336,7 +336,7 @@ impl Vm {
         // globalThis：属性读取直通全局变量表与内建全局
         if let Some(r) = obj.as_object() {
             if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
-                return Ok(self.resolve_global(key));
+                return Ok(self.resolve_global(key).unwrap_or(Value::Undefined));
             }
         }
         // 流实例计算属性（writableLength/writableNeedDrain/destroyed 等；
@@ -811,8 +811,7 @@ impl Vm {
                 _ => None,
             };
             if let Some(name) = ctor_name {
-                let c = self.resolve_global(name);
-                if !matches!(c, Value::Undefined) {
+                if let Some(c) = self.resolve_global(name) {
                     return Ok(c);
                 }
             }

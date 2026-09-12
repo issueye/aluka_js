@@ -1,0 +1,1568 @@
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_core-05dzip9okdp9f\s-hm7f6m7ml7-1jm95ob-working`
+
+warning: `aluka-core` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_bytecode-0n8i9y61d462p\s-hm7f6mrsvj-0nt0u5u-working`
+
+warning: `aluka-bytecode` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_module-3pf1u0ji4dynm\s-hm7f6ms8du-12qkz5e-working`
+
+warning: `aluka-module` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_jit-0pwv013axcuti\s-hm7qf2ebps-0xixo7y-working`
+
+warning: `aluka-jit` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_regex-1702n5wpdnzwq\s-hm7f6ms4d4-0hh6ypt-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_parser-02ktxhq935jcc\s-hm863ytwpr-0hsw0es-working`
+
+warning: `aluka-regex` (lib) generated 1 warning
+warning: `aluka-parser` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_vm-1i01z1aquzl05\s-hm863ytsk6-1ulot29-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_compiler-3jdqfro1alwek\s-hm863z2whj-1kmuesl-working`
+
+warning: `aluka-vm` (lib) generated 1 warning
+warning: `aluka-compiler` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_webapi-37tw0k1fbkcr0\s-hm8641k252-0390e90-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_builtins-1xigqfd2p3im1\s-hm8641jjiv-0ol2co7-working`
+
+warning: `aluka-webapi` (lib) generated 1 warning
+warning: `aluka-builtins` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_runtime-36e9q6ru5qydc\s-hm8641q36x-05cpic4-working`
+
+warning: `aluka-runtime` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_npm-2rp9azo79cb77\s-hm7ckfz1c3-072dahx-working`
+
+warning: `aluka-npm` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluvm-2exg9mr5k1jlw\s-hm8643rrtu-1tc7934-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka-0orimce7iqb7h\s-hm8643rm9i-00ejjjz-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\alukac-1ltmfwr2brz6w\s-hm8643rvy5-02y4l2q-working`
+
+warning: `aluka-cli` (bin "aluvm") generated 1 warning
+warning: `aluka-cli` (bin "aluka") generated 1 warning
+warning: `aluka-cli` (bin "alukac") generated 1 warning
+   Compiling aluka-cli v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-cli)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\test262_subset_test-276zt364410l5\s-hm865gy8pf-1dyykif-working`
+
+warning: `aluka-cli` (test "test262_subset_test") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.49s
+     Running tests\test262_subset_test.rs (target\debug\deps\test262_subset_test-59d6c99346a72776.exe)
+
+running 1 test
+[t262] 共 1154 例（jobs=8）
+PASS 01-basic.js
+PASS 02-negative-syntax.js
+PASS 03-negative-runtime.js
+PASS 04-builtins.js
+PASS 05-es2015.js
+PASS 06-regexp.js
+PASS 07-regexp-negative.js
+PASS 08-tagged-template.js
+PASS m1-array-001.js
+PASS m1-array-002.js
+PASS m1-array-003.js
+PASS m1-array-004.js
+PASS m1-array-005.js
+PASS m1-array-006.js
+PASS m1-array-007.js
+PASS m1-array-008.js
+PASS m1-array-009.js
+PASS m1-array-010.js
+PASS m1-es2024-001.js
+PASS m1-es2024-002.js
+PASS m1-es2024-003.js
+PASS m1-es2024-004.js
+PASS m1-es2024-005.js
+PASS m1-es2024-006.js
+PASS m1-es2024-007.js
+PASS m1-es2024-008.js
+PASS m1-es2024-009.js
+PASS m1-es2024-010.js
+PASS m1-eval-001.js
+PASS m1-eval-002.js
+PASS m1-eval-003.js
+PASS m1-eval-004.js
+PASS m1-eval-005.js
+PASS m1-eval-006.js
+PASS m1-eval-007.js
+PASS m1-eval-008.js
+PASS m1-eval-009.js
+PASS m1-eval-010.js
+PASS m1-eval-011.js
+PASS m1-eval-012.js
+PASS m1-eval-013.js
+PASS m1-eval-014.js
+PASS m1-eval-015.js
+PASS m1-eval-016.js
+PASS m1-eval-017.js
+PASS m1-eval-018.js
+PASS m1-eval-019.js
+PASS m1-eval-020.js
+PASS m1-eval-021.js
+PASS m1-eval-022.js
+PASS m1-eval-023.js
+PASS m1-eval-024.js
+PASS m1-eval-025.js
+PASS m1-eval-026.js
+PASS m1-eval-027.js
+PASS m1-eval-028.js
+PASS m1-eval-029.js
+PASS m1-eval-030.js
+PASS m1-eval-031.js
+PASS m1-eval-032.js
+PASS m1-eval-033.js
+PASS m1-eval-034.js
+PASS m1-eval-035.js
+PASS m1-eval-036.js
+PASS m1-eval-037.js
+PASS m1-eval-038.js
+PASS m1-eval-039.js
+PASS m1-eval-040.js
+PASS m1-eval-041.js
+PASS m1-eval-042.js
+PASS m1-eval-043.js
+PASS m1-eval-044.js
+PASS m1-eval-045.js
+PASS m1-eval-046.js
+PASS m1-eval-047.js
+PASS m1-eval-048.js
+PASS m1-eval-049.js
+PASS m1-eval-050.js
+PASS m1-eval-051.js
+PASS m1-eval-052.js
+PASS m1-negative-proxy-target.js
+PASS m1-negative-regexp-group.js
+PASS m1-proxy-001.js
+PASS m1-proxy-002.js
+PASS m1-proxy-003.js
+PASS m1-proxy-004.js
+PASS m1-proxy-005.js
+PASS m1-proxy-006.js
+INV  m1-proxy-007.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m1-proxy-008.js
+PASS m1-proxy-009.js
+PASS m1-proxy-010.js
+PASS m1-proxy-011.js
+PASS m1-proxy-012.js
+PASS m1-proxy-013.js
+PASS m1-proxy-014.js
+PASS m1-proxy-015.js
+PASS m1-proxy-016.js
+PASS m1-proxy-017.js
+PASS m1-proxy-018.js
+PASS m1-proxy-019.js
+PASS m1-proxy-020.js
+PASS m1-proxy-021.js
+PASS m1-proxy-022.js
+PASS m1-proxy-023.js
+PASS m1-proxy-024.js
+PASS m1-proxy-025.js
+PASS m1-proxy-026.js
+PASS m1-proxy-027.js
+PASS m1-proxy-028.js
+PASS m1-proxy-029.js
+PASS m1-proxy-030.js
+PASS m1-proxy-031.js
+PASS m1-proxy-032.js
+PASS m1-proxy-033.js
+PASS m1-proxy-034.js
+PASS m1-proxy-035.js
+PASS m1-proxy-036.js
+PASS m1-proxy-037.js
+PASS m1-proxy-038.js
+PASS m1-proxy-039.js
+PASS m1-proxy-040.js
+PASS m1-proxy-041.js
+PASS m1-proxy-042.js
+PASS m1-proxy-043.js
+PASS m1-proxy-044.js
+PASS m1-proxy-045.js
+PASS m1-regexp-001.js
+PASS m1-regexp-002.js
+PASS m1-regexp-003.js
+PASS m1-regexp-004.js
+PASS m1-regexp-005.js
+PASS m1-regexp-006.js
+PASS m1-regexp-007.js
+PASS m1-regexp-008.js
+PASS m1-regexp-009.js
+PASS m1-regexp-010.js
+PASS m1-regexp-011.js
+PASS m1-regexp-012.js
+PASS m1-typedarray-001.js
+PASS m1-typedarray-002.js
+PASS m1-typedarray-003.js
+PASS m1-typedarray-004.js
+PASS m1-typedarray-005.js
+PASS m1-typedarray-006.js
+INV  m1-typedarray-007.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m1-typedarray-008.js
+PASS m1-typedarray-009.js
+PASS m1-typedarray-010.js
+PASS m1-typedarray-011.js
+PASS m1-typedarray-012.js
+PASS m1-typedarray-013.js
+PASS m1-typedarray-014.js
+INV  m1-typedarray-015.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Array-15.4.5-1.js
+PASS m72-built-ins-Array-15.4.5.1-5-1.js
+PASS m72-built-ins-Array-15.4.5.1-5-2.js
+PASS m72-built-ins-Array-S15.4.1_A1.1_T1.js
+FAIL m72-built-ins-Array-S15.4.1_A1.1_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got  (x.toString() must return "[object Array]")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.1_A1.1_T2.js.bc)
+
+PASS m72-built-ins-Array-S15.4.1_A1.1_T3.js
+FAIL m72-built-ins-Array-S15.4.1_A1.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got undefined (x.getClass() must return "[object Array]")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.1_A1.2_T1.js.bc)
+
+PASS m72-built-ins-Array-S15.4.1_A1.3_T1.js
+PASS m72-built-ins-Array-S15.4.1_A2.1_T1.js
+PASS m72-built-ins-Array-S15.4.1_A2.2_T1.js
+PASS m72-built-ins-Array-S15.4.1_A3.1_T1.js
+FAIL m72-built-ins-Array-S15.4.2.1_A1.1_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected false got undefined (x.hasOwnProperty("myproperty") must return false)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.2.1_A1.1_T1.js.bc)
+
+FAIL m72-built-ins-Array-S15.4.2.1_A1.1_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got  (x.toString() must return "[object Array]")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.2.1_A1.1_T2.js.bc)
+
+PASS m72-built-ins-Array-S15.4.2.1_A1.1_T3.js
+FAIL m72-built-ins-Array-S15.4.2.1_A1.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got undefined (x.getClass() must return "[object Array]")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.2.1_A1.2_T1.js.bc)
+
+PASS m72-built-ins-Array-S15.4.2.1_A1.3_T1.js
+PASS m72-built-ins-Array-S15.4.2.1_A2.1_T1.js
+PASS m72-built-ins-Array-S15.4.2.1_A2.2_T1.js
+PASS m72-built-ins-Array-S15.4.3_A1.1_T1.js
+PASS m72-built-ins-Array-S15.4.3_A1.1_T2.js
+FAIL m72-built-ins-Array-S15.4.3_A1.1_T3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got false (Function.prototype.isPrototypeOf(Array) must return true)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.3_A1.1_T3.js.bc)
+
+FAIL m72-built-ins-Array-S15.4.5.1_A1.2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected -1 got 2 (The value of x[2] is expected to be -1)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.5.1_A1.2_T2.js.bc)
+
+PASS m72-built-ins-Array-S15.4.5.1_A2.1_T1.js
+PASS m72-built-ins-Array-S15.4.5.1_A2.2_T1.js
+PASS m72-built-ins-Array-S15.4.5.1_A2.3_T1.js
+INV  m72-built-ins-Array-S15.4.5.2_A1_T1.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Array-S15.4.5.2_A1_T2.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Array-S15.4.5.2_A2_T1.js
+FAIL m72-built-ins-Array-S15.4.5.2_A3_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 0 (The value of x.length is expected to be 1)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.5.2_A3_T1.js.bc)
+
+FAIL m72-built-ins-Array-S15.4.5.2_A3_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got 6 (The value of x.length is expected to be 4)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.5.2_A3_T2.js.bc)
+
+FAIL m72-built-ins-Array-S15.4.5.2_A3_T3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4294967295 got 0 (The value of x.length is expected to be 4294967295)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4.5.2_A3_T3.js.bc)
+
+PASS m72-built-ins-Array-S15.4_A1.1_T10.js
+PASS m72-built-ins-Array-S15.4_A1.1_T4.js
+PASS m72-built-ins-Array-S15.4_A1.1_T5.js
+FAIL m72-built-ins-Array-S15.4_A1.1_T6.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got undefined (The value of x["true"] is expected to be 1)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4_A1.1_T6.js.bc)
+
+FAIL m72-built-ins-Array-S15.4_A1.1_T7.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got undefined (The value of x[0] is expected to be 0)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4_A1.1_T7.js.bc)
+
+FAIL m72-built-ins-Array-S15.4_A1.1_T8.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got undefined (The value of x[0] is expected to be 0)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4_A1.1_T8.js.bc)
+
+FAIL m72-built-ins-Array-S15.4_A1.1_T9.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got undefined (The value of x["[object Object]"] is expected to be 0)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Array-S15.4_A1.1_T9.js.bc)
+
+PASS m72-built-ins-Array-constructor.js
+PASS m72-built-ins-Array-property-cast-boolean-primitive.js
+PASS m72-built-ins-Boolean-S15.6.1.1_A1_T1.js
+PASS m72-built-ins-Boolean-S15.6.1.1_A1_T2.js
+PASS m72-built-ins-Boolean-S15.6.1.1_A1_T3.js
+PASS m72-built-ins-Boolean-S15.6.1.1_A1_T4.js
+PASS m72-built-ins-Boolean-S15.6.1.1_A1_T5.js
+PASS m72-built-ins-Boolean-S15.6.1.1_A2.js
+PASS m72-built-ins-Boolean-S15.6.2.1_A1.js
+INV  m72-built-ins-Boolean-S15.6.2.1_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Boolean-S15.6.2.1_A3.js
+FAIL m72-built-ins-Boolean-S15.6.2.1_A4.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Boolean] got [object Object] (obj.toString() must return "[object Boolean]")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-S15.6.2.1_A4.js.bc)
+
+INV  m72-built-ins-Boolean-S15.6.3_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Boolean-S15.6.3_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Boolean-S15.6.3_A3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Boolean-S9.2_A1_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): TypeError: undefined is not a function
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-S9.2_A1_T1.js.bc)
+
+PASS m72-built-ins-Boolean-S9.2_A2_T1.js
+PASS m72-built-ins-Boolean-S9.2_A3_T1.js
+PASS m72-built-ins-Boolean-S9.2_A4_T1.js
+PASS m72-built-ins-Boolean-S9.2_A4_T3.js
+PASS m72-built-ins-Boolean-S9.2_A5_T1.js
+PASS m72-built-ins-Boolean-S9.2_A5_T3.js
+PASS m72-built-ins-Boolean-S9.2_A6_T1.js
+INV  m72-built-ins-Boolean-proto-from-ctor-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Boolean-prototype-S15.6.3.1_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Boolean-prototype-S15.6.3.1_A4.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Boolean-prototype-S15.6.4_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Boolean-prototype-constructor-S15.6.4.1_A1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of Boolean.prototype.constructor is expected to equal the value of Boolean)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-constructor-S15.6.4.1_A1.js.bc)
+
+PASS m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A1_T1.js
+PASS m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A1_T2.js
+FAIL m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T1.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T2.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T3.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T4.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T4.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T5.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T5.js.bc)
+
+PASS m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A1_T1.js
+PASS m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A1_T2.js
+FAIL m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T1.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T2.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T3.js.bc)
+
+FAIL m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T4.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T4.js.bc)
+
+FAIL m72-built-ins-Boolean-symbol-coercion.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got 1 (`Boolean(sym).valueOf()` returns `true`)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Boolean-symbol-coercion.js.bc)
+
+INV  m72-built-ins-Infinity-15.1.1.2-0.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Infinity-S15.1.1.2_A1.js
+FAIL m72-built-ins-Infinity-S15.1.1.2_A2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.notSameValue: expected not to be boolean (The value of typeof(Infinity) is not "boolean")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Infinity-S15.1.1.2_A2_T2.js.bc)
+
+FAIL m72-built-ins-Infinity-S15.1.1.2_A3_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected false got true (The value of `delete Infinity` is expected to be false)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Infinity-S15.1.1.2_A3_T2.js.bc)
+
+PASS m72-built-ins-Infinity-S15.1.1.2_A4.js
+PASS m72-built-ins-JSON-15.12-0-1.js
+FAIL m72-built-ins-JSON-15.12-0-2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-JSON-15.12-0-2.js.bc)
+
+PASS m72-built-ins-JSON-15.12-0-3.js
+FAIL m72-built-ins-JSON-15.12-0-4.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 3 (i)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-JSON-15.12-0-4.js.bc)
+
+INV  m72-built-ins-JSON-isRawJSON-basic.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-JSON-isRawJSON-builtin.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-1.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-2.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-3.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-4.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-5.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-6.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-8.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-0-9.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g1-1.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g1-2.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g1-3.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g1-4.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g2-1.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g2-2.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g2-3.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g2-4.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g2-5.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g4-1.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g4-2.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g4-3.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g4-4.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g5-1.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g5-2.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g5-3.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-1.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-2.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-3.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-4.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-5.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-6.js
+PASS m72-built-ins-JSON-parse-15.12.1.1-g6-7.js
+PASS m72-built-ins-JSON-parse-15.12.2-2-1.js
+PASS m72-built-ins-JSON-parse-15.12.2-2-10.js
+PASS m72-built-ins-JSON-parse-15.12.2-2-2.js
+INV  m72-built-ins-Math-abs-S15.8.2.1_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Math-abs-S15.8.2.1_A2.js
+PASS m72-built-ins-Math-abs-S15.8.2.1_A3.js
+PASS m72-built-ins-Math-abs-absolute-value.js
+INV  m72-built-ins-Math-acos-S15.8.2.2_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-acos-S15.8.2.2_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-acos-S15.8.2.2_A3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Math-acos-S15.8.2.2_A4.js
+PASS m72-built-ins-Math-acosh-arg-is-infinity.js
+PASS m72-built-ins-Math-acosh-arg-is-one.js
+INV  m72-built-ins-Math-acosh-nan-returns.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-asin-S15.8.2.3_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-asin-S15.8.2.3_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-asin-S15.8.2.3_A3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Math-asin-S15.8.2.3_A4.js
+PASS m72-built-ins-Math-asin-S15.8.2.3_A5.js
+INV  m72-built-ins-Math-asinh-asinh-specialVals.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-atan-S15.8.2.4_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Math-atan-S15.8.2.4_A2.js
+PASS m72-built-ins-Math-atan-S15.8.2.4_A3.js
+INV  m72-built-ins-Math-atan2-S15.8.2.5_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Math-atan2-S15.8.2.5_A14.js
+PASS m72-built-ins-Math-atan2-S15.8.2.5_A16.js
+PASS m72-built-ins-Math-atan2-S15.8.2.5_A4.js
+PASS m72-built-ins-Math-atan2-S15.8.2.5_A5.js
+PASS m72-built-ins-Math-atan2-S15.8.2.5_A8.js
+PASS m72-built-ins-Math-atan2-S15.8.2.5_A9.js
+INV  m72-built-ins-Math-atanh-atanh-specialVals.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-cbrt-cbrt-specialValues.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Math-ceil-S15.8.2.6_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Math-ceil-S15.8.2.6_A2.js
+PASS m72-built-ins-Math-ceil-S15.8.2.6_A3.js
+PASS m72-built-ins-Math-ceil-S15.8.2.6_A4.js
+PASS m72-built-ins-Math-ceil-S15.8.2.6_A5.js
+PASS m72-built-ins-Math-ceil-S15.8.2.6_A6.js
+PASS m72-built-ins-Math-ceil-S15.8.2.6_A7.js
+PASS m72-built-ins-Math-clz32-Math.clz32.js
+PASS m72-built-ins-Math-clz32-Math.clz32_1.js
+PASS m72-built-ins-Math-clz32-Math.clz32_2.js
+PASS m72-built-ins-Math-proto.js
+INV  m72-built-ins-NaN-15.1.1.1-0.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-NaN-S15.1.1.1_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-NaN-S15.1.1.1_A2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.notSameValue: expected not to be boolean (The value of typeof(NaN) is not "boolean")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-NaN-S15.1.1.1_A2_T2.js.bc)
+
+FAIL m72-built-ins-NaN-S15.1.1.1_A3_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected false got true (The value of `delete NaN` is expected to be false)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-NaN-S15.1.1.1_A3_T2.js.bc)
+
+PASS m72-built-ins-NaN-S15.1.1.1_A4.js
+FAIL m72-built-ins-Number-15.7.3-1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got false (Function.prototype.isPrototypeOf(Number))
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-15.7.3-1.js.bc)
+
+FAIL m72-built-ins-Number-15.7.3-2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null (p)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-15.7.3-2.js.bc)
+
+FAIL m72-built-ins-Number-15.7.4-1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Number] got [object Object] (s)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-15.7.4-1.js.bc)
+
+INV  m72-built-ins-Number-S15.7.1.1_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Number-S15.7.1.1_A2.js
+PASS m72-built-ins-Number-S15.7.2.1_A1.js
+INV  m72-built-ins-Number-S15.7.2.1_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Number-S15.7.2.1_A3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (x2.valueOf() must return 0)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-S15.7.2.1_A3.js.bc)
+
+FAIL m72-built-ins-Number-S15.7.2.1_A4.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Number] got [object Object] (obj.toString() must return "[object Number]")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-S15.7.2.1_A4.js.bc)
+
+INV  m72-built-ins-Number-S15.7.3_A1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A4.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A5.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A6.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A7.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Number-S15.7.3_A8.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Number-S15.7.5_A1_T01.js
+PASS m72-built-ins-Number-S15.7.5_A1_T02.js
+PASS m72-built-ins-Number-S15.7.5_A1_T03.js
+PASS m72-built-ins-Number-S15.7.5_A1_T04.js
+PASS m72-built-ins-Number-S15.7.5_A1_T05.js
+PASS m72-built-ins-Number-S15.7.5_A1_T06.js
+PASS m72-built-ins-Number-S15.7.5_A1_T07.js
+FAIL m72-built-ins-Number-S8.12.8_A3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-S8.12.8_A3.js.bc)
+
+PASS m72-built-ins-Number-S8.12.8_A4.js
+FAIL m72-built-ins-Number-S9.1_A1_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (Number({valueOf: function() {return "1"}, toString: function() {return 0}}) must return 1)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Number-S9.1_A1_T1.js.bc)
+
+PASS m72-built-ins-Number-S9.3.1_A1.js
+PASS m72-built-ins-Number-S9.3.1_A10.js
+PASS m72-built-ins-Number-S9.3.1_A11.js
+PASS m72-built-ins-Number-S9.3.1_A12.js
+PASS m72-built-ins-Number-S9.3.1_A13.js
+PASS m72-built-ins-Number-S9.3.1_A14.js
+INV  m72-built-ins-Number-S9.3.1_A15.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Number-S9.3.1_A16.js
+PASS m72-built-ins-Number-S9.3.1_A17.js
+PASS m72-built-ins-Number-S9.3.1_A18.js
+PASS m72-built-ins-Number-S9.3.1_A19.js
+PASS m72-built-ins-Number-S9.3.1_A2.js
+PASS m72-built-ins-Number-S9.3.1_A20.js
+PASS m72-built-ins-Object-S15.2.1.1_A1_T1.js
+PASS m72-built-ins-Object-S15.2.1.1_A1_T2.js
+PASS m72-built-ins-Object-S15.2.1.1_A1_T3.js
+PASS m72-built-ins-Object-S15.2.1.1_A1_T4.js
+PASS m72-built-ins-Object-S15.2.1.1_A1_T5.js
+INV  m72-built-ins-Object-S15.2.1.1_A2_T1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Object-S15.2.1.1_A2_T10.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1,2,3,4 got [object Object] (The value of n_obj is expected to equal the value of arr)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.1.1_A2_T10.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.1.1_A2_T11.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of n_obj.constructor is expected to equal the value of Function)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.1.1_A2_T11.js.bc)
+
+INV  m72-built-ins-Object-S15.2.1.1_A2_T12.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.1.1_A2_T13.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.1.1_A2_T14.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.1.1_A2_T2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.1.1_A2_T3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.1.1_A2_T4.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Object-S15.2.1.1_A2_T5.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of obj.constructor is expected to equal the value of Number)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.1.1_A2_T5.js.bc)
+
+INV  m72-built-ins-Object-S15.2.1.1_A2_T6.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.1.1_A2_T7.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Object-S15.2.1.1_A2_T8.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.1.1_A2_T8.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.1.1_A2_T9.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.1.1_A2_T9.js.bc)
+
+INV  m72-built-ins-Object-S15.2.1.1_A3_T1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Object-S15.2.1.1_A3_T2.js
+INV  m72-built-ins-Object-S15.2.1.1_A3_T3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A1_T1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A1_T2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A1_T3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A1_T4.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A1_T5.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Object-S15.2.2.1_A2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got [object Object] (The value of n_obj is expected to equal the value of obj)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.2.1_A2_T1.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.2.1_A2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.2.1_A2_T2.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.2.1_A2_T3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1,2,3,4 got [object Object] (The value of n_obj is expected to equal the value of arr)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.2.1_A2_T3.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.2.1_A2_T5.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 260236800000 got [object Object] (The value of n_obj is expected to equal the value of obj)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.2.1_A2_T5.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.2.1_A2_T6.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.2.1_A2_T6.js.bc)
+
+FAIL m72-built-ins-Object-S15.2.2.1_A2_T7.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of n_obj.constructor is expected to equal the value of Function)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Object-S15.2.2.1_A2_T7.js.bc)
+
+INV  m72-built-ins-Object-S15.2.2.1_A3_T1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A3_T2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A3_T3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A4_T1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A4_T2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A4_T3.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Object-S15.2.2.1_A5_T1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-String-15.5.5.5.2-1-1.js
+PASS m72-built-ins-String-15.5.5.5.2-1-2.js
+PASS m72-built-ins-String-15.5.5.5.2-3-1.js
+PASS m72-built-ins-String-15.5.5.5.2-3-2.js
+PASS m72-built-ins-String-15.5.5.5.2-3-3.js
+PASS m72-built-ins-String-15.5.5.5.2-3-4.js
+PASS m72-built-ins-String-15.5.5.5.2-3-5.js
+PASS m72-built-ins-String-15.5.5.5.2-3-6.js
+PASS m72-built-ins-String-15.5.5.5.2-3-7.js
+PASS m72-built-ins-String-15.5.5.5.2-3-8.js
+PASS m72-built-ins-String-15.5.5.5.2-7-1.js
+PASS m72-built-ins-String-15.5.5.5.2-7-2.js
+PASS m72-built-ins-String-15.5.5.5.2-7-3.js
+PASS m72-built-ins-String-15.5.5.5.2-7-4.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T1.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T10.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T11.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T12.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T13.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T14.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T15.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T16.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T17.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T18.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T19.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T2.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T3.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T4.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T5.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T6.js
+PASS m72-built-ins-String-S15.5.1.1_A1_T7.js
+FAIL m72-built-ins-String-S15.5.1.1_A1_T8.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.1.1_A1_T8.js.bc)
+
+INV  m72-built-ins-String-S15.5.1.1_A1_T9.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-String-S15.5.1.1_A2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.1.1_A2_T1.js.bc)
+
+FAIL m72-built-ins-String-S15.5.2.1_A1_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.2.1_A1_T1.js.bc)
+
+FAIL m72-built-ins-String-S15.5.2.1_A1_T10.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.2.1_A1_T10.js.bc)
+
+FAIL m72-built-ins-String-S15.5.2.1_A1_T11.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.2.1_A1_T11.js.bc)
+
+FAIL m72-built-ins-String-S15.5.2.1_A1_T12.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.2.1_A1_T12.js.bc)
+
+FAIL m72-built-ins-String-S15.5.2.1_A1_T13.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.2.1_A1_T13.js.bc)
+
+FAIL m72-built-ins-String-S15.5.2.1_A1_T16.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-String-S15.5.2.1_A1_T16.js.bc)
+
+INV  m72-built-ins-Symbol-asyncDispose-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-asyncDispose-no-key.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-asyncIterator-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Symbol-auto-boxing-non-strict.js
+INV  m72-built-ins-Symbol-auto-boxing-strict.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Symbol-constructor.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of null (reading 'constructor')
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-constructor.js.bc)
+
+FAIL m72-built-ins-Symbol-desc-to-string-symbol.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-desc-to-string-symbol.js.bc)
+
+FAIL m72-built-ins-Symbol-desc-to-string.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected toStringvalueOf got 
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-desc-to-string.js.bc)
+
+INV  m72-built-ins-Symbol-dispose-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-dispose-no-key.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-Symbol-for-create-value.js
+INV  m72-built-ins-Symbol-for-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Symbol-for-description.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected test262 got [object Object]
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-for-description.js.bc)
+
+PASS m72-built-ins-Symbol-for-retrieve-value.js
+INV  m72-built-ins-Symbol-for-to-string-err.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-hasInstance-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Symbol-invoked-with-new.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-invoked-with-new.js.bc)
+
+INV  m72-built-ins-Symbol-isConcatSpreadable-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-iterator-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Symbol-keyFor-arg-non-symbol.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected function got undefined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-keyFor-arg-non-symbol.js.bc)
+
+PASS m72-built-ins-Symbol-keyFor-arg-symbol-registry-hit.js
+PASS m72-built-ins-Symbol-keyFor-arg-symbol-registry-miss.js
+INV  m72-built-ins-Symbol-keyFor-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-match-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-built-ins-Symbol-matchAll-cross-realm.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-Symbol-not-callable.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-not-callable.js.bc)
+
+PASS m72-built-ins-Symbol-prototype-description-description-symboldescriptivestring.js
+FAIL m72-built-ins-Symbol-prototype-description-get.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected  got undefined (The value of emptyStr.description is "")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-prototype-description-get.js.bc)
+
+PASS m72-built-ins-Symbol-prototype-description-is-not-own-property.js
+FAIL m72-built-ins-Symbol-prototype-intrinsic.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null (`Object.getPrototypeOf(Symbol('66'))` returns `Symbol.prototype`)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-Symbol-prototype-intrinsic.js.bc)
+
+PASS m72-built-ins-Symbol-uniqueness.js
+INV  m72-built-ins-undefined-15.1.1.3-0.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-built-ins-undefined-15.1.1.3-1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected undefined got number (typeof undefined)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-undefined-15.1.1.3-1.js.bc)
+
+INV  m72-built-ins-undefined-15.1.1.3-2.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-built-ins-undefined-15.1.1.3-3.js
+PASS m72-built-ins-undefined-S15.1.1.3_A1.js
+FAIL m72-built-ins-undefined-S15.1.1.3_A3_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-built-ins-undefined-S15.1.1.3_A3_T2.js.bc)
+
+PASS m72-built-ins-undefined-S15.1.1.3_A4.js
+FAIL m72-language-asi-S7.9.2_A1_T1.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9.2_A1_T1.js.bc)\n"）
+PASS m72-language-asi-S7.9.2_A1_T2.js
+PASS m72-language-asi-S7.9.2_A1_T3.js
+PASS m72-language-asi-S7.9.2_A1_T4.js
+FAIL m72-language-asi-S7.9.2_A1_T5.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9.2_A1_T5.js.bc)
+
+FAIL m72-language-asi-S7.9.2_A1_T6.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9.2_A1_T6.js.bc)\n"）
+PASS m72-language-asi-S7.9.2_A1_T7.js
+FAIL m72-language-asi-S7.9_A1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: label1 is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A1.js.bc)
+
+PASS m72-language-asi-S7.9_A10_T1.js
+FAIL m72-language-asi-S7.9_A10_T10.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: a is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A10_T10.js.bc)
+
+FAIL m72-language-asi-S7.9_A10_T11.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: a is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A10_T11.js.bc)
+
+FAIL m72-language-asi-S7.9_A10_T12.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: a is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A10_T12.js.bc)
+
+FAIL m72-language-asi-S7.9_A10_T2.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A10_T2.js.bc)\n"）
+PASS m72-language-asi-S7.9_A10_T3.js
+PASS m72-language-asi-S7.9_A10_T4.js
+PASS m72-language-asi-S7.9_A10_T5.js
+FAIL m72-language-asi-S7.9_A10_T6.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A10_T6.js.bc)\n"）
+PASS m72-language-asi-S7.9_A10_T7.js
+FAIL m72-language-asi-S7.9_A10_T8.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A10_T8.js.bc)\n"）
+PASS m72-language-asi-S7.9_A10_T9.js
+PASS m72-language-asi-S7.9_A11_T1.js
+PASS m72-language-asi-S7.9_A11_T10.js
+PASS m72-language-asi-S7.9_A11_T11.js
+PASS m72-language-asi-S7.9_A11_T2.js
+PASS m72-language-asi-S7.9_A11_T3.js
+FAIL m72-language-asi-S7.9_A11_T4.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A11_T4.js.bc)\n"）
+PASS m72-language-asi-S7.9_A11_T5.js
+PASS m72-language-asi-S7.9_A11_T6.js
+PASS m72-language-asi-S7.9_A11_T7.js
+FAIL m72-language-asi-S7.9_A11_T8.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A11_T8.js.bc)\n"）
+PASS m72-language-asi-S7.9_A11_T9.js
+FAIL m72-language-asi-S7.9_A2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: label1 is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A2.js.bc)
+
+PASS m72-language-asi-S7.9_A3.js
+PASS m72-language-asi-S7.9_A4.js
+FAIL m72-language-asi-S7.9_A5.1_T1.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A5.1_T1.js.bc)\n"）
+FAIL m72-language-asi-S7.9_A5.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A5.2_T1.js.bc)
+
+FAIL m72-language-asi-S7.9_A5.3_T1.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-asi-S7.9_A5.3_T1.js.bc)\n"）
+FAIL m72-language-asi-S7.9_A5.4_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-asi-S7.9_A5.4_T1.js.bc)
+
+PASS m72-language-asi-S7.9_A5.5_T1.js
+PASS m72-language-asi-S7.9_A5.5_T2.js
+PASS m72-language-comments-S7.4_A1_T1.js
+PASS m72-language-comments-S7.4_A1_T2.js
+PASS m72-language-comments-S7.4_A2_T1.js
+PASS m72-language-comments-S7.4_A2_T2.js
+FAIL m72-language-comments-S7.4_A3.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-comments-S7.4_A3.js.bc)\n"）
+FAIL m72-language-comments-S7.4_A4_T1.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-comments-S7.4_A4_T1.js.bc)\n"）
+PASS m72-language-comments-S7.4_A4_T2.js
+PASS m72-language-comments-S7.4_A4_T3.js
+FAIL m72-language-comments-S7.4_A4_T4.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-comments-S7.4_A4_T4.js.bc)\n"）
+PASS m72-language-comments-S7.4_A4_T5.js
+PASS m72-language-comments-S7.4_A4_T6.js
+PASS m72-language-comments-S7.4_A4_T7.js
+FAIL m72-language-comments-S7.4_A5.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-comments-S7.4_A5.js.bc)
+
+FAIL m72-language-comments-hashbang-eval-indirect.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+PASS m72-language-comments-hashbang-eval.js
+PASS m72-language-comments-hashbang-function-body.js
+FAIL m72-language-comments-hashbang-function-constructor.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-comments-hashbang-function-constructor.js.bc)
+
+PASS m72-language-comments-hashbang-no-line-separator.js
+PASS m72-language-comments-hashbang-statement-block.js
+PASS m72-language-comments-mongolian-vowel-separator-multi.js
+PASS m72-language-comments-mongolian-vowel-separator-single-eval.js
+PASS m72-language-comments-mongolian-vowel-separator-single.js
+PASS m72-language-comments-multi-line-asi-carriage-return.js
+PASS m72-language-comments-multi-line-asi-line-feed.js
+PASS m72-language-comments-multi-line-asi-line-separator.js
+PASS m72-language-comments-multi-line-asi-paragraph-separator.js
+FAIL m72-language-comments-multi-line-html-close-extra.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-comments-multi-line-html-close-extra.js.bc)\n"）
+FAIL m72-language-comments-single-line-html-close-without-lt.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-comments-single-line-html-close-without-lt.js.bc)\n"）
+FAIL m72-language-computed-property-names-class-accessor-getter-duplicates.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-accessor-getter.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-accessor-setter-duplicates.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-accessor-setter.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-method-constructor-can-be-generator.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-method-constructor-can-be-getter.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-method-constructor-can-be-setter.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-method-constructor-duplicate-1.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-method-constructor-duplicate-2.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-method-constructor-duplicate-3.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+INV  m72-language-computed-property-names-class-method-constructor.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-computed-property-names-class-static-generator-constructor.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-generator-prototype.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-getter-constructor.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-getter-prototype.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-method-constructor.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-method-prototype.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-setter-constructor.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-computed-property-names-class-static-setter-prototype.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+PASS m72-language-computed-property-names-object-accessor-getter-duplicates.js
+FAIL m72-language-computed-property-names-object-accessor-getter-super.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'm')
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-computed-property-names-object-accessor-getter-super.js.bc)
+
+PASS m72-language-computed-property-names-object-accessor-getter.js
+PASS m72-language-computed-property-names-object-accessor-setter-duplicates.js
+FAIL m72-language-computed-property-names-object-accessor-setter-super.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'm')
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-computed-property-names-object-accessor-setter-super.js.bc)
+
+PASS m72-language-computed-property-names-object-accessor-setter.js
+FAIL m72-language-computed-property-names-object-method-super.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'm')
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-computed-property-names-object-method-super.js.bc)
+
+FAIL m72-language-computed-property-names-object-property-number-duplicates.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected B got undefined (The value of `object['1e+55']` is `'B'`. Defined as `[1e55]: 'B'`)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-computed-property-names-object-property-number-duplicates.js.bc)
+
+FAIL m72-language-destructuring-binding-initialization-requires-object-coercible-null.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-destructuring-binding-initialization-requires-object-coercible-null.js.bc)
+
+FAIL m72-language-destructuring-binding-initialization-requires-object-coercible-undefined.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-destructuring-binding-initialization-requires-object-coercible-undefined.js.bc)
+
+INV  m72-language-destructuring-binding-initialization-returns-normal-completion-for-empty-objects.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-destructuring-binding-syntax-array-elements-with-initializer.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-destructuring-binding-syntax-array-elements-with-object-patterns.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-destructuring-binding-syntax-array-elements-without-initializer.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+PASS m72-language-destructuring-binding-syntax-array-pattern-with-elisions.js
+PASS m72-language-destructuring-binding-syntax-array-pattern-with-no-elements.js
+FAIL m72-language-destructuring-binding-syntax-array-rest-elements.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-destructuring-binding-syntax-destructuring-array-parameters-function-arguments-length.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-destructuring-binding-syntax-destructuring-object-parameters-function-arguments-length.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+PASS m72-language-destructuring-binding-syntax-object-pattern-with-no-property-list.js
+PASS m72-language-destructuring-binding-syntax-property-list-bindings-elements.js
+PASS m72-language-destructuring-binding-syntax-property-list-followed-by-a-single-comma.js
+PASS m72-language-destructuring-binding-syntax-property-list-single-name-bindings.js
+PASS m72-language-destructuring-binding-syntax-property-list-with-property-list.js
+FAIL m72-language-destructuring-binding-syntax-recursive-array-and-object-patterns.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+PASS m72-language-expressions-addition-S11.6.1_A1.js
+PASS m72-language-expressions-addition-S11.6.1_A2.1_T1.js
+PASS m72-language-expressions-addition-S11.6.1_A2.1_T2.js
+PASS m72-language-expressions-addition-S11.6.1_A2.1_T3.js
+FAIL m72-language-expressions-addition-S11.6.1_A2.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-S11.6.1_A2.2_T1.js.bc)
+
+FAIL m72-language-expressions-addition-S11.6.1_A2.2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-S11.6.1_A2.2_T2.js.bc)
+
+FAIL m72-language-expressions-addition-S11.6.1_A2.2_T3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-S11.6.1_A2.2_T3.js.bc)
+
+FAIL m72-language-expressions-addition-S11.6.1_A2.3_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-S11.6.1_A2.3_T1.js.bc)
+
+PASS m72-language-expressions-addition-S11.6.1_A2.4_T1.js
+PASS m72-language-expressions-addition-S11.6.1_A2.4_T2.js
+PASS m72-language-expressions-addition-S11.6.1_A2.4_T3.js
+PASS m72-language-expressions-addition-S11.6.1_A2.4_T4.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T1.1.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T1.2.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T1.3.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T2.1.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T2.2.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T2.3.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T2.4.js
+PASS m72-language-expressions-addition-S11.6.1_A3.1_T2.5.js
+PASS m72-language-expressions-addition-S11.6.1_A3.2_T1.1.js
+FAIL m72-language-expressions-addition-S11.6.1_A3.2_T1.2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-S11.6.1_A3.2_T1.2.js.bc)
+
+PASS m72-language-expressions-addition-S11.6.1_A3.2_T2.1.js
+PASS m72-language-expressions-addition-S11.6.1_A3.2_T2.2.js
+PASS m72-language-expressions-addition-S11.6.1_A3.2_T2.3.js
+PASS m72-language-expressions-addition-S11.6.1_A3.2_T2.4.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T1.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T2.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T3.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T4.js
+INV  m72-language-expressions-addition-S11.6.1_A4_T5.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-addition-S11.6.1_A4_T6.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T7.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T8.js
+PASS m72-language-expressions-addition-S11.6.1_A4_T9.js
+FAIL m72-language-expressions-addition-bigint-and-number.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-bigint-and-number.js.bc)
+
+FAIL m72-language-expressions-addition-bigint-arithmetic.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 36729517088986129440 got 36729517088986129440 (The result of (0xFEDCBA9876543210n + 0xFEDCBA9876543210n) is 0x1FDB97530ECA86420n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-bigint-arithmetic.js.bc)
+
+FAIL m72-language-expressions-addition-bigint-errors.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-bigint-errors.js.bc)
+
+FAIL m72-language-expressions-addition-bigint-toprimitive.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 3 got [object Object]1 (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) + 1n) is 3n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-bigint-toprimitive.js.bc)
+
+FAIL m72-language-expressions-addition-bigint-wrapped-values.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 3 got [object Object]1 (The result of (Object(2n) + 1n) is 3n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-addition-bigint-wrapped-values.js.bc)
+
+PASS m72-language-expressions-array-11.1.4-0.js
+INV  m72-language-expressions-array-11.1.4_4-5-1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-11.1.4_5-6-1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-array-S11.1.4_A1.1.js
+PASS m72-language-expressions-array-S11.1.4_A1.2.js
+PASS m72-language-expressions-array-S11.1.4_A1.3.js
+PASS m72-language-expressions-array-S11.1.4_A1.4.js
+PASS m72-language-expressions-array-S11.1.4_A1.5.js
+PASS m72-language-expressions-array-S11.1.4_A1.6.js
+PASS m72-language-expressions-array-S11.1.4_A1.7.js
+PASS m72-language-expressions-array-S11.1.4_A2.js
+INV  m72-language-expressions-array-spread-err-mult-err-expr-throws.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-array-spread-err-mult-err-iter-get-value.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-array-spread-err-mult-err-iter-get-value.js.bc)
+
+INV  m72-language-expressions-array-spread-err-mult-err-itr-get-call.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-spread-err-mult-err-itr-get-get.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-spread-err-mult-err-itr-step.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-spread-err-mult-err-itr-value.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-array-spread-err-mult-err-obj-unresolvable.js
+PASS m72-language-expressions-array-spread-err-mult-err-unresolvable.js
+INV  m72-language-expressions-array-spread-err-sngl-err-expr-throws.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-spread-err-sngl-err-itr-get-call.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-spread-err-sngl-err-itr-get-get.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-array-spread-err-sngl-err-itr-get-value.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-array-spread-err-sngl-err-itr-get-value.js.bc)
+
+INV  m72-language-expressions-array-spread-err-sngl-err-itr-step.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-array-spread-err-sngl-err-itr-value.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-array-spread-err-sngl-err-obj-unresolvable.js
+PASS m72-language-expressions-array-spread-err-sngl-err-unresolvable.js
+PASS m72-language-expressions-array-spread-mult-empty.js
+PASS m72-language-expressions-array-spread-mult-expr.js
+FAIL m72-language-expressions-array-spread-mult-iter.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 5 got 3
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-array-spread-mult-iter.js.bc)
+
+PASS m72-language-expressions-array-spread-mult-literal.js
+PASS m72-language-expressions-array-spread-mult-obj-null.js
+PASS m72-language-expressions-array-spread-mult-obj-undefined.js
+PASS m72-language-expressions-array-spread-obj-getter-init.js
+INV  m72-language-expressions-array-spread-obj-manipulate-outter-obj-in-getter.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-array-spread-obj-mult-spread-getter.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 2 got [function Function]
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-array-spread-obj-mult-spread-getter.js.bc)
+
+PASS m72-language-expressions-array-spread-obj-mult-spread.js
+PASS m72-language-expressions-array-spread-obj-null.js
+PASS m72-language-expressions-array-spread-obj-overrides-prev-properties.js
+PASS m72-language-expressions-array-spread-obj-skip-non-enumerable.js
+PASS m72-language-expressions-division-S11.5.2_A1.js
+PASS m72-language-expressions-division-S11.5.2_A2.1_T1.js
+PASS m72-language-expressions-division-S11.5.2_A2.1_T2.js
+PASS m72-language-expressions-division-S11.5.2_A2.1_T3.js
+FAIL m72-language-expressions-division-S11.5.2_A2.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-S11.5.2_A2.2_T1.js.bc)
+
+FAIL m72-language-expressions-division-S11.5.2_A2.3_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-S11.5.2_A2.3_T1.js.bc)
+
+PASS m72-language-expressions-division-S11.5.2_A2.4_T1.js
+PASS m72-language-expressions-division-S11.5.2_A2.4_T2.js
+PASS m72-language-expressions-division-S11.5.2_A2.4_T3.js
+PASS m72-language-expressions-division-S11.5.2_A2.4_T4.js
+PASS m72-language-expressions-division-S11.5.2_A3_T1.1.js
+PASS m72-language-expressions-division-S11.5.2_A3_T1.2.js
+PASS m72-language-expressions-division-S11.5.2_A3_T1.3.js
+PASS m72-language-expressions-division-S11.5.2_A3_T1.4.js
+PASS m72-language-expressions-division-S11.5.2_A3_T1.5.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.1.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.2.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.3.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.4.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.5.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.6.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.7.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.8.js
+PASS m72-language-expressions-division-S11.5.2_A3_T2.9.js
+PASS m72-language-expressions-division-S11.5.2_A4_T1.1.js
+PASS m72-language-expressions-division-S11.5.2_A4_T1.2.js
+PASS m72-language-expressions-division-S11.5.2_A4_T10.js
+INV  m72-language-expressions-division-S11.5.2_A4_T2.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-division-S11.5.2_A4_T3.js
+PASS m72-language-expressions-division-S11.5.2_A4_T4.js
+PASS m72-language-expressions-division-S11.5.2_A4_T5.js
+PASS m72-language-expressions-division-S11.5.2_A4_T6.js
+PASS m72-language-expressions-division-S11.5.2_A4_T7.js
+PASS m72-language-expressions-division-S11.5.2_A4_T8.js
+PASS m72-language-expressions-division-S11.5.2_A4_T9.js
+FAIL m72-language-expressions-division-bigint-and-number.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-bigint-and-number.js.bc)
+
+FAIL m72-language-expressions-division-bigint-arithmetic.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 1 (The result of (0xFEDCBA9876543210n / 0xFEDCBA9876543210n) is 0x1n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-bigint-arithmetic.js.bc)
+
+FAIL m72-language-expressions-division-bigint-complex-infinity.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-bigint-complex-infinity.js.bc)
+
+FAIL m72-language-expressions-division-bigint-errors.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-bigint-errors.js.bc)
+
+FAIL m72-language-expressions-division-bigint-toprimitive.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) / 2n) is 1n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-division-bigint-toprimitive.js.bc)
+
+PASS m72-language-expressions-grouping-S11.1.6_A1.js
+PASS m72-language-expressions-grouping-S11.1.6_A2_T1.js
+FAIL m72-language-expressions-grouping-S11.1.6_A2_T2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: x is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-grouping-S11.1.6_A2_T2.js.bc)
+
+PASS m72-language-expressions-grouping-S11.1.6_A3_T1.js
+PASS m72-language-expressions-grouping-S11.1.6_A3_T2.js
+PASS m72-language-expressions-grouping-S11.1.6_A3_T3.js
+PASS m72-language-expressions-grouping-S11.1.6_A3_T4.js
+FAIL m72-language-expressions-grouping-S11.1.6_A3_T6.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: x is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-grouping-S11.1.6_A3_T6.js.bc)
+
+PASS m72-language-expressions-grouping-S11.1.6_A3_T7.js
+PASS m72-language-expressions-modulus-S11.5.3_A1.js
+PASS m72-language-expressions-modulus-S11.5.3_A2.1_T1.js
+PASS m72-language-expressions-modulus-S11.5.3_A2.1_T2.js
+PASS m72-language-expressions-modulus-S11.5.3_A2.1_T3.js
+FAIL m72-language-expressions-modulus-S11.5.3_A2.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-S11.5.3_A2.2_T1.js.bc)
+
+FAIL m72-language-expressions-modulus-S11.5.3_A2.3_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-S11.5.3_A2.3_T1.js.bc)
+
+PASS m72-language-expressions-modulus-S11.5.3_A2.4_T1.js
+PASS m72-language-expressions-modulus-S11.5.3_A2.4_T2.js
+PASS m72-language-expressions-modulus-S11.5.3_A2.4_T3.js
+PASS m72-language-expressions-modulus-S11.5.3_A2.4_T4.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T1.1.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T1.2.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T1.3.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T1.4.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T1.5.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.1.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.2.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.3.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.4.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.5.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.6.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.7.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.8.js
+PASS m72-language-expressions-modulus-S11.5.3_A3_T2.9.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T1.1.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T1.2.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T2.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T3.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T4.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T5.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T6.js
+PASS m72-language-expressions-modulus-S11.5.3_A4_T7.js
+FAIL m72-language-expressions-modulus-bigint-and-number.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-bigint-and-number.js.bc)
+
+FAIL m72-language-expressions-modulus-bigint-arithmetic.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 0 (The result of (0xFEDCBA9876543210n % 0xFEDCBA9876543210n) is 0x0n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-bigint-arithmetic.js.bc)
+
+FAIL m72-language-expressions-modulus-bigint-errors.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-bigint-errors.js.bc)
+
+FAIL m72-language-expressions-modulus-bigint-modulo-zero.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-bigint-modulo-zero.js.bc)
+
+FAIL m72-language-expressions-modulus-bigint-toprimitive.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) % 2n) is 0n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-bigint-toprimitive.js.bc)
+
+FAIL m72-language-expressions-modulus-bigint-wrapped-values.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (The result of (Object(2n) % 2n) is 0n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-bigint-wrapped-values.js.bc)
+
+PASS m72-language-expressions-modulus-line-terminator.js
+FAIL m72-language-expressions-modulus-order-of-evaluation.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-modulus-order-of-evaluation.js.bc)
+
+PASS m72-language-expressions-multiplication-S11.5.1_A1.js
+PASS m72-language-expressions-multiplication-S11.5.1_A2.1_T1.js
+PASS m72-language-expressions-multiplication-S11.5.1_A2.1_T2.js
+PASS m72-language-expressions-multiplication-S11.5.1_A2.1_T3.js
+FAIL m72-language-expressions-multiplication-S11.5.1_A2.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-S11.5.1_A2.2_T1.js.bc)
+
+FAIL m72-language-expressions-multiplication-S11.5.1_A2.3_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-S11.5.1_A2.3_T1.js.bc)
+
+PASS m72-language-expressions-multiplication-S11.5.1_A2.4_T1.js
+PASS m72-language-expressions-multiplication-S11.5.1_A2.4_T2.js
+PASS m72-language-expressions-multiplication-S11.5.1_A2.4_T3.js
+PASS m72-language-expressions-multiplication-S11.5.1_A2.4_T4.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T1.1.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T1.2.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T1.3.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T1.4.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T1.5.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.1.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.2.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.3.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.4.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.5.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.6.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.7.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.8.js
+PASS m72-language-expressions-multiplication-S11.5.1_A3_T2.9.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T1.1.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T1.2.js
+INV  m72-language-expressions-multiplication-S11.5.1_A4_T2.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T3.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T4.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T5.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T6.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T7.js
+PASS m72-language-expressions-multiplication-S11.5.1_A4_T8.js
+FAIL m72-language-expressions-multiplication-bigint-and-number.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-bigint-and-number.js.bc)
+
+FAIL m72-language-expressions-multiplication-bigint-arithmetic.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 337264356397531028994973048178108678400 got 3.37264356397531e+38 (The result of (0xFEDCBA9876543210n * 0xFEDCBA9876543210n) is 0xFDBAC097C8DC5ACCDEEC6CD7A44A4100n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-bigint-arithmetic.js.bc)
+
+FAIL m72-language-expressions-multiplication-bigint-errors.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-bigint-errors.js.bc)
+
+FAIL m72-language-expressions-multiplication-bigint-toprimitive.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) * 2n) is 4n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-bigint-toprimitive.js.bc)
+
+FAIL m72-language-expressions-multiplication-bigint-wrapped-values.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got NaN (The result of (Object(2n) * 2n) is 4n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-bigint-wrapped-values.js.bc)
+
+PASS m72-language-expressions-multiplication-line-terminator.js
+FAIL m72-language-expressions-multiplication-order-of-evaluation.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-multiplication-order-of-evaluation.js.bc)
+
+FAIL m72-language-expressions-object-11.1.5-0-1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: s1 is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-11.1.5-0-1.js.bc)
+
+FAIL m72-language-expressions-object-11.1.5-0-2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: s1 is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-11.1.5-0-2.js.bc)
+
+FAIL m72-language-expressions-object-11.1.5-1gs.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-expressions-object-11.1.5-1gs.js.bc)\n"）
+PASS m72-language-expressions-object-11.1.5-2gs.js
+INV  m72-language-expressions-object-11.1.5_3-3-1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-object-11.1.5_4-4-a-3.js
+PASS m72-language-expressions-object-11.1.5_4-4-b-1.js
+INV  m72-language-expressions-object-11.1.5_4-5-1.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-object-11.1.5_5-4-1.js
+PASS m72-language-expressions-object-11.1.5_6-3-1.js
+PASS m72-language-expressions-object-11.1.5_6-3-2.js
+PASS m72-language-expressions-object-11.1.5_7-3-1.js
+PASS m72-language-expressions-object-11.1.5_7-3-2.js
+PASS m72-language-expressions-object-S11.1.5_A1.1.js
+PASS m72-language-expressions-object-S11.1.5_A1.2.js
+PASS m72-language-expressions-object-S11.1.5_A1.3.js
+PASS m72-language-expressions-object-S11.1.5_A1.4.js
+PASS m72-language-expressions-object-S11.1.5_A2.js
+PASS m72-language-expressions-object-S11.1.5_A3.js
+PASS m72-language-expressions-object-S11.1.5_A4.1.js
+PASS m72-language-expressions-object-S11.1.5_A4.2.js
+PASS m72-language-expressions-object-S11.1.5_A4.3.js
+INV  m72-language-expressions-object-__proto__-duplicate-computed.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-object-__proto__-duplicate.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-expressions-object-__proto__-duplicate.js.bc)\n"）
+INV  m72-language-expressions-object-__proto__-fn-name.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+INV  m72-language-expressions-object-__proto__-permitted-dup-shorthand.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-object-__proto__-permitted-dup.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+INV  m72-language-expressions-object-__proto__-poisoned-object-prototype.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-object-__proto__-value-non-object.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected undefined got [object Object] (property (undefined))
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-__proto__-value-non-object.js.bc)
+
+FAIL m72-language-expressions-object-__proto__-value-null.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected null got [object Object]
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-__proto__-value-null.js.bc)
+
+FAIL m72-language-expressions-object-__proto__-value-obj.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got [object Object]
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-__proto__-value-obj.js.bc)
+
+INV  m72-language-expressions-object-accessor-name-computed-err-evaluation.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-expressions-object-accessor-name-computed-err-to-prop-key.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-accessor-name-computed-err-to-prop-key.js.bc)
+
+PASS m72-language-expressions-object-accessor-name-computed-err-unresolvable.js
+PASS m72-language-expressions-object-accessor-name-computed-in.js
+FAIL m72-language-expressions-object-accessor-name-computed-yield-expr.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'first')
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-accessor-name-computed-yield-expr.js.bc)
+
+FAIL m72-language-expressions-object-accessor-name-computed-yield-id.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+FAIL m72-language-expressions-object-accessor-name-computed.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected get string got undefined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-object-accessor-name-computed.js.bc)
+
+PASS m72-language-expressions-object-accessor-name-literal-numeric-binary.js
+PASS m72-language-expressions-object-accessor-name-literal-numeric-exponent.js
+PASS m72-language-expressions-subtraction-S11.6.2_A1.js
+PASS m72-language-expressions-subtraction-S11.6.2_A2.1_T1.js
+PASS m72-language-expressions-subtraction-S11.6.2_A2.1_T2.js
+PASS m72-language-expressions-subtraction-S11.6.2_A2.1_T3.js
+FAIL m72-language-expressions-subtraction-S11.6.2_A2.2_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-S11.6.2_A2.2_T1.js.bc)
+
+FAIL m72-language-expressions-subtraction-S11.6.2_A2.3_T1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-S11.6.2_A2.3_T1.js.bc)
+
+PASS m72-language-expressions-subtraction-S11.6.2_A2.4_T1.js
+PASS m72-language-expressions-subtraction-S11.6.2_A2.4_T2.js
+PASS m72-language-expressions-subtraction-S11.6.2_A2.4_T3.js
+PASS m72-language-expressions-subtraction-S11.6.2_A2.4_T4.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T1.1.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T1.2.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T1.3.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T1.4.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T1.5.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.1.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.2.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.3.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.4.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.5.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.6.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.7.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.8.js
+PASS m72-language-expressions-subtraction-S11.6.2_A3_T2.9.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T1.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T2.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T3.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T4.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T5.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T6.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T7.js
+PASS m72-language-expressions-subtraction-S11.6.2_A4_T8.js
+FAIL m72-language-expressions-subtraction-bigint-and-number.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-bigint-and-number.js.bc)
+
+FAIL m72-language-expressions-subtraction-bigint-arithmetic.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 0 (The result of (0xFEDCBA9876543210n - 0xFEDCBA9876543210n) is 0x0n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-bigint-arithmetic.js.bc)
+
+FAIL m72-language-expressions-subtraction-bigint-errors.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-bigint-errors.js.bc)
+
+FAIL m72-language-expressions-subtraction-bigint-toprimitive.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) - 1n) is 1n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-bigint-toprimitive.js.bc)
+
+FAIL m72-language-expressions-subtraction-bigint-wrapped-values.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (The result of (Object(2n) - 1n) is 1n)
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-bigint-wrapped-values.js.bc)
+
+FAIL m72-language-expressions-subtraction-order-of-evaluation.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-subtraction-order-of-evaluation.js.bc)
+
+FAIL m72-language-expressions-typeof-bigint.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: BigInt is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-typeof-bigint.js.bc)
+
+PASS m72-language-expressions-typeof-boolean.js
+FAIL m72-language-expressions-typeof-built-in-exotic-objects-no-call.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected object got function (typeof this === "object")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-typeof-built-in-exotic-objects-no-call.js.bc)
+
+PASS m72-language-expressions-typeof-built-in-functions.js
+PASS m72-language-expressions-typeof-built-in-ordinary-objects-no-call.js
+PASS m72-language-expressions-typeof-get-value-ref-err.js
+INV  m72-language-expressions-typeof-get-value.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-expressions-typeof-native-call.js
+PASS m72-language-expressions-typeof-null.js
+PASS m72-language-expressions-typeof-number.js
+PASS m72-language-expressions-typeof-proxy.js
+FAIL m72-language-expressions-typeof-string.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected string got object (typeof Date() === "string")
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-expressions-typeof-string.js.bc)
+
+PASS m72-language-expressions-typeof-symbol.js
+PASS m72-language-expressions-typeof-syntax.js
+PASS m72-language-expressions-typeof-undefined.js
+PASS m72-language-expressions-typeof-unresolvable-reference.js
+PASS m72-language-expressions-void-S11.4.2_A1.js
+PASS m72-language-expressions-void-S11.4.2_A2_T1.js
+PASS m72-language-expressions-void-S11.4.2_A2_T2.js
+PASS m72-language-expressions-void-S11.4.2_A4_T1.js
+PASS m72-language-expressions-void-S11.4.2_A4_T2.js
+PASS m72-language-expressions-void-S11.4.2_A4_T3.js
+PASS m72-language-expressions-void-S11.4.2_A4_T4.js
+PASS m72-language-expressions-void-S11.4.2_A4_T5.js
+PASS m72-language-expressions-void-S11.4.2_A4_T6.js
+PASS m72-language-line-terminators-7.3-15.js
+PASS m72-language-line-terminators-7.3-5.js
+PASS m72-language-line-terminators-7.3-6.js
+FAIL m72-language-line-terminators-S7.3_A2.1_T2.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-S7.3_A2.1_T2.js.bc)\n"）
+FAIL m72-language-line-terminators-S7.3_A2.2_T2.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-S7.3_A2.2_T2.js.bc)\n"）
+PASS m72-language-line-terminators-S7.3_A3.2_T1.js
+PASS m72-language-line-terminators-S7.3_A5.4.js
+PASS m72-language-line-terminators-S7.3_A6_T1.js
+PASS m72-language-line-terminators-S7.3_A6_T2.js
+PASS m72-language-line-terminators-S7.3_A6_T3.js
+PASS m72-language-line-terminators-S7.3_A6_T4.js
+PASS m72-language-line-terminators-S7.3_A7_T1.js
+PASS m72-language-line-terminators-S7.3_A7_T2.js
+PASS m72-language-line-terminators-S7.3_A7_T3.js
+PASS m72-language-line-terminators-S7.3_A7_T4.js
+PASS m72-language-line-terminators-S7.3_A7_T5.js
+PASS m72-language-line-terminators-S7.3_A7_T6.js
+PASS m72-language-line-terminators-S7.3_A7_T7.js
+PASS m72-language-line-terminators-S7.3_A7_T8.js
+PASS m72-language-line-terminators-between-tokens-cr.js
+PASS m72-language-line-terminators-between-tokens-lf.js
+PASS m72-language-line-terminators-between-tokens-ls.js
+PASS m72-language-line-terminators-between-tokens-ps.js
+PASS m72-language-line-terminators-comment-multi-cr.js
+PASS m72-language-line-terminators-comment-multi-lf.js
+PASS m72-language-line-terminators-comment-multi-ls.js
+PASS m72-language-line-terminators-comment-multi-ps.js
+PASS m72-language-line-terminators-comment-single-cr.js
+PASS m72-language-line-terminators-comment-single-lf.js
+FAIL m72-language-line-terminators-comment-single-ls.js (vm_rc=Some(0)) runtime 负例未抛错（vm_rc=Some(0)）: 
+FAIL m72-language-line-terminators-comment-single-ps.js (vm_rc=Some(0)) runtime 负例未抛错（vm_rc=Some(0)）: 
+FAIL m72-language-line-terminators-invalid-comment-single-cr.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-comment-single-cr.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-comment-single-lf.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-comment-single-lf.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-comment-single-ls.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-comment-single-ls.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-comment-single-ps.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-comment-single-ps.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-regexp-cr.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-regexp-cr.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-regexp-lf.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-regexp-lf.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-regexp-ls.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-regexp-ls.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-regexp-ps.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-regexp-ps.js.bc)\n"）
+FAIL m72-language-line-terminators-invalid-string-cr.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-line-terminators-invalid-string-cr.js.bc)\n"）
+PASS m72-language-literals-bigint-binary-invalid-digit.js
+PASS m72-language-literals-bigint-exponent-part.js
+PASS m72-language-literals-bigint-hexadecimal-invalid-digit.js
+PASS m72-language-literals-bigint-legacy-octal-like-invalid-00n.js
+PASS m72-language-literals-bigint-legacy-octal-like-invalid-01n.js
+PASS m72-language-literals-bigint-legacy-octal-like-invalid-07n.js
+FAIL m72-language-literals-bigint-mv-is-not-integer-dil-dot-dds.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-mv-is-not-integer-dil-dot-dds.js.bc)\n"）
+FAIL m72-language-literals-bigint-mv-is-not-integer-dot-dds.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-mv-is-not-integer-dot-dds.js.bc)\n"）
+PASS m72-language-literals-bigint-non-octal-like-invalid-0008n.js
+PASS m72-language-literals-bigint-non-octal-like-invalid-012348n.js
+PASS m72-language-literals-bigint-non-octal-like-invalid-08n.js
+PASS m72-language-literals-bigint-non-octal-like-invalid-09n.js
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd-err.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd-err.js.bc)\n"）
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 1
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bds.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 2 got 2
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bds.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bds-nsl-bd.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 2 got 2
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bds-nsl-bd.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bds-nsl-bds.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got 4
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bds-nsl-bds.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-dunder-err.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-dunder-err.js.bc)\n"）
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-err.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-err.js.bc)\n"）
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dd-nsl-dd-one-of.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 10 got 10
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dd-nsl-dd-one-of.js.bc)
+
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dd-nsl-dds-dunder-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dd-nsl-err.js
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dds-nsl-dd.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1234567890 got 1234567890
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dds-nsl-dd.js.bc)
+
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dds-nsl-dds-dunder-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dds-nsl-err.js
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd-err.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd-err.js.bc)\n"）
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 1
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hds.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 16 got 16
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hds.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hds-nsl-hd.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 16 got 16
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hds-nsl-hd.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hds-nsl-hds.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 256 got 256
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hds-nsl-hds.js.bc)
+
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-dunder-err.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-dunder-err.js.bc)\n"）
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-err.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-err.js.bc)\n"）
+FAIL m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-od-nsl-od-one-of.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 0
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-od-nsl-od-one-of.js.bc)
+
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-lol-00-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-lol-01-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-lol-07-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-lol-0_0-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-lol-0_1-err.js
+PASS m72-language-literals-bigint-numeric-separators-numeric-separator-literal-lol-0_7-err.js
+PASS m72-language-literals-bigint-octal-invalid-digit.js
+FAIL m72-language-rest-parameters-array-pattern.js (vm_rc=None) 正向用例失败 vm_rc=None: 
+PASS m72-language-rest-parameters-expected-argument-count.js
+PASS m72-language-rest-parameters-object-pattern.js
+FAIL m72-language-rest-parameters-position-invalid.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-rest-parameters-position-invalid.js.bc)\n"）
+PASS m72-language-rest-parameters-rest-index.js
+PASS m72-language-rest-parameters-rest-parameters-apply.js
+PASS m72-language-rest-parameters-rest-parameters-call.js
+INV  m72-language-rest-parameters-rest-parameters-produce-an-array.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-statementList-block-array-literal-with-item.js
+PASS m72-language-statementList-block-array-literal.js
+PASS m72-language-statementList-block-arrow-function-assignment-expr.js
+PASS m72-language-statementList-block-arrow-function-functionbody.js
+FAIL m72-language-statementList-block-block-with-labels.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: x is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-block-with-labels.js.bc)
+
+PASS m72-language-statementList-block-block.js
+PASS m72-language-statementList-block-expr-arrow-function-boolean-literal.js
+PASS m72-language-statementList-block-let-declaration.js
+PASS m72-language-statementList-block-regexp-literal-flags.js
+PASS m72-language-statementList-block-regexp-literal.js
+FAIL m72-language-statementList-block-with-statment-array-literal-with-item.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-array-literal-with-item.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-array-literal.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-array-literal.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-arrow-function-assignment-expr.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-arrow-function-assignment-expr.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-arrow-function-functionbody.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-arrow-function-functionbody.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-block-with-labels.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-block-with-labels.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-block.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-block.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-expr-arrow-function-boolean-literal.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-expr-arrow-function-boolean-literal.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-let-declaration.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-let-declaration.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-regexp-literal-flags.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-regexp-literal-flags.js.bc)
+
+FAIL m72-language-statementList-block-with-statment-regexp-literal.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: length is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-block-with-statment-regexp-literal.js.bc)
+
+PASS m72-language-statementList-class-array-literal-with-item.js
+PASS m72-language-statementList-class-array-literal.js
+PASS m72-language-statementList-class-arrow-function-assignment-expr.js
+PASS m72-language-statementList-class-arrow-function-functionbody.js
+FAIL m72-language-statementList-class-block-with-labels.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: x is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-class-block-with-labels.js.bc)
+
+PASS m72-language-statementList-class-block.js
+PASS m72-language-statementList-class-expr-arrow-function-boolean-literal.js
+PASS m72-language-statementList-class-let-declaration.js
+PASS m72-language-statementList-class-regexp-literal-flags.js
+PASS m72-language-statementList-class-regexp-literal.js
+PASS m72-language-statementList-eval-block-array-literal-with-item.js
+PASS m72-language-statementList-eval-block-array-literal.js
+PASS m72-language-statementList-eval-block-arrow-function-assignment-expr.js
+PASS m72-language-statementList-eval-block-arrow-function-functionbody.js
+FAIL m72-language-statementList-eval-block-block-with-labels.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: x is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-eval-block-block-with-labels.js.bc)
+
+PASS m72-language-statementList-eval-block-block.js
+PASS m72-language-statementList-eval-block-expr-arrow-function-boolean-literal.js
+PASS m72-language-statementList-eval-block-let-declaration.js
+FAIL m72-language-statementList-eval-block-regexp-literal-flags.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-eval-block-regexp-literal-flags.js.bc)
+
+FAIL m72-language-statementList-eval-block-regexp-literal.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statementList-eval-block-regexp-literal.js.bc)
+
+PASS m72-language-statements-async-function-array-destructuring-param-strict-body.js
+PASS m72-language-statements-async-function-await-as-binding-identifier-escaped.js
+PASS m72-language-statements-async-function-await-as-binding-identifier.js
+FAIL m72-language-statements-async-function-await-as-identifier-reference-escaped.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-await-as-identifier-reference-escaped.js.bc)\n"）
+FAIL m72-language-statements-async-function-await-as-identifier-reference.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-await-as-identifier-reference.js.bc)\n"）
+FAIL m72-language-statements-async-function-await-as-label-identifier-escaped.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-await-as-label-identifier-escaped.js.bc)\n"）
+FAIL m72-language-statements-async-function-await-as-label-identifier.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-await-as-label-identifier.js.bc)\n"）
+FAIL m72-language-statements-async-function-cptn-decl.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Number.prototype.sameValue is not a function
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statements-async-function-cptn-decl.js.bc)
+
+INV  m72-language-statements-async-function-declaration-returns-promise.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-statements-async-function-dflt-params-duplicates.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-dflt-params-duplicates.js.bc)\n"）
+FAIL m72-language-statements-async-function-dflt-params-rest.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-dflt-params-rest.js.bc)\n"）
+PASS m72-language-statements-async-function-early-errors-declaration-NSPL-with-USD.js
+FAIL m72-language-statements-async-function-early-errors-declaration-arguments-in-formal-parameters.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-arguments-in-formal-parameters.js.bc)\n"）
+PASS m72-language-statements-async-function-early-errors-declaration-await-in-formals-default.js
+FAIL m72-language-statements-async-function-early-errors-declaration-await-in-formals.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-await-in-formals.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-binding-identifier-arguments.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-binding-identifier-arguments.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-binding-identifier-eval.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-binding-identifier-eval.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-body-contains-super-call.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-body-contains-super-call.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-body-contains-super-property.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-body-contains-super-property.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-duplicate-parameters.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-duplicate-parameters.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-eval-in-formal-parameters.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-eval-in-formal-parameters.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-formals-body-duplicate.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-formals-body-duplicate.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-formals-contains-super-call.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-formals-contains-super-call.js.bc)\n"）
+FAIL m72-language-statements-async-function-early-errors-declaration-formals-contains-super-property.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-early-errors-declaration-formals-contains-super-property.js.bc)\n"）
+FAIL m72-language-statements-async-function-escaped-async.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-escaped-async.js.bc)\n"）
+INV  m72-language-statements-async-function-evaluation-body.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-statements-async-function-let-newline-await-in-async-function.js
+PASS m72-language-statements-async-function-object-destructuring-param-strict-body.js
+PASS m72-language-statements-async-function-rest-param-strict-body.js
+FAIL m72-language-statements-async-function-rest-params-trailing-comma-early-error.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-function-rest-params-trailing-comma-early-error.js.bc)\n"）
+INV  m72-language-statements-async-function-syntax-declaration-line-terminators-allowed.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+FAIL m72-language-statements-async-function-syntax-declaration-no-line-terminator.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-statements-async-function-syntax-declaration-no-line-terminator.js.bc)
+
+PASS m72-language-statements-async-generator-array-destructuring-param-strict-body.js
+PASS m72-language-statements-async-generator-await-as-binding-identifier-escaped.js
+PASS m72-language-statements-async-generator-await-as-binding-identifier.js
+FAIL m72-language-statements-async-generator-await-as-identifier-reference-escaped.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-generator-await-as-identifier-reference-escaped.js.bc)\n"）
+FAIL m72-language-statements-async-generator-await-as-identifier-reference.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-generator-await-as-identifier-reference.js.bc)\n"）
+FAIL m72-language-statements-async-generator-await-as-label-identifier-escaped.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-generator-await-as-label-identifier-escaped.js.bc)\n"）
+FAIL m72-language-statements-async-generator-await-as-label-identifier.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-statements-async-generator-await-as-label-identifier.js.bc)\n"）
+INV  m72-language-statements-async-generator-dflt-params-abrupt.js (vm_rc=Some(1)) INVALID：node 侧与用例预期相悖
+PASS m72-language-types-boolean-S8.3_A1_T1.js
+PASS m72-language-types-boolean-S8.3_A1_T2.js
+FAIL m72-language-types-boolean-S8.3_A2.1.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-types-boolean-S8.3_A2.1.js.bc)\n"）
+FAIL m72-language-types-boolean-S8.3_A2.2.js (vm_rc=Some(1)) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_397004\\m72-language-types-boolean-S8.3_A2.2.js.bc)\n"）
+PASS m72-language-types-boolean-S8.3_A3.js
+PASS m72-language-types-list-S8.8_A2_T1.js
+PASS m72-language-types-list-S8.8_A2_T2.js
+PASS m72-language-types-list-S8.8_A2_T3.js
+PASS m72-language-types-null-S8.2_A1_T1.js
+PASS m72-language-types-null-S8.2_A1_T2.js
+PASS m72-language-types-null-S8.2_A2.js
+PASS m72-language-types-null-S8.2_A3.js
+PASS m72-language-types-number-8.5.1.js
+PASS m72-language-types-number-S8.5_A1.js
+PASS m72-language-types-number-S8.5_A10_T1.js
+PASS m72-language-types-number-S8.5_A10_T2.js
+PASS m72-language-types-number-S8.5_A11_T1.js
+INV  m72-language-types-number-S8.5_A11_T2.js (vm_rc=Some(0)) INVALID：node 侧与用例预期相悖
+PASS m72-language-types-number-S8.5_A12.1.js
+PASS m72-language-types-number-S8.5_A12.2.js
+PASS m72-language-types-number-S8.5_A13_T2.js
+PASS m72-language-types-number-S8.5_A14_T1.js
+PASS m72-language-types-number-S8.5_A14_T2.js
+PASS m72-language-types-number-S8.5_A2.1.js
+PASS m72-language-types-number-S8.5_A2.2.js
+PASS m72-language-types-number-S8.5_A3.js
+PASS m72-language-types-number-S8.5_A4_T1.js
+PASS m72-language-types-number-S8.5_A4_T2.js
+PASS m72-language-types-number-S8.5_A5.js
+PASS m72-language-types-number-S8.5_A6.js
+PASS m72-language-types-number-S8.5_A7.js
+PASS m72-language-types-number-S8.5_A8.js
+FAIL m72-language-types-number-S8.5_A9.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-types-number-S8.5_A9.js.bc)
+
+FAIL m72-language-types-object-S8.6.1_A1.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-types-object-S8.6.1_A1.js.bc)
+
+FAIL m72-language-types-object-S8.6.1_A2.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-types-object-S8.6.1_A2.js.bc)
+
+FAIL m72-language-types-object-S8.6.1_A3.js (vm_rc=Some(1)) 正向用例失败 vm_rc=Some(1): ReferenceError: Test262Error is not defined
+    at <module> (C:\Users\issue\AppData\Local\Temp\aluka_t262_397004\m72-language-types-object-S8.6.1_A3.js.bc)
+
+PASS m72-language-types-object-S8.6.2_A1.js
+PASS m72-language-types-object-S8.6.2_A2.js
+PASS m72-language-types-object-S8.6.2_A3.js
+PASS m72-language-types-object-S8.6.2_A4.js
+PASS m72-language-white-space-S7.2_A2.1_T2.js
+PASS m72-language-white-space-S7.2_A2.2_T2.js
+PASS m72-language-white-space-S7.2_A2.3_T2.js
+PASS m72-language-white-space-S7.2_A2.4_T2.js
+PASS m72-language-white-space-S7.2_A2.5_T2.js
+PASS m72-language-white-space-S7.2_A3.1_T2.js
+PASS m72-language-white-space-S7.2_A3.2_T2.js
+PASS m72-language-white-space-S7.2_A3.3_T2.js
+PASS m72-language-white-space-S7.2_A3.4_T2.js
+PASS m72-language-white-space-S7.2_A3.5_T2.js
+PASS m72-language-white-space-S7.2_A4.1_T2.js
+PASS m72-language-white-space-S7.2_A4.2_T2.js
+PASS m72-language-white-space-S7.2_A4.3_T2.js
+PASS m72-language-white-space-S7.2_A4.4_T2.js
+PASS m72-language-white-space-S7.2_A4.5_T2.js
+PASS m72-language-white-space-S7.2_A5_T1.js
+PASS m72-language-white-space-S7.2_A5_T2.js
+PASS m72-language-white-space-S7.2_A5_T3.js
+PASS m72-language-white-space-S7.2_A5_T4.js
+PASS m72-language-white-space-S7.2_A5_T5.js
+PASS m72-language-white-space-after-regular-expression-literal-carriage-return.js
+PASS m72-language-white-space-after-regular-expression-literal-em-quad.js
+PASS m72-language-white-space-after-regular-expression-literal-em-space.js
+PASS m72-language-white-space-after-regular-expression-literal-en-quad.js
+PASS m72-language-white-space-after-regular-expression-literal-en-space.js
+PASS m72-language-white-space-after-regular-expression-literal-figure-space.js
+PASS m72-language-white-space-after-regular-expression-literal-form-feed.js
+PASS m72-language-white-space-after-regular-expression-literal-four-per-em-space.js
+PASS m72-language-white-space-after-regular-expression-literal-hair-space.js
+PASS m72-language-white-space-after-regular-expression-literal-ideographic-space.js
+PASS m72-language-white-space-after-regular-expression-literal-line-feed.js
+PASS m72-language-white-space-after-regular-expression-literal-line-separator.js
+PASS m72-language-white-space-after-regular-expression-literal-medium-mathematical-space.js
+PASS m72-language-white-space-after-regular-expression-literal-nbsp.js
+PASS m72-language-white-space-after-regular-expression-literal-nnbsp.js
+PASS m72-language-white-space-after-regular-expression-literal-ogham-space.js
+PASS m72-language-white-space-after-regular-expression-literal-paragraph-separator.js
+PASS m72-language-white-space-after-regular-expression-literal-punctuation-space.js
+PASS m72-language-white-space-after-regular-expression-literal-six-per-em-space.js
+PASS m72-language-white-space-after-regular-expression-literal-space.js
+----------------------------------------
+test262 subset: 770/1154 passed（115 invalid）
+test test262_subset_conformance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.00s
+

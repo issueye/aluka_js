@@ -368,6 +368,9 @@ impl<'src> Lexer<'src> {
                         b'`' => current_quasi.push('`'),
                         b'$' => current_quasi.push('$'),
                         b'0' => current_quasi.push('\0'),
+                        b'f' => current_quasi.push('\u{000C}'),
+                        b'b' => current_quasi.push('\u{0008}'),
+                        b'v' => current_quasi.push('\u{000B}'),
                         b'x' => {
                             // 跳过 'x' 再读 2 位十六进制；两路径都 continue
                             // （pos 已消费完整序列，跳过末尾 +1）
@@ -484,6 +487,9 @@ impl<'src> Lexer<'src> {
                         b'"' => s.push('"'),
                         b'\'' => s.push('\''),
                         b'0' => s.push('\0'),
+                        b'f' => s.push('\u{000C}'),
+                        b'b' => s.push('\u{0008}'),
+                        b'v' => s.push('\u{000B}'),
                         b'x' => {
                             // 跳过 'x' 再读 2 位十六进制。成功时 pos 指向序列后；
                             // 失败时 pos 停在 'x' 后、按字面输出 'x'。
@@ -571,6 +577,52 @@ impl<'src> Lexer<'src> {
             }
             return Token {
                 kind: TokenKind::String(s),
+                text: self.src[start..self.pos].to_owned(),
+                start,
+            };
+        }
+
+        // 2. 前导点数值字面量（`.5` / `.00000012345` / `.5e-7`；规范
+        // DecimalLiteral 允许省略整数部分——此前被切成 Punct('.') + Number，
+        // `String(.12345)` 直接解析失败）
+        if first == b'.' && self.pos + 1 < bytes.len() && bytes[self.pos + 1].is_ascii_digit() {
+            self.pos += 1;
+            while self.pos < bytes.len()
+                && (bytes[self.pos].is_ascii_digit() || bytes[self.pos] == b'_')
+            {
+                self.pos += 1;
+            }
+            if self.pos < bytes.len() && matches!(bytes[self.pos], b'e' | b'E') {
+                let mut ahead = self.pos + 1;
+                if ahead < bytes.len() && matches!(bytes[ahead], b'+' | b'-') {
+                    ahead += 1;
+                }
+                if ahead < bytes.len() && bytes[ahead].is_ascii_digit() {
+                    self.pos = ahead;
+                    while self.pos < bytes.len() && bytes[self.pos].is_ascii_digit() {
+                        self.pos += 1;
+                    }
+                }
+            }
+            let raw_str: String = self.src[start..self.pos]
+                .chars()
+                .filter(|&c| c != '_')
+                .collect();
+            // 小数（前导点）不可作 BigInt 字面量（`.5n` → SyntaxError）
+            if self.pos < bytes.len() && matches!(bytes[self.pos], b'n' | b'N') {
+                self.pos += 1;
+                return Token {
+                    kind: TokenKind::LexError("BigInt 字面量不支持小数".to_owned()),
+                    text: self.src[start..self.pos].to_owned(),
+                    start,
+                };
+            }
+            let val = raw_str
+                .parse::<f64>()
+                .or_else(|_| format!("0{raw_str}").parse::<f64>())
+                .unwrap_or(0.0);
+            return Token {
+                kind: TokenKind::Number(val),
                 text: self.src[start..self.pos].to_owned(),
                 start,
             };
@@ -675,6 +727,14 @@ impl<'src> Lexer<'src> {
                 if raw_digits.contains(['e', 'E']) {
                     return Token {
                         kind: TokenKind::LexError("BigInt 字面量不支持指数".to_owned()),
+                        text: self.src[start..self.pos].to_owned(),
+                        start,
+                    };
+                }
+                // 小数（整数部分带点）不可作 BigInt 字面量（`1.5n` → SyntaxError）
+                if raw_digits.contains('.') {
+                    return Token {
+                        kind: TokenKind::LexError("BigInt 字面量不支持小数".to_owned()),
                         text: self.src[start..self.pos].to_owned(),
                         start,
                     };

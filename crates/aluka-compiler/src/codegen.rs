@@ -117,7 +117,7 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
     // 保证默认编译产物与关闭态逐字节一致）。Block 包装语句不登记——它自身
     // 零宽（无指令），内部语句自会登记；否则零宽项会吞掉迁移计数并产生
     // 指向 `}`/`else` 行的假 DA 条目。
-    if unit.line_coverage && !matches!(s.stmt, Stmt::Block(_)) {
+    if unit.line_coverage && !matches!(s.stmt, Stmt::Block(_) | Stmt::Labeled { .. }) {
         // 连续同行条目合并（for-init/for 头、else 包装等零宽重复）——
         // 重复条目会让迁移计数把同一语句执行计成多次
         let dup_last = matches!(unit.line_table.last(), Some((_, l)) if *l == s.line);
@@ -625,6 +625,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                 scope.break_jumps.push(jmp);
             }
         }
+        Stmt::Labeled { body, .. } => {
+            // 标签本身零宽：直接编译标注语句（无 `break label` 时语义等价）
+            compile_stmt(body, unit, is_last);
+        }
         Stmt::Continue => {
             let jmp = emit_jump(unit, Op::Jmp);
             if let Some(scope) = unit.loop_stack.last_mut() {
@@ -966,6 +970,20 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                         compile_expr(index, unit);
                         unit.code.push(Instr::new(Op::DelElem, 0));
                     }
+                    // `delete <标识符>`：不得对标识符求值（未声明读取应返回
+                    // true 而非抛 ReferenceError）；局部/上值绑定与只读全局
+                    // （Infinity/NaN/undefined）不可删除 → false
+                    Expr::Ident(name) => {
+                        let op = if unit.symbol_map.contains_key(name)
+                            || unit.upvalue_map.contains_key(name)
+                            || matches!(name.as_str(), "Infinity" | "NaN" | "undefined")
+                        {
+                            Op::PushFalse
+                        } else {
+                            Op::PushTrue
+                        };
+                        unit.code.push(Instr::new(op, 0));
+                    }
                     other => {
                         compile_expr(other, unit);
                         unit.code.push(Instr::new(Op::Pop, 0));
@@ -977,8 +995,21 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                 unit.code.push(Instr::new(Op::Pop, 0));
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
             } else if op == "typeof" {
-                compile_expr(expr, unit);
-                unit.code.push(Instr::new(Op::Typeof, 0));
+                // `typeof <未声明标识符>` 必须返回 "undefined" 而非抛
+                // ReferenceError（规范 UnaryExpression `typeof` 的特殊豁免）：
+                // 自由标识符走 TypeofGlobal 通道；局部/上值名仍取实值再判型。
+                if let Expr::Ident(name) = expr.as_ref() {
+                    if unit.symbol_map.contains_key(name) || unit.upvalue_map.contains_key(name) {
+                        compile_expr(expr, unit);
+                        unit.code.push(Instr::new(Op::Typeof, 0));
+                    } else {
+                        let name_idx = add_constant(unit, Constant::String(name.clone()));
+                        unit.code.push(Instr::new(Op::TypeofGlobal, name_idx));
+                    }
+                } else {
+                    compile_expr(expr, unit);
+                    unit.code.push(Instr::new(Op::Typeof, 0));
+                }
             } else {
                 compile_expr(expr, unit);
                 let opcode = match op.as_str() {
@@ -1537,6 +1568,7 @@ fn stmt_has_closure_capturing(s: &SpannedStmt, target_name: &str) -> bool {
         Stmt::Return(Some(expr)) => expr_has_closure_capturing(expr, target_name),
         Stmt::Throw(expr) => expr_has_closure_capturing(expr, target_name),
         Stmt::Return(None) | Stmt::Break | Stmt::Continue => false,
+        Stmt::Labeled { body, .. } => stmt_has_closure_capturing(body, target_name),
         Stmt::For {
             init,
             cond,

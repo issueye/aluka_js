@@ -740,3 +740,93 @@ M7.3（npm Top 50 签核）未启动。
   全依赖（check#2/5/8/10 等 VT+NBSP 形态）；
 - 效果：test262 基线 697 → **703/1154**（+6 算术五则族）；
 - 门禁：workspace 652/0、GC 压力 215/0、clippy 0 全绿。
+
+### 26.17 M7.2 轮九：语义核心缺口补全（20260912 续）
+
+**基线**：703/1154（336 正向失败 + 60 parse 负例 + 115 invalid）。
+
+**失败分桶（真实清单）**：
+- `S11.*_A2` 族（未声明标识符读取应抛 ReferenceError）≈27；
+- `S11.*_A3` 族（包装对象/对象参与算术的 ToPrimitive）≈30；
+- `typeof Math.*` / `Math.PI`（Math 常量与部分方法缺失）；
+- `Number.MIN_VALUE` 取错（`f64::MIN_POSITIVE` ≠ 最小次正规数）；
+- `Number()` 无参返回 NaN（应 0）、字符串转义 `\f` 词法缺口；
+- 数组 elision `[,,,1,2]`、前导点数字 `.12345` 解析缺口。
+
+**本轮修复范围**：
+1. 未声明标识符读取抛 ReferenceError（`resolve_global` 改 `Option`，LoadGlobal
+   命中 None 即抛；TypeofGlobal 保持返回 "undefined"）；
+2. 包装对象 ToPrimitive：`add_values` 与 `to_number_value` 解包
+   `[[NumberValue]]`/`[[BooleanValue]]`/`[[StringValue]]`/Date `_timeValue`；
+3. Math 对象补全：8 个常量 + 全部标准方法（含缺失的 `sin`/`cos`/`tan`）
+   挂为属性（`typeof Math.x === "function"`）；
+4. Number 静态：`MIN_VALUE = f64::from_bits(1)`（最小次正规数）；`Number()` 无参 = 0；
+5. 词法器字符串转义 `\f`/`\b` 修正；JSON.parse 转义臂复核；
+6. 解析器：数组 elision 与前导点数字字面量。
+
+**验收标准**：test262 手写 154 硬门禁全绿 + 官方导入语料基线显著上调；
+workspace 全量测试、GC 压力、clippy、fmt、node22 conformance 差分全绿。
+
+### 26.18 M7.2 轮九：实现记录与门禁证据
+
+#### 实现（12 处引擎修复）
+
+| # | 修复 | 位置 | 说明 |
+|---|---|---|---|
+| 1 | **未声明标识符读取抛 ReferenceError** | `vm/interpreter.rs` `resolve_global` → `Option`；`LoadGlobal` 命中 None 抛 `ReferenceError: x is not defined` | 此前 `_ => Undefined` 静默求值；`typeof`/`delete` 走豁免通道 |
+| 2 | `typeof <自由标识符>` 走 `TypeofGlobal` | `compiler/codegen.rs` | 此前编译为 `LoadGlobal; Typeof`，ReferenceError 化后会误抛；`typeof` 对未声明必须返回 `"undefined"` |
+| 3 | `delete <标识符>` 不读取标识符 | `compiler/codegen.rs` | 局部/上值/只读全局 → `PushFalse`，未声明 → `PushTrue`（此前先求值再删，未声明会抛） |
+| 4 | 包装对象 ToPrimitive 解包 | `vm/interpreter.rs` `wrapper_primitive` + `to_number_value`；`vm/ops.rs` `add_values` | `[[NumberValue]]`/`[[BooleanValue]]`/`[[StringValue]]`/Date `_timeValue`；`new Boolean(true)+true → 2`、`new Number(1)/true → 1` |
+| 5 | Math 常量 + 全部标准方法挂属性 | `vm/interpreter.rs` `Vm::new` | 8 常量（PI/E/…）+ 35 方法（补 `sin`/`cos`/`tan`）；`typeof Math.exp === "function"`、`Math.PI === 3.14159…` |
+| 6 | `Number.MIN_VALUE` = 最小次正规数 | `vm/builtins/global/mod.rs` | `f64::MIN_POSITIVE` → `f64::from_bits(1)`（5e-324） |
+| 7 | `Number()` / `String()` 无参 = 0 / "" | `vm/call.rs` | 此前 `args.first().unwrap_or(undefined)` → NaN / "undefined" |
+| 8 | 包装原型 `constructor` 回指 | `vm/builtins/surface.rs` | `new String().constructor === String` 等（S15.5/6/7 族） |
+| 9 | 词法字符串转义 `\f`/`\b`/`\v` | `parser/lexer.rs` | 此前落 `other => push(char)`，`\f` 变字母 `f`（`Number("\f")` 错为 NaN） |
+| 10 | BigInt 小数/前导点判死 | `parser/lexer.rs` | `.0000000001n` / `1.5n` → SyntaxError（此前静默接受） |
+| 11 | 数组 elision + 前导点数字 | `parser/parser.rs` / `lexer.rs` | `[,,,1,2]`（length 5）、`.12345` / `.00000012345` |
+| 12 | 标签语句 `label: Statement` | `parser/ast.rs`/`parser.rs`/`codegen.rs` | `{length: 3000}[]` 等块内标签此前被当表达式求值；**消除 ReferenceError 化后的 18 例回归** |
+| 13 | BigInt `===` 按内容比较 | `vm/ops.rs` `strict_eq` | 归一化十进制文本比较（`0b0_1n === 0b01n`） |
+| 14 | 只读全局赋值忽略 | `vm/interpreter.rs`/`jit_helpers.rs` `StoreGlobal` | `Infinity`/`NaN`/`undefined` 赋值静默忽略 |
+| 15 | GC 压力相位基准 | `vm/gc.rs`/`heap.rs` | `stress_base` 使 `drain_gc` 后压力触发相位从 0 起算（修复轮九新增分配数改变相位、压力下 `cyclic_garbage_is_collected` 触发点落入分配间隙的**测试脆弱性**，非引擎缺陷） |
+
+#### 门禁证据（真实输出）
+
+```text
+$ cargo fmt --all --check                              → 通过
+$ cargo clippy --all-targets --all-features -- -D warnings
+    → 0 error
+$ cargo test --workspace --all-features
+    → TOTAL passed: 652, failed: 0
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm -p aluka-cli --all-features
+    → passed: 457, failed: 0
+$ cargo test -p aluka-cli --all-features --test test262_subset_test
+    → 811/1154 passed（115 invalid；手写 154 硬门禁 ✓）
+      基线 703 → 811：新增通过 108、回归 0（逐例集合差分核验）
+$ cargo test -p aluka-cli --all-features --test conformance_node22_test
+    → 1 passed（全量差分 vs node v22.23.1 stdout 逐字节一致，37.51s）
+$ cargo test -p aluka-jit --release --test jitbench
+    → 3 passed（JIT ≥ 解释器保守门禁保持）
+```
+
+#### 关键教训
+
+- **ReferenceError 化的连带面**：标识符读取语义收紧会暴露此前被
+  「未声明 = undefined」掩盖的解析器缺口（标签语句）与 `typeof`/`delete`
+  豁免缺失——18 例回归当场由逐例集合差分捕获并全部修复，最终净收益
+  108 例、零回归。这正是「真实证据闭环 + 逐例差分」的价值。
+- **GC 压力相位**：新增构建期分配改变了 `allocated % N` 的触发相位，
+  使依赖「两次分配间不触发回收」的 GC 单元测试变脆；以 `stress_base`
+  将测试相位归零，恢复确定性（引擎根扫描本身无误）。
+
+#### 剩余（如实结转）
+
+- BigInt mul/div/mod/sub 与混合类型 TypeError（~20 例）、对象 ToPrimitive
+  经用户 `valueOf`/`toString`（`Number({valueOf})`）、`Object(2n)` 包装、
+  BigInt 全局函数；
+- 标签语句仅作跳转目标标记，`break/continue label` 未接线；
+- Boolean.prototype `this` 值 TypeError（需 `CallMethod` 尊重实例自有方法值）、
+  Symbol 家族、`Object.prototype.toString` 内建标签、`Date()` 字符串形态、
+  模块顶层 `typeof this`；
+- parse 负例大桶（async-function early errors / ASI 严格化 / 行终结符）——
+  按登记推进，不在本轮声称完成。
+

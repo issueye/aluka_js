@@ -1,0 +1,994 @@
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_core-05dzip9okdp9f\s-hm7f6m7ml7-1jm95ob-working`
+
+warning: `aluka-core` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_bytecode-0n8i9y61d462p\s-hm7f6mrsvj-0nt0u5u-working`
+
+warning: `aluka-bytecode` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_module-3pf1u0ji4dynm\s-hm7f6ms8du-12qkz5e-working`
+
+warning: `aluka-module` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_jit-0pwv013axcuti\s-hm7qf2ebps-0xixo7y-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_regex-1702n5wpdnzwq\s-hm7f6ms4d4-0hh6ypt-working`
+
+warning: `aluka-jit` (lib) generated 1 warning
+warning: `aluka-regex` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_parser-02ktxhq935jcc\s-hm87ccgfdl-0wjo4ne-working`
+
+warning: `aluka-parser` (lib) generated 1 warning
+   Compiling aluka-vm v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-vm)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_compiler-3jdqfro1alwek\s-hm87ccoc3b-16pt87p-working`
+
+warning: `aluka-compiler` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_npm-2rp9azo79cb77\s-hm7ckfz1c3-072dahx-working`
+
+warning: `aluka-npm` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_vm-1i01z1aquzl05\s-hm87g9ewmk-0w0b5xg-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_vm-1f41wbvh5johj\s-hm87g9ewqu-01pnou3-working`
+
+   Compiling aluka-builtins v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-builtins)
+   Compiling aluka-webapi v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-webapi)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_webapi-37tw0k1fbkcr0\s-hm87gbkffs-070trpf-working`
+
+warning: `aluka-webapi` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_builtins-1xigqfd2p3im1\s-hm87gbk90e-048s2vb-working`
+
+   Compiling aluka-runtime v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-runtime)
+warning: `aluka-builtins` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_runtime-36e9q6ru5qydc\s-hm87gbpcl0-1cwl0at-working`
+
+warning: `aluka-runtime` (lib) generated 1 warning
+warning: `aluka-vm` (lib) generated 1 warning
+   Compiling aluka-cli v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-cli)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\alukac-3s1exqouxu5sd\s-hm87ggv5zw-073qi55-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m2_conf_fixes_test-267mwwzr6beor\s-hm87ggvb72-0ae1b6f-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\esm_interop_test-100ts2dzz0zug\s-hm87ggw61f-1nht4d2-working`
+
+warning: `aluka-cli` (bin "alukac" test) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\gcpressure-1y6xd92lq3lvl\s-hm87ggwbii-0ego5n3-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase4_stream_test-3rbzmvj85qihp\s-hm87ggu9ei-1lajut3-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase4_crypto_test-0vyz1p4301j2n\s-hm87gguqzj-1hlcvpb-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase4_events_test-1foaiiortbvda\s-hm87ggv0p8-1ffdqse-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m54_transform_reporter_test-0xabeelc98sab\s-hm87gguk82-0mkmw0h-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\https_tls_loopback_test-2gfl0ccwm9u2v\s-hm87gh0601-1gco2hv-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\sync_builtins_test-2ypes9njwdljm\s-hm87ggvj3z-1sjfh7r-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka-0orimce7iqb7h\s-hm87gh5b8y-1iufevo-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\conformance_node22_test-0i9eyuehoznrh\s-hm87ggwbfl-1xttlyg-working`
+
+warning: `aluka-cli` (example "gcpressure") generated 1 warning
+warning: `aluka-cli` (test "https_tls_loopback_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m52_conn_close_test-08ly1o1nvl58v\s-hm87giicja-0urihfw-working`
+
+warning: `aluka-cli` (test "builtins_phase4_stream_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase4_events_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase4_crypto_test") generated 1 warning
+warning: `aluka-cli` (test "sync_builtins_test") generated 1 warning
+warning: `aluka-cli` (test "m54_transform_reporter_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\frontend_features_test-2jzpfs0hewb91\s-hm87gkiuhu-0fu2fkm-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m52_settings_test-1eojacymf6vst\s-hm87gjwals-1qnz7u5-working`
+
+warning: `aluka-cli` (test "conformance_node22_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m52_worker_msg_test-1ot29x0osi6yt\s-hm87gkgqtu-0d25o21-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase7_diag_test-0bz6uxukrw7mz\s-hm87gkhbtj-15bx4mv-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m3_tls_loopback_test-0zk7bxcn1tdpy\s-hm87gkws2r-19aq0sr-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\test262_subset_test-276zt364410l5\s-hm87gkhb6w-0821nq1-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluvm_test-37b6s31asrdcj\s-hm87gl8pvr-1gikbof-working`
+
+warning: `aluka-cli` (test "m2_conf_fixes_test") generated 1 warning
+warning: `aluka-cli` (test "esm_interop_test") generated 1 warning
+warning: `aluka-cli` (test "m52_conn_close_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase7_io_test-15hicfnbz3u8i\s-hm87gmh69q-1i39dky-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase4_zlib_test-1s44z3egxpzah\s-hm87gmgday-1tlattt-working`
+
+warning: `aluka-cli` (test "aluvm_test") generated 1 warning
+warning: `aluka-cli` (test "m52_settings_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka-0w3ix426zlfsg\s-hm87gojkt5-13fjji2-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\core_semantics_test-1o5a2oemqccf9\s-hm87gny9j8-056n2ly-working`
+
+warning: `aluka-cli` (test "m52_worker_msg_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase7_diag_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m54_lcov_test-0eqbk4clmvahc\s-hm87golww0-0mkrj7m-working`
+
+warning: `aluka-cli` (bin "aluka") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\dsl_frontend_test-1sekv3022v9tt\s-hm87gpbv96-1bvwipq-working`
+
+warning: `aluka-vm` (lib test) generated 1 warning
+warning: `aluka-cli` (test "test262_subset_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase5_net_test-1vejfkz89d8ds\s-hm87gp9twy-1go22h1-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m52_http_cluster_test-1mygkzjn3i2vn\s-hm87gp9w4v-0fvfrog-working`
+
+warning: `aluka-cli` (test "m3_tls_loopback_test") generated 1 warning
+warning: `aluka-cli` (test "frontend_features_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase4_zlib_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase7_io_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase3_test-1lmyr2gobbq0u\s-hm87gpp5ax-1rg0fo0-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m52_cluster_events_test-0fkr0bqep1ul6\s-hm87gpmnzv-1pukvle-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\four_quadrants_oracle_test-1m8imhd4ywtv1\s-hm87gqjvda-1vgpay4-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\golden_compile_oracle_test-3nd1m36tcl51s\s-hm87gqhl4v-0ilw0cr-working`
+
+warning: `aluka-cli` (test "m54_lcov_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\cjs_test-3du87zsie4jjr\s-hm87gqhfvd-0huaqwk-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\jit_fib_probe-3ofnc817k8qlz\s-hm87gqwgc7-1sbdtaf-working`
+
+warning: `aluka-cli` (test "core_semantics_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase4_fs_promises_test-34kmwlrvfz11v\s-hm87gqkzw7-13h0x2w-working`
+
+warning: `aluka-cli` (bin "aluka" test) generated 1 warning
+warning: `aluka-cli` (test "builtins_phase5_net_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase4_assert_sys_test-2rubukmnnmb14\s-hm87grcyk1-1or6r7r-working`
+
+warning: `aluka-cli` (test "cjs_test") generated 1 warning
+warning: `aluka-cli` (test "m52_http_cluster_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\alukac-1ltmfwr2brz6w\s-hm87gswbu5-1jbio25-working`
+
+warning: `aluka-cli` (test "builtins_phase3_test") generated 1 warning
+warning: `aluka-cli` (test "m52_cluster_events_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase5_http_test-0rqwv1r0tea0c\s-hm87gshbev-06k2tn3-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase6_vm_module_test-33km5olypxg6i\s-hm87gt2bi3-0gm71l7-working`
+
+warning: `aluka-cli` (test "dsl_frontend_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_iter_protocol_test-0xx774efpmppn\s-hm87gt1any-1qsv46p-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase9_m4_test-059dsaiuamxw5\s-hm87gtlat3-0fvenyo-working`
+
+warning: `aluka-cli` (test "builtins_phase4_fs_promises_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase1_test-0vshqdi2wlzsi\s-hm87gtetgx-06141xp-working`
+
+warning: `aluka-cli` (bin "alukac") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\alukac_test-0mmuf8w8pfx02\s-hm87gupgpw-1m0oppn-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\fib_bench-2qjb0y40rqtsd\s-hm87gv7vsx-1wrjyxt-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_run_test-31r9lh7os0aqa\s-hm87guzv8l-1cr9pjx-working`
+
+warning: `aluka-cli` (test "builtins_phase4_assert_sys_test") generated 1 warning
+warning: `aluka-cli` (test "four_quadrants_oracle_test") generated 1 warning
+warning: `aluka-cli` (example "jit_fib_probe") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase9_m4_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase5_http_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\express_e2e_test-30hhvkazg0pkf\s-hm87gwv8b1-1u5pr5p-working`
+
+warning: `aluka-cli` (test "golden_compile_oracle_test") generated 1 warning
+warning: `aluka-cli` (test "alukac_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluvm-0vn9echxzwpxu\s-hm87gxy2o8-1xjxfpj-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase8_compat_test-0xg51ck8zs9fw\s-hm87gwkhkv-1pfa1rt-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\golden_execution_oracle_test-0fzrkh3e0zbqp\s-hm87gxxqxa-1gljzz2-working`
+
+warning: `aluka-cli` (test "builtins_phase6_vm_module_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_iter_protocol_test") generated 1 warning
+warning: `aluka-cli` (test "aluka_run_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_all_modules_test-3qa5wru7fho8p\s-hm87gxe2of-1imy963-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_json_stringify_test-3tbo4rfwfcsq8\s-hm87gxe2on-1o7jf1k-working`
+
+warning: `aluka-cli` (test "builtins_phase1_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m52_disconnect_test-0zwogrb1aj76o\s-hm87gxmnad-0swh8aj-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\npm_install_e2e_test-3ad64eekee4i7\s-hm87gyb7bn-04a3uwy-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluvm-2exg9mr5k1jlw\s-hm87gyka0z-0opv8l0-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\m5_semantics_test-2fut0wbh6081e\s-hm87gy5sej-19rilr3-working`
+
+warning: `aluka-cli` (test "express_e2e_test") generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\builtins_phase6_proc_test-2h82tthf76m9m\s-hm87gy92cx-1xs2sqe-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\test_runner_cli_test-0q4kdk5xrznko\s-hm87gz63j6-0dwlc7h-working`
+
+warning: `aluka-cli` (test "npm_install_e2e_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase8_compat_test") generated 1 warning
+warning: `aluka-cli` (example "fib_bench") generated 1 warning
+warning: `aluka-cli` (test "builtins_all_modules_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_json_stringify_test") generated 1 warning
+warning: `aluka-cli` (test "m52_disconnect_test") generated 1 warning
+warning: `aluka-cli` (test "test_runner_cli_test") generated 1 warning
+warning: `aluka-cli` (bin "aluvm" test) generated 1 warning
+warning: `aluka-cli` (test "m5_semantics_test") generated 1 warning
+warning: `aluka-cli` (test "builtins_phase6_proc_test") generated 1 warning
+warning: `aluka-vm` (test "golden_execution_oracle_test") generated 1 warning
+warning: `aluka-cli` (bin "aluvm") generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 51.50s
+     Running unittests src\main.rs (target\debug\deps\aluka-d72d2da4486504b6.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\alukac\main.rs (target\debug\deps\alukac-926a84ec1e7306d1.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\bin\aluvm.rs (target\debug\deps\aluvm-d8675983bbeb928b.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\aluka_run_test.rs (target\debug\deps\aluka_run_test-9fd71c079aba80cf.exe)
+
+running 5 tests
+test test_aluka_run_uncaught_exception_exit_code ... ok
+test test_aluka_run_argv_forwarding ... ok
+test test_aluka_run_dsl ... ok
+test test_aluka_run_typescript ... ok
+test test_aluka_run_javascript ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.81s
+
+     Running tests\alukac_test.rs (target\debug\deps\alukac_test-8f258d4934055f1b.exe)
+
+running 2 tests
+test test_alukac_cli_version_and_help ... ok
+test test_alukac_compile_and_disasm_roundtrip ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\aluvm_test.rs (target\debug\deps\aluvm_test-818b6d298e62c02a.exe)
+
+running 4 tests
+test aluvm_version_exits_successfully ... ok
+test aluvm_reports_uncaught_exception_with_failure_exit ... ok
+test aluvm_injects_process_argv ... ok
+test aluvm_runs_golden_corpus_and_matches_node ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests\builtins_all_modules_test.rs (target\debug\deps\builtins_all_modules_test-bf6506f1cc666356.exe)
+
+running 2 tests
+test manifest_module_count_anchor ... ok
+test all_builtin_modules_requireable_e2e_matches_go ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\builtins_iter_protocol_test.rs (target\debug\deps\builtins_iter_protocol_test-29fb22d031677635.exe)
+
+running 5 tests
+test string_for_of_iterates_by_code_point ... ok
+test set_iterators_matches_node ... ok
+test spread_syntax_matches_node ... ok
+test map_iterators_matches_node ... ok
+test array_iterators_matches_node ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.16s
+
+     Running tests\builtins_json_stringify_test.rs (target\debug\deps\builtins_json_stringify_test-384ce34dcaaaab38.exe)
+
+running 3 tests
+test ignored_values_matches_node ... ok
+test key_order_matches_node ... ok
+test dict_order_and_delete_readd_matches_node ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.20s
+
+     Running tests\builtins_phase1_test.rs (target\debug\deps\builtins_phase1_test-41d0c7e652b294a9.exe)
+
+running 4 tests
+test phase1_string_decoder_e2e ... ok
+test phase1_path_win32_e2e ... ok
+test phase1_path_posix_e2e ... ok
+test phase1_constants_e2e ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests\builtins_phase3_test.rs (target\debug\deps\builtins_phase3_test-dc555472f7678692.exe)
+
+running 4 tests
+test buffer_family_e2e_matches_go ... ok
+test perf_hooks_e2e_matches_go ... ok
+test v8_heap_statistics_e2e_matches_go ... ok
+test timers_and_promises_e2e_matches_go ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests\builtins_phase4_assert_sys_test.rs (target\debug\deps\builtins_phase4_assert_sys_test-70fb24e95cfdff8b.exe)
+
+running 3 tests
+test 系统兼容模块格式化对拍验证 ... ok
+test 严格断言与系统兼容模块对拍验证 ... ok
+test 严格断言相等性细化对拍验证 ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\builtins_phase4_crypto_test.rs (target\debug\deps\builtins_phase4_crypto_test-1e8712201406346a.exe)
+
+running 15 tests
+test hash_create_family_e2e_matches_go ... ok
+test checkprime_e2e_matches_go ... ok
+test crypto_error_paths_e2e_matches_go ... ok
+test hash_oneshot_gethashes_ciphers_e2e_matches_go ... ok
+test cipher_modes_ecb_ctr_gcm_e2e_matches_go ... ok
+test hkdf_async_callback_e2e_matches_go ... ok
+test hmac_family_e2e_matches_go ... ok
+test cipher_cbc_roundtrip_e2e_matches_go ... ok
+test pbkdf2_async_callback_e2e_matches_go ... ok
+test random_surface_e2e_matches_go ... ok
+test randomint_async_getrandomvalues_e2e_matches_go ... ok
+test scrypt_async_callback_e2e_matches_go ... ok
+test kdf_sync_e2e_matches_go ... ok
+test timing_safe_equal_e2e_matches_go ... ok
+test x509_certificate_e2e_matches_go ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests\builtins_phase4_events_test.rs (target\debug\deps\builtins_phase4_events_test-bc0fb6f62b4379e2.exe)
+
+running 5 tests
+test events_listener_count_and_max_listeners_e2e_matches_go ... ok
+test events_emitter_off_and_remove_all_e2e_matches_go ... ok
+test events_emitter_on_and_emit_e2e_matches_go ... ok
+test events_emitter_once_e2e_matches_go ... ok
+test events_module_identity_and_exports_e2e_matches_go ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests\builtins_phase4_fs_promises_test.rs (target\debug\deps\builtins_phase4_fs_promises_test-a5812e75dbf0b609.exe)
+
+running 2 tests
+test fs_promises_core_lifecycle_e2e_matches_go ... ok
+test fs_promises_recursive_and_dir_e2e_matches_go ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.23s
+
+     Running tests\builtins_phase4_stream_test.rs (target\debug\deps\builtins_phase4_stream_test-a4a015ba9ed41a60.exe)
+
+running 4 tests
+test stream_consumers_text_e2e_matches_go ... ok
+test stream_promises_finished_e2e_matches_go ... ok
+test readable_writable_pipe_e2e_matches_go ... ok
+test readable_for_await_e2e_matches_go ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests\builtins_phase4_zlib_test.rs (target\debug\deps\builtins_phase4_zlib_test-609e0617cf786d18.exe)
+
+running 18 tests
+test stream_web_read_cycle_e2e_matches_go ... ok
+test stream_web_exports_typeof_e2e_matches_go ... ok
+test stream_web_writable_transform_e2e_matches_go ... ok
+test zlib_crc32_values_e2e_matches_go ... ok
+test stream_web_tee_reader_e2e_matches_go ... ok
+test zlib_async_deflate_inflate_e2e_matches_go ... ok
+test zlib_async_serial_chain_e2e_matches_go ... ok
+test stream_web_readable_stream_surface_e2e_matches_go ... ok
+test zlib_brotli_roundtrip_e2e_matches_go ... ok
+test zlib_deflate_inflate_roundtrip_e2e_matches_go ... ok
+test zlib_constants_values_e2e_matches_go ... ok
+test zlib_deflate_raw_roundtrip_e2e_matches_go ... ok
+test zlib_error_paths_throw_e2e_matches_go ... ok
+test zlib_exports_typeof_e2e_matches_go ... ok
+test zlib_gzip_gunzip_roundtrip_e2e_matches_go ... ok
+test zlib_unzip_auto_detect_e2e_matches_go ... ok
+test zlib_zstd_roundtrip_e2e_matches_go ... ok
+test zlib_large_input_roundtrip_lengths_e2e_matches_go ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.82s
+
+     Running tests\builtins_phase5_http_test.rs (target\debug\deps\builtins_phase5_http_test-e449fa5ff939e5b1.exe)
+
+running 10 tests
+test http2_surface_and_events_matches_go ... ok
+test http2_create_server_plain_roundtrip_matches_go ... ok
+test http_post_echo_matches_go ... ok
+test http_status_codes_methods_surface_matches_go ... ok
+test http_get_roundtrip_matches_go ... ok
+test https_validation_and_surface_matches_go ... ok
+test http_server_lifecycle_matches_go ... ok
+test http_sequential_and_res_events_matches_go ... ok
+test http_write_head_and_204_matches_go ... ok
+test http_no_handler_and_string_url_matches_go ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.26s
+
+     Running tests\builtins_phase5_net_test.rs (target\debug\deps\builtins_phase5_net_test-a5a9a847b32e36a8.exe)
+
+running 8 tests
+test dgram_loopback_send_receive_e2e_matches_go ... ok
+test net_isip_blocklist_socketaddress_e2e_matches_go ... ok
+test dns_callback_family_e2e_matches_go ... ok
+test net_echo_greet_lifecycle_e2e_matches_go ... ok
+test net_write_callback_lifecycle_e2e_matches_go ... ok
+test tls_surface_and_errors_e2e_matches_go ... ok
+test dns_promises_family_e2e_matches_go ... ok
+test net_positional_connect_and_props_e2e_matches_go ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+     Running tests\builtins_phase6_proc_test.rs (target\debug\deps\builtins_phase6_proc_test-338c2e8bdc44c8c4.exe)
+
+running 11 tests
+test worker_missing_file_emits_error_and_exit_matches_go ... ok
+test message_channel_and_broadcast_match_go ... ok
+test spawn_kill_emits_exit_matches_go ... ok
+test spawn_event_order_and_error_path_matches_go ... ok
+test worker_message_round_trip_matches_go ... ok
+test fork_inherits_stdio_and_exits_matches_go ... ok
+test cluster_surface_and_fork_matches_go ... ok
+test spawn_sync_timeout_matches_go ... ok
+test exec_execfile_chained_callbacks_match_go ... ok
+test spawn_sync_result_shape_matches_go ... ok
+test exec_sync_buffer_encoding_and_throws_matches_go ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.88s
+
+     Running tests\builtins_phase6_vm_module_test.rs (target\debug\deps\builtins_phase6_vm_module_test-5dfa991846933856.exe)
+
+running 10 tests
+test module_surface_and_create_require_matches_go ... ok
+test trace_events_surface_matches_go ... ok
+test module_class_surface_matches_go ... ok
+test trace_events_error_codes_match_go ... ok
+test module_builtin_modules_verbatim_matches_go ... ok
+test module_node_module_paths_matches_go ... ok
+test vm_script_surface_and_cached_data_matches_go ... ok
+test vm_surface_and_is_context_matches_go ... ok
+test vm_measure_memory_promise_shape_matches_go ... ok
+test vm_error_messages_match_go ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests\builtins_phase7_diag_test.rs (target\debug\deps\builtins_phase7_diag_test-55d00838a8f20c2a.exe)
+
+running 7 tests
+test diagnostics_channel_pubsub_matches_go ... ok
+test domain_lifecycle_and_emitter_surface_matches_go ... ok
+test domain_run_and_error_capture_matches_go ... ok
+test async_hooks_als_and_resource_matches_go ... ok
+test inspector_session_surface_matches_go ... ok
+test diagnostics_channel_tracing_and_stores_matches_go ... ok
+test inspector_promises_session_surface_matches_go ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+     Running tests\builtins_phase7_io_test.rs (target\debug\deps\builtins_phase7_io_test-52f292b7dc73248c.exe)
+
+running 13 tests
+test readline_promises_stream_e2e_matches_go ... ok
+test readline_surface_e2e_matches_go ... ok
+test sqlite_bigint_blob_errors_e2e_matches_go ... ok
+test readline_eof_close_e2e_matches_go ... ok
+test repl_display_prompt_piped_e2e_matches_go ... ok
+test repl_piped_loop_e2e_matches_go ... ok
+test sqlite_memory_roundtrip_e2e_matches_go ... ok
+test readline_piped_question_e2e_matches_go ... ok
+test sqlite_open_and_sql_errors_e2e_matches_go ... ok
+test readline_promises_stdin_fallback_piped_e2e_matches_go ... ok
+test tty_surface_e2e_matches_go ... ok
+test sqlite_file_db_reopen_e2e_matches_go ... ok
+test sqlite_node22_diff_e2e_matches_node ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.47s
+
+     Running tests\builtins_phase8_compat_test.rs (target\debug\deps\builtins_phase8_compat_test-b2f95ac3ea77b6f6.exe)
+
+running 10 tests
+test test_registration_is_silent_in_run_mode_e2e ... ok
+test test_runner_events_e2e_matches_go ... ok
+test punycode_family_e2e_matches_go ... ok
+test markdown_render_branches_e2e_matches_go ... ok
+test wasi_surface_e2e_matches_go ... ok
+test test_reporters_surface_e2e_matches_go ... ok
+test aluka_markdown_namespace_e2e_matches_go ... ok
+test test_async_subtests_mock_e2e_matches_go ... ok
+test test_suites_hooks_plan_e2e_matches_go ... ok
+test test_concurrency_batch_starts_all_before_any_settles_e2e ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests\builtins_phase9_m4_test.rs (target\debug\deps\builtins_phase9_m4_test-a032ba109d1c79b6.exe)
+
+running 1 test
+test fetch_redirect_request_headers_e2e_matches_node ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.33s
+
+     Running tests\cjs_test.rs (target\debug\deps\cjs_test-25a3a5db6f10cb15.exe)
+
+running 3 tests
+test aluvm_os_and_url_builtins_e2e ... ok
+test aluvm_node_path_fs_env_builtins_e2e ... ok
+test aluvm_cjs_modules_cycle_and_fs_end_to_end ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.15s
+
+     Running tests\conformance_node22_test.rs (target\debug\deps\conformance_node22_test-410d60d8bc502736.exe)
+
+running 1 test
+test node22_conformance_matches_node_stdout ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 39.74s
+
+     Running tests\core_semantics_test.rs (target\debug\deps\core_semantics_test-8aaac8e4fcc754d9.exe)
+
+running 21 tests
+test for_of_array_iteration_matches_go ... ok
+test basic_globals_match_go ... ok
+test promise_all_matches_go ... ok
+test function_name_property_matches_go ... ok
+test async_throw_rejects_promise_chain_matches_go ... ok
+test await_rejection_throws_in_frame_matches_go ... ok
+test promise_all_settled_matches_go ... ok
+test promise_executor_sync_throw_rejects_matches_go ... ok
+test json_parse_matches_node ... ok
+test custom_iterable_for_of_matches_go ... ok
+test deep_recursion_fib_matches_go ... ok
+test promise_finally_passes_value_matches_go ... ok
+test promise_race_matches_go ... ok
+test promise_rejection_catch_matches_go ... ok
+test string_prototype_methods_match_go ... ok
+test symbol_basics_match_go ... ok
+test symbol_property_keys_match_go ... ok
+test symbol_well_known_match_go ... ok
+test then_chaining_semantics_match_go ... ok
+test rust_frontend_cjk_literals_match_go ... ok
+test gc_stress_heavy_allocation_matches_go has been running for over 60 seconds
+test gc_stress_heavy_allocation_matches_go ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 178.84s
+
+     Running tests\dsl_frontend_test.rs (target\debug\deps\dsl_frontend_test-f3694d5a7fae54dd.exe)
+
+running 2 tests
+test test_dsl_frontend_e2e_compilation_and_execution ... ok
+test test_dsl_cli_invocation_with_aluvm ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests\esm_interop_test.rs (target\debug\deps\esm_interop_test-df4a381a0d6b4200.exe)
+
+running 1 test
+test require_esm_returns_namespace_with_named_and_default ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\express_e2e_test.rs (target\debug\deps\express_e2e_test-87b0951a64b1d01b.exe)
+
+running 1 test
+test express_six_scenes_match_node22_oracle ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.37s
+
+     Running tests\four_quadrants_oracle_test.rs (target\debug\deps\four_quadrants_oracle_test-313f48af42c2c771.exe)
+
+running 1 test
+test test_four_quadrants_oracle_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.04s
+
+     Running tests\frontend_features_test.rs (target\debug\deps\frontend_features_test-8c59a6ef2a103fd3.exe)
+
+running 4 tests
+test test_advanced_destructuring_and_defaults ... ok
+test test_template_literal_interpolation ... ok
+test test_function_parameter_destructuring ... ok
+test test_class_derived_default_constructor_super_forwarding ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests\golden_compile_oracle_test.rs (target\debug\deps\golden_compile_oracle_test-a0e0bfac647c23da.exe)
+
+running 2 tests
+test test_compile_all_32_golden_corpus_and_verify ... ok
+test test_compile_and_execute_node_diff ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.83s
+
+     Running tests\https_tls_loopback_test.rs (target\debug\deps\https_tls_loopback_test-a36934c03832f495.exe)
+
+running 1 test
+test https_self_loopback_matches_node22 ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.25s
+
+     Running tests\m2_conf_fixes_test.rs (target\debug\deps\m2_conf_fixes_test-c887da4e0b215f76.exe)
+
+running 6 tests
+test buffer_from_utf8_string_stays_raw_bytes ... ok
+test error_prototype_distinct_from_object_prototype ... ok
+test asi_return_newline_terminates_statement ... ok
+test broadcast_channel_post_reaches_other_instances_only ... ok
+test array_ctor_single_numeric_length_semantics ... ok
+test m2_conf_fixes_match_node22 ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests\m3_tls_loopback_test.rs (target\debug\deps\m3_tls_loopback_test-7534f6b034600db3.exe)
+
+running 2 tests
+test m3_tls13_protocol_version ... ok
+test m3_tls13_real_tcp_https_loopback ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests\m52_cluster_events_test.rs (target\debug\deps\m52_cluster_events_test-d52ddda39c1a88ed.exe)
+
+running 4 tests
+test cluster_listening_payload_wildcard_matches_node ... ok
+test cluster_lifecycle_events_match_node ... ok
+test cluster_listening_payload_ipv6_matches_node ... ok
+test cluster_listening_payload_zero4_matches_node ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.30s
+
+     Running tests\m52_conn_close_test.rs (target\debug\deps\m52_conn_close_test-3023d9d7cdcf9bae.exe)
+
+running 2 tests
+test http_connection_reuse_matches_node ... ok
+test http_connection_close_semantics_match_node ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.34s
+
+     Running tests\m52_disconnect_test.rs (target\debug\deps\m52_disconnect_test-b50a23f5d7df5425.exe)
+
+running 3 tests
+test cluster_worker_disconnect_ack_roundtrip_matches_node ... ok
+test cluster_worker_self_disconnect_matches_node ... ok
+test cluster_primary_disconnect_matches_node ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+
+     Running tests\m52_http_cluster_test.rs (target\debug\deps\m52_http_cluster_test-c90de52d7a3ece62.exe)
+
+running 3 tests
+test http_listen_eaddrinuse_error_payload_matches_node ... ok
+test listen_error_without_listener_throws_uncaught_like_node ... ok
+test net_listen_eaddrinuse_error_payload_matches_node ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+
+     Running tests\m52_settings_test.rs (target\debug\deps\m52_settings_test-e778393a32bfc297.exe)
+
+running 7 tests
+test cluster_settings_contract_matches_node ... ok
+test cluster_default_fork_fallback_matches_node ... ok
+test cluster_settings_cwd_matches_node ... ok
+test cluster_settings_exec_args_apply_matches_node ... ok
+test cluster_settings_silent_off_matches_node ... ok
+test cluster_settings_silent_on_matches_node ... ok
+test cluster_fork_arg_validation_matches_node ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.69s
+
+     Running tests\m52_worker_msg_test.rs (target\debug\deps\m52_worker_msg_test-cb9cce2c9f886156.exe)
+
+running 6 tests
+test process_event_api_values_match_node ... ok
+test cluster_worker_process_channel_matches_node ... ok
+test cluster_worker_message_delivery_matches_node ... ok
+test cluster_worker_self_events_match_node ... ok
+test cluster_worker_process_disconnect_matches_node ... ok
+test cluster_worker_channel_keeps_alive_matches_node ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.06s
+
+     Running tests\m54_lcov_test.rs (target\debug\deps\m54_lcov_test-7cf49f99fc93d99b.exe)
+
+running 1 test
+test lcov_report_structure_and_counts ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests\m54_transform_reporter_test.rs (target\debug\deps\m54_transform_reporter_test-39de67eac11ec07b.exe)
+
+running 5 tests
+test reporter_transform_surface_matches_node_oracle ... ok
+test compose_spec_pipe_matches_spec_contract ... ok
+test compose_tap_pipe_matches_tap_contract ... ok
+test compose_pipe_after_events_flushes_buffer ... ok
+test compose_dot_pipe_matches_dot_contract ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests\m5_semantics_test.rs (target\debug\deps\m5_semantics_test-8a04dc29e05a80f2.exe)
+
+running 8 tests
+test clone_getter_invalid_date_error_matches_node ... ok
+test message_port_ref_surface_matches_node ... ok
+test timer_mock_runall_and_reset_matches_node ... ok
+test clone_shared_array_buffer_matches_node ... ok
+test timer_mock_shape_matches_node ... ok
+test clone_unreachable_transfer_detached_matches_node ... ok
+test timer_mock_tick_and_settime_matches_node ... ok
+test listen_failure_error_payload_matches_node ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.36s
+
+     Running tests\npm_install_e2e_test.rs (target\debug\deps\npm_install_e2e_test-577f342c9b6c7d52.exe)
+
+running 1 test
+test npm_install_and_vm_run_matches_node ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.41s
+
+     Running tests\sync_builtins_test.rs (target\debug\deps\sync_builtins_test-23048482a6feda71.exe)
+
+running 4 tests
+test util_format_inspect_types_e2e_matches_go ... ok
+test fs_sync_family_e2e_matches_go ... ok
+test assert_family_e2e_matches_go ... ok
+test os_extended_family_e2e_matches_go ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+     Running tests\test262_subset_test.rs (target\debug\deps\test262_subset_test-59d6c99346a72776.exe)
+
+running 1 test
+test test262_subset_conformance ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 42.30s
+
+     Running tests\test_runner_cli_test.rs (target\debug\deps\test_runner_cli_test-9dafb624008b2fef.exe)
+
+running 6 tests
+test value_call_and_function_identity_e2e ... ok
+test tap_reporter_shape_e2e ... ok
+test todo_without_callback_is_ok_and_does_not_fail_exit_e2e ... ok
+test pass_and_fail_files_drive_exit_code_e2e ... ok
+test skip_function_attribute_and_options_forms_are_equivalent_e2e ... ok
+test directory_target_recurses_and_ignores_node_modules_e2e ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running unittests src\lib.rs (target\debug\deps\aluka_vm-dc4630b3725ebd5f.exe)
+
+running 182 tests
+test bigdec::tests::bignat_basics ... ok
+test builtins::assert::tests::handler_signatures_anchor ... ok
+test bigdec::tests::shortest_digits_ties_to_even ... ok
+test bigdec::tests::to_exponential_matches_node ... ok
+test builtins::async_hooks::tests::handler_signatures_anchor ... ok
+test bigdec::tests::to_radix_string_matches_node ... ok
+test builtins::assert_strict::tests::处理器签名锚定 ... ok
+test bigdec::tests::to_precision_matches_node ... ok
+test builtins::constants::tests::key_signal_and_priority_values_anchor ... ok
+test bigdec::tests::exact_decimal_expands_exactly ... ok
+test builtins::async_hooks::tests::provider_names_match_go_count ... ok
+test bigdec::tests::to_fixed_matches_node ... ok
+test builtins::crypto::der::tests::der_reader_basics ... ok
+test builtins::crypto::der::tests::integer_sign_byte ... ok
+test builtins::crypto::der::tests::fingerprint_format ... ok
+test builtins::crypto::aes::tests::fips197_appendix_c ... ok
+test builtins::crypto::der::tests::ipv6_formatting ... ok
+test builtins::crypto::der::tests::oid_decoding ... ok
+test builtins::crypto::der::tests::time_formatting ... ok
+test builtins::crypto::digest::tests::algo_name_resolution ... ok
+test builtins::crypto::digest::tests::finalize_is_idempotent ... ok
+test builtins::crypto::digest::tests::hex_encoding ... ok
+test builtins::crypto::enc::tests::pem_roundtrip ... ok
+test builtins::crypto::enc::tests::rfc4648_base64_vectors ... ok
+test builtins::crypto::hmac::tests::idempotent_and_incremental ... ok
+test builtins::crypto::hmac::tests::rfc2202_md5_vectors ... ok
+test builtins::crypto::hmac::tests::rfc4231_long_key ... ok
+test builtins::crypto::hmac::tests::rfc4231_vectors ... ok
+test builtins::crypto::inst_cipher::tests::gcm_decrypt_requires_tag ... ok
+test builtins::crypto::inst_cipher::tests::cbc_state_roundtrip ... ok
+test builtins::crypto::inst_digest::tests::handler_signatures_anchor ... ok
+test builtins::crypto::kdf::tests::kdf_error_paths ... ok
+test builtins::crypto::inst_cipher::tests::handler_signatures_anchor ... ok
+test builtins::crypto::inst_digest::tests::digest_state_lengths ... ok
+test builtins::crypto::inst_cipher::tests::gcm_state_roundtrip ... ok
+test builtins::crypto::kdf_api::tests::handler_signatures_anchor ... ok
+test builtins::crypto::kdf::tests::rfc5869_hkdf_vectors ... ok
+test builtins::crypto::kdf_api::tests::int_arg_defaults ... ok
+test builtins::crypto::md5::tests::incremental_matches_one_shot ... ok
+test builtins::crypto::md5::tests::rfc1321_vectors ... ok
+test builtins::crypto::modes::tests::pkcs7_edges ... ok
+test builtins::crypto::modes::tests::ecb_roundtrip ... ok
+test builtins::crypto::modes::tests::sp80038a_cbc_aes256 ... ok
+test builtins::crypto::modes::tests::sp80038a_cbc_aes128 ... ok
+test builtins::crypto::rand_api::tests::handler_signatures_anchor ... ok
+test builtins::crypto::modes::tests::sp80038a_ctr_aes128 ... ok
+test builtins::crypto::rand_api::tests::random_range_bounds ... ok
+test builtins::crypto::random::tests::random_bytes_length_and_spread ... ok
+test builtins::crypto::random::tests::uuid_v4_format ... ok
+test builtins::crypto::modes::tests::gcm_spec_vectors ... ok
+test builtins::crypto::sha1::tests::fips180_vectors ... ok
+test builtins::crypto::random::tests::random_int_in_range ... ok
+test builtins::crypto::sha2::tests::fips180_256_vectors ... ok
+test builtins::crypto::sha2::tests::fips180_384_vectors ... ok
+test builtins::crypto::sha1::tests::incremental_matches_one_shot ... ok
+test builtins::crypto::sha2::tests::fips180_512_vectors ... ok
+test builtins::crypto::tests::cipher_table_matches_go ... ok
+test builtins::crypto::tests::handler_signatures_anchor ... ok
+test builtins::crypto::x509_api::tests::handler_signatures_anchor ... ok
+test builtins::crypto::tests::primality_basics ... ok
+test builtins::crypto::x509_api::tests::modulus_bit_length ... ok
+test builtins::crypto::x509_api::tests::key_equality ... ok
+test builtins::diagnostics_channel::tests::handler_signatures_anchor ... ok
+test builtins::dns::tests::dns_queue_starts_empty_per_process ... ok
+test builtins::dns::tests::resolver_surface_matches_go_list ... ok
+test builtins::dns_promises::tests::dns_error_codes_cover_go_set ... ok
+test builtins::dns_promises::tests::ip_family_matches_go_semantics ... ok
+test builtins::dns_promises::tests::port_service_name_maps_common_ports ... ok
+test builtins::dns_promises::tests::resolver_surface_excludes_lookup ... ok
+test builtins::dns_resolver::tests::interpret_nxdomain_and_nodata ... ok
+test builtins::crypto::sha2::tests::incremental_matches_one_shot ... ok
+test builtins::dns_resolver::tests::arpa_v4_and_v6 ... ok
+test builtins::dns_resolver::tests::rrtype_covers_node_set ... ok
+test builtins::dns_resolver::tests::server_parse_forms ... ok
+test builtins::domain::tests::handler_signatures_anchor ... ok
+test builtins::dns_resolver::tests::query_wire_roundtrip_no_network ... ok
+test builtins::fs::tests::handler_signatures_anchor ... ok
+test builtins::fs_promises::tests::handler_signatures_anchor ... ok
+test builtins::global::fetch::delim_tests::bodyless_status_completes_at_header_end ... ok
+test builtins::global::fetch::delim_tests::chunked_data_containing_terminator_bytes_is_not_truncated ... ok
+test builtins::global::fetch::delim_tests::chunked_terminator_variants ... ok
+test builtins::global::fetch::delim_tests::content_length_delimits ... ok
+test builtins::global::fetch::delim_tests::head_response_has_no_body ... ok
+test builtins::global::fetch::delim_tests::close_delimited_waits_for_eof ... ok
+test builtins::global::fetch::delim_tests::malformed_status_line_is_error ... ok
+test builtins::global::fetch::delim_tests::incomplete_head_is_not_complete ... ok
+test builtins::inspector::tests::handler_signatures_anchor ... ok
+test builtins::inspector_promises::tests::handler_signatures_anchor ... ok
+test builtins::markdown::tests::handler_signatures_anchor ... ok
+test builtins::markdown::tests::frontmatter_and_full_document_match_go ... ok
+test builtins::module::tests::handler_signatures_anchor ... ok
+test builtins::module::tests::builtin_modules_count ... ok
+test builtins::markdown::tests::render_samples_conform ... ok
+test builtins::os::tests::handler_signatures_anchor ... ok
+test builtins::os::tests::release_parses_first_three_parts ... ok
+test builtins::path_posix::tests::handler_signatures_anchor ... ok
+test builtins::path_win32::tests::handler_signatures_anchor ... ok
+test builtins::punycode::tests::handler_signatures_anchor ... ok
+test builtins::querystring::tests::handler_signatures_anchor ... ok
+test builtins::readline::tests::handler_signatures_anchor ... ok
+test builtins::punycode::tests::punycode_rfc3492_cases ... ok
+test builtins::repl::tests::handler_signatures_anchor ... ok
+test builtins::readline_promises::tests::handler_signatures_anchor ... ok
+test builtins::sqlite::tests::errstr_table_anchor ... ok
+test builtins::sqlite::tests::handler_signatures_anchor ... ok
+test builtins::stream_web::tests::handler_signatures_anchor ... ok
+test builtins::string_decoder::tests::handler_signatures_anchor ... ok
+test builtins::string_decoder::tests::valid_prefix_holds_trailing_multibyte ... ok
+test builtins::sys::tests::处理器签名锚定 ... ok
+test builtins::test_reporters::tests::dot_failed_block_matches_go_contract ... ok
+test builtins::test_reporters::tests::handler_signatures_anchor ... ok
+test builtins::test_reporters::tests::reporter_formatting_conform ... ok
+test builtins::test_reporters::tests::reporter_kind_dispatch_reuses_existing_formatters ... ok
+test builtins::test_reporters::tests::tap_lines_and_summaries_match_go_contract ... ok
+test builtins::tls::tests::cipher_suites_match_standard_list ... ok
+test builtins::tls::tests::pem_validation_mirrors_go_messages ... ok
+test builtins::trace_events::tests::handler_signatures_anchor ... ok
+test builtins::tty::tests::handler_signatures_anchor ... ok
+test builtins::tty::tests::isatty_negative_fd_is_false ... ok
+test builtins::util::tests::handler_signatures_anchor ... ok
+test builtins::vm::tests::handler_signatures_anchor ... ok
+test builtins::zlib::tests::crc32_known_values ... ok
+test builtins::zlib::tests::handler_signatures_anchor ... ok
+test builtins::zlib::tests::zstd_frame_roundtrip_via_ruzstd ... ok
+test builtins::inspector::probe_tests::probe_session_construct ... ok
+test exception::tests::pending_exception_in_finally_rethrows_on_exit ... ok
+test exception::tests::jump_out_of_region_runs_finally_first ... ok
+test exception::tests::jump_target_inside_region_keeps_handler ... ok
+test builtins::zlib::tests::gzip_deflate_roundtrip ... ok
+test gc::tests::adaptive_trigger_tracks_survival_rate ... ok
+test exception::tests::return_through_finally_suspends_then_resumes ... ok
+test exception::tests::throw_inside_catch_escapes_to_outer_handler ... ok
+test gc::tests::card_table_granularity ... ok
+test exception::tests::throw_with_catch_pushes_exc_and_jumps_to_catch ... ok
+test exception::tests::throw_without_any_handler_propagates ... ok
+test gc::tests::free_slot_is_reused_with_reset_age ... ok
+test gc::tests::cyclic_garbage_is_collected ... ok
+test builtins::crypto::sha1::tests::million_a_vector ... ok
+test gc::tests::birth_watermark_protects_new_objects ... ok
+test gc::tests::promote_age_constant_matches_adr ... ok
+test gc::tests::globally_reachable_object_survives ... ok
+test interpreter::tests::call_args_uses_heap_path_at_nine_arguments ... ok
+test gc::tests::graph_trace_keeps_reachable_chain ... ok
+test gc::tests::major_survivors_promote ... ok
+test builtins::crypto::sha2::tests::million_a_sha256 ... ok
+test gc::tests::minor_collects_young_only_and_promotes ... ok
+test gc::tests::unreferenced_object_is_reclaimed ... ok
+test gc::tests::registry_symbol_survives_gc ... ok
+test gc::tests::write_barrier_protects_old_to_young ... ok
+test interpreter::tests::fixed_argument_call_preserves_order_with_tier_zero ... ok
+test interpreter::tests::jit_switch_can_force_tier_zero_execution ... ok
+test interpreter::tests::native_function_call_still_reenters_vm_without_heap_clone ... ok
+test jit_helpers::pic_layout_tests::pic_layout_matches_repr_c_enum ... ok
+test interpreter::tests::closure_metadata_reads_name_lazily_and_length_directly ... ok
+test interpreter::tests::reports_underflow_instead_of_panicking ... ok
+test jit_hot::tests::ineligible_templates_are_rejected ... ok
+test interpreter::tests::reports_missing_return ... ok
+test interpreter::tests::round_trips_a_value_through_a_local_slot ... ok
+test interpreter::tests::reports_local_out_of_range ... ok
+test interpreter::tests::runs_addition_and_returns_result ... ok
+test jit_helpers::pic_layout_tests::pic_layout_agrees_with_runtime_object ... ok
+test pic::poly_method_tests::polymorphic_method_site_all_hit ... ok
+test jit_hot::tests::unsupported_opcode_marks_rejected_once ... ok
+test jit_hot::tests::hot_function_switches_to_machine_code_with_identical_results ... ok
+test pic::poly_tests::quad_polymorphic_site_all_hit ... ok
+test pic::poly_tests::quad_group_eviction_stays_correct ... ok
+test pic::slice2_tests::method_ic_own_shadow_and_polymorphism ... ok
+test jit_hot::call_chain_tests::callee_invoked_from_jit_also_gets_compiled ... ok
+test pic::slice2_tests::method_ic_binds_proto_and_reads_fresh ... ok
+test pic::slice2_tests::write_ic_overwrite_keeps_visibility ... ok
+test pic::tests::accessor_shadow_beats_cached_slot ... ok
+test pic::slice2_tests::write_ic_setter_beats_cached_slot ... ok
+test pic::tests::delete_switches_to_dict_and_ic_bails ... ok
+test pic::tests::polymorphic_alternation_stays_correct ... ok
+test pic::tests::monomorphic_hit_reads_correct_values ... ok
+test pic::tests::proto_fallback_via_slow_path ... ok
+test property::tests::oversized_objects_switch_to_dict_mode_bounded_memory ... ok
+test property::tests::small_objects_stay_in_fast_shape_mode_and_share_shape ... ok
+test tls_spike::tests::tls13_handshake_and_echo_over_pure_rust_provider ... ok
+test builtins::crypto::kdf::tests::rfc6070_pbkdf2_sha1 ... ok
+test builtins::crypto::kdf::tests::rfc7914_pbkdf2_sha256 ... ok
+test builtins::crypto::kdf::tests::rfc7914_scrypt_vectors ... ok
+
+test result: ok. 182 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.99s
+
+     Running tests\golden_execution_oracle_test.rs (target\debug\deps\golden_execution_oracle_test-e6da1eb8e6696597.exe)
+
+running 33 tests
+test test_execute_04_control_flow_jumps ... ok
+test test_execute_01_arithmetic_bitwise ... ok
+test test_execute_05_optional_chaining ... ok
+test test_execute_07_objects_and_properties ... ok
+test test_execute_10_try_catch_finally ... ok
+test test_execute_03_comparisons ... ok
+test test_execute_09_classes_and_inheritance ... ok
+test test_execute_08_arrays_and_methods ... ok
+test test_execute_11_generators_and_iterators ... ok
+test test_execute_12_for_in_keys ... ok
+test test_execute_02_literals_and_stack ... ok
+test test_execute_06_closures_and_upvalues ... ok
+test test_execute_14_regexp_and_types ... ok
+test test_execute_13_async_await ... ok
+test test_execute_15_update_expressions ... ok
+test test_execute_17_in_and_instanceof ... ok
+test test_execute_16_destructuring_and_spread ... ok
+test test_execute_18_switch_statement ... ok
+test test_execute_19_while_dowhile ... ok
+test test_execute_20_apply_and_spread_call ... ok
+test test_execute_21_template_literals ... ok
+test test_execute_22_nested_closures ... ok
+test test_execute_23_computed_getter_setter ... ok
+test test_execute_99_synthetic_special_opcodes ... ok
+test test_execute_25_call_this_constructor ... ok
+test test_execute_24_typeof_global ... ok
+test test_execute_26_for_await_of ... ok
+test test_execute_27_chained_try_finally ... ok
+test test_execute_28_super_methods ... ok
+test test_execute_30_dynamic_globals_and_undef ... ok
+test test_execute_29_dynamic_arithmetic_ops ... ok
+test test_execute_31_dynamic_props_and_spread ... ok
+test test_execute_32_try_exit_jmp_loop ... ok
+
+test result: ok. 33 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+   Doc-tests aluka_vm
+
+running 1 test
+test crates\aluka-vm\src\builtins\mod.rs - builtins::builtin_module (line 379) ... ignored
+
+test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.39s; merged doctests compilation took 0.38s

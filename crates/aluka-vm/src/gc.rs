@@ -100,6 +100,10 @@ pub(crate) struct GcState {
     pub(crate) allocs_since_major: u32,
     /// 累计分配对象数
     pub(crate) allocated: u64,
+    /// 压力模式相位基准：`gc_stress_due` 以 `allocated - stress_base` 取模。
+    /// 测试 `drain_gc` 将其对齐到当前分配数，使压力触发相位从 0 起算
+    /// （避免因构建期分配数变化导致触发点落入被测代码的分配间隙）。
+    pub(crate) stress_base: u64,
     /// 累计回收对象数
     pub(crate) reclaimed: u64,
     /// major 回收次数
@@ -136,6 +140,7 @@ impl Default for GcState {
             allocs_since_minor: 0,
             allocs_since_major: 0,
             allocated: 0,
+            stress_base: 0,
             reclaimed: 0,
             major_collections: 0,
             minor_collections: 0,
@@ -213,9 +218,9 @@ pub(crate) fn gc_stress_interval() -> u32 {
 }
 
 /// 给定累计分配数，当前是否到了强制回收点。
-pub(crate) fn gc_stress_due(allocated: u64) -> bool {
+pub(crate) fn gc_stress_due(allocated: u64, stress_base: u64) -> bool {
     let n = gc_stress_interval();
-    n > 0 && allocated % (n as u64) == 0
+    n > 0 && allocated.wrapping_sub(stress_base) % (n as u64) == 0
 }
 
 /// 压力模式收集器选择（诊断用）：`major` 只跑 major，`minor` 只跑 minor。
@@ -803,6 +808,8 @@ mod tests {
         vm.gc.birth_watermark = 0;
         vm.force_gc();
         vm.force_gc();
+        // 压力模式相位归零：被测分配从 0 起算，触发点确定
+        vm.gc.stress_base = vm.gc.allocated;
     }
 
     /// 无引用的分配在两遍回收后被终审释放（槽位转 Free 并入 free-list）。

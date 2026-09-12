@@ -81,7 +81,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         ("MIN_SAFE_INTEGER", Value::Number(-9007199254740991.0)),
         ("EPSILON", Value::Number(f64::EPSILON)),
         ("MAX_VALUE", Value::Number(f64::MAX)),
-        ("MIN_VALUE", Value::Number(f64::MIN_POSITIVE)),
+        ("MIN_VALUE", Value::Number(f64::from_bits(1))),
         ("POSITIVE_INFINITY", Value::Number(f64::INFINITY)),
         ("NEGATIVE_INFINITY", Value::Number(f64::NEG_INFINITY)),
         ("NaN", Value::Number(f64::NAN)),

@@ -192,6 +192,13 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         let _ = vm.define_proto_method(Value::Object(num_p), m, Value::Object(f));
         register_handler(registry, "Number.prototype", m, num_method_dispatch);
     }
+    // 包装原型 `constructor` 回指构造器（`new String().constructor === String`；
+    // 此前缺失致 S15.5/S15.6/S15.7 的 constructor 恒等断言失败）
+    for (proto, ctor_name) in [(str_p, "String"), (bool_p, "Boolean"), (num_p, "Number")] {
+        if let Some(c) = vm.resolve_global(ctor_name).and_then(|v| v.as_object()) {
+            let _ = vm.define_proto_method(Value::Object(proto), "constructor", Value::Object(c));
+        }
+    }
 
     // Function.prototype：toString 真实 handler（interpreter 侧注册），
     // call/apply/bind 属性占位（调用形态经解释器通用协议消化）
@@ -215,7 +222,7 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         fn_proto_to_string,
     );
     // `constructor` → 真 Function 构造器（同上：占位会令 `f.constructor.name` 错）
-    if let Some(fc) = vm.resolve_global("Function").as_object() {
+    if let Some(fc) = vm.resolve_global("Function").and_then(|v| v.as_object()) {
         let _ = vm.set_property(Value::Object(fn_p), "constructor", Value::Object(fc));
     }
     register_handler(registry, "Function.prototype", "call", fn_proto_call_apply);
@@ -1023,6 +1030,26 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             Ok(Value::Object(vm.alloc_string(text)))
         }
         "toString" => {
+            // 原型覆盖检测（M7.2 语料 `Array.prototype.toString = Object.
+            // prototype.toString`）：解析到的属性值 native name 若仍是内置
+            // join 占位走内置逗号拼接；被覆盖（换成了别的占位/用户函数）
+            // 则走通用 invoke——经注册表分派到新函数
+            let override_fn = vm
+                .get_property(Value::Object(r), "toString")
+                .ok()
+                .and_then(|v| {
+                    v.as_object().and_then(|f| match vm.heap.get(f.0 as usize) {
+                        Some(HeapObject::NativeFn { name, .. })
+                            if name == "Array.prototype.toString" =>
+                        {
+                            None
+                        }
+                        _ => Some(v),
+                    })
+                });
+            if let Some(override_fn) = override_fn {
+                return vm.invoke_callable(override_fn, Value::Object(r), args);
+            }
             let text = elems(vm, r)
                 .iter()
                 .map(|v| vm.format_value(*v))

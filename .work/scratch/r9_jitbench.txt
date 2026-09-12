@@ -1,0 +1,12 @@
+   Compiling aluka-vm v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-vm)
+   Compiling aluka-jit v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-jit)
+    Finished `release` profile [optimized] target(s) in 5m 02s
+     Running tests\jitbench.rs (target\release\deps\jitbench-01938d4368e7f87b.exe)
+
+running 3 tests
+test hot_loop_jit_not_slower_than_interpreter ... ok
+test prop_sum_pic_vs_interpreter ... ok
+test closure_call_jit_vs_interpreter ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.93s
+

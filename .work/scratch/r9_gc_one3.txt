@@ -1,0 +1,27 @@
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_core-05dzip9okdp9f\s-hm7f6m7ml7-1jm95ob-working`
+
+warning: `aluka-core` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_bytecode-0n8i9y61d462p\s-hm7f6mrsvj-0nt0u5u-working`
+
+warning: `aluka-bytecode` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_jit-0pwv013axcuti\s-hm7qf2ebps-0xixo7y-working`
+
+warning: `aluka-jit` (lib) generated 1 warning
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_module-3pf1u0ji4dynm\s-hm7f6ms8du-12qkz5e-working`
+
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_regex-1702n5wpdnzwq\s-hm7f6ms4d4-0hh6ypt-working`
+
+warning: `aluka-module` (lib) generated 1 warning
+warning: `aluka-regex` (lib) generated 1 warning
+   Compiling aluka-vm v0.1.0 (E:\codes\go_projects\aluka_lang\aluka_js\crates\aluka-vm)
+warning: hard linking files in the incremental compilation cache failed. copying files instead. consider moving the cache directory to a file system which supports hard linking in session dir `\\?\E:\codes\go_projects\aluka_lang\aluka_js\target\debug\incremental\aluka_vm-0wwb9x2x4gskx\s-hm87fnyrm2-1k26o1q-working`
+
+warning: `aluka-vm` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 13.01s
+     Running unittests src\lib.rs (target\debug\deps\aluka_vm-b53af4156d11cadd.exe)
+
+running 1 test
+test gc::tests::cyclic_garbage_is_collected ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 181 filtered out; finished in 0.01s
+

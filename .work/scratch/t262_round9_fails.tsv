@@ -1,0 +1,336 @@
+m72-built-ins-Array-S15.4.1_A1.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got  (x.toString() must return "[object Array]")
+m72-built-ins-Array-S15.4.1_A1.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got undefined (x.getClass() must return "[object Array]")
+m72-built-ins-Array-S15.4.2.1_A1.1_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected false got undefined (x.hasOwnProperty("myproperty") must return false)
+m72-built-ins-Array-S15.4.2.1_A1.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got  (x.toString() must return "[object Array]")
+m72-built-ins-Array-S15.4.2.1_A1.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Array] got undefined (x.getClass() must return "[object Array]")
+m72-built-ins-Array-S15.4.3_A1.1_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got false (Function.prototype.isPrototypeOf(Array) must return true)
+m72-built-ins-Array-S15.4.5.1_A1.2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected -1 got 2 (The value of x[2] is expected to be -1)
+m72-built-ins-Array-S15.4.5.2_A3_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 0 (The value of x.length is expected to be 1)
+m72-built-ins-Array-S15.4.5.2_A3_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got 6 (The value of x.length is expected to be 4)
+m72-built-ins-Array-S15.4.5.2_A3_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4294967295 got 0 (The value of x.length is expected to be 4294967295)
+m72-built-ins-Array-S15.4_A1.1_T6.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got undefined (The value of x["true"] is expected to be 1)
+m72-built-ins-Array-S15.4_A1.1_T7.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got undefined (The value of x[0] is expected to be 0)
+m72-built-ins-Array-S15.4_A1.1_T8.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got undefined (The value of x[0] is expected to be 0)
+m72-built-ins-Array-S15.4_A1.1_T9.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got undefined (The value of x["[object Object]"] is expected to be 0)
+m72-built-ins-Boolean-S15.6.2.1_A4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Boolean] got [object Object] (obj.toString() must return "[object Boolean]")
+m72-built-ins-Boolean-S9.2_A1_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: undefined is not a function
+m72-built-ins-Boolean-prototype-constructor-S15.6.4.1_A1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of Boolean.prototype.constructor is expected to equal the value of Boolean)
+m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-toString-S15.6.4.2_A2_T5.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-prototype-valueOf-S15.6.4.3_A2_T4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Boolean-symbol-coercion.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got 1 (`Boolean(sym).valueOf()` returns `true`)
+m72-built-ins-Infinity-S15.1.1.2_A2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.notSameValue: expected not to be boolean (The value of typeof(Infinity) is not "boolean")
+m72-built-ins-Infinity-S15.1.1.2_A3_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected false got true (The value of `delete Infinity` is expected to be false)
+m72-built-ins-JSON-15.12-0-2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-JSON-15.12-0-4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 3 (i)
+m72-built-ins-JSON-parse-15.12.1.1-g6-3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected b got  (JSON.parse('"\b"'))
+m72-built-ins-JSON-parse-15.12.1.1-g6-4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected f got  (JSON.parse('"\f"'))
+m72-built-ins-NaN-S15.1.1.1_A2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.notSameValue: expected not to be boolean (The value of typeof(NaN) is not "boolean")
+m72-built-ins-NaN-S15.1.1.1_A3_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected false got true (The value of `delete NaN` is expected to be false)
+m72-built-ins-Number-15.7.3-1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got false (Function.prototype.isPrototypeOf(Number))
+m72-built-ins-Number-15.7.3-2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null (p)
+m72-built-ins-Number-15.7.4-1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Number] got [object Object] (s)
+m72-built-ins-Number-S15.7.1.1_A2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (Number() must return 0)
+m72-built-ins-Number-S15.7.2.1_A3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (x2.valueOf() must return 0)
+m72-built-ins-Number-S15.7.2.1_A4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Number] got [object Object] (obj.toString() must return "[object Number]")
+m72-built-ins-Number-S8.12.8_A3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-Number-S8.12.8_A4.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected true got false (The result of evaluating (e instanceof TypeError) is expected to be true)
+m72-built-ins-Number-S9.1_A1_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (Number({valueOf: function() {return "1"}, toString: function() {return 0}}) must return 1)
+m72-built-ins-Number-S9.3.1_A2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (Number("f") must return 0)
+m72-built-ins-Object-S15.2.1.1_A2_T10.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1,2,3,4 got [object Object] (The value of n_obj is expected to equal the value of arr)
+m72-built-ins-Object-S15.2.1.1_A2_T11.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of n_obj.constructor is expected to equal the value of Function)
+m72-built-ins-Object-S15.2.1.1_A2_T5.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of obj.constructor is expected to equal the value of Number)
+m72-built-ins-Object-S15.2.1.1_A2_T8.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+m72-built-ins-Object-S15.2.1.1_A2_T9.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+m72-built-ins-Object-S15.2.2.1_A2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got [object Object] (The value of n_obj is expected to equal the value of obj)
+m72-built-ins-Object-S15.2.2.1_A2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+m72-built-ins-Object-S15.2.2.1_A2_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1,2,3,4 got [object Object] (The value of n_obj is expected to equal the value of arr)
+m72-built-ins-Object-S15.2.2.1_A2_T5.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got [object Object] (The value of n_obj is expected to equal the value of obj)
+m72-built-ins-Object-S15.2.2.1_A2_T6.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [object Object] (The value of n_obj is expected to equal the value of func)
+m72-built-ins-Object-S15.2.2.1_A2_T7.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [function Function] got [function Function] (The value of n_obj.constructor is expected to equal the value of Function)
+m72-built-ins-String-S15.5.1.1_A1_T16.js	None	正向用例失败 vm_rc=None: 
+m72-built-ins-String-S15.5.1.1_A1_T8.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.1.1_A2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.2.1_A1_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.2.1_A1_T10.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.2.1_A1_T11.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.2.1_A1_T12.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.2.1_A1_T13.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-built-ins-String-S15.5.2.1_A1_T16.js	None	正向用例失败 vm_rc=None: 
+m72-built-ins-Symbol-constructor.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of null (reading 'constructor')
+m72-built-ins-Symbol-desc-to-string-symbol.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Symbol-desc-to-string.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected toStringvalueOf got 
+m72-built-ins-Symbol-for-description.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected test262 got [object Object]
+m72-built-ins-Symbol-invoked-with-new.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Symbol-keyFor-arg-non-symbol.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected function got undefined
+m72-built-ins-Symbol-not-callable.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-built-ins-Symbol-prototype-description-get.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected  got undefined (The value of emptyStr.description is "")
+m72-built-ins-Symbol-prototype-intrinsic.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null (`Object.getPrototypeOf(Symbol('66'))` returns `Symbol.prototype`)
+m72-built-ins-undefined-15.1.1.3-1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected undefined got number (typeof undefined)
+m72-built-ins-undefined-S15.1.1.3_A3_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-asi-S7.9.2_A1_T1.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9.2_A1_T1.js.bc)\n"）
+m72-language-asi-S7.9.2_A1_T5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-asi-S7.9.2_A1_T6.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9.2_A1_T6.js.bc)\n"）
+m72-language-asi-S7.9_A1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-asi-S7.9_A10_T2.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A10_T2.js.bc)\n"）
+m72-language-asi-S7.9_A10_T6.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A10_T6.js.bc)\n"）
+m72-language-asi-S7.9_A10_T8.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A10_T8.js.bc)\n"）
+m72-language-asi-S7.9_A11_T4.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A11_T4.js.bc)\n"）
+m72-language-asi-S7.9_A11_T8.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A11_T8.js.bc)\n"）
+m72-language-asi-S7.9_A2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-asi-S7.9_A5.1_T1.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A5.1_T1.js.bc)\n"）
+m72-language-asi-S7.9_A5.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-asi-S7.9_A5.3_T1.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-asi-S7.9_A5.3_T1.js.bc)\n"）
+m72-language-asi-S7.9_A5.4_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-comments-S7.4_A3.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-comments-S7.4_A3.js.bc)\n"）
+m72-language-comments-S7.4_A4_T1.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-comments-S7.4_A4_T1.js.bc)\n"）
+m72-language-comments-S7.4_A4_T4.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-comments-S7.4_A4_T4.js.bc)\n"）
+m72-language-comments-S7.4_A5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-comments-hashbang-eval-indirect.js	None	正向用例失败 vm_rc=None: 
+m72-language-comments-hashbang-function-constructor.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-comments-multi-line-html-close-extra.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-comments-multi-line-html-close-extra.js.bc)\n"）
+m72-language-comments-single-line-html-close-without-lt.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-comments-single-line-html-close-without-lt.js.bc)\n"）
+m72-language-computed-property-names-class-accessor-getter-duplicates.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-accessor-getter.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-accessor-setter-duplicates.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-accessor-setter.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-method-constructor-can-be-generator.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-method-constructor-can-be-getter.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-method-constructor-can-be-setter.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-method-constructor-duplicate-1.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-method-constructor-duplicate-2.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-method-constructor-duplicate-3.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-generator-constructor.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-generator-prototype.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-getter-constructor.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-getter-prototype.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-method-constructor.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-method-prototype.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-setter-constructor.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-class-static-setter-prototype.js	None	正向用例失败 vm_rc=None: 
+m72-language-computed-property-names-object-accessor-getter-super.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'm')
+m72-language-computed-property-names-object-accessor-setter-super.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'm')
+m72-language-computed-property-names-object-method-super.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'm')
+m72-language-computed-property-names-object-property-number-duplicates.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected B got undefined (The value of `object['1e+55']` is `'B'`. Defined as `[1e55]: 'B'`)
+m72-language-destructuring-binding-initialization-requires-object-coercible-null.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-destructuring-binding-initialization-requires-object-coercible-undefined.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-destructuring-binding-syntax-array-elements-with-initializer.js	None	正向用例失败 vm_rc=None: 
+m72-language-destructuring-binding-syntax-array-elements-with-object-patterns.js	None	正向用例失败 vm_rc=None: 
+m72-language-destructuring-binding-syntax-array-elements-without-initializer.js	None	正向用例失败 vm_rc=None: 
+m72-language-destructuring-binding-syntax-array-rest-elements.js	None	正向用例失败 vm_rc=None: 
+m72-language-destructuring-binding-syntax-destructuring-array-parameters-function-arguments-length.js	None	正向用例失败 vm_rc=None: 
+m72-language-destructuring-binding-syntax-destructuring-object-parameters-function-arguments-length.js	None	正向用例失败 vm_rc=None: 
+m72-language-destructuring-binding-syntax-recursive-array-and-object-patterns.js	None	正向用例失败 vm_rc=None: 
+m72-language-expressions-addition-S11.6.1_A2.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A2.1_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A2.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A2.2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A2.2_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A2.3_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A2.4_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.1_T1.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.1_T1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.1_T2.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.1_T2.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.1_T2.5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.2_T1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.2_T2.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-S11.6.1_A3.2_T2.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-addition-bigint-and-number.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-addition-bigint-arithmetic.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 36729517088986129440 got 36729517088986129440 (The result of (0xFEDCBA9876543210n + 0xFEDCBA9876543210n) is 0x1FDB97530ECA86420n)
+m72-language-expressions-addition-bigint-errors.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-addition-bigint-toprimitive.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 3 got [object Object]1 (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) + 1n) is 3n)
+m72-language-expressions-addition-bigint-wrapped-values.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 3 got [object Object]1 (The result of (Object(2n) + 1n) is 3n)
+m72-language-expressions-array-S11.1.4_A1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-array-S11.1.4_A1.4.js	None	正向用例失败 vm_rc=None: 
+m72-language-expressions-array-S11.1.4_A1.5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-array-S11.1.4_A1.6.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-array-S11.1.4_A1.7.js	None	正向用例失败 vm_rc=None: 
+m72-language-expressions-array-spread-err-mult-err-iter-get-value.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-array-spread-err-mult-err-obj-unresolvable.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-array-spread-err-mult-err-unresolvable.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-array-spread-err-sngl-err-itr-get-value.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-array-spread-err-sngl-err-obj-unresolvable.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-array-spread-err-sngl-err-unresolvable.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-array-spread-mult-iter.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 5 got 3
+m72-language-expressions-array-spread-obj-mult-spread-getter.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 2 got [function Function]
+m72-language-expressions-division-S11.5.2_A2.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A2.1_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A2.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A2.3_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A2.4_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T1.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T1.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T2.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T2.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T2.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T2.5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T2.7.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A3_T2.9.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-S11.5.2_A4_T10.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-division-bigint-and-number.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-division-bigint-arithmetic.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 1 (The result of (0xFEDCBA9876543210n / 0xFEDCBA9876543210n) is 0x1n)
+m72-language-expressions-division-bigint-complex-infinity.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-division-bigint-errors.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-division-bigint-toprimitive.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) / 2n) is 1n)
+m72-language-expressions-modulus-S11.5.3_A2.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A2.1_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A2.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A2.3_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A2.4_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T1.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T1.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T2.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T2.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T2.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T2.5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T2.7.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-S11.5.3_A3_T2.9.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-modulus-bigint-and-number.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-modulus-bigint-arithmetic.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 0 (The result of (0xFEDCBA9876543210n % 0xFEDCBA9876543210n) is 0x0n)
+m72-language-expressions-modulus-bigint-errors.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-modulus-bigint-modulo-zero.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-modulus-bigint-toprimitive.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) % 2n) is 0n)
+m72-language-expressions-modulus-bigint-wrapped-values.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got NaN (The result of (Object(2n) % 2n) is 0n)
+m72-language-expressions-modulus-order-of-evaluation.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-multiplication-S11.5.1_A2.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A2.1_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A2.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A2.3_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A2.4_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T1.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T1.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T2.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T2.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T2.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T2.5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T2.7.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A3_T2.9.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-S11.5.1_A4_T7.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-multiplication-bigint-and-number.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-multiplication-bigint-arithmetic.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 337264356397531028994973048178108678400 got 3.37264356397531e+38 (The result of (0xFEDCBA9876543210n * 0xFEDCBA9876543210n) is 0xFDBAC097C8DC5ACCDEEC6CD7A44A4100n)
+m72-language-expressions-multiplication-bigint-errors.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-multiplication-bigint-toprimitive.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) * 2n) is 4n)
+m72-language-expressions-multiplication-bigint-wrapped-values.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got NaN (The result of (Object(2n) * 2n) is 4n)
+m72-language-expressions-multiplication-order-of-evaluation.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-object-11.1.5-0-1.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected In getter got undefined (o.foo)
+m72-language-expressions-object-11.1.5-0-2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected First getter got undefined (o.foo)
+m72-language-expressions-object-11.1.5-1gs.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-expressions-object-11.1.5-1gs.js.bc)\n"）
+m72-language-expressions-object-__proto__-duplicate.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-expressions-object-__proto__-duplicate.js.bc)\n"）
+m72-language-expressions-object-__proto__-permitted-dup.js	None	正向用例失败 vm_rc=None: 
+m72-language-expressions-object-__proto__-value-non-object.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected undefined got [object Object] (property (undefined))
+m72-language-expressions-object-__proto__-value-null.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected null got [object Object]
+m72-language-expressions-object-__proto__-value-obj.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got [object Object]
+m72-language-expressions-object-accessor-name-computed-err-to-prop-key.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-object-accessor-name-computed-err-unresolvable.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-object-accessor-name-computed-yield-expr.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: Cannot read properties of undefined (reading 'first')
+m72-language-expressions-object-accessor-name-computed-yield-id.js	None	正向用例失败 vm_rc=None: 
+m72-language-expressions-object-accessor-name-computed.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected get string got undefined
+m72-language-expressions-subtraction-S11.6.2_A2.1_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A2.1_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A2.2_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A2.3_T1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A2.4_T3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T1.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T1.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T1.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T2.1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T2.2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T2.3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T2.5.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T2.7.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-S11.6.2_A3_T2.9.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-expressions-subtraction-bigint-and-number.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-subtraction-bigint-arithmetic.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 0 (The result of (0xFEDCBA9876543210n - 0xFEDCBA9876543210n) is 0x0n)
+m72-language-expressions-subtraction-bigint-errors.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-subtraction-bigint-toprimitive.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (The result of (({[Symbol.toPrimitive]: function() {return 2n;}, valueOf: err, toString: err}) - 1n) is 1n)
+m72-language-expressions-subtraction-bigint-wrapped-values.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got NaN (The result of (Object(2n) - 1n) is 1n)
+m72-language-expressions-subtraction-order-of-evaluation.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-expressions-typeof-bigint.js	Some(1	) 正向用例失败 vm_rc=Some(1): TypeError: undefined is not a function
+m72-language-expressions-typeof-built-in-exotic-objects-no-call.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected object got function (typeof this === "object")
+m72-language-expressions-typeof-built-in-functions.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected function got undefined (typeof Math.exp === "function")
+m72-language-expressions-typeof-number.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected number got undefined (typeof Math.PI === "number")
+m72-language-expressions-typeof-string.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected string got object (typeof Date() === "string")
+m72-language-expressions-void-S11.4.2_A2_T2.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-line-terminators-S7.3_A2.1_T2.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-S7.3_A2.1_T2.js.bc)\n"）
+m72-language-line-terminators-S7.3_A2.2_T2.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-S7.3_A2.2_T2.js.bc)\n"）
+m72-language-line-terminators-comment-multi-lf.js	Some(1	) runtime 负例类型不匹配（期望 test262error）: [object Object]
+m72-language-line-terminators-comment-multi-ls.js	Some(1	) runtime 负例类型不匹配（期望 test262error）: [object Object]
+m72-language-line-terminators-comment-multi-ps.js	Some(1	) runtime 负例类型不匹配（期望 test262error）: [object Object]
+m72-language-line-terminators-comment-single-cr.js	Some(1	) runtime 负例类型不匹配（期望 test262error）: [object Object]
+m72-language-line-terminators-comment-single-lf.js	Some(1	) runtime 负例类型不匹配（期望 test262error）: [object Object]
+m72-language-line-terminators-comment-single-ls.js	Some(0	) runtime 负例未抛错（vm_rc=Some(0)）: 
+m72-language-line-terminators-comment-single-ps.js	Some(0	) runtime 负例未抛错（vm_rc=Some(0)）: 
+m72-language-line-terminators-invalid-comment-single-cr.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-comment-single-cr.js.bc)\n"）
+m72-language-line-terminators-invalid-comment-single-lf.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-comment-single-lf.js.bc)\n"）
+m72-language-line-terminators-invalid-comment-single-ls.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-comment-single-ls.js.bc)\n"）
+m72-language-line-terminators-invalid-comment-single-ps.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-comment-single-ps.js.bc)\n"）
+m72-language-line-terminators-invalid-regexp-cr.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-regexp-cr.js.bc)\n"）
+m72-language-line-terminators-invalid-regexp-lf.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-regexp-lf.js.bc)\n"）
+m72-language-line-terminators-invalid-regexp-ls.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-regexp-ls.js.bc)\n"）
+m72-language-line-terminators-invalid-regexp-ps.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-regexp-ps.js.bc)\n"）
+m72-language-line-terminators-invalid-string-cr.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-line-terminators-invalid-string-cr.js.bc)\n"）
+m72-language-literals-bigint-mv-is-not-integer-dil-dot-dds.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-mv-is-not-integer-dil-dot-dds.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd-err.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd-err.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bd.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 1
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bd-nsl-bds.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 2 got 2
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bds-nsl-bd.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 2 got 2
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-bds-nsl-bds.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 4 got 4
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-dunder-err.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-dunder-err.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-err.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-bil-nsl-bd-err.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dd-nsl-dd-one-of.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 10 got 10
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-dds-nsl-dd.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1234567890 got 1234567890
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd-err.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd-err.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hd.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 1 got 1
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hd-nsl-hds.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 16 got 16
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hds-nsl-hd.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 16 got 16
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-hds-nsl-hds.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 256 got 256
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-dunder-err.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-dunder-err.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-err.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-nsl-hd-err.js.bc)\n"）
+m72-language-literals-bigint-numeric-separators-numeric-separator-literal-hil-od-nsl-od-one-of.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 0 got 0
+m72-language-rest-parameters-array-pattern.js	None	正向用例失败 vm_rc=None: 
+m72-language-rest-parameters-position-invalid.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-rest-parameters-position-invalid.js.bc)\n"）
+m72-language-rest-parameters-rest-parameters-apply.js	None	正向用例失败 vm_rc=None: 
+m72-language-statementList-eval-block-block-with-labels.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected 42 got undefined (it does not evaluate to an Object with the property x)
+m72-language-statementList-eval-block-regexp-literal-flags.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null
+m72-language-statementList-eval-block-regexp-literal.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.sameValue: expected [object Object] got null
+m72-language-statements-async-function-await-as-identifier-reference-escaped.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-await-as-identifier-reference-escaped.js.bc)\n"）
+m72-language-statements-async-function-await-as-identifier-reference.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-await-as-identifier-reference.js.bc)\n"）
+m72-language-statements-async-function-await-as-label-identifier-escaped.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-await-as-label-identifier-escaped.js.bc)\n"）
+m72-language-statements-async-function-await-as-label-identifier.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-await-as-label-identifier.js.bc)\n"）
+m72-language-statements-async-function-cptn-decl.js	Some(1	) 正向用例失败 vm_rc=Some(1): Number.prototype.sameValue is not a function
+m72-language-statements-async-function-dflt-params-duplicates.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-dflt-params-duplicates.js.bc)\n"）
+m72-language-statements-async-function-dflt-params-rest.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-dflt-params-rest.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-arguments-in-formal-parameters.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-arguments-in-formal-parameters.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-await-in-formals.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-await-in-formals.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-binding-identifier-arguments.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-binding-identifier-arguments.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-binding-identifier-eval.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-binding-identifier-eval.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-body-contains-super-call.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-body-contains-super-call.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-body-contains-super-property.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-body-contains-super-property.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-duplicate-parameters.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-duplicate-parameters.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-eval-in-formal-parameters.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-eval-in-formal-parameters.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-formals-body-duplicate.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-formals-body-duplicate.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-formals-contains-super-call.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-formals-contains-super-call.js.bc)\n"）
+m72-language-statements-async-function-early-errors-declaration-formals-contains-super-property.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-early-errors-declaration-formals-contains-super-property.js.bc)\n"）
+m72-language-statements-async-function-escaped-async.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-escaped-async.js.bc)\n"）
+m72-language-statements-async-function-rest-params-trailing-comma-early-error.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-function-rest-params-trailing-comma-early-error.js.bc)\n"）
+m72-language-statements-async-function-syntax-declaration-no-line-terminator.js	Some(1	) 正向用例失败 vm_rc=Some(1): Error: assert.throws: no exception thrown
+m72-language-statements-async-generator-await-as-identifier-reference-escaped.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-generator-await-as-identifier-reference-escaped.js.bc)\n"）
+m72-language-statements-async-generator-await-as-identifier-reference.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-generator-await-as-identifier-reference.js.bc)\n"）
+m72-language-statements-async-generator-await-as-label-identifier-escaped.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-generator-await-as-label-identifier-escaped.js.bc)\n"）
+m72-language-statements-async-generator-await-as-label-identifier.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-statements-async-generator-await-as-label-identifier.js.bc)\n"）
+m72-language-types-boolean-S8.3_A2.1.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-types-boolean-S8.3_A2.1.js.bc)\n"）
+m72-language-types-boolean-S8.3_A2.2.js	Some(1	) parse 负例未报 SyntaxError（compile_err=None, out="Error: $DONOTEVALUATE\n    at <module> (C:\\Users\\issue\\AppData\\Local\\Temp\\aluka_t262_21152\\m72-language-types-boolean-S8.3_A2.2.js.bc)\n"）
+m72-language-types-number-S8.5_A9.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-types-object-S8.6.1_A1.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-types-object-S8.6.1_A2.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]
+m72-language-types-object-S8.6.1_A3.js	Some(1	) 正向用例失败 vm_rc=Some(1): [object Object]

@@ -316,6 +316,13 @@ pub enum Stmt {
     Break,
     /// Continue 语句
     Continue,
+    /// 标签语句：`label: Statement`（标签仅作跳转目标标记，执行体为 body）
+    Labeled {
+        /// 标签名
+        label: String,
+        /// 标签标注的语句
+        body: Box<SpannedStmt>,
+    },
     /// Throw 抛出异常语句：`throw expr`
     Throw(Expr),
     /// 异常捕获语句：`try { body } catch (e) { catch_body } finally { finally_body }`

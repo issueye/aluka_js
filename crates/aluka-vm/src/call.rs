@@ -184,11 +184,14 @@ impl Vm {
             if ctor_name.as_deref() == Some("Array") {
                 return self.do_construct(callee, args);
             }
-            // Number(value)/Boolean(value)：转换为原始值（不加 new 语义）
+            // Number(value)/Boolean(value)：转换为原始值（不加 new 语义）；
+            // `Number()` 无参按规范返回 +0（此前落 undefined → NaN）
             if ctor_name.as_deref() == Some("Number") {
-                return Ok(Value::Number(self.to_number_value(
-                    args.first().copied().unwrap_or(Value::Undefined),
-                )));
+                let v = match args.first() {
+                    None => 0.0,
+                    Some(v) => self.to_number_value(*v),
+                };
+                return Ok(Value::Number(v));
             }
             if ctor_name.as_deref() == Some("Boolean") {
                 return Ok(Value::Boolean(
@@ -196,10 +199,13 @@ impl Vm {
                 ));
             }
             // String(value)：无 new 直调 = 字符串化（真实包顶层大量
-            // `String(x)` 形态，如 depd 的 containsNamespace）
+            // `String(x)` 形态，如 depd 的 containsNamespace）；无参按规范 ""
             if ctor_name.as_deref() == Some("String") {
-                let v = args.first().copied().unwrap_or(Value::Undefined);
-                let s = self.alloc_string(self.format_value(v));
+                let s = match args.first() {
+                    None => String::new(),
+                    Some(v) => self.format_value(*v),
+                };
+                let s = self.alloc_string(s);
                 return Ok(Value::Object(s));
             }
             // Symbol([description])：无 new 直调 = 创建符号
@@ -486,8 +492,10 @@ impl Vm {
                             _ => None,
                         };
                         let inst = self.alloc_ordinary_with_proto(proto);
-                        let text =
-                            self.format_value(args.first().copied().unwrap_or(Value::Undefined));
+                        let text = match args.first() {
+                            None => String::new(),
+                            Some(v) => self.format_value(*v),
+                        };
                         let s_val = Value::Object(self.alloc_string(text.clone()));
                         // 数据槽 Dict 模式直载（eq 纯堆读取面）
                         if let Some(HeapObject::Ordinary { props, .. }) =
