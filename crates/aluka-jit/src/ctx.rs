@@ -117,6 +117,14 @@ pub struct CallCell {
     pub cell_gen: u32,
     /// 缓存状态：0=未初始化 / 1=可直调 / 2=不可直调
     pub state: u32,
+    /// 被调上值表数据基址（机器可寻址；直调前换入 `ctx.upvals_ptr`）。
+    ///
+    /// **不被缓存守卫依赖**：emit_call 快路径每次从被调堆对象现读
+    /// upvalues 表指针（经 `JitLayout::closure_uv_*_off`），不存在陈旧
+    /// 缓存指针问题；此字段仅为省一次站点内 load 而设（暂留 0）。
+    pub upvals_ptr: usize,
+    /// 被调上值表长度（与 [`CallCell::upvals_ptr`] 成对）
+    pub upvals_len: usize,
 }
 
 impl CallCell {
@@ -136,6 +144,8 @@ impl CallCell {
             consts_len: 0,
             cell_gen: 0,
             state: Self::UNINIT,
+            upvals_ptr: 0,
+            upvals_len: 0,
         }
     }
 }
@@ -238,6 +248,13 @@ pub struct JitLayout {
     pub has_accessors_off: usize,
     /// `Ordinary` 判别式：props 为 `Shape` 变体的判别值
     pub disc_shape: i32,
+    /// `HeapObject::Closure.upvalues`（`Vec`）结构体内**数据指针**字段的
+    /// 对象内偏移（运行时探测填充——`Vec` 为 repr(Rust)，见
+    /// `slots_data_off` 注释）。机器直调 uses_upvalues=true 被调时经此
+    /// 读取被调上值表指针换装 ctx。
+    pub closure_uv_ptr_off: usize,
+    /// `HeapObject::Closure.upvalues` 的 `len` 字段对象内偏移
+    pub closure_uv_len_off: usize,
 }
 
 /// JIT 调用的运行时上下文（由 aluka-vm 构造并复用）。
@@ -273,6 +290,13 @@ pub struct JitCtx {
     pub layout: JitLayout,
     /// helper 函数指针表
     pub vtable: JitVtable,
+    /// 当前帧机器可寻址上值表数据基址（`Upvalue` 数组；null = 未安装）。
+    ///
+    /// `jit_run` / `emit_call` 快路径在进入被调前换装、返回后恢复；
+    /// `LOAD_UPVALUE` helper 经本表读单元格（切片四：机器可寻址上值表）。
+    pub upvals_ptr: *const core::ffi::c_void,
+    /// 上值表长度（元素 = `Upvalue`，8 字节）
+    pub upvals_len: usize,
 }
 
 impl JitCtx {

@@ -17,7 +17,7 @@
 use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::Vm;
 use crate::ops;
-use crate::value::{Value, ValueCase};
+use crate::value::{Upvalue, Value, ValueCase};
 use aluka_bytecode::Constant;
 use aluka_core::ObjectRef;
 use aluka_jit::ctx::JitCtx;
@@ -273,6 +273,8 @@ impl Vm {
                 load_global: jit_load_global,
                 load_upvalue: jit_load_upvalue,
             },
+            upvals_ptr: std::ptr::null(),
+            upvals_len: 0,
         }
     }
 }
@@ -357,10 +359,7 @@ fn call_ic_writeback(
     // NO_FAST 短路：同站点同被调已永久判定不可直调（机器守卫按位比对
     // callee，被调变化时位不同自然重判），避免每次调用重复完整判定
     //（递归调用密集负载上 writeback 本身是每调用开销）
-    // SAFETY: 同上
-    if unsafe { (*cell).state } == aluka_jit::ctx::CallCell::NO_FAST {
-        return;
-    }
+
     let ValueCase::Object(r) = to_vm_value(callee).case() else {
         return no_fast(cell);
     };
@@ -394,6 +393,10 @@ fn call_ic_writeback(
             consts_len: consts.len(),
             cell_gen: cur_gen,
             state: aluka_jit::ctx::CallCell::FAST,
+            // 上值表指针不缓存：emit_call 快路径每次从被调堆对象现读
+            // （对象存活期间 Vec 缓冲区地址稳定，无陈旧指针问题）
+            upvals_ptr: 0,
+            upvals_len: 0,
         };
     }
 }
@@ -441,13 +444,25 @@ pub unsafe extern "C" fn jit_load_global(
 /// # Safety
 /// 见模块文档。
 pub unsafe extern "C" fn jit_load_upvalue(ctx: *mut JitCtx, uv_idx: u32) -> u64 {
-    // SAFETY: 见模块文档
-    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
-    let v = vm
-        .current_upvalues
-        .get(uv_idx as usize)
-        .map(|uv| *uv.0.borrow())
-        .unwrap_or(Value::Undefined);
+    // 切片四：优先读机器可寻址上值表（emit_call 快路径 / jit_run 换装，
+    // 指向被调闭包自己的单元格——递归自引用等体读上值的被调由此正确）；
+    // 表未安装时回退解释器帧的 current_upvalues。
+    // SAFETY: ctx 由 JIT 同步传入（见模块文档），字段读取在 unsafe fn 内
+    let (ptr, len) = unsafe { ((*ctx).upvals_ptr, (*ctx).upvals_len) };
+    let idx = uv_idx as usize;
+    let v = if !ptr.is_null() && idx < len {
+        // SAFETY: 表在调用期间存活——单元格由被调闭包持有（调用中被根集合
+        // /延迟回收保护），表缓冲区由 current_upvalues 或闭包对象持有
+        let uv = unsafe { &*(ptr as *const Upvalue).add(idx) };
+        *uv.0.borrow()
+    } else {
+        // SAFETY: 见模块文档
+        let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+        vm.current_upvalues
+            .get(idx)
+            .map(|uv| *uv.0.borrow())
+            .unwrap_or(Value::Undefined)
+    };
     from_vm_value(v)
 }
 
@@ -525,6 +540,51 @@ fn measure_pic_layout() -> aluka_jit::ctx::JitLayout {
     };
     // SAFETY: repr(C) 枚举判别式固定为偏移 0 的 i32（普通对象属性存储契约）
     let disc_shape = unsafe { *(props as *const OrdinaryProps as *const i32) };
+
+    // Closure.upvalues 表指针/长度偏移探测（切片四：机器可寻址上值表）。
+    // with_capacity(4) + push 3 个单元格 → len=3、cap=4，两个值可区分：
+    // 数据指针字 = as_ptr()；len 字 = 3；cap 字 = 4。
+    let mut uv_probe: Vec<Upvalue> = Vec::with_capacity(4);
+    for n in 0..3i32 {
+        uv_probe.push(Upvalue(std::rc::Rc::new(std::cell::RefCell::new(
+            Value::Number(f64::from(n)),
+        ))));
+    }
+    let closure_probe = HeapObject::Closure {
+        func_idx: 0,
+        upvalues: uv_probe,
+        properties: HashMap::new(),
+        getters: HashMap::new(),
+        non_enum: HashSet::new(),
+        proto: None,
+    };
+    let (closure_uv_ptr_off, closure_uv_len_off) = {
+        let HeapObject::Closure { upvalues, .. } = &closure_probe else {
+            unreachable!("探针必须是 Closure")
+        };
+        let base = (&closure_probe as *const HeapObject) as usize;
+        let vec_base = (upvalues as *const Vec<Upvalue>) as usize;
+        let data_ptr = upvalues.as_ptr() as usize;
+        let mut ptr_off = usize::MAX;
+        let mut len_off = usize::MAX;
+        for i in 0..(std::mem::size_of::<Vec<Upvalue>>() / 8) {
+            // SAFETY: 读取自有 Vec 结构体内的机器字（探测字段布局）
+            let w = unsafe { *((vec_base + i * 8) as *const usize) };
+            if w == data_ptr {
+                ptr_off = i * 8;
+            } else if w == 3 {
+                len_off = i * 8;
+            }
+        }
+        assert!(
+            ptr_off != usize::MAX && len_off != usize::MAX,
+            "未能在 Closure.upvalues 内定位表指针/长度字段——布局假设失效"
+        );
+        // 字偏移（Vec 内）+ Vec 结构体在堆对象内的偏移 = 对象内总偏移
+        let closure_uv_ptr_off = vec_base + ptr_off - base;
+        let closure_uv_len_off = vec_base + len_off - base;
+        (closure_uv_ptr_off, closure_uv_len_off)
+    };
     aluka_jit::ctx::JitLayout {
         props_off,
         shape_id_off,
@@ -533,6 +593,8 @@ fn measure_pic_layout() -> aluka_jit::ctx::JitLayout {
         deleted_gen_off,
         has_accessors_off,
         disc_shape,
+        closure_uv_ptr_off,
+        closure_uv_len_off,
     }
 }
 

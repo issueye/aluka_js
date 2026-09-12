@@ -35,6 +35,8 @@ const CTX_CONSTS_LEN_OFF: i32 = std::mem::offset_of!(JitCtx, consts_len) as i32;
 const CTX_GLOBALS_GEN_OFF: i32 = std::mem::offset_of!(JitCtx, globals_gen) as i32;
 const CTX_HEAP_PTR_OFF: i32 = std::mem::offset_of!(JitCtx, heap_ptr) as i32;
 const CTX_HEAP_STRIDE_OFF: i32 = std::mem::offset_of!(JitCtx, heap_stride) as i32;
+const CTX_UPVALS_PTR_OFF: i32 = std::mem::offset_of!(JitCtx, upvals_ptr) as i32;
+const CTX_UPVALS_LEN_OFF: i32 = std::mem::offset_of!(JitCtx, upvals_len) as i32;
 const CTX_FRAMES_PTR_OFF: i32 = std::mem::offset_of!(JitCtx, frames_ptr) as i32;
 const CTX_JIT_GEN_OFF: i32 = std::mem::offset_of!(JitCtx, jit_gen) as i32;
 const CTX_LAYOUT_OFF: i32 = std::mem::offset_of!(JitCtx, layout) as i32;
@@ -43,6 +45,8 @@ const LAYOUT_PROPS_OFF: i32 = std::mem::offset_of!(JitLayout, props_off) as i32;
 const LAYOUT_SHAPE_ID_OFF: i32 = std::mem::offset_of!(JitLayout, shape_id_off) as i32;
 const LAYOUT_SLOTS_PTR_OFF: i32 = std::mem::offset_of!(JitLayout, slots_ptr_off) as i32;
 const LAYOUT_SLOTS_DATA_OFF: i32 = std::mem::offset_of!(JitLayout, slots_data_off) as i32;
+const LAYOUT_CLOSURE_UV_PTR_OFF: i32 = std::mem::offset_of!(JitLayout, closure_uv_ptr_off) as i32;
+const LAYOUT_CLOSURE_UV_LEN_OFF: i32 = std::mem::offset_of!(JitLayout, closure_uv_len_off) as i32;
 const LAYOUT_DELETED_GEN_OFF: i32 = std::mem::offset_of!(JitLayout, deleted_gen_off) as i32;
 const LAYOUT_HAS_ACCESSORS_OFF: i32 = std::mem::offset_of!(JitLayout, has_accessors_off) as i32;
 const LAYOUT_DISC_SHAPE: i32 = std::mem::offset_of!(JitLayout, disc_shape) as i32;
@@ -875,6 +879,10 @@ struct CallSite {
     sig_ref: ir::SigRef,
     /// 目标机器指针类型
     ptr_type: ir::Type,
+    /// 保存/恢复调用方 `ctx.upvals_ptr` 的栈槽（切片四上值表换装）
+    saved_uv_ptr_slot: ir::StackSlot,
+    /// 保存/恢复调用方 `ctx.upvals_len` 的栈槽
+    saved_uv_len_slot: ir::StackSlot,
 }
 
 /// `CALL`：JIT→JIT 原生直调快速路径 + helper 回退。
@@ -897,6 +905,8 @@ fn emit_call(cg: &mut Cg, ctx_val: Value, site: &CallSite) -> Value {
         fref_call,
         sig_ref,
         ptr_type,
+        saved_uv_ptr_slot,
+        saved_uv_len_slot,
     } = *site;
     let slow_b = cg.fb.create_block();
     let fast_b = cg.fb.create_block();
@@ -957,6 +967,52 @@ fn emit_call(cg: &mut Cg, ctx_val: Value, site: &CallSite) -> Value {
     cg.fb
         .ins()
         .store(MemFlags::new(), new_cl, ctx_val, CTX_CONSTS_LEN_OFF);
+    // 上值表换装（切片四）：从被调堆对象现读 `upvalues` 表指针/长度写入
+    // ctx（LoadUpvalue helper 读此表）；旧值存调用方栈槽，返回后恢复——
+    // 被调对象存活期间其 Vec 缓冲区地址稳定，无陈旧指针问题
+    let uv_ptr_off = cg.layout_field(ctx_val, LAYOUT_CLOSURE_UV_PTR_OFF);
+    let uv_len_off = cg.layout_field(ctx_val, LAYOUT_CLOSURE_UV_LEN_OFF);
+    let shifted = cg.fb.ins().ushr_imm(callee, 8);
+    let callee_idx = cg.fb.ins().band_imm(shifted, 0x0000_0000_FFFF_FFFF);
+    let uv_heap = cg
+        .fb
+        .ins()
+        .load(types::I64, MemFlags::new(), ctx_val, CTX_HEAP_PTR_OFF);
+    let uv_stride = cg
+        .fb
+        .ins()
+        .load(types::I64, immutable_flags(), ctx_val, CTX_HEAP_STRIDE_OFF);
+    let uv_byte = cg.fb.ins().imul(callee_idx, uv_stride);
+    let uv_obj = cg.fb.ins().iadd(uv_heap, uv_byte);
+    let uv_ptr_addr = cg.fb.ins().iadd(uv_obj, uv_ptr_off);
+    let uv_len_addr = cg.fb.ins().iadd(uv_obj, uv_len_off);
+    let new_uv_ptr = cg.fb.ins().load(ptr_type, MemFlags::new(), uv_ptr_addr, 0);
+    let new_uv_len = cg
+        .fb
+        .ins()
+        .load(types::I64, MemFlags::new(), uv_len_addr, 0);
+    let saved_uv_ptr = cg
+        .fb
+        .ins()
+        .load(ptr_type, MemFlags::new(), ctx_val, CTX_UPVALS_PTR_OFF);
+    let saved_uv_len = cg
+        .fb
+        .ins()
+        .load(types::I64, MemFlags::new(), ctx_val, CTX_UPVALS_LEN_OFF);
+    let uv_save_ptr = cg.fb.ins().stack_addr(ptr_type, saved_uv_ptr_slot, 0);
+    let uv_save_len = cg.fb.ins().stack_addr(ptr_type, saved_uv_len_slot, 0);
+    cg.fb
+        .ins()
+        .store(MemFlags::new(), saved_uv_ptr, uv_save_ptr, 0);
+    cg.fb
+        .ins()
+        .store(MemFlags::new(), saved_uv_len, uv_save_len, 0);
+    cg.fb
+        .ins()
+        .store(MemFlags::new(), new_uv_ptr, ctx_val, CTX_UPVALS_PTR_OFF);
+    cg.fb
+        .ins()
+        .store(MemFlags::new(), new_uv_len, ctx_val, CTX_UPVALS_LEN_OFF);
     let n = cg.fb.ins().iconst(types::I64, argc as i64);
     let inst = cg
         .fb
@@ -969,6 +1025,17 @@ fn emit_call(cg: &mut Cg, ctx_val: Value, site: &CallSite) -> Value {
     cg.fb
         .ins()
         .store(MemFlags::new(), saved_cl, ctx_val, CTX_CONSTS_LEN_OFF);
+    let old_uv_ptr = cg.fb.ins().load(ptr_type, MemFlags::new(), uv_save_ptr, 0);
+    let old_uv_len = cg
+        .fb
+        .ins()
+        .load(types::I64, MemFlags::new(), uv_save_len, 0);
+    cg.fb
+        .ins()
+        .store(MemFlags::new(), old_uv_ptr, ctx_val, CTX_UPVALS_PTR_OFF);
+    cg.fb
+        .ins()
+        .store(MemFlags::new(), old_uv_len, ctx_val, CTX_UPVALS_LEN_OFF);
     cg.fb.def_var(res, r);
     cg.jump_to(join_b);
 
@@ -1158,6 +1225,17 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let call_args_slot = cg.fb.create_sized_stack_slot(ir::StackSlotData::new(
         ir::StackSlotKind::ExplicitSlot,
         call_slots * 8,
+        3,
+    ));
+    // 直调上值表换装的保存槽（切片四）
+    let saved_uv_ptr_slot = cg.fb.create_sized_stack_slot(ir::StackSlotData::new(
+        ir::StackSlotKind::ExplicitSlot,
+        8,
+        3,
+    ));
+    let saved_uv_len_slot = cg.fb.create_sized_stack_slot(ir::StackSlotData::new(
+        ir::StackSlotKind::ExplicitSlot,
+        8,
         3,
     ));
 
@@ -1359,6 +1437,8 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                         fref_call,
                         sig_ref: jit_sig_ref,
                         ptr_type,
+                        saved_uv_ptr_slot,
+                        saved_uv_len_slot,
                     },
                 );
                 value_stack.push(r);

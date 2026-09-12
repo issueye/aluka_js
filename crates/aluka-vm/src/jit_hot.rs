@@ -188,11 +188,16 @@ impl Vm {
             ctx_box.consts_ptr,
             ctx_box.consts_len,
             ctx_box.heap_ptr,
+            ctx_box.upvals_ptr,
+            ctx_box.upvals_len,
         );
         ctx_box.vm = vm_ptr;
         ctx_box.consts_ptr = consts.as_ptr();
         ctx_box.consts_len = consts.len();
         ctx_box.heap_ptr = heap_ptr;
+        // 机器可寻址上值表：本次传入的真实单元格（LoadUpvalue helper 读此表）
+        ctx_box.upvals_ptr = self.current_upvalues.as_ptr() as *const core::ffi::c_void;
+        ctx_box.upvals_len = self.current_upvalues.len();
         // 代数不需保存恢复（属 Vm 状态而非帧状态），但复用的 ctx 可能建于上一代
         ctx_box.jit_gen = cur_gen;
         ctx_box.globals_gen = globals_gen;
@@ -207,6 +212,8 @@ impl Vm {
             ctx_box.consts_ptr = saved.1;
             ctx_box.consts_len = saved.2;
             ctx_box.heap_ptr = saved.3;
+            ctx_box.upvals_ptr = saved.4;
+            ctx_box.upvals_len = saved.5;
         }
 
         self.current_upvalues = self.gc_saved_frames.pop().unwrap_or_default().upvalues;
@@ -290,8 +297,11 @@ impl Vm {
     /// 入口在对应 `Rc<JittedFn>` 存活期间有效；`jit_reset` 丢弃编译产物时
     /// 递增 [`Vm::jit_gen`]，令一切登记过旧入口的缓存守卫失配。
     pub(crate) fn jit_entry_for(&self, func_idx: usize) -> Option<usize> {
+        // 切片四：uses_upvalues=true 的编译产物同样可直调——emit_call 快路径
+        // 从被调堆对象现读 upvalues 表换装 ctx（LoadUpvalue helper 读此表），
+        // 不再依赖调用方帧的上值表安装
         match self.jit_slots.get(func_idx) {
-            Some(JitSlot::Compiled(f)) if !f.uses_upvalues => Some(f.entry_addr()),
+            Some(JitSlot::Compiled(f)) => Some(f.entry_addr()),
             _ => None,
         }
     }

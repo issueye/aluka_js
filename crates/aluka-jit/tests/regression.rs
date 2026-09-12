@@ -762,11 +762,12 @@ fn callee_with_unread_upvalues_direct_called_after_first() {
     );
 }
 
-/// 体真读上值（uses_upvalues=true）的被调：机器直调会读到调用方上值表
-/// ——必须每轮回退 helper，经 invoke_function 换装真实上值表（切片四
-/// P1 的 fib10 NaN 教训的安全面），结果仍正确。
+/// 体真读上值（uses_upvalues=true）的被调：机器直调经 CallCell 换装
+/// 机器可寻址上值表（emit_call 从被调堆对象现读表指针写入 ctx，
+/// LoadUpvalue helper 读此表）——首轮回退登记后其余轮次机器直调，
+/// 读到的是被调自己的单元格，结果逐位正确。
 #[test]
-fn callee_reading_upvalues_stays_on_helper() {
+fn callee_reading_upvalues_reads_own_cells_via_installed_table() {
     use aluka_bytecode::BytecodeModule;
     let rounds = 100.0;
     let caller = call_loop(rounds);
@@ -809,11 +810,11 @@ fn callee_reading_upvalues_stays_on_helper() {
     assert_eq!(
         aluka_jit::valbox::unbox_number(r),
         3.5 * rounds * (rounds + 1.0),
-        "读上值被调经真实上值表结果正确"
+        "读上值被调经换装表结果正确"
     );
     assert_eq!(
-        fallbacks, rounds as u64,
-        "读上值被调每轮都必须走 helper 换装上值表，实际 {fallbacks}"
+        fallbacks, 1,
+        "首轮登记 CallCell 后其余轮次机器直调，实际 {fallbacks}"
     );
 }
 

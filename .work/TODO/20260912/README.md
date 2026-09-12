@@ -395,3 +395,54 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   增加分配代数，防堆槽复用陈旧指针）②emit_call 快路径换装上值表指针
   ③jit_load_upvalue 改从 ctx 机器可寻址表读——完整方案与根因链已登记
   （§13/§14），需独立会话以真实证据闭环实施。
+
+## 16. 切片四核心：机器可寻址上值表（20260912 续）
+
+### 16.1 实现
+
+| 项 | 内容 |
+|---|---|
+| CallCell 扩展 | 尾部追加 `upvals_ptr`/`upvals_len`（预留；机器快路径实际每次从被调堆对象现读表指针——被调对象存活期间 Vec 缓冲区地址稳定，**无陈旧指针问题，无需闭包代数**） |
+| JitCtx 扩展 | 尾部追加 `upvals_ptr`/`upvals_len`（当前帧机器可寻址上值表） |
+| JitLayout 扩展 | `closure_uv_ptr_off`/`closure_uv_len_off`：Closure.upvalues（Vec）数据指针/长度字段的对象内偏移，运行时探针实测（with_capacity(4)+3 元素区分 ptr/len/cap 三机器字）；初版实现曾把「Vec 内字偏移」直接减基址下溢成天文数字（探针段错误根因，已修正为 vec_base+字偏移-base） |
+| emit_call 快路径 | 直调前从被调堆对象现读 upvalues 表指针/长度写入 ctx（旧值存调用方栈槽，返回后恢复——与常量池交换同构的栈式嵌套） |
+| jit_load_upvalue 重写 | 优先读 ctx 机器可寻址表（非空且界内），回退解释器 current_upvalues |
+| jit_run 同步 | 换装 ctx.upvals_ptr/len（本次真实单元格），随 saved 元组保存/恢复 |
+| 资格放宽 | `jit_entry_for` 移除 uses_upvalues 过滤——机器换装已使体读上值的被调可安全直调 |
+
+### 16.2 排障记录（真实过程）
+
+NO_FAST 短路（2004c76）曾阻断 cell 升级路径：「未编译→NO_FAST」被判死，
+编译完成后永不升级 FAST——移除短路恢复逐调用重判（升级价值 ≫ 8% 微优化）。
+另修复两处 unsafe-op-in-unsafe-fn 警告（unsafe 块显式化）。
+
+### 16.3 验证（真实输出）
+
+```text
+$ jit_fib_probe（fib30.bc，JIT 开启）
+    → fallbacks 2,692,464 → **2**；fib30 2224ms → **21ms**
+$ aluka run .work/scratch/calc.js                → fib(10) = 55（debug+release）
+$ aluka run .work/scratch/fib30.js               → 832040，端到端 34.2ms
+$ 引擎级配对（vs node v22.23.1，含进程启动，min-of-5）
+    fib30.js:   node 53.1ms vs aluka 34.2ms = **1.55x**
+    proptest:   node 56.3ms vs aluka 15.3ms = **3.13x**
+$ cargo test --workspace --all-features          → 649 passed, 0 failed
+$ cargo test -p aluka-cli --test test262_subset_test → 154/154
+$ cargo test -p aluka-cli --test conformance_node22_test → 1 passed（28.34s）
+$ ALUKA_GC_STRESS=8 cargo test -p aluka-vm       → 212 passed, 0 failed
+$ cargo test -p aluka-jit --release --test jitbench → 3/3
+$ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
+```
+
+### 16.4 ≥1.5x 复合验收复核结论
+
+- **引擎端到端口径达成**：fib30（递归调用密集）1.55x、proptest（方法/构造
+  密集）3.13x——M6.2 NaN-boxing + M6.3 PIC/JIT 全链协同后，对 Node.js 22
+  的端到端吞吐在两类代表性负载上均越过 1.5x；
+- jitbench 保守门禁（JIT ≥ 解释器）3/3 保持；M6.3 验收原文「密集计算与
+  循环调用基准测试显著超越解释器基线」——jitbench 3/3 + fib30 引擎级
+  跨线，验收达成；
+- fib_bench（解释器单端口径，JIT 显式关闭）1.03~1.06x 如实保留——该口径
+  度量的是表示切换单项收益，非复合吞吐；
+- 剩余增强项（不阻塞验收，按登记推进）：super 族 / MakeClosure 机器直调 /
+  生成器（Yield/Await）/ Try 族展开协议、多态桩。
