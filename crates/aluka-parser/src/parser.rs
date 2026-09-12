@@ -248,7 +248,17 @@ impl<'src> Parser<'src> {
     /// 解析完整 Program
     pub fn parse_program(&mut self) -> Program {
         let mut body = Vec::new();
-        while self.peek().kind != TokenKind::Eof {
+        loop {
+            // 词法错误（未终止多行注释等）：任意位置判死
+            if let TokenKind::LexError(msg) = &self.peek().kind {
+                let msg = msg.clone();
+                self.advance();
+                self.record_error(format!("SyntaxError: {msg}"));
+                break;
+            }
+            if self.peek().kind == TokenKind::Eof {
+                break;
+            }
             // 跳过 TS interface / type 声明
             if self.check_keyword("interface") {
                 self.advance();

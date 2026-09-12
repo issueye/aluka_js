@@ -937,8 +937,10 @@ impl<'a> JsonParser<'a> {
                         0x22 => out.push('"'),
                         0x5c => out.push('\\'),
                         0x2f => out.push('/'),
-                        0x08 => out.push('\u{8}'),
-                        0x0c => out.push('\u{c}'),
+                        // JSON 转义字母 \b / \f（原文误写控制字符值 0x08/0x0c，
+                        // \b 一律落入 other 报 invalid escape——M7.2 语料暴露）
+                        b'b' => out.push('\u{8}'),
+                        b'f' => out.push('\u{c}'),
                         b'n' => out.push('\n'),
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),

@@ -665,3 +665,22 @@ M7.3（npm Top 50 签核）未启动。
 效果：test262 基线 642 → **656/1154**（not-a-function 桶 113→65、Math 桶清零、OOM 桶清零）；node22 conformance 差分 877/878 的 gen-coerce-matrix-0034 回归由宽松相等解包修复（现全绿）。
 
 门禁：workspace 652/0、GC 压力 215/0、clippy 0、test262 手写 154 硬门禁 ✓、conformance 差分 ✓、jitbench 3/3。
+
+### 26.9 M7.2 分桶修复轮二：JSON 转义 + 词法错误通道（20260912 续）
+
+| 修复 | 内容 |
+|---|---|
+| **JSON.parse 转义臂错值** | `\b`/`\f` 转义臂误写控制字符值 0x08/0x0c（转义字母实为 b/f）——`JSON.parse('"\b"')` 一律报 invalid escape；修正后合法转义全通 |
+| **词法错误通道** | TokenKind 新增 `LexError` 变体 + Lexer `pending_lex_error` 待发标志（skip 函数无返回通道，next_token 在 inner 返回 Eof 时拦截换发）——未终止多行注释（`/*x` 静默吞到 EOF）现判 SyntaxError；解析器 parse_program 循环任意位置遇 LexError 即 record_error 判死 |
+| 效果 | test262 基线 656 → **657/1154**（+2 JSON 转义、+1 未终止注释等）；aluka run/alukac compile 对未终止注释双双报「解析错误: SyntaxError」 |
+
+### 26.10 剩余大桶的根因定性（下一轮设计输入）
+
+- **parse 负例未拒 ~85 例**：解析器 ASI（自动分号插入）无换行也插入——
+  `{ 1 2 } 3`（同行相邻表达式）、`throw\n1`（受限产生式）等被静默接受。
+  系统性修复 = lexer 为每 token 记录「前置换行」标记 + 解析器
+  consume_stmt_end 仅在换行/`}`/EOF 时自动补分号—— invasive 改造，
+  独立专项；连带 `= 1;`（无目标赋值语句）等少数形态；
+- **sameValue 107 / TypeError 84 / not-a-function 65 / assert.throws 54**：
+  逐例定位中（sameValue 多为内置方法返回值细节；not-a-function 余量为
+  propertyHelper 家族在 includes 内联后的残余缺口）。

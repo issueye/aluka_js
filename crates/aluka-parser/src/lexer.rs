@@ -5,6 +5,8 @@
 /// Token 细分类别。
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
+    /// 词法错误（未终止的多行注释等）：解析器按意外 token 报 SyntaxError
+    LexError(String),
     /// 数值字面量
     Number(f64),
     /// 大整数字面量（如 123n）
@@ -64,6 +66,8 @@ pub struct Lexer<'src> {
     pos: usize,
     /// 上一个 token 之后是否允许「除法」（false 时 `/` 按正则字面量分词）
     division_possible: bool,
+    /// 待发的词法错误（未终止多行注释等）：next_token 优先发出
+    pending_lex_error: Option<String>,
 }
 
 const KEYWORDS: &[&str] = &[
@@ -134,6 +138,7 @@ impl<'src> Lexer<'src> {
             src,
             pos: 0,
             division_possible: false,
+            pending_lex_error: None,
         }
     }
 
@@ -166,6 +171,11 @@ impl<'src> Lexer<'src> {
                 }
                 if self.pos + 1 < bytes.len() {
                     self.pos += 2; // 跳过 */
+                } else {
+                    // 未终止的多行注释：规范为 SyntaxError
+                    //（M7.2 语料暴露：`/*CHECK#1/` 被静默吞到 EOF）
+                    self.pending_lex_error = Some("未终止的多行注释".to_owned());
+                    self.pos = bytes.len();
                 }
                 continue;
             }
@@ -175,7 +185,29 @@ impl<'src> Lexer<'src> {
 
     /// 取下一个 token；输入耗尽后恒返回 [`TokenKind::Eof`]。
     pub fn next_token(&mut self) -> Token {
+        if let Some(msg) = self.pending_lex_error.take() {
+            let start = self.pos;
+            self.pos = self.src.len();
+            return Token {
+                kind: TokenKind::LexError(msg),
+                text: self.src[start..].to_owned(),
+                start,
+            };
+        }
+
         let token = self.next_token_inner();
+        // inner 在词末才探到未终止注释（pending 置位后返回 Eof）——
+        // 此处拦截，把 Eof 换成 LexError 让解析器判死
+        if token.kind == TokenKind::Eof
+            && let Some(msg) = self.pending_lex_error.take()
+        {
+            let start = self.src.len().saturating_sub(1);
+            return Token {
+                kind: TokenKind::LexError(msg),
+                text: self.src[start..].to_owned(),
+                start,
+            };
+        }
         self.division_possible = matches!(
             &token.kind,
             TokenKind::Ident(_)
