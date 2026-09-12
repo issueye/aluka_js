@@ -295,3 +295,17 @@ $ cargo fmt --all --check / clippy -D warnings     → 通过 / 0 error
 - **1.5x 复合验收仍未达成**（两口径均 <1.2x）——剩余依赖：JIT 调用族
   补全（New/MakeClosure/CallArgs 族）、多态桩、生成器/Try 展开协议
   （切片四，多日）。如实结转，不在未达成状态下声称完成。
+
+## 12. M6.3 切片三 C：调用族补全（20260912 续）
+
+- `Op::New`（jit_construct → do_construct）、`Op::NewArgs`/`Op::CallArgs`
+  （jit_call_args → to_array_values + invoke_callable）、
+  `Op::CallWithThis`/`Op::CallWithThisArgs`（jit_call_this：argc>0 表指针 /
+  argc==0 数组值约定，两变体共用通道）接入 JIT 编译；
+- **调用族覆盖 6/8**：Call/CallMethod/CallArgs/New/NewArgs/CallWithThis(Args)
+  已编译；余 super 族（ConstructThis/ConstructThisArgs——需 JIT 帧访问
+  this=locals[0]）与 MakeClosure（需上值表安装）——与生成器/Try 同归
+  切片四的调用约定协同，多日专项；
+- 门禁：workspace 648/0、test262 154/154、jitbench 3/3、clippy 0、
+  GC 压力 vm 212/0 全绿（真实输出同 §11 口径）。
+

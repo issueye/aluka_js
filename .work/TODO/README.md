@@ -445,8 +445,10 @@
     方法 IC 复用）；648 测试 + GC 压力 + test262 154 + conformance 差分 +
     jitbench 3/3 全绿；当前窗口同条件配对 928.8→901.2ms（1.031x），
     上午静默窗口 1.059x——口径修正登记于 20260912 §11。
-    剩余：JIT 调用族补全（New/MakeClosure/CallArgs 族）+ 多态桩；
-    生成器/Try 展开协议（切片四，多日）；1.5x 复合验收未达成，如实结转。
+  - ✅ 切片三 C（20260912，e43e1ce）：调用族补全——NEW/NEW_ARGS/CALL_ARGS/
+    CALL_WITH_THIS/CALL_WITH_THIS_ARGS 接入 JIT 编译（用户侧调用族 6/8）。
+    剩余：多态桩；super 族 + MakeClosure + 生成器/Try 展开协议（切片四，
+    多日，需调用约定与 GC 栈映射协同）；1.5x 复合验收未达成，如实结转。
 
 ---
 
