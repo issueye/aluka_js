@@ -98,6 +98,7 @@ pub(crate) const HELPER_SET_ACCESSOR: &str = "aluka_jit.set_accessor";
 pub(crate) const HELPER_STORE_UPVALUE: &str = "aluka_jit.store_upvalue";
 pub(crate) const HELPER_SPREAD_OBJECT: &str = "aluka_jit.spread_object";
 pub(crate) const HELPER_ENUM_KEYS: &str = "aluka_jit.enum_keys";
+pub(crate) const HELPER_ARRAY_SPREAD: &str = "aluka_jit.array_spread";
 pub(crate) const HELPER_LOAD_GLOBAL: &str = "aluka_jit.load_global";
 pub(crate) const HELPER_LOAD_UPVALUE: &str = "aluka_jit.load_upvalue";
 
@@ -1135,6 +1136,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_STORE_UPVALUE => Some(v.store_upvalue as *const u8),
             HELPER_SPREAD_OBJECT => Some(v.spread_object as *const u8),
             HELPER_ENUM_KEYS => Some(v.enum_keys as *const u8),
+            HELPER_ARRAY_SPREAD => Some(v.array_spread as *const u8),
             HELPER_LOAD_GLOBAL => Some(v.load_global as *const u8),
             HELPER_LOAD_UPVALUE => Some(v.load_upvalue as *const u8),
             _ => None,
@@ -1229,6 +1231,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let sig_ivv2b = mk_sig(&[ptr_type, types::I64, types::I64]);
     let id_spread_object = decl(&mut module, HELPER_SPREAD_OBJECT, &sig_ivv2b)?;
     let id_enum_keys = decl(&mut module, HELPER_ENUM_KEYS, &sig_i)?;
+    let id_array_spread = decl(&mut module, HELPER_ARRAY_SPREAD, &sig_ivv)?;
     let id_load_global = decl(&mut module, HELPER_LOAD_GLOBAL, &sig_global)?;
     let id_load_upvalue = decl(&mut module, HELPER_LOAD_UPVALUE, &sig_idx)?;
 
@@ -1271,6 +1274,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_store_upvalue = module.declare_func_in_func(id_store_upvalue, cg.fb.func);
     let fref_spread_object = module.declare_func_in_func(id_spread_object, cg.fb.func);
     let fref_enum_keys = module.declare_func_in_func(id_enum_keys, cg.fb.func);
+    let fref_array_spread = module.declare_func_in_func(id_array_spread, cg.fb.func);
     let fref_load_global = module.declare_func_in_func(id_load_global, cg.fb.func);
     let fref_load_upvalue = module.declare_func_in_func(id_load_upvalue, cg.fb.func);
     // JIT→JIT 直调的间接调用签名引用（被调签名与本函数同形）
@@ -1282,7 +1286,13 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     for (pc, instr) in code.iter().enumerate() {
         if matches!(
             instr.op,
-            Op::Jmp | Op::JmpTruePop | Op::JmpFalsePop | Op::JmpTrueKeep | Op::JmpFalseKeep
+            Op::Jmp
+                | Op::JmpTruePop
+                | Op::JmpFalsePop
+                | Op::JmpTrueKeep
+                | Op::JmpFalseKeep
+                | Op::OptionalJump
+                | Op::JmpNullishKeep
         ) {
             starts.insert(jump_target(pc, instr.operand));
             starts.insert(pc + 1);
@@ -1969,6 +1979,49 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
                 emit_helper(&mut cg, fref_array_push, ctx_val, &[arr, val]);
             }
+            Op::OptionalJump => {
+                // 栈顶 nullish → 以 undefined 原位替换后跳转；否则持有原值
+                // 落到下一 pc（select 合并两条路径的栈顶值）
+                let v = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let is_null = cg.fb.ins().icmp_imm(IntCC::Equal, v, NULL as i64);
+                let is_undef = cg.fb.ins().icmp_imm(IntCC::Equal, v, UNDEFINED as i64);
+                let nullish = cg.fb.ins().bor(is_null, is_undef);
+                let undef = cg.fb.ins().iconst(types::I64, UNDEFINED as i64);
+                let merged = cg.fb.ins().select(nullish, undef, v);
+                if let Some(top) = value_stack.last_mut() {
+                    *top = merged;
+                }
+                let target = jump_target(pc, instr.operand);
+                let tb = *blocks
+                    .get(&target)
+                    .ok_or_else(|| JitError::Codegen(format!("跳转目标越界 {target}")))?;
+                let fb_b = *blocks
+                    .get(&(pc + 1))
+                    .ok_or_else(|| JitError::Codegen("跳转落点缺块".into()))?;
+                cg.fb.ins().brif(nullish, tb, &[], fb_b, &[]);
+                terminated = true;
+            }
+            Op::JmpNullishKeep => {
+                // 栈顶 nullish → 弹出落到下一 pc；否则持有值跳转
+                //（编译期保留栈顶：跳转目标需要它；落点路径该值已死但无害）
+                let v = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let is_null = cg.fb.ins().icmp_imm(IntCC::Equal, v, NULL as i64);
+                let is_undef = cg.fb.ins().icmp_imm(IntCC::Equal, v, UNDEFINED as i64);
+                let nullish = cg.fb.ins().bor(is_null, is_undef);
+                let target = jump_target(pc, instr.operand);
+                let tb = *blocks
+                    .get(&target)
+                    .ok_or_else(|| JitError::Codegen(format!("跳转目标越界 {target}")))?;
+                let fb_b = *blocks
+                    .get(&(pc + 1))
+                    .ok_or_else(|| JitError::Codegen("跳转落点缺块".into()))?;
+                cg.fb.ins().brif(nullish, fb_b, &[], tb, &[]);
+                terminated = true;
+            }
             Op::ReturnUndef => {
                 // 无 try 表的函数（编译资格保证）：返回 undefined
                 cg.bump_frames(ctx_val, ptr_type, -1);
@@ -2099,6 +2152,16 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
                 let r = emit_helper(&mut cg, fref_enum_keys, ctx_val, &[src]);
                 value_stack.push(r);
+            }
+            Op::ArraySpread => {
+                // 栈序 [..., arr, spread_val]；peek arr、pop spread_val
+                let spread_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let arr = *value_stack
+                    .last()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                emit_helper(&mut cg, fref_array_spread, ctx_val, &[arr, spread_val]);
             }
             Op::NewObject => {
                 if instr.operand != 0 {

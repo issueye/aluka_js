@@ -234,6 +234,9 @@ pub type StoreUpvalueFn = unsafe extern "C" fn(ctx: *mut JitCtx, uv_idx: u32, va
 pub type SpreadObjectFn = unsafe extern "C" fn(ctx: *mut JitCtx, src: u64, dst: u64) -> u64;
 /// `ENUM_KEYS`：for-in 键快照。
 pub type EnumKeysFn = unsafe extern "C" fn(ctx: *mut JitCtx, src: u64) -> u64;
+/// `ARRAY_SPREAD`：迭代物化 + 追加（错误降级空集，J2 约定）。
+pub type ArraySpreadFn =
+    unsafe extern "C" fn(ctx: *mut JitCtx, target_arr: u64, spread_val: u64) -> u64;
 
 /// helper 函数指针表（由 aluka-vm 每次调用时填充）。
 #[repr(C)]
@@ -303,6 +306,8 @@ pub struct JitVtable {
     pub spread_object: SpreadObjectFn,
     /// `ENUM_KEYS`
     pub enum_keys: EnumKeysFn,
+    /// `ARRAY_SPREAD`
+    pub array_spread: ArraySpreadFn,
 }
 
 /// 对象布局偏移（PIC 快速路径用；由 aluka-vm 按实际布局填充）。

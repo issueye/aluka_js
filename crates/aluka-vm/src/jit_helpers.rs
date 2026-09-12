@@ -289,6 +289,7 @@ impl Vm {
                 store_upvalue: jit_store_upvalue,
                 spread_object: jit_spread_object,
                 enum_keys: jit_enum_keys,
+                array_spread: jit_array_spread,
             },
             upvals_ptr: std::ptr::null(),
             upvals_len: 0,
@@ -1012,6 +1013,33 @@ pub unsafe extern "C" fn jit_enum_keys(ctx: *mut JitCtx, src: u64) -> u64 {
     let r = Value::Object(vm.alloc_array(key_refs));
     refresh_heap(ctx, vm);
     from_vm_value(r)
+}
+
+/// `ARRAY_SPREAD`：迭代协议物化 + 追加到目标数组（含写屏障）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_array_spread(
+    ctx: *mut JitCtx,
+    target_arr: u64,
+    spread_val: u64,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let tv = to_vm_value(target_arr);
+    let sv = to_vm_value(spread_val);
+    // J2 错误约定：不可迭代等抛错场景降级为空追加（helper 无错误通道）
+    let to_append = vm.collect_iter_values(sv).unwrap_or_default();
+    if let Some(t_ref) = tv.as_object() {
+        for a in &to_append {
+            vm.gc_write_barrier(t_ref, *a);
+        }
+        if let Some(HeapObject::Array { elements, .. }) = vm.heap.get_mut(t_ref.0 as usize) {
+            elements.extend(to_append);
+        }
+    }
+    refresh_heap(ctx, vm);
+    from_vm_value(tv)
 }
 
 /// 位运算族（`BIT_AND/OR/XOR/SHL/SHR/USHR/NOT`）：ToNumber + i32 位语义

@@ -524,3 +524,16 @@ $ cargo fmt --all --check / clippy -D warnings   → 通过 / 0 error
   getter（750/42 ✓）双引擎逐字节一致；
 - 门禁：workspace 652/0、test262 154/154、GC 压力 215/0、jitbench 3/3、
   clippy 0 全绿。
+
+## 22. 指令流扩容第四批：3 操作码接入（20260912 续）
+
+- **OptionalJump**（`?.` 短路）：栈顶 nullish 位比对（NaN-box 常量直比）
+  → select 原位合并 undefined/原值 → 条件跳转——两路径栈深度一致，
+  编译期栈模型无分歧；
+- **JmpNullishKeep**（`??` 短路）：nullish → 弹出落点；非 nullish →
+  持值跳转（编译期保留栈顶；落点路径该值已死但运行时无害）；
+- **ArraySpread**：迭代物化 + 写屏障追加（J2 错误约定降级空集）；
+- e2e：`?.`/`??` 热函数（1620/-60/2700 ✓）与数组展开（600 ✓）
+  双引擎逐字节一致；
+- JIT 操作码覆盖 86 → **89**/106；门禁：workspace 652/0、test262 154/154、
+  GC 压力 215/0、clippy 0 全绿。
