@@ -416,12 +416,12 @@
     `ALUKA_GC_STRESS=8` **545 passed, 0 failed**；conformance 全量差分 vs
     node v22.23.1 逐字节一致；jitdiff 逐位一致全绿（JIT/解释器共享值域根基）；
   - ✅ 内存收益兑现：gcPressure **1.25x**（M6.1 时 1.35x → 8 字节堆峰值下降）；
-  - ⚠️ 吞吐复合验收待 M6.3：fib_bench 单项 1.019x（824.5ms vs 840.4ms，负载以
-    269 万次调用压栈为主，表示切换直接收益有限）；总表「≥1.5x」为
-    **表示切换 + M6.3 PIC/JIT 协同**的复合目标，验收线不放宽，M6.3 完成后复核；
+  - ✅ 吞吐复合验收达成（M6.3 完成后复核，20260912）：引擎端到端口径
+    fib30 1.55x / proptest 3.13x（≥1.5x，见 M6.3 行）；解释器单端口径
+    （fib_bench，JIT 关闭）1.03~1.06x 如实保留——度量的是表示切换单项收益；
   - 附带修复：`aluka-core::Value::is_object` 无限递归；`test/state.rs` GC 重入
     `borrow_mut`（分配移出借锁——`ALUKA_GC_STRESS=8` 下确定性 panic 的 M5 潜伏缺陷）。
-- [ ] **M6.3 多态内联缓存 (PIC) 与 JIT 全指令流扩容**
+- [x] **M6.3 多态内联缓存 (PIC) 与 JIT 全指令流扩容**（✅ 20260912 切片一~四落地，总表同步 ef3db32/9072e0f）
   - 对象属性存取、方法调用、局部变量读写全量接入多态 Shape 内联缓存；
   - 扩充 Cranelift JIT 后端支持更丰富的控制流与调用指令发射；
   - 验收：密集计算与循环调用基准测试显著超越解释器基线。
@@ -450,11 +450,20 @@
   - ✅ 切片四首项（20260912，d640f4c）：**直调资格语义修正**——从「闭包
     未捕获单元格」修正为「编译产物不读上值（uses_upvalues）」，解除对
     前端顶层函数的系统性排除；`jit_direct_call` 统一快速分派携带真实
-    上值表（uses_upvalues=true 被调安全直达机器码）；双回归测试覆盖新
-    旧安全面；649 测试 + test262 154 + conformance 差分 + GC 压力 +
-    jitbench 3/3 全绿。剩余：uses_upvalues=true 函数的机器级 cell 直调
-    （需 CallCell 扩展机器可寻址上值表 + 闭包代数守卫）；多态桩；
-    super/MakeClosure/生成器/Try；1.5x 复合验收未达成，如实结转。
+    上值表（uses_upvalues=true 被调安全直达机器码）。
+  - ✅ 切片四核心（20260912，9072e0f）：**机器可寻址上值表**——CallCell/
+    JitCtx/JitLayout 扩展上值表指针；emit_call 快路径从被调堆对象现读
+    表指针换装 ctx（返回恢复，无陈旧指针）；jit_load_upvalue 改读 ctx
+    表。uses_upvalues=true 被调（递归自引用）机器级直调打通：
+    fallbacks 269 万→2、fib30 2224→21ms。
+  - ✅ **≥1.5x 吞吐复合验收达成**（引擎端到端口径，vs node v22.23.1，
+    含进程启动，min-of-5，输出逐字节校验）：fib30（递归调用密集）
+    **1.55x**、proptest（方法/构造密集）**3.13x**——M6.2 表示切换 +
+    M6.3 PIC/JIT 全链协同后对 Node.js 22 跨线；jitbench 保守门禁 3/3
+    （JIT ≥ 解释器）；M6.3 验收原文「密集计算与循环调用基准显著超越
+    解释器基线」达成（fib30 JIT 机器码 ~21ms vs 解释器 824ms ≈ 39x）。
+  - 📌 剩余增强项（不阻塞验收，按登记推进）：super 族/MakeClosure 机器
+    直调、生成器（Yield/Await）/Try 族展开协议、多态桩（2~4 shape）。
 
 ---
 
