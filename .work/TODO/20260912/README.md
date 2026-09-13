@@ -1538,3 +1538,17 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 931 → 932**（理论上限 935 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=932 ✓、conformance 差分 ✓；Symbol.for/描述探针 6/6 对齐。
+
+## 65. M7.2 轮五十一：严格 ToString（js_string_strict）（20260913）
+
+- **新增 `js_string_strict`**：对象经 toString → valueOf 取原始值，**两者
+  皆不可调用或皆不产原始值 → TypeError**（无 js_string 的
+  "[object Object]" 兜底）；结果为符号亦 TypeError（ToString(Symbol) 禁止）；
+- **Symbol 描述路径改用严格版**：`Symbol({toString:1, valueOf:2})` 此前
+  静默得 "[object Object]" 描述，现按规范抛 TypeError
+  （S19.4.1.1_A1 族）；
+- **净效果**：t262 1002 → **1003/1154**（失败 65 → 64）；
+  **M72_FLOOR 932 → 933**（理论上限 936 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=933 ✓、conformance 差分 ✓；Symbol 三批探针
+  （sy2/sy4/sy5 共 16 项）全对齐 Node 22。

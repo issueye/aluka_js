@@ -616,6 +616,53 @@ impl Vm {
         Ok(self.format_value(v))
     }
 
+    /// 严格 ToString（规范 ToString 语义）：对象经 toString → valueOf 取原始值；
+    /// **两者皆不可调用或皆不产原始值 → TypeError**（无 `[object Object]` 兜底）。
+    /// 供 Symbol 描述转换等要求严格语义的调用点使用。
+    pub(crate) fn js_string_strict(&mut self, v: Value) -> Result<String, VmError> {
+        let is_heap_str = v
+            .as_object()
+            .is_some_and(|r| matches!(self.heap.get(r.index()), Some(HeapObject::String(_))));
+        if !matches!(v.case(), ValueCase::Object(_)) || is_heap_str {
+            return self.js_string(v);
+        }
+        if self.is_symbol(v) {
+            return Ok(self.format_value(v));
+        }
+        for m in ["toString", "valueOf"] {
+            let mv = self.get_property(v, m)?;
+            let callable = mv.as_object().is_some_and(|f| {
+                matches!(
+                    self.heap.get(f.index()),
+                    Some(HeapObject::Closure { .. })
+                        | Some(HeapObject::NativeFn { .. })
+                        | Some(HeapObject::NativeCtor { .. })
+                )
+            });
+            if !callable {
+                continue;
+            }
+            let res = self.invoke_callable(mv, v, &[])?;
+            let primitive = match res.case() {
+                ValueCase::Object(rr) => matches!(
+                    self.heap.get(rr.index()),
+                    Some(HeapObject::String(_))
+                        | Some(HeapObject::BigInt(_))
+                        | Some(HeapObject::Symbol { .. })
+                ),
+                _ => true,
+            };
+            if primitive {
+                // 结果为符号：ToString(Symbol) 禁止（调用方按需特殊处理）
+                if self.is_symbol(res) {
+                    return Err(self.type_error("Cannot convert a Symbol value to a string"));
+                }
+                return Ok(self.format_value(res));
+            }
+        }
+        Err(self.type_error("Cannot convert object to primitive value"))
+    }
+
     /// `BigInt(v)`：数字须为整数（否则 RangeError）、字符串按字面量解析
     /// （含 0x/0b/0o 前缀与空白裁剪）、布尔 → 0n/1n、BigInt 原样。
     pub(crate) fn bigint_from_value(&mut self, v: Value) -> Result<Value, VmError> {

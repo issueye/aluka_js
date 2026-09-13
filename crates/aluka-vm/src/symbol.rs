@@ -131,7 +131,9 @@ impl Vm {
                     matches!(self.heap.get(r.index()), Some(HeapObject::String(_)))
                 });
                 let prim = if matches!(v.case(), ValueCase::Object(_)) && !is_heap_str {
-                    let sv = self.js_string(*v)?;
+                    // 严格 ToString：无可原始化方法 → TypeError
+                    //（`Symbol({toString:1, valueOf:2})` 非法）
+                    let sv = self.js_string_strict(*v)?;
                     Value::Object(self.alloc_string(sv))
                 } else {
                     *v
