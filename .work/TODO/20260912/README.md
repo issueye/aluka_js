@@ -948,3 +948,37 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy -D warnings exit 0 ✓、t262 门禁
   FLOOR=770 ✓、conformance 差分 ✓、GC 压力 ALUKA_GC_STRESS=8
   aluka-vm+runtime 0 失败 ✓、jitbench 3/3 ✓、workspace 全量 exit 0 ✓。
+
+## 31. M7.2 轮十六：BigInt 算术切片 + Error 子类独立原型重构（20260913）
+
+- **失败清单分桶**（218 例）：[object Object] 正向失败 120、
+  $DONOTEVALUATE parse 负例 46、vm_rc=None 超时 35、BigInt 32；
+- **BigInt 算术（32 例桶）**：
+  - bigdec 补全 BigNat `mul_big`（schoolbook u32）/`divmod_big`（二进制
+    长除）+ `bigint_dec_sub/mul/divmod/pow`（符号层：商向零截断、余数
+    符号随被除数、除零/负指数拒绝）；
+  - ops 新增 `bigint_binary`（Sub/Mul/Div/Mod/Pow 五臂接线）：双侧
+    BigInt 计算、单侧 BigInt 抛 TypeError（规范禁止隐式混算）、对象参
+    数先 wrapper 槽直解再 ToPrimitive（valueOf 产 BigInt 采纳）；
+  - add_values 补混算拦截（**规范序**：字符串拼接分支先于混算拦截——
+    `1n + "1"` === "11"，oracle 实测）；
+  - 除零 RangeError "Division by zero"、负指数 RangeError 对齐 oracle
+    文案；`Object(2n)` 造 `[[BigIntData]]` 槽 wrapper（`Object(2n)+1n`
+    === 3n）、`[[SymbolData]]` 同型补齐（`typeof Object(Symbol())`）；
+- **Error 子类独立原型重构（根因修复）**：error_subclass_ctor 此前把
+  `constructor` 写在**共享 Error.prototype** 上，第二个子类缓存时覆盖
+  前一个（实测：先 TypeError 后 RangeError，`thrown.constructor ===
+  TypeError` 由真变假）；改为每子类**独立 prototype**（链
+  Error.prototype）+ 其上 constructor/name 自有属性；连带
+  attach_error_proto 统一 9 处手拼错误站点（含 do_construct、
+  LoadGlobal ReferenceError、克隆反序列化）并覆盖 alloc_error_instance
+  预置的自有 name="Error" 遮蔽；
+- **structuredClone 子类保型**：is_error 放宽为 error_prototype 或任一
+  缓存子类原型命中（子类实例走 error 通道，反序列化按 name 恢复原型
+  ——`instanceof TypeError` 随克隆体保留，m5 语义测试回绿）；
+- **净效果**：t262 849 → **874/1154**（失败 218 → 193）；conformance
+  差分保持全绿（中途被 name 遮蔽波及的 5 例归位）；
+- 门禁证据：fmt ✓、clippy -D warnings exit 0 ✓、workspace 全量 exit 0 ✓
+  （m2/m5 语义测试回绿）、t262 874 ✓、conformance 差分 ✓、jitbench
+  3/3 ✓、GC 压力 ALUKA_GC_STRESS=8 0 失败 ✓；BigInt 16 例探针 + 算术
+  15 例探针 + 克隆/原型 9 例探针逐字节对齐 Node 22。

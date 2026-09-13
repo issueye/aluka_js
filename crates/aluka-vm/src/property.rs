@@ -854,8 +854,7 @@ impl Vm {
             let err = self.alloc_error_instance(&format!(
                 "Cannot read properties of {kind} (reading '{key}')"
             ));
-            let name = self.alloc_string("TypeError".to_owned());
-            let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+            self.attach_error_proto(err, "TypeError");
             return Err(VmError::Thrown(Value::Object(err)));
         }
         Ok(Value::Undefined)

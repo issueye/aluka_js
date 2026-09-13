@@ -189,6 +189,86 @@ impl BigNat {
         }
         Ordering::Equal
     }
+
+    /// `self *= other`（schoolbook u32×u32 逐字累加；任一为零清空）。
+    pub(crate) fn mul_big(&mut self, other: &BigNat) {
+        if self.is_zero() || other.is_zero() {
+            self.words.clear();
+            return;
+        }
+        let (a, b) = (&self.words, &other.words);
+        let mut out = vec![0u32; a.len() + b.len()];
+        for (i, &x) in a.iter().enumerate() {
+            let mut carry: u64 = 0;
+            for (j, &y) in b.iter().enumerate() {
+                let cur = u64::from(out[i + j]) + u64::from(x) * u64::from(y) + carry;
+                out[i + j] = cur as u32;
+                carry = cur >> 32;
+            }
+            let mut idx = i + b.len();
+            while carry != 0 {
+                let cur = u64::from(out[idx]) + carry;
+                out[idx] = cur as u32;
+                carry = cur >> 32;
+                idx += 1;
+            }
+        }
+        while out.last() == Some(&0) {
+            out.pop();
+        }
+        self.words = out;
+    }
+
+    /// `self = q*d + r` 带余除法（`d` 非零）：就地置余数，返回商。
+    /// 二进制长除——自高位逐位下放、够减即记商位（JS BigInt 的 `/`
+    /// 向零截断与 `%` 符号随被除数由调用方在符号层落实）。
+    pub(crate) fn divmod_big(&mut self, d: &BigNat) -> BigNat {
+        let mut q = BigNat::default();
+        let mut r = BigNat::default();
+        for i in (0..self.bit_len()).rev() {
+            r.shl(1);
+            if self.bit(i) {
+                r.add_small(1);
+            }
+            if BigNat::cmp_big(&r, d) != std::cmp::Ordering::Less {
+                r.sub_big(d);
+                q.set_bit(i, true);
+            }
+        }
+        *self = r;
+        q
+    }
+
+    /// 有效位宽（零为 0）。
+    fn bit_len(&self) -> usize {
+        match self.words.len() {
+            0 => 0,
+            n => 32 * (n - 1) + (32 - self.words[n - 1].leading_zeros() as usize),
+        }
+    }
+
+    /// 第 `i` 位（小端字序）。
+    fn bit(&self, i: usize) -> bool {
+        self.words
+            .get(i / 32)
+            .is_some_and(|w| (w >> (i % 32)) & 1 == 1)
+    }
+
+    /// 置/清第 `i` 位（必要时扩容字表）。
+    fn set_bit(&mut self, i: usize, v: bool) {
+        let wi = i / 32;
+        if wi >= self.words.len() {
+            if !v {
+                return;
+            }
+            self.words.resize(wi + 1, 0);
+        }
+        if v {
+            self.words[wi] |= 1 << (i % 32);
+        } else {
+            self.words[wi] &= !(1 << (i % 32));
+        }
+    }
 }
 
 /// BigInt 字面量载荷归一化：进制前缀（`0x`/`0b`/`0o` + 可选负号）→
@@ -260,6 +340,93 @@ fn strip_sign(s: &str) -> (bool, &str) {
     match s.strip_prefix('-') {
         Some(rest) => (true, rest),
         None => (false, s.strip_prefix('+').unwrap_or(s)),
+    }
+}
+
+/// 十进制字符串减法：`a - b ≡ a + (-b)`（符号翻转复用加法的
+/// 同号/异号逻辑；结果零规范为 "0"）。
+pub(crate) fn bigint_dec_sub(a: &str, b: &str) -> String {
+    let neg_b = if let Some(rest) = b.strip_prefix('-') {
+        rest.to_owned()
+    } else {
+        format!("-{b}")
+    };
+    bigint_dec_add(a, &neg_b)
+}
+
+/// 十进制字符串乘法：符号取异或；零因子短路。
+pub(crate) fn bigint_dec_mul(a: &str, b: &str) -> String {
+    let (neg_a, mag_a) = strip_sign(a);
+    let (neg_b, mag_b) = strip_sign(b);
+    let mut x = dec_to_bignat(mag_a);
+    let y = dec_to_bignat(mag_b);
+    x.mul_big(&y);
+    if (neg_a != neg_b) && !x.is_zero() {
+        format!("-{}", x.to_decimal_string())
+    } else {
+        x.to_decimal_string()
+    }
+}
+
+/// 十进制字符串带余除法：返回 `(商, 余数)`。商向零截断、余数符号随
+/// 被除数（JS BigInt 语义）；除数为零返回 `None`（调用方抛 RangeError）。
+pub(crate) fn bigint_dec_divmod(a: &str, b: &str) -> Option<(String, String)> {
+    let (neg_a, mag_a) = strip_sign(a);
+    let (neg_b, mag_b) = strip_sign(b);
+    let mut x = dec_to_bignat(mag_a);
+    let d = dec_to_bignat(mag_b);
+    if d.is_zero() {
+        return None;
+    }
+    let q = x.divmod_big(&d);
+    let r = x;
+    let q_text = q.to_decimal_string();
+    let r_text = r.to_decimal_string();
+    let q_out = if neg_a != neg_b && !q.is_zero() {
+        format!("-{q_text}")
+    } else {
+        q_text
+    };
+    let r_out = if neg_a && !r.is_zero() {
+        format!("-{r_text}")
+    } else {
+        r_text
+    };
+    Some((q_out, r_out))
+}
+
+/// 十进制字符串幂：指数为非负十进制串；负指数返回 `None`（调用方抛
+/// RangeError）。指数幅值超 `POW_EXP_CAP` 返回 `None`（测试规模远小于此；
+/// 真实巨指数本就该拒绝以防内存爆量）。
+pub(crate) fn bigint_dec_pow(base: &str, exp: &str) -> Option<String> {
+    let (neg_exp, mag_exp) = strip_sign(exp);
+    if neg_exp {
+        return None;
+    }
+    if mag_exp.len() > 4 {
+        return None;
+    }
+    let mut e: u64 = 0;
+    for ch in mag_exp.chars() {
+        e = e * 10 + u64::from(ch.to_digit(10)?);
+    }
+    if e > 10_000 {
+        return None;
+    }
+    let (neg_b, mag_b) = strip_sign(base);
+    let mut acc = BigNat::from_u64(1);
+    let base_nat = dec_to_bignat(mag_b);
+    for _ in 0..e {
+        acc.mul_big(&base_nat);
+        if acc.bit_len() > 4_000_000 {
+            return None;
+        }
+    }
+    let text = acc.to_decimal_string();
+    if neg_b && e % 2 == 1 && !acc.is_zero() {
+        Some(format!("-{text}"))
+    } else {
+        Some(text)
     }
 }
 

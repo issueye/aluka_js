@@ -618,8 +618,7 @@ impl Vm {
     fn syntax_error(&mut self, msg: &str) -> VmError {
         let ctor = self.error_subclass_ctor("SyntaxError");
         let err = self.alloc_error_instance(msg);
-        let name = self.alloc_string("SyntaxError".to_owned());
-        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        self.attach_error_proto(err, "SyntaxError");
         let proto = self.get_property(ctor, "prototype").ok();
         if let Some(ValueCase::Object(p)) = proto.map(|v| v.case()) {
             self.set_prototype_of(Value::Object(err), Some(p));

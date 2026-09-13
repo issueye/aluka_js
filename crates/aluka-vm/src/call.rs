@@ -289,8 +289,7 @@ impl Vm {
         // 掩盖真实缺陷）
         let desc = self.format_value(callee);
         let err = self.alloc_error_instance(&format!("{desc} is not a function"));
-        let name = self.alloc_string("TypeError".to_owned());
-        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        self.attach_error_proto(err, "TypeError");
         Err(VmError::Thrown(Value::Object(err)))
     }
 
@@ -320,8 +319,10 @@ impl Vm {
                         };
                         let err = self.alloc_error_instance(&message);
                         if name != "Error" {
-                            let n = self.alloc_string(name.clone());
-                            let _ = self.set_property(Value::Object(err), "name", Value::Object(n));
+                            // 实例挂**独立**子类原型（instanceof TypeError 判
+                            // 型；error_subclass_ctor 的 prototype.constructor
+                            // 判定面配套——共享 Error.prototype 时代已终结）
+                            self.attach_error_proto(err, name);
                         }
                         return Ok(Value::Object(err));
                     }
@@ -385,7 +386,26 @@ impl Vm {
                         }
                         return Ok(Value::Object(self.alloc_array(args.to_vec())));
                     }
-                    "Object" => return Ok(Value::Object(self.alloc_ordinary())),
+                    "Object" => {
+                        // 规范：Object(v) 与 new Object(v) 同型——原始值造
+                        // 包装实例（数据槽承载）；undefined/null → 空普通
+                        // 对象；对象原样返回
+                        let arg = args.first().copied().unwrap_or(Value::Undefined);
+                        return match arg.case() {
+                            ValueCase::Undefined | ValueCase::Null => {
+                                Ok(Value::Object(self.alloc_ordinary()))
+                            }
+                            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                                Some(HeapObject::String(_))
+                                | Some(HeapObject::BigInt(_))
+                                | Some(HeapObject::Symbol { .. }) => {
+                                    Ok(Value::Object(self.alloc_primitive_wrapper(arg)))
+                                }
+                                _ => Ok(arg),
+                            },
+                            _ => Ok(Value::Object(self.alloc_primitive_wrapper(arg))),
+                        };
+                    }
                     "RegExp" => return self.construct_regexp(args),
                     "Map" => {
                         // new Map(iterable?)：逐项按 `[key, value]` 取键值

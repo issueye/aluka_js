@@ -90,21 +90,18 @@ impl Vm {
             let err = self.alloc_error_instance(
                 "EvalError: Code generation from strings disallowed for this context",
             );
-            let name = self.alloc_string("EvalError".to_owned());
-            let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+            self.attach_error_proto(err, "EvalError");
             VmError::Thrown(Value::Object(err))
         })?;
         let module = (provider.borrow_mut())(src).map_err(|e| {
             let err = self.alloc_error_instance(&e);
-            let name = self.alloc_string("SyntaxError".to_owned());
-            let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+            self.attach_error_proto(err, "SyntaxError");
             VmError::Thrown(Value::Object(err))
         })?;
         // 动态字节码安全门禁：非法跳转/栈深越界的模块一律拒绝执行
         module.verify().map_err(|e| {
             let err = self.alloc_error_instance(&format!("dynamic bytecode verify: {e}"));
-            let name = self.alloc_string("SyntaxError".to_owned());
-            let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+            self.attach_error_proto(err, "SyntaxError");
             VmError::Thrown(Value::Object(err))
         })?;
         Ok(module)

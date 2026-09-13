@@ -227,12 +227,30 @@ impl Ser<'_> {
         }
     }
 
-    /// Error 实例判定：Ordinary 且原型即 `error_prototype`（Node 实测：克隆
-    /// 体 `instanceof Error` 为真；普通对象字面量 `{name:'Error'}` 不参与）。
+    /// Error 实例判定：Ordinary 且原型为 `error_prototype` **或任一
+    /// NativeError 子类原型**（Node 实测：克隆体 `instanceof Error` 为真；
+    /// 普通对象字面量 `{name:'Error'}` 不参与）。子类实例走 error 通道后
+    /// 反序列化按 name 恢复对应子类原型（`instanceof TypeError` 随克隆
+    /// 体保留——独立子类原型后不再命中共享 `error_prototype` 判定）。
     fn is_error(&self, idx: usize) -> bool {
         match self.vm.heap.get(idx) {
             Some(HeapObject::Ordinary { proto, .. }) => {
-                self.vm.error_prototype.is_some() && *proto == self.vm.error_prototype
+                if self.vm.error_prototype.is_some() && *proto == self.vm.error_prototype {
+                    return true;
+                }
+                // 子类原型：任一缓存子类构造器的 prototype 命中即可
+                //（NativeCtor 的 prototype 存于 properties 表）
+                self.vm
+                    .ctor_cache
+                    .values()
+                    .any(|c| match self.vm.heap.get(c.0 as usize) {
+                        Some(HeapObject::NativeCtor { properties, .. }) => properties
+                            .get("prototype")
+                            .and_then(|v| v.as_object())
+                            .map(|p| Some(p) == *proto)
+                            .unwrap_or(false),
+                        _ => false,
+                    })
             }
             _ => false,
         }
@@ -800,10 +818,8 @@ impl De<'_, '_> {
         // 先登记：cause 可循环指回自身
         self.objects.push(Value::Object(err));
         self.vm.mark_non_enumerable(Value::Object(err), "message");
-        let name_ref = self.vm.alloc_string(name);
-        let _ = self
-            .vm
-            .set_property(Value::Object(err), "name", Value::Object(name_ref));
+        // 子类原型 + 自有 name（instanceof TypeError 判型随克隆体保留）
+        self.vm.attach_error_proto(err, &name);
         self.vm.mark_non_enumerable(Value::Object(err), "name");
         if flags & 1 != 0 {
             let stack = self.str()?;

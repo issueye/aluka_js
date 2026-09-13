@@ -4,6 +4,7 @@ use crate::VmError;
 use crate::heap::{HeapObject, OrdinaryProps};
 use crate::interpreter::Vm;
 use crate::value::{Value, ValueCase};
+use aluka_core::ObjectRef;
 
 /// 将任意值强制转换为数值。
 #[must_use]
@@ -282,6 +283,16 @@ pub fn strict_eq(
     }
 }
 
+/// BigInt 二元算术运算种类（`+` 混算拦截在 add_values 内单源）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BigIntArith {
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+}
+
 impl Vm {
     /// ECMAScript ToBoolean（借助本 VM 堆判定字符串内容）。
     #[must_use]
@@ -302,13 +313,6 @@ impl Vm {
         if let (ValueCase::Number(a), ValueCase::Number(b)) = (left.case(), right.case()) {
             return Ok(Value::Number(a + b));
         }
-        // BigInt + BigInt：十进制大数加法（M7.2 修复：此前落入对象拼接，
-        // `1n + 2n` 得 "12"——字符串连接而非算术）
-        if let (Some(lb), Some(rb)) = (self.bigint_text(&left), self.bigint_text(&right)) {
-            let dec = crate::bigdec::bigint_dec_add(&lb, &rb);
-            let b_ref = self.alloc_bigint(dec);
-            return Ok(Value::Object(b_ref));
-        }
         let is_left_str = if let Some(r) = left.as_object() {
             matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_)))
         } else {
@@ -324,12 +328,29 @@ impl Vm {
         let is_left_buf = self.is_buffer_value(left);
         let is_right_buf = self.is_buffer_value(right);
 
+        // 规范序：任一侧为字符串 → 先走 ToString 拼接（`1n + "1"` === "11"，
+        // 字符串分支在 BigInt 混算拦截**之前**）
         if is_left_str || is_right_str || is_left_buf || is_right_buf {
             let s1 = self.value_as_concat_text(left);
             let s2 = self.value_as_concat_text(right);
             let combined = format!("{s1}{s2}");
             let s_ref = self.alloc_string(combined);
             return Ok(Value::Object(s_ref));
+        }
+        // BigInt 运算族：单侧 BigInt → TypeError（规范禁止隐式混算——
+        // `1n + true`/`Infinity + 1n` 等此前落入数值/拼接路径静默出错）；
+        // 双侧 BigInt → 十进制大数加法（此前 `1n + 2n` 得 "12"——字符串
+        // 连接而非算术）
+        let (lb, rb) = (self.bigint_text(&left), self.bigint_text(&right));
+        if lb.is_some() != rb.is_some() {
+            return Err(
+                self.type_error("Cannot mix BigInt and other types, use explicit conversions")
+            );
+        }
+        if let (Some(lb), Some(rb)) = (lb, rb) {
+            let dec = crate::bigdec::bigint_dec_add(&lb, &rb);
+            let b_ref = self.alloc_bigint(dec);
+            return Ok(Value::Object(b_ref));
         }
         // 双方都不是数值：任一为对象 → ToPrimitive 后字符串拼接
         // （`[] + []` === ""、`[] + {}` === "[object Object]"；生成语料实测）
@@ -406,16 +427,88 @@ impl Vm {
         }
         // 规范 TypeError（V8 同文案）：实例挂 TypeError.prototype +
         // name（prims.rs syntax_error 同口径，instanceof/constructor 判型）
-        let ctor = self.error_subclass_ctor("TypeError");
-        let err = self.alloc_error_instance("Cannot convert object to primitive value");
-        let name = self.alloc_string("TypeError".to_owned());
+        Err(self.type_error("Cannot convert object to primitive value"))
+    }
+
+    /// 为手拼的错误实例挂对应子类原型并覆盖自有 `name`
+    /// （alloc_error_instance 预置自有 name="Error"，不覆盖会遮蔽子类
+    /// 原型名；`instanceof TypeError` 等判型语义；typed_error 之外的
+    /// 散布构造点统一入口）。
+    pub(crate) fn attach_error_proto(&mut self, err: ObjectRef, ctor_name: &str) {
+        let ctor = self.error_subclass_ctor(ctor_name);
+        if let Some(ValueCase::Object(p)) =
+            self.get_property(ctor, "prototype").ok().map(|v| v.case())
+        {
+            self.set_prototype_of(Value::Object(err), Some(p));
+        }
+        let name = self.alloc_string(ctor_name.to_owned());
+        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+    }
+
+    /// 构造带对应原型 + `name` 的 Error 抛出值（TypeError/RangeError 等；
+    /// instanceof / `constructor` 判型对官方 assert.throws 必需）。
+    pub(crate) fn typed_error(&mut self, ctor_name: &str, msg: &str) -> VmError {
+        let ctor = self.error_subclass_ctor(ctor_name);
+        let err = self.alloc_error_instance(msg);
+        let name = self.alloc_string(ctor_name.to_owned());
         let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
         if let Some(ValueCase::Object(p)) =
             self.get_property(ctor, "prototype").ok().map(|v| v.case())
         {
             self.set_prototype_of(Value::Object(err), Some(p));
         }
-        Err(VmError::Thrown(Value::Object(err)))
+        VmError::Thrown(Value::Object(err))
+    }
+
+    /// 构造带 `TypeError.prototype` + `name` 的 TypeError 抛出值。
+    pub(crate) fn type_error(&mut self, msg: &str) -> VmError {
+        self.typed_error("TypeError", msg)
+    }
+
+    /// BigInt 二元算术（`-` `*` `/` `%` `**`）：两侧均 BigInt → 计算并
+    /// 返回结果；均非 BigInt → `None`（调用方继续常规数值路径）；**单侧
+    /// BigInt** → TypeError（规范禁止隐式混算）。对象参数先 ToPrimitive
+    /// （valueOf 产 BigInt 采纳——bigint-toprimitive 族）。
+    pub(crate) fn bigint_binary(
+        &mut self,
+        left: Value,
+        right: Value,
+        op: BigIntArith,
+    ) -> Result<Option<Value>, VmError> {
+        // wrapper 内部槽直解先于 ToPrimitive（r15 同教训：wrapper 的
+        // valueOf 占位会被 invoke_callable 误调用）
+        let left = self.wrapper_primitive(left).unwrap_or(left);
+        let right = self.wrapper_primitive(right).unwrap_or(right);
+        let left = self.to_primitive_number(left)?;
+        let right = self.to_primitive_number(right)?;
+        let lb = self.bigint_text(&left);
+        let rb = self.bigint_text(&right);
+        let (lb, rb) = match (lb, rb) {
+            (Some(l), Some(r)) => (l, r),
+            (None, None) => return Ok(None),
+            _ => {
+                return Err(
+                    self.type_error("Cannot mix BigInt and other types, use explicit conversions")
+                );
+            }
+        };
+        let text = match op {
+            BigIntArith::Sub => crate::bigdec::bigint_dec_sub(&lb, &rb),
+            BigIntArith::Mul => crate::bigdec::bigint_dec_mul(&lb, &rb),
+            BigIntArith::Div | BigIntArith::Mod => {
+                let Some((q, r)) = crate::bigdec::bigint_dec_divmod(&lb, &rb) else {
+                    return Err(self.typed_error("RangeError", "Division by zero"));
+                };
+                if op == BigIntArith::Div { q } else { r }
+            }
+            BigIntArith::Pow => {
+                let Some(text) = crate::bigdec::bigint_dec_pow(&lb, &rb) else {
+                    return Err(self.typed_error("RangeError", "undefined must be positive"));
+                };
+                text
+            }
+        };
+        Ok(Some(Value::Object(self.alloc_bigint(text))))
     }
 
     /// 二元/一元数值算子（`-` `*` `/` `%` `**` 位运算、一元 ±）的操作数

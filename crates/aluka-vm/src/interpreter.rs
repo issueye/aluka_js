@@ -3,7 +3,9 @@
 use crate::exception::{Completion, FinallyOutcome, PHASE_TRY, TryExitOutcome, TryHandler};
 use crate::generator::GeneratorState;
 use crate::heap::HeapObject;
-use crate::ops::{eq, js_number_to_string, parse_js_number, strict_eq, to_boolean, to_number};
+use crate::ops::{
+    BigIntArith, eq, js_number_to_string, parse_js_number, strict_eq, to_boolean, to_number,
+};
 use crate::value::{Upvalue, Value, ValueCase};
 use aluka_bytecode::{ClassTemplate, Constant, FuncTemplate, Instr, Op, TryEntry};
 use aluka_core::{ObjectRef, ShapeTable};
@@ -840,18 +842,21 @@ impl Vm {
         if let Some(c) = self.ctor_cache.get(name) {
             return Value::Object(*c);
         }
-        // 子类 prototype 链独立 Error.prototype（如 `TypeError.prototype` 可读、
-        // 错误实例 instanceof TypeError 沿链命中——曾为 None 致 prototype 缺失）
-        let proto = self.error_prototype;
-        let c = self.alloc_native_ctor(name, proto);
+        // **独立**子类原型：链 Error.prototype（规范 TypeError.prototype
+        // 自成一格），`constructor` 挂在该原型上——此前把 constructor 写在
+        // 共享 Error.prototype 上，第二个子类（如 RangeError）会覆盖前一个
+        // 子类的写入，`thrown.constructor !== ExpectedCtor` 误判批量回归
+        let base_proto = self.error_prototype;
+        let proto = self.alloc_ordinary_with_proto(base_proto);
+        let c = self.alloc_native_ctor(name, Some(proto));
         // prototype.constructor 挂接：官方 assert.throws 用
         // `thrown.constructor !== ExpectedCtor` 判定错误类型——缺此属性
         // 会误判（M7.2 语料 JSON.parse 桶实测）
-        let _ = self.set_property(
-            Value::Object(proto.unwrap()),
-            "constructor",
-            Value::Object(c),
-        );
+        let _ = self.set_property(Value::Object(proto), "constructor", Value::Object(c));
+        // 规范：每个 NativeError.prototype 有自有 `name`（否则实例
+        // e.name 沿链命中 Error.prototype 的 "Error"）
+        let name_val = self.alloc_string(name.to_owned());
+        let _ = self.set_property(Value::Object(proto), "name", Value::Object(name_val));
         self.ctor_cache.insert(name.to_owned(), c);
         Value::Object(c)
     }
@@ -1118,15 +1123,16 @@ impl Vm {
     /// 堆感知的 ToNumber：堆字符串/BigInt 按内容转数值（裸 `ops::to_number`
     /// 无法读取堆，字符串一律 NaN——真实包大量依赖 `"404"` 参与算术）。
     /// 包装对象 / Date 的 ToPrimitive 快路径解包：返回 `[[NumberValue]]` /
-    /// `[[BooleanValue]]` / `[[StringValue]]` 数据槽值，或 Date 的
-    /// `_timeValue`；非包装对象返回 None（M7.2 轮九：`new Boolean(true) + 1`
-    /// 等此前落 `[object Object]` 拼接 / NaN）。
+    /// `[[BooleanValue]]` / `[[StringValue]]` / `[[BigIntData]]` 数据槽值，
+    /// 或 Date 的 `_timeValue`；非包装对象返回 None（M7.2 轮九：
+    /// `new Boolean(true) + 1` 等此前落 `[object Object]` 拼接 / NaN）。
     pub(crate) fn wrapper_primitive(&self, val: Value) -> Option<Value> {
         let r = val.as_object()?;
         for key in [
             "[[NumberValue]]",
             "[[BooleanValue]]",
             "[[StringValue]]",
+            "[[BigIntData]]",
             "_timeValue",
         ] {
             if let Some(w) = self.own_value(r.0 as usize, key) {
@@ -1134,6 +1140,26 @@ impl Vm {
             }
         }
         None
+    }
+
+    /// 原始值包装实例分配（`Object(v)` 直调/`new Object(v)` 对原始值参数）：
+    /// 数值/布尔/堆字符串/BigInt 分别落 `[[NumberValue]]`/`[[BooleanValue]]`/
+    /// `[[StringValue]]`/`[[BigIntData]]` 数据槽——算术族经 wrapper_primitive
+    /// 解包（`Object(2n) + 1n === 3n`；此前一律空对象致语义丢失）。
+    pub(crate) fn alloc_primitive_wrapper(&mut self, v: Value) -> ObjectRef {
+        let key = match v.case() {
+            ValueCase::Number(_) => "[[NumberValue]]",
+            ValueCase::Boolean(_) => "[[BooleanValue]]",
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::BigInt(_)) => "[[BigIntData]]",
+                Some(HeapObject::Symbol { .. }) => "[[SymbolData]]",
+                _ => "[[StringValue]]",
+            },
+            _ => "[[StringValue]]",
+        };
+        let inst = self.alloc_ordinary();
+        let _ = self.set_property(Value::Object(inst), key, v);
+        inst
     }
 
     pub(crate) fn to_number_value(&self, val: Value) -> f64 {
@@ -1509,15 +1535,13 @@ impl Vm {
                 let err = self.alloc_error_instance(&format!(
                     "Invalid flags supplied to RegExp constructor '{flags}'"
                 ));
-                let name = self.alloc_string("SyntaxError".to_owned());
-                let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+                self.attach_error_proto(err, "SyntaxError");
                 return Err(VmError::Thrown(Value::Object(err)));
             }
         }
         if let Err(e) = aluka_regex::Regex::compile(&pattern, &flags) {
             let err = self.alloc_error_instance(&format!("Invalid regular expression: {e}"));
-            let name = self.alloc_string("SyntaxError".to_owned());
-            let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+            self.attach_error_proto(err, "SyntaxError");
             return Err(VmError::Thrown(Value::Object(err)));
         }
         let regexp = HeapObject::RegExp { pattern, flags };
@@ -3746,6 +3770,7 @@ impl Vm {
                                 let desc = self.format_value(method_val);
                                 let err =
                                     self.alloc_error_instance(&format!("{desc} is not a function"));
+                                self.attach_error_proto(err, "TypeError");
                                 let name = self.alloc_string("TypeError".to_owned());
                                 let _ = self.set_property(
                                     Value::Object(err),
@@ -3760,8 +3785,7 @@ impl Vm {
                     // 方法属性 undefined/非对象：同样抛 TypeError
                     let err =
                         self.alloc_error_instance(&format!("{method_name} is not a function"));
-                    let name = self.alloc_string("TypeError".to_owned());
-                    let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+                    self.attach_error_proto(err, "TypeError");
                     Err(VmError::Thrown(Value::Object(err)))
                 }
             }
@@ -3857,6 +3881,11 @@ impl Vm {
                 Op::Sub => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Sub)? {
+                        self.stack.push(r);
+                        pc += 1;
+                        continue;
+                    }
                     let a = self.numeric_operand(left)?;
                     let b = self.numeric_operand(right)?;
                     self.stack.push(Value::Number(a - b));
@@ -3864,6 +3893,11 @@ impl Vm {
                 Op::Mul => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Mul)? {
+                        self.stack.push(r);
+                        pc += 1;
+                        continue;
+                    }
                     let a = self.numeric_operand(left)?;
                     let b = self.numeric_operand(right)?;
                     self.stack.push(Value::Number(a * b));
@@ -3871,6 +3905,11 @@ impl Vm {
                 Op::Div => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Div)? {
+                        self.stack.push(r);
+                        pc += 1;
+                        continue;
+                    }
                     let a = self.numeric_operand(left)?;
                     let b = self.numeric_operand(right)?;
                     self.stack.push(Value::Number(a / b));
@@ -3878,6 +3917,11 @@ impl Vm {
                 Op::Mod => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Mod)? {
+                        self.stack.push(r);
+                        pc += 1;
+                        continue;
+                    }
                     let a = self.numeric_operand(left)?;
                     let b = self.numeric_operand(right)?;
                     self.stack.push(Value::Number(a % b));
@@ -3885,6 +3929,11 @@ impl Vm {
                 Op::Pow => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Pow)? {
+                        self.stack.push(r);
+                        pc += 1;
+                        continue;
+                    }
                     let a = self.numeric_operand(left)?;
                     let b = self.numeric_operand(right)?;
                     self.stack.push(Value::Number(a.powf(b)));
@@ -4087,6 +4136,7 @@ impl Vm {
                         // TypeofGlobal 通道不受影响）
                         None => {
                             let err = self.alloc_error_instance(&format!("{name} is not defined"));
+                            self.attach_error_proto(err, "ReferenceError");
                             let n = self.alloc_string("ReferenceError".to_owned());
                             let _ = self.set_property(Value::Object(err), "name", Value::Object(n));
                             return Err(VmError::Thrown(Value::Object(err)));
