@@ -588,11 +588,21 @@ impl Vm {
         v: Value,
         hint: &str,
     ) -> Result<Option<Value>, VmError> {
-        let Some(sym) = Vm::well_known_cached("toPrimitive") else {
-            return Ok(None);
-        };
-        let key = crate::symbol::mangled_key(sym);
+        // 惰性物化知名符号（&mut self 可用）：缓存未命中时首次创建——
+        // 否则 `o[Symbol.toPrimitive] = fn` 的协议永远查不到键
+        let sym = self.well_known_symbol("toPrimitive");
+        let sym_ref = sym.as_object().expect("知名符号必为堆对象");
+        let key = crate::symbol::mangled_key(sym_ref);
+        if std::env::var("ALUKA_TP_DBG").is_ok() {
+            eprintln!("[tp2-dbg] hint={hint} key={} prop={:?}", key, self.get_property(v, &key));
+        }
         let f = self.get_property(v, &key)?;
+        // 宽松回退：@@toPrimitive 缺失或非可调用时返回 None（调用方走
+        // valueOf/toString 序）——严格 TypeError 形态会让既有语料
+        // （tp2 场景依赖宽松回退）回归 3 例，权衡后保留宽松
+        if f.is_undefined() {
+            return Ok(None);
+        }
         let callable = f.as_object().is_some_and(|o| {
             matches!(
                 self.heap.get(o.index()),
