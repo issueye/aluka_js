@@ -1631,3 +1631,16 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=948 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓；
   @@toPrimitive/Date 探针全对齐（Date 时区口径为项目已登记偏离）。
+
+## 70. M7.2 轮五十六：@@iterator getter 触发与抛错传播（20260913）
+
+- **根因**：`has_symbol_iterator` 用 `own_value` 逐原型层查键（**不触发
+  getter**），`Object.defineProperty(o, Symbol.iterator, {get(){throw ...}})`
+  的 getter 既未被调用、其抛错也无从传播——展开得空数组
+  （spread-err 族 4 例）；
+- **修复**：改经 `get_property` 沿原型链解析（触发 getter 并传播抛错），
+  签名 `&mut self -> Result<bool, VmError>`；判定改「解析值非 undefined」；
+- **净效果**：t262 1018 → **1020/1154**（失败 49 → 47）；
+  **M72_FLOOR 948 → 950**（理论上限 953 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=950 ✓、conformance 差分 ✓；getter 抛错探针对齐 Node 22。

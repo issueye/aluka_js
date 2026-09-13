@@ -29,29 +29,24 @@ use std::collections::{HashMap, HashSet};
 impl Vm {
     /// 对象是否定义了 `Symbol.iterator`（自有或沿原型链）——判定自定义可迭代，
     /// 用于展开/for-of 的协议回退路径。
-    pub(crate) fn has_symbol_iterator(&self, val: Value) -> bool {
-        let Some(obj) = val.as_object() else {
-            return false;
+    /// 对象是否可迭代（`@@iterator` 可解析）。
+    ///
+    /// 经 `get_property` 沿原型链解析：**触发 getter** 并传播其抛错
+    /// （`Object.defineProperty(o, Symbol.iterator, {get(){throw ...}})` 的
+    /// 展开必须抛错——spread-err 族）。
+    pub(crate) fn has_symbol_iterator(&mut self, val: Value) -> Result<bool, VmError> {
+        let Some(_) = val.as_object() else {
+            return Ok(false);
         };
         // 知名符号迭代器在 WELL_KNOWN 缓存中（已物化时直接查键）
         let Some(sym) = Vm::well_known_cached("iterator") else {
-            return false;
+            return Ok(false);
         };
         let key = crate::symbol::mangled_key(sym);
-        let mut cur = Some(obj);
-        for _ in 0..64 {
-            let Some(c) = cur else { break };
-            if self.own_value(c.index(), &key).is_some() {
-                return true;
-            }
-            cur = match self.heap.get(c.index()) {
-                Some(HeapObject::Ordinary { proto, .. }) => *proto,
-                Some(HeapObject::Array { proto, .. }) => *proto,
-                Some(HeapObject::Closure { proto, .. }) => *proto,
-                _ => None,
-            };
+        match self.get_property(val, &key) {
+            Ok(v) => Ok(!v.is_undefined()),
+            Err(e) => Err(e),
         }
-        false
     }
 
     /// 为内建迭代器对象挂 `next` / `Symbol.iterator` 真实属性（偏离见上方登记）。
@@ -482,7 +477,7 @@ impl Vm {
                                 out.push(v);
                             }
                         }
-                    } else if self.has_symbol_iterator(val) {
+                    } else if self.has_symbol_iterator(val)? {
                         // 自定义可迭代：Symbol.iterator() 取得迭代器后按
                         // `next()` 协议驱动（`[...obj]`——对象字面量自定义
                         // Symbol.iterator；方法体抛错沿 `?` 传播，
