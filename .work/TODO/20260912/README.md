@@ -1706,3 +1706,20 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=954 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
   GC 压力 0 失败 ✓；super 探针（sm/sm2/sm3）对齐 Node 22。
+
+## 73. M7.2 轮五十九：Symbol 静态方法真实属性（20260913）
+
+- **根因**：`Symbol.for` / `Symbol.keyFor` 仅按名硬编码分派（CALL_METHOD
+  链内识别），Symbol 构造器上**无真实属性**——`typeof Symbol.for` 为
+  undefined，官方 verifyCallableProperty 断言（`typeof value === "function"`
+  + 属性描述符校验）失败（S19.4.2 族 2 例）；
+- **修复**：surface 装配期为 Symbol 构造器挂 for/keyFor 真实属性
+  （NativeFn "Symbol.for"/"Symbol.keyFor"）+ registry handler
+  （symbol_for_dispatch / symbol_key_for_dispatch 薄包装转发
+  vm.symbol_for / vm.symbol_key_for）；
+- 附：fmt 期间 FLOOR 注释误写 935，复核（1025 通过/42 失败 → 上限 958）
+  后修正为 **955**；
+- **净效果**：t262 1024 → **1025/1154**（失败 43 → 42）；
+  **M72_FLOOR 954 → 955**（理论上限 958 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=955 ✓、conformance 差分 ✓；typeof/harness 探针对齐 Node 22。

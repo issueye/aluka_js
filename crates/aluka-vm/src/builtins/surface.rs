@@ -167,6 +167,24 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
 
     // Symbol 实例方法面（toString/valueOf/description）
     let sym_p = symbol_proto(vm);
+    // Symbol **静态方法**（for/keyFor 挂构造器本身；此前仅按名硬编码分派，
+    // `typeof Symbol.for` 为 undefined——verifyCallableProperty 族断言失败）
+    for m in ["for", "keyFor"] {
+        let f = vm.alloc_native_fn(&format!("Symbol.{m}"));
+        if let Some(c) = vm.resolve_global("Symbol").and_then(|v| v.as_object()) {
+            let _ = vm.define_proto_method(Value::Object(c), m, Value::Object(f));
+        }
+        register_handler(
+            registry,
+            "Symbol",
+            m,
+            if m == "for" {
+                symbol_for_dispatch
+            } else {
+                symbol_key_for_dispatch
+            },
+        );
+    }
     for m in ["toString", "valueOf"] {
         let f = vm.alloc_native_fn(&format!("Symbol.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(sym_p), m, Value::Object(f));
@@ -743,6 +761,16 @@ pub(crate) fn symbol_description_get(vm: &mut Vm, _args: &[Value]) -> Result<Val
         }
         _ => Ok(Value::Undefined),
     }
+}
+
+/// `Symbol.for(key)` 静态分派。
+pub(crate) fn symbol_for_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    vm.symbol_for(args)
+}
+
+/// `Symbol.keyFor(sym)` 静态分派。
+pub(crate) fn symbol_key_for_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    vm.symbol_key_for(args)
 }
 
 /// `Symbol.prototype.{toString,valueOf,description}` 分派（thisSymbolValue：
