@@ -1325,3 +1325,21 @@ $ cargo test -p aluka-jit --release --test jitbench
   t262 FLOOR=891 ✓、conformance 差分 ✓、jitbench 3/3 ✓、
   express e2e ✓（栈深校验回归已修）、GC 压力 0 失败 ✓；
   __proto__ 探针 5/5 对齐 Node 22。
+
+## 52. M7.2 轮卅七/卅八：生成器迭代 + 函数 prototype.constructor（20260913）
+
+- **生成器接入迭代协议**（iter.rs collect_iter_values）：此前生成器对象
+  不在快路径（Array/Map/Set/String/typed array 之外），`[...gen()]`
+  静默为空；补生成器分支——驱动至 done 逐次取 `value`，步骤内抛错沿 `?`
+  传播（spread-err 族期望异常穿透）；
+- **函数 prototype.constructor 回指**（heap.rs alloc_closure_with_upvalues）：
+  规范要求函数 `prototype` 的自有 `constructor` 指向函数自身——
+  `new F().constructor === F`；官方 assert.throws 的
+  `thrown.constructor !== ExpectedCtor` 判定依赖此属性，缺失时实例
+  constructor 沿链落到 Object.prototype.constructor（自定义错误类判定
+  全灭，spread-err 族 12 例的直接根因）；
+- **净效果**：t262 961 → **964/1154**（失败 106 → 103）；
+  **M72_FLOOR 891 → 894**（理论上限 897 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=894 ✓、conformance 差分 ✓、jitbench 3/3 ✓；
+  生成器/constructor 探针 6/6 对齐 Node 22。

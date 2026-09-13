@@ -428,10 +428,34 @@ impl Vm {
                 }
             }
             None => {
-                if let ValueCase::Object(r) = val.case()
-                    && self.is_typed_array(val)
-                {
-                    out = self.ta_to_values(r)?;
+                if let ValueCase::Object(r) = val.case() {
+                    if self.is_typed_array(val) {
+                        out = self.ta_to_values(r)?;
+                    } else if self.is_generator_obj(val) {
+                        // 生成器对象：驱动至 done，逐次取 value
+                        //（`[...function*(){yield 1}()]` / for-of / Array.from；
+                        // 步骤内抛错沿 `?` 传播——spread-err 族期望异常穿透）
+                        let mut done = false;
+                        while !done {
+                            let result = self.drive_generator(r, None)?;
+                            let (v, d) = match result.case() {
+                                ValueCase::Object(res) => {
+                                    let v = self.get_property(Value::Object(res), "value")?;
+                                    let d = self
+                                        .get_property(Value::Object(res), "done")
+                                        .map(|x| matches!(x.case(), ValueCase::Boolean(true)))
+                                        .unwrap_or(true);
+                                    (v, d)
+                                }
+                                _ => (Value::Undefined, true),
+                            };
+                            if d {
+                                done = true;
+                            } else {
+                                out.push(v);
+                            }
+                        }
+                    }
                 }
             }
         }

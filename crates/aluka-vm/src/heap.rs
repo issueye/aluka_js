@@ -348,14 +348,24 @@ impl Vm {
         let mut non_enum = HashSet::new();
         // JS 规范：函数对象 `prototype` 属性不可枚举（Object.keys 不含）
         non_enum.insert("prototype".to_owned());
-        self.push_object(HeapObject::Closure {
+        let f_ref = self.push_object(HeapObject::Closure {
             func_idx,
             upvalues,
             properties,
             getters: HashMap::new(),
             non_enum,
             proto: None,
-        })
+        });
+        // 规范：函数 prototype 的自有 `constructor` 回指函数自身
+        //（`new F().constructor === F`——官方 assert.throws 的
+        // `thrown.constructor !== ExpectedCtor` 判定依赖；缺失时实例
+        // constructor 沿链落到 Object.prototype.constructor）
+        let _ = self.set_property(
+            Value::Object(default_proto),
+            "constructor",
+            Value::Object(f_ref),
+        );
+        f_ref
     }
 
     /// 在堆上分配无上值的闭包对象，返回句柄。
