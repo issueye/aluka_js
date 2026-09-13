@@ -1421,3 +1421,22 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=914 ✓、conformance 差分 ✓、jitbench 3/3 ✓、
   express e2e ✓（回归已修）；BigInt 探针 7/7 对齐 Node 22。
+
+## 58. M7.2 轮卌四：ToString 全语义（js_string）+ Boolean 标签槽名（20260913）
+
+- **新增 `js_string`（Vm 公开，含 hint string 全语义）**：对象按
+  toString → valueOf 序取原始值后转串——用户自定义 toString 生效；
+  `String(obj)` / `new String(obj)` 全路径接入（call.rs 直调分支 +
+  do_construct + invoke_callable 的 NativeFn 分支）；
+  - 规范细节：`String(sym)` 是**唯一**允许符号转串的路径
+    （SymbolDescriptiveString → "Symbol(d)"），`"" + sym` 仍由
+    add_values 字符串分支抛 TypeError（core_semantics 单测回绿）；
+- **Boolean 包装标签**：obj_to_string_tag 此前只认 [[BooleanData]]，
+  而实例槽实为 [[BooleanValue]]——两名称并存，判定同时认
+  （`delete Boolean.prototype.toString` 后 `new Boolean().toString()`
+  沿链命中 Object.prototype.toString 得 "[object Boolean]"）；
+- **净效果**：t262 984 → **990/1154**（失败 83 → 77）；
+  **M72_FLOOR 914 → 920**（理论上限 923 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓
+  （core_semantics 21/21）、t262 FLOOR=920 ✓、conformance 差分 ✓；
+  String/Boolean 探针 7/7 对齐 Node 22。

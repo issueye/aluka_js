@@ -584,8 +584,13 @@ fn obj_to_string_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
             // 包装实例：tag 来自内部数据槽（delete Boolean.prototype.toString
             // 后 obj.toString() 沿链命中 Object.prototype.toString，
             // `new Boolean()` → "[object Boolean]"）
+            // 注意实例槽为 [[BooleanValue]]（do_construct/alloc_primitive_wrapper
+            // 口径），原型单例槽为 [[BooleanData]]（prime_wrapper_proto）——
+            // 两名称并存，标签判定须同时认（`new Boolean().toString()` 在
+            // delete Boolean.prototype.toString 后沿链命中 Object.prototype.toString）
             Some(HeapObject::Ordinary { .. })
-                if vm.own_value(r.0 as usize, "[[BooleanData]]").is_some() =>
+                if vm.own_value(r.0 as usize, "[[BooleanValue]]").is_some()
+                    || vm.own_value(r.0 as usize, "[[BooleanData]]").is_some() =>
             {
                 "Boolean"
             }

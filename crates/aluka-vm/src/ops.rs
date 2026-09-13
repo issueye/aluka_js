@@ -538,6 +538,61 @@ impl Vm {
         Ok(self.to_number_value(p))
     }
 
+    /// ToString（hint string，全语义）：对象按 `toString` → `valueOf` 序
+    /// 取原始值后转串（用户自定义 toString 生效——`String({toString(){...}})`
+    /// / `new String(obj)`）；数组/Date 等经其原型方法；皆非原始 → TypeError。
+    pub(crate) fn js_string(&mut self, v: Value) -> Result<String, VmError> {
+        // 堆字符串：直接取文本
+        if let Some(r) = v.as_object()
+            && let Some(HeapObject::String(s)) = self.heap.get(r.index())
+        {
+            return Ok(s.clone());
+        }
+        // 包装对象内部槽直解（须先于 ToPrimitive，避免 valueOf 占位误调用）
+        if let Some(w) = self.wrapper_primitive(v) {
+            return self.js_string(w);
+        }
+        if !matches!(v.case(), ValueCase::Object(_)) {
+            return Ok(self.format_value(v));
+        }
+        // `String(sym)` 是规范中**唯一**允许符号转串的路径
+        // （SymbolDescriptiveString → "Symbol(desc)"）；`"" + sym` 由
+        // add_values 字符串分支单独拦截抛 TypeError
+        if self.is_symbol(v) {
+            return Ok(self.format_value(v));
+        }
+        // hint string：toString → valueOf（Date 同序——hint string 下
+        // Date.prototype.toString 即日期可读形式）
+        for m in ["toString", "valueOf"] {
+            let mv = self.get_property(v, m)?;
+            let callable = mv.as_object().is_some_and(|f| {
+                matches!(
+                    self.heap.get(f.index()),
+                    Some(HeapObject::Closure { .. })
+                        | Some(HeapObject::NativeFn { .. })
+                        | Some(HeapObject::NativeCtor { .. })
+                )
+            });
+            if callable {
+                let res = self.invoke_callable(mv, v, &[])?;
+                let primitive = match res.case() {
+                    ValueCase::Object(rr) => matches!(
+                        self.heap.get(rr.index()),
+                        Some(HeapObject::String(_))
+                            | Some(HeapObject::BigInt(_))
+                            | Some(HeapObject::Symbol { .. })
+                    ),
+                    _ => true,
+                };
+                if primitive {
+                    return Ok(self.format_value(res));
+                }
+            }
+        }
+        // 无可用方法：数组 join / 普通对象 "[object Object]" 兜底
+        Ok(self.format_value(v))
+    }
+
     /// `BigInt(v)`：数字须为整数（否则 RangeError）、字符串按字面量解析
     /// （含 0x/0b/0o 前缀与空白裁剪）、布尔 → 0n/1n、BigInt 原样。
     pub(crate) fn bigint_from_value(&mut self, v: Value) -> Result<Value, VmError> {

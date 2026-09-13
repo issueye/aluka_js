@@ -4320,9 +4320,11 @@ impl Vm {
                         };
                         self.stack.push(exports);
                     } else if self.is_native_fn(callee, "String") {
-                        // String(value)：全局字符串转换
+                        // String(value)：全局字符串转换（ToString 全语义——
+                        // 用户自定义 toString 生效）
                         let v = args.first().copied().unwrap_or(Value::Undefined);
-                        let s = self.alloc_string(self.format_value(v));
+                        let text = self.js_string(v)?;
+                        let s = self.alloc_string(text);
                         self.stack.push(Value::Object(s));
                     } else if self.is_native_fn(callee, "JSON.stringify") {
                         let v = args.first().copied().unwrap_or(Value::Undefined);

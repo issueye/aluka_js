@@ -209,9 +209,10 @@ impl Vm {
             // String(value)：无 new 直调 = 字符串化（真实包顶层大量
             // `String(x)` 形态，如 depd 的 containsNamespace）；无参按规范 ""
             if ctor_name.as_deref() == Some("String") {
+                // ToString 全语义（用户自定义 toString 生效；符号 → TypeError）
                 let s = match args.first() {
                     None => String::new(),
-                    Some(v) => self.format_value(*v),
+                    Some(v) => self.js_string(*v)?,
                 };
                 let s = self.alloc_string(s);
                 return Ok(Value::Object(s));
@@ -535,7 +536,7 @@ impl Vm {
                         let inst = self.alloc_ordinary_with_proto(proto);
                         let text = match args.first() {
                             None => String::new(),
-                            Some(v) => self.format_value(*v),
+                            Some(v) => self.js_string(*v)?,
                         };
                         let s_val = Value::Object(self.alloc_string(text.clone()));
                         // 数据槽 Dict 模式直载（eq 纯堆读取面）
