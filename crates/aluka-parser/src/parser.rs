@@ -666,10 +666,21 @@ impl<'src> Parser<'src> {
         // 逗号表达式——此前 parse_expr 停在逗号、宽松 eat_semi 以
         // 「拆成多条语句」掩盖，ASI 严格化后必须整串解析）
         let expr = self.parse_expr_sequence();
-        // 裸 Ident 表达式语句：宽松吞分号（TS `declare enum` 等 strip-only
-        // 豁免形态依赖；同一行跟 `enum` 等关键字不应误报 ASI 错误）
+        // 裸 Ident 表达式语句：仅当下一 token 是**关键字**时宽松吞分号
+        //（TS `declare enum` 等 strip-only 豁免形态依赖）；裸 Ident 后同行
+        // 跟 Ident（`line comment`，无行终结符）不得 ASI——必须报
+        // SyntaxError（Node 22 实测 "Unexpected identifier"）
         let bare_ident = matches!(&expr, Expr::Ident(_));
-        if bare_ident {
+        // 裸 Ident 宽容仅限 TS strip-only 形态链（`declare enum Color {..}`）：
+        // 下一 token 是关键字 / TS 标记 Ident（enum/namespace/type，非保留字
+        // 故词法为 Ident）/ `{`（enum 体前导的绑定名形态）；裸 Ident 后同行
+        // 跟普通 Ident（`line comment`，无行终结符）不得 ASI——必须报
+        // SyntaxError（Node 22 实测 "Unexpected identifier"）
+        let next_is_ts_marker = matches!(&self.peek().kind, TokenKind::Keyword(_))
+            || matches!(&self.peek().kind, TokenKind::Ident(id) if matches!(id.as_str(), "enum" | "namespace" | "type"))
+            || self.check_punct("{");
+        let expr_is_ts_marker = matches!(&expr, Expr::Ident(id) if matches!(id.as_str(), "enum" | "namespace" | "type" | "declare"));
+        if bare_ident && (next_is_ts_marker || expr_is_ts_marker) {
             self.match_punct(";");
         } else {
             self.eat_semi();

@@ -1076,3 +1076,20 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=832 ✓、conformance 差分 ✓；分隔符 4 负例 +
   3 正例（0b101/0xFFn/1_000n）对齐 Node 22。
+
+## 36. M7.2 轮二十一：裸 Ident ASI 豁免收窄 + 正则 LS/PS（20260913）
+
+- **裸 Ident 豁免收窄**：轮十三为 TS `declare enum` 开的「裸 Ident 语句
+  一律宽松吞分号」使同行 Ident-Ident（`line comment`，无行终结符）
+  被静默接受——Node 22 实测 SyntaxError（ASI 不适用：两 token 同行）；
+  收窄为「下一 token 是关键字 / TS 标记 Ident（enum/namespace/type）/
+  `{`，或 Ident 本身是 TS 标记」——TS strip-only 链
+  （`declare enum Color { Red }`）完整保留（ts_enum 单测回绿）；
+- **正则字面量 LS/PS**：lexer 自带正则扫描器（前缀位置 `/` 整体成词）
+  缺 U+2028/U+2029 行终结符检测——补 UTF-8 序列检查，`/␨/` 判死
+  （parser 侧 parse_regexp_literal 同型检查轮二十已加）；
+- **净效果**：t262 902 → **906/1154**（失败 165 → 161）；
+  **M72_FLOOR 832 → 836**（理论上限 839 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=836 ✓、conformance 差分 ✓、jitbench 3/3 ✓；
+  ASI/正则探针 4 向对齐 Node 22。

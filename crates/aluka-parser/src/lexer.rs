@@ -810,6 +810,14 @@ impl<'src> Lexer<'src> {
                 if ch == b'\n' || ch == b'\r' {
                     break;
                 }
+                // U+2028/U+2029（LS/PS，UTF-8: E2 80 A8/A9）同为行终结符——
+                // 正则字面量禁止（invalid-regexp-ls/ps 负例）
+                if ch == 0xE2
+                    && bytes.get(idx + 1) == Some(&0x80)
+                    && matches!(bytes.get(idx + 2), Some(0xA8) | Some(0xA9))
+                {
+                    break;
+                }
                 if ch == b'\\' {
                     idx += 1;
                     if idx < bytes.len() {
