@@ -461,6 +461,33 @@ pub fn try_dispatch(
     let ValueCase::Object(r) = receiver.case() else {
         return None;
     };
+    // 实例**自有同名键**优先于内置原型分派：内置实例方法（Date/Map/Set 等）
+    // 在原型上以 NativeFn 存在，用户覆写实例属性后须走覆写值
+    //（`d.toString = f` 后 `d.toString()` 调 f；S15.9.5 族）。
+    // 仅对 Ordinary 实例生效（原生堆变体无自有属性面）。
+    // 用户**闭包**覆写实例方法时让位内置分派（`d.toString = function(){...}`
+    // 后调用户函数；S15.9.5 族）。
+    // 判定收窄到 Closure：内建对象以 NativeFn 挂同名成员极其普遍
+    // （`Reflect.apply`、fs.Stats.isFile、Proxy 的 trap 名等），一律让位会
+    // 破坏这些形态（实测 gen-builtin-fs / m1-proxy 回归）。
+    // 实例自有键与**原型同名方法不同值**时让位内置分派（用户覆写：
+    // `d.toString = f` / `Object.defineProperty(d, "toString", ...)`；
+    // S15.9.5 族）。仅比较"自有值 ≠ 原型槽值"——内建对象（Reflect.apply、
+    // fs.Stats.isFile 等）的自有 NativeFn **就是**分派目标，比较相等故不误拦。
+    if vm.proxy_parts(r).is_none()
+        && matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. }))
+        && let Some(own) = vm.own_value(r.index(), method)
+    {
+        // 仅当**原型链上存在同名方法**时才比较：原型无同名键者
+        // （Reflect 的 apply、fs.Stats 的 isFile 等）其自有成员即分派目标
+        let proto_slot = match vm.heap.get(r.index()) {
+            Some(HeapObject::Ordinary { proto: Some(p), .. }) => vm.own_value(p.index(), method),
+            _ => None,
+        };
+        if proto_slot.is_some() && proto_slot != Some(own) {
+            return None;
+        }
+    }
     let key = match &vm.heap[r.index()] {
         // 形态一：GET_PROP 后调用（receiver 是 NativeFn "模块.方法"）。
         // 优先尝试「名.方法」键（构造器静态方法，如 AsyncResource.bind），

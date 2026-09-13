@@ -153,8 +153,14 @@ impl Vm {
                 let entry = self.prop_ic[base + way];
                 if entry.site == site && entry.shape == shape.0 {
                     if let Some(&b) = slots.get(entry.slot as usize) {
-                        self.pic_hits = self.pic_hits.wrapping_add(1);
-                        return Ok(to_vm_value(b));
+                        // 命中前复核 receiver **自身**无该键：`Object.defineProperty`
+                        // 可在不改 shape 的前提下加键（Date 实例覆写 toString），
+                        // 此时原型槽值不应被采纳（S15.9.5 族——函数体内调用
+                        // 与顶层结果必须一致）
+                        if self.own_value(r.index(), key).is_none() {
+                            self.pic_hits = self.pic_hits.wrapping_add(1);
+                            return Ok(to_vm_value(b));
+                        }
                     }
                 }
             }

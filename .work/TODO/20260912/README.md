@@ -1584,3 +1584,28 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=936 ✓、conformance 差分 ✓、jitbench 3/3 ✓、
   express e2e ✓、GC 压力 0 失败 ✓；解构探针 4/4 对齐 Node 22。
+
+## 68. M7.2 轮五十四：内置实例方法用户覆写优先（20260913）
+
+- **根因**：`try_dispatch` 按 receiver 类型（`_builtinNs`/`_isDate` 等）
+  直接执行内置 handler，**绕过属性查找**——Date/Map/Set 等实例以
+  NativeFn 在原型上挂方法，用户覆写实例同名属性后调用仍走内置
+  （`Object.defineProperty(d, "toString", {value: Boolean.prototype.toString})`
+  后 `d.toString()` 不抛 TypeError，S15.9.5 族）；
+- **修复**：try_dispatch 入口加守卫——receiver 为 Ordinary 且
+  **自有同名键值与原型槽值不同**（即真覆写）时返回 None 走常规解析；
+  - 判定演进（三轮收敛）：①任意自有键让位 → 误拦内建单例
+    （Reflect.apply、fs.Stats.isFile）致 conformance 3 例 + m1-proxy 2 例
+    回归；②仅 Closure 让位 → 漏掉 NativeFn 形态覆写（本用例正是
+    借道 Boolean.prototype.toString 的 NativeFn）；③**仅当原型链上
+    存在同名方法且值不同**时让位 —— 原型无该键者（Reflect.apply）
+    其自有成员即分派目标，不误拦；
+- **配套**：get_method_ic 命中前复核 receiver 自身无该键
+  （`Object.defineProperty` 可在不改 shape 前提下加键，IC 缓存的原型槽
+  会被误采纳）；
+- **净效果**：t262 1006 → **1008/1154**（失败 61 → 59）；
+  **M72_FLOOR 936 → 938**（理论上限 941 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓（含 nonminimal_bool 修正）、
+  workspace 全量 0 失败 ✓、t262 FLOOR=938 ✓、conformance 差分 ✓
+  （3 例回归已修）、express e2e ✓；覆写探针 3 批（bp5/bp6/bp9）
+  全对齐 Node 22。
