@@ -1093,3 +1093,16 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=836 ✓、conformance 差分 ✓、jitbench 3/3 ✓；
   ASI/正则探针 4 向对齐 Node 22。
+
+## 37. M7.2 轮廿二：async 绑定名早错误补全（20260913）
+
+- **新增三查**（parse_function_def / 标签语句）：
+  - async 函数**名**不得为 arguments/eval（`async function arguments(){}`）；
+  - async 形参名不得为 arguments/eval（`async function foo(arguments){}`）；
+  - await 不得作标签（`await: ;`——await 为 Keyword，Label 臂的 Ident
+    模式走不到；经 parse_unary await 臂补 `:` 缺操作数判定拦截）；
+  - 正例 `function arguments(){}`/`function eval(){}`（非 async）不受限；
+- **净效果**：t262 906 → **912/1154**（失败 161 → 155）；
+  **M72_FLOOR 836 → 842**（理论上限 845 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=842 ✓、conformance 差分 ✓。

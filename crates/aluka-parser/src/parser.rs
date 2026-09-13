@@ -373,6 +373,10 @@ impl<'src> Parser<'src> {
         // 对象属性——此前无标签支持，`length` 被当表达式求值致 ReferenceError）
         if let TokenKind::Ident(label) = self.peek().kind.clone() {
             if self.peek_ahead(1).is_punct(":") {
+                // async 函数体内 await 不得作标签（规范早错误）
+                if self.in_async && label == "await" {
+                    self.record_error("SyntaxError: async 函数中 await 不允许作标签".to_owned());
+                }
                 self.advance();
                 self.advance();
                 let body = Box::new(self.parse_stmt());
@@ -831,6 +835,11 @@ impl<'src> Parser<'src> {
     fn parse_function_def(&mut self, is_async: bool) -> FunctionDef {
         let name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
             self.advance();
+            // async 函数绑定名不得为 arguments/eval（规范早错误；
+            // `async function arguments() {}` → SyntaxError）
+            if is_async && matches!(id.as_str(), "arguments" | "eval") {
+                self.record_error(format!("SyntaxError: async 函数名不允许为 {id}"));
+            }
             id
         } else {
             String::new()
@@ -872,6 +881,12 @@ impl<'src> Parser<'src> {
                 self.advance();
                 self.record_error("SyntaxError: async 函数形参名不允许为 await".to_owned());
             } else if let TokenKind::Ident(param_name) = self.advance().kind {
+                // async 形参名不得为 arguments/eval（规范早错误）
+                if is_async && matches!(param_name.as_str(), "arguments" | "eval") {
+                    self.record_error(format!(
+                        "SyntaxError: async 函数形参名不允许为 {param_name}"
+                    ));
+                }
                 params.push(param_name.clone());
                 self.skip_type_annotation();
                 // 默认参数 `param = default`：运行时参数为 undefined 时取默认值
@@ -1364,7 +1379,9 @@ impl<'src> Parser<'src> {
             if self.in_async {
                 let cant_start = match &self.peek().kind {
                     TokenKind::Punct(p) => {
-                        matches!(p.as_str(), ";" | ")" | "]" | "}" | "," | "=")
+                        // `:` 覆盖标签形态 `await: ;`（await 后接冒号只能是
+                        // 标签，AwaitExpression 不允许）
+                        matches!(p.as_str(), ";" | ")" | "]" | "}" | "," | "=" | ":")
                     }
                     TokenKind::Eof => true,
                     _ => false,
