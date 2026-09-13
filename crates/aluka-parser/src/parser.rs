@@ -971,6 +971,27 @@ impl<'src> Parser<'src> {
         }
         self.in_async = outer_async;
         self.super_disallowed = outer_super;
+        // 体**顶层** let/const 不得与形参重名（`foo(bar){ let bar; }` →
+        // SyntaxError；嵌套块内 let 遮蔽合法，不在此查）
+        for s in &body {
+            let conflict = match &s.stmt {
+                Stmt::VarDecl {
+                    name,
+                    kind: VarKind::Let | VarKind::Const,
+                    ..
+                } => params.contains(name),
+                Stmt::MultiVarDecl {
+                    kind: VarKind::Let | VarKind::Const,
+                    decls,
+                    ..
+                } => decls.iter().any(|(n, _)| params.contains(n)),
+                _ => false,
+            };
+            if conflict {
+                self.record_error("SyntaxError: 体顶层 let/const 不得与形参重名".to_owned());
+                break;
+            }
+        }
         FunctionDef {
             name,
             params,
@@ -1559,6 +1580,19 @@ impl<'src> Parser<'src> {
             if self.nl_before_current() {
                 return expr;
             }
+            // 后缀目标为字面量（`;-->` 解析出的 `undefined--` 等）：
+            // Invalid left-hand side → SyntaxError
+            if matches!(
+                expr,
+                Expr::Undefined
+                    | Expr::Boolean(_)
+                    | Expr::Number(_)
+                    | Expr::BigInt(_)
+                    | Expr::String(_)
+                    | Expr::Null
+            ) {
+                self.record_error("SyntaxError: 后缀 ++/-- 目标不能为字面量".to_owned());
+            }
             self.advance();
             return Expr::Update {
                 op,
@@ -1982,6 +2016,15 @@ impl<'src> Parser<'src> {
                     self.record_error(format!("SyntaxError: {msg}"));
                     self.advance();
                     return Expr::Undefined;
+                }
+                // 比较类标点永不处于表达式主位（`;-->` 的 `>` 曾被静默吞）
+                if let TokenKind::Punct(p) = &self.peek().kind {
+                    if matches!(
+                        p.as_str(),
+                        ">" | "<" | ">=" | "<=" | "===" | "!==" | "==" | "!="
+                    ) {
+                        self.record_error(format!("SyntaxError: 意外的标记 '{p}'"));
+                    }
                 }
                 self.advance();
                 Expr::Undefined

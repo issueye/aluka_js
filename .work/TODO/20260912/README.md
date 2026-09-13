@@ -1134,3 +1134,21 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 845 → 849**（理论上限 852 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=849 ✓、conformance 差分 ✓；super/rest 探针 5 向对齐 Node 22。
+
+## 40. M7.2 轮廿五：单行注释 LS/PS 终止 + HTML 闭注释 + 形参重名（20260913）
+
+- **单行注释 LS/PS 终止**：U+2028/U+2029 同为行终结符——`//` 注释在此
+  终止，其后内容为代码（`// single line LS??? (invalid)` 负例；
+  `// ok<LS>console.log(1)` 正常执行不受影响）；
+- **HTML 闭注释（Annex B）**：`-->` 仅在行首（此前至多空白）构成单行
+  注释；`;-->` 前置有代码 → 常规记号解析 → `undefined--`（后缀目标为
+  字面量）补记 SyntaxError（Invalid left-hand side）；
+- **比较类标点主位判死**：`>` `<` `>=` `<=` `==` `!=` `===` `!==` 永不
+  处于表达式主位，兜底臂补记 SyntaxError；
+- **形参重名**：函数体顶层 let/const 与形参重名（`foo(bar){ let bar; }`）
+  → SyntaxError（嵌套块内遮蔽合法不查）；
+- **净效果**：t262 919 → **923/1154**（失败 148 → 144）；
+  **M72_FLOOR 849 → 853**（理论上限 856 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=853 ✓、conformance 差分 ✓、GC 压力 0 失败 ✓；
+  探针（LS 注释/`-->` 三向/形参重名）逐项对齐 Node 22。

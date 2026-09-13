@@ -210,11 +210,41 @@ impl<'src> Lexer<'src> {
                     continue;
                 }
             }
+            // Annex B HTML 风格闭注释：`-->` 仅在**行首**（此前至多空白）
+            // 时构成单行注释（web 兼容）；`;-->` 等前置有代码的形态不构成
+            // 注释，后续按常规记号解析（html-close-without-lt 负例）
+            if bytes[self.pos] == b'-'
+                && self.pos + 2 < bytes.len()
+                && bytes[self.pos + 1] == b'-'
+                && bytes[self.pos + 2] == b'>'
+            {
+                let at_line_start = self.pos == 0
+                    || bytes[..self.pos]
+                        .iter()
+                        .rev()
+                        .find(|&&b| b != b' ' && b != b'\t')
+                        .is_none_or(|&b| b == b'\n' || b == b'\r' || b == 0xE2);
+                if at_line_start {
+                    self.pos += 3;
+                    while self.pos < bytes.len() && bytes[self.pos] != b'\n' {
+                        self.pos += 1;
+                    }
+                    continue;
+                }
+            }
             // 单行注释 //
             if self.pos + 1 < bytes.len() && bytes[self.pos] == b'/' && bytes[self.pos + 1] == b'/'
             {
                 self.pos += 2;
                 while self.pos < bytes.len() && bytes[self.pos] != b'\n' {
+                    // LS/PS（E2 80 A8/A9）同为行终结符：注释在此终止，
+                    // 其后内容为代码（invalid-comment-single-ls/ps 负例）
+                    if bytes[self.pos] == 0xE2
+                        && bytes.get(self.pos + 1) == Some(&0x80)
+                        && matches!(bytes.get(self.pos + 2), Some(0xA8) | Some(0xA9))
+                    {
+                        break;
+                    }
                     self.pos += 1;
                 }
                 continue;
