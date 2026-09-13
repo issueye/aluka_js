@@ -167,7 +167,12 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
 
     // Symbol 实例方法面（toString/valueOf/description）
     let sym_p = symbol_proto(vm);
-    for m in ["toString", "valueOf", "description", "for", "keyFor"] {
+    for m in ["toString", "valueOf", "description"] {
+        let f = vm.alloc_native_fn(&format!("Symbol.prototype.{m}"));
+        let _ = vm.define_proto_method(Value::Object(sym_p), m, Value::Object(f));
+        register_handler(registry, "Symbol.prototype", m, symbol_method_dispatch);
+    }
+    for m in ["for", "keyFor"] {
         let f = vm.alloc_native_fn(&format!("Symbol.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(sym_p), m, Value::Object(f));
     }
@@ -669,6 +674,41 @@ fn str_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             let msg = vm.alloc_string(format!("String.prototype.{name} is not a function"));
             Err(VmError::Thrown(Value::Object(msg)))
         }
+    }
+}
+
+/// `Symbol.prototype.{toString,valueOf,description}` 分派（thisSymbolValue：
+/// 仅符号接收者合法——`Symbol.prototype.toString.call(sym)` 经注册表
+/// 到此；非符号 this → TypeError，S15.x Symbol 桶）
+pub(crate) fn symbol_method_dispatch(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let full = super::pending_native_name();
+    let name = full
+        .rsplit("Symbol.prototype.")
+        .next()
+        .unwrap_or(&full)
+        .to_owned();
+    let this = super::current_receiver();
+    let sym = match this.case() {
+        ValueCase::Object(r) if vm.is_symbol(Value::Object(r)) => r,
+        _ => {
+            return Err(vm.type_error("Symbol.prototype method called on non-symbol"));
+        }
+    };
+    let description = match vm.heap.get(sym.0 as usize) {
+        Some(HeapObject::Symbol { description, .. }) => description.clone(),
+        _ => String::new(),
+    };
+    match name.as_str() {
+        "toString" => Ok(Value::Object(
+            vm.alloc_string(crate::symbol::symbol_display(&description)),
+        )),
+        "valueOf" => Ok(Value::Object(sym)),
+        "description" => Ok(if description.is_empty() {
+            Value::Undefined
+        } else {
+            Value::Object(vm.alloc_string(description))
+        }),
+        _ => Err(vm.type_error(&format!("Symbol.prototype.{name} is not a function"))),
     }
 }
 

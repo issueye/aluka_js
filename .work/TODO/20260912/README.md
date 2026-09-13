@@ -1168,3 +1168,20 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 853 → 857**（理论上限 860 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=857 ✓、conformance 差分 ✓；Boolean 7 探针对齐 Node 22。
+
+## 42. M7.2 轮廿七：Symbol.prototype 注册表 handler（20260913）
+
+- Symbol.prototype.{toString,valueOf,description} 此前仅注册原生函数名、
+  无 registry handler——`Symbol.prototype.toString.call(sym)` 形态
+  （经 invoke_callable 的注册表查找）误报 TypeError；
+- 新增 symbol_method_dispatch（thisSymbolValue：仅符号接收者合法，
+  非符号 → TypeError）；方法面注册拆分（for/keyFor 为静态面不入
+  prototype handler）；
+- 探针：A/B/C（借道调用/非符号 this/符号 this）逐项对齐 Node 22；
+- t262 基线 927 持平——语料 Symbol 桶（Boolean-symbol-coercion、
+  desc-to-string 等）实际需要 **Symbol ToString 限制**（模板串/字符串
+  拼接遇 Symbol → TypeError，现静默产 "Symbol(x)"）与
+  `true.valueOf()`（布尔原始值接收者 valueOf 误落数值通道得 1），
+  登记为下一轮目标；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  conformance 差分 ✓。
