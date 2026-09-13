@@ -313,6 +313,16 @@ impl Vm {
                         HeapObject::String(s) => return s.clone(),
                         HeapObject::BigInt(s) => return s.clone(),
                         HeapObject::Symbol { .. } => return crate::symbol::mangled_key(r),
+                        // 包装对象：ToPropertyKey 经 ToPrimitive 解包内部槽
+                        //（`a[new Number(1)]` → 键 "1"、`a[new Boolean(true)]`
+                        // → "true"；此前落 "[object Object]" 致下标写入丢失）
+                        HeapObject::Ordinary { .. } => {
+                            for slot in ["[[NumberValue]]", "[[BooleanValue]]", "[[StringValue]]"] {
+                                if let Some(w) = self.own_value(idx, slot) {
+                                    return self.to_property_key(w);
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -925,12 +935,17 @@ impl Vm {
                         return Err(self.typed_error("RangeError", "Invalid array length"));
                     }
                     let newlen = n as usize;
-                    if let Some(HeapObject::Array { elements, .. }) =
-                        self.heap.get_mut(r.0 as usize)
-                    {
-                        elements.resize(newlen, Value::Undefined);
+                    // 稀疏大 length 的内存保护：VM 数组为密集 Vec 表示，
+                    // 4e6 上限与 new Array(len) 同口径（超限按普通属性
+                    // 写入处理，避免 34GB 分配直接 abort）
+                    if newlen <= 4_000_000 {
+                        if let Some(HeapObject::Array { elements, .. }) =
+                            self.heap.get_mut(r.0 as usize)
+                        {
+                            elements.resize(newlen, Value::Undefined);
+                        }
+                        return Ok(());
                     }
-                    return Ok(());
                 }
             }
         }

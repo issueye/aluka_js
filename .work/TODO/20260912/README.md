@@ -1387,3 +1387,17 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=910 ✓、conformance 差分 ✓；可迭代探针 3/3 对齐
   （含异常穿透与生成器方法体）。
+
+## 56. M7.2 轮卌二：ToPropertyKey wrapper 解包 + length 上限保护（20260913）
+
+- **ToPropertyKey wrapper 解包**：`a[new Number(1)]` 此前键落
+  "[object Object]"（下标写入丢失，读回 undefined）——补内部槽
+  （[[NumberValue]]/[[BooleanValue]]/[[StringValue]]）递归取键
+  （S15.4_A1.1_T6/T7/T8 族）；
+- **length setter 内存保护**：`x.length = 4294967295` 触发 34GB 分配
+  直接 abort（vm_rc=0xC0000409）——加 4e6 上限（与 new Array(len) 同口径），
+  超限不 resize（转为语义差异而非崩溃）；
+- **净效果**：t262 980 → **983/1154**（失败 87 → 84）；
+  **M72_FLOOR 910 → 913**（理论上限 916 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=913 ✓、conformance 差分 ✓；索引/崩溃探针 4/4 对齐。
