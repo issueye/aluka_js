@@ -233,9 +233,26 @@ impl Vm {
                 let v = args.first().copied().unwrap_or(Value::Undefined);
                 return self.bigint_from_value(v);
             }
-            // Date(value) 无 new 直调等价 new Date(value)
+            // Date(value)：无 new 直调 → **当前时间的可读字符串**（Annex B：
+            // 函数调用形态忽略参数，`typeof Date() === "string"`；
+            // `new Date(v)` 才是对象。此前带参误等价 new Date(v) 得对象）
             if ctor_name.as_deref() == Some("Date") {
-                return self.construct_date(args);
+                let now = self.construct_date(&[]);
+                return match now {
+                    Ok(d) => {
+                        let s = self.get_property(d, "toString")?;
+                        let t = self.invoke_callable(s, d, &[])?;
+                        let text = match self
+                            .heap
+                            .get(t.as_object().map(|r| r.index()).unwrap_or(usize::MAX))
+                        {
+                            Some(HeapObject::String(str_val)) => str_val.clone(),
+                            _ => self.format_value(t),
+                        };
+                        Ok(Value::Object(self.alloc_string(text)))
+                    }
+                    Err(e) => Err(e),
+                };
             }
             // Error 族无 new 直调等价 new（TypeError('msg') 常见形态）
             if matches!(

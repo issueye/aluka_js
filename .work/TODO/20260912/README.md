@@ -1723,3 +1723,14 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 954 → 955**（理论上限 958 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=955 ✓、conformance 差分 ✓；typeof/harness 探针对齐 Node 22。
+
+## 74. M7.2 轮六十：Date() 无 new 直调返回时间串（20260913）
+
+- **规范（Annex B）**：`Date(value)` 无 new 直调返回**当前时间的可读
+  字符串**且**忽略参数**（`typeof Date() === "string"`、
+  `Date(1970).length > 0`）；`new Date(v)` 才是对象。此前带参误等价
+  `new Date(v)` 得对象；
+- **净效果**：t262 1025 → **1026/1154**（失败 42 → 41）；
+  **M72_FLOOR 955 → 956**（1026 通过/41 失败 → 上限 959，留 3 余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=956 ✓、conformance 差分 ✓；Date() 探针 3/3 对齐 Node 22。
