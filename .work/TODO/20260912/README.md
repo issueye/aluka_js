@@ -1504,3 +1504,21 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=929 ✓、conformance 差分 ✓；eval/var 探针矩阵
   （1+1/;/if/赋值/声明 五种源码）5/5 对齐 Node 22。
+
+## 63. M7.2 轮卌九：Symbol 描述语义 + 原型 constructor（20260913）—— 突破 1000
+
+- **ToSymbolDescription**（Symbol(desc) 的 desc 经 ToPrimitive 后转串）：
+  - 对象走其 toString（`Symbol({toString:()=>"toString"}).description`
+    === "toString"，此前得 "[object Object]"）；
+  - 描述产符号 → TypeError（`Symbol({toString:()=>Symbol()})`；
+    此前静默产串）；
+  - 空描述区分：**新增 HeapObject::Symbol.has_desc 字段**——规范
+    `Symbol()` → description 为 undefined、`Symbol("")` → ""，两者堆
+    描述串均为空、此前无法区分（唯一此前用 is_empty 判定的两处
+    ——property.rs 合成路径与 surface description getter——同步改用）；
+- **Symbol.prototype.constructor 回指**：包装原型 constructor 回指循环
+  补入 Symbol（`Object.getPrototypeOf(Symbol('x')).constructor === Symbol`）；
+- **净效果**：t262 999 → **1001/1154**（失败 68 → 66）——**突破 1000**；
+  **M72_FLOOR 929 → 931**（理论上限 934 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=931 ✓、conformance 差分 ✓；Symbol 探针 6/6 对齐 Node 22。

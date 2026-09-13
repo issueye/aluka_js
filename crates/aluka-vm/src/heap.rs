@@ -145,8 +145,11 @@ pub enum HeapObject {
     Symbol {
         /// 全局唯一 id（分配序）
         sym_id: u64,
-        /// 描述文本（`Symbol()` 为空串）
+        /// 描述文本（`Symbol()` 与 `Symbol("")` 均为空串）
         description: String,
+        /// 是否**显式提供**过描述：`Symbol()` → false（description 访问器得
+        /// undefined）；`Symbol("")` → true（得 ""）——规范区分两者
+        has_desc: bool,
     },
     /// Map/Set 对象（键为原始 `Value` + SameValueZero 语义；`get/set/has/groupBy` 运行时）
     ///
@@ -446,9 +449,20 @@ impl Vm {
 
     /// 在堆上分配 Symbol 原语对象，返回句柄。
     pub fn alloc_symbol(&mut self, sym_id: u64, description: String) -> ObjectRef {
+        self.alloc_symbol_described(sym_id, description, false)
+    }
+
+    /// 带"显式描述"标记的符号分配（`Symbol(desc)` 传 true）。
+    pub fn alloc_symbol_described(
+        &mut self,
+        sym_id: u64,
+        description: String,
+        has_desc: bool,
+    ) -> ObjectRef {
         self.push_object(HeapObject::Symbol {
             sym_id,
             description,
+            has_desc,
         })
     }
 

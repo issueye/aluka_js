@@ -827,8 +827,14 @@ impl Vm {
         // 占位 NativeFn，typeof 非 undefined 但取值错。
         if key == "description" {
             if let Some(r) = obj.as_object() {
-                if let Some(HeapObject::Symbol { description, .. }) = self.heap.get(r.0 as usize) {
-                    if description.is_empty() {
+                if let Some(HeapObject::Symbol {
+                    description,
+                    has_desc,
+                    ..
+                }) = self.heap.get(r.0 as usize)
+                {
+                    // 未显式提供描述 → undefined；`Symbol("")` → ""（空串）
+                    if !has_desc {
                         return Ok(Value::Undefined);
                     }
                     let s = description.clone();

@@ -110,18 +110,37 @@ impl Vm {
         &mut self,
         args: &[Value],
     ) -> Result<Value, crate::interpreter::VmError> {
-        // 规范：description 若为符号 → TypeError（Symbol(sym) 非法——
-        // 符号不能经 ToString 转描述，S19.4.1.1 族）
+        // 规范：Symbol(description) 的 description 经 **ToString** 转换——
+        // 对象走其 toString（`Symbol({toString:()=>"x"}).description === "x"`）；
+        // 转换结果若为符号 → TypeError（Symbol(sym) 与 toString 产符号两形态，
+        // S19.4.1.1 族）
+        let has_desc = !matches!(args.first().copied(), None | Some(Value::Undefined));
         let description = match args.first() {
             None => String::new(),
             Some(v) if v.is_undefined() => String::new(),
             Some(v) if self.is_symbol(*v) => {
                 return Err(self.type_error("Cannot convert a Symbol value to a string"));
             }
-            Some(v) => self.format_value(*v),
+            Some(v) => {
+                // ToSymbolDescription：对象经 ToPrimitive，结果为符号 → TypeError
+                //（`Symbol({toString:()=>Symbol()})` 非法）；字符串直通不走原型
+                let prim = if matches!(v.case(), ValueCase::Object(_)) {
+                    self.to_primitive_number(*v)?
+                } else {
+                    *v
+                };
+                if self.is_symbol(prim) {
+                    return Err(self.type_error("Cannot convert a Symbol value to a string"));
+                }
+                self.js_string(prim)?
+            }
         };
         let id = NEXT_SYM_ID.fetch_add(1, Ordering::Relaxed);
-        Ok(Value::Object(self.alloc_symbol(id, description)))
+        Ok(Value::Object(self.alloc_symbol_described(
+            id,
+            description,
+            has_desc,
+        )))
     }
 
     /// `Symbol.for(key)`：注册表幂等分配。

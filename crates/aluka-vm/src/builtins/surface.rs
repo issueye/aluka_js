@@ -217,7 +217,13 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
     prime_wrapper_proto(vm);
     // 包装原型 `constructor` 回指构造器（`new String().constructor === String`；
     // 此前缺失致 S15.5/S15.6/S15.7 的 constructor 恒等断言失败）
-    for (proto, ctor_name) in [(str_p, "String"), (bool_p, "Boolean"), (num_p, "Number")] {
+    for (proto, ctor_name) in [
+        (str_p, "String"),
+        (bool_p, "Boolean"),
+        (num_p, "Number"),
+        // Symbol 同理（`Object.getPrototypeOf(Symbol('x')).constructor === Symbol`）
+        (sym_p, "Symbol"),
+    ] {
         if let Some(c) = vm.resolve_global(ctor_name).and_then(|v| v.as_object()) {
             let _ = vm.define_proto_method(Value::Object(proto), "constructor", Value::Object(c));
         }
@@ -721,8 +727,14 @@ pub(crate) fn symbol_description_get(vm: &mut Vm, _args: &[Value]) -> Result<Val
         return Ok(Value::Undefined);
     };
     match vm.heap.get(r.0 as usize) {
-        Some(HeapObject::Symbol { description, .. }) => {
-            if description.is_empty() {
+        Some(HeapObject::Symbol {
+            description,
+            has_desc,
+            ..
+        }) => {
+            // 规范：未显式提供描述（`Symbol()`）→ undefined；
+            // `Symbol("")` → ""（两者 description 均为空串，靠 has_desc 区分）
+            if !has_desc {
                 Ok(Value::Undefined)
             } else {
                 let s = vm.alloc_string(description.clone());
