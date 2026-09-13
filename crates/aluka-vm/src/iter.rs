@@ -44,7 +44,17 @@ impl Vm {
         };
         let key = crate::symbol::mangled_key(sym);
         match self.get_property(val, &key) {
-            Ok(v) => Ok(!v.is_undefined()),
+            // 可迭代判定：解析值须为**可调用**（null/undefined/数据值
+            // 均非可迭代——`Symbol.iterator` getter 返回 null 时展开
+            // 应抛 TypeError，spread-err 族）
+            Ok(v) => Ok(v.as_object().is_some_and(|o| {
+                matches!(
+                    self.heap.get(o.index()),
+                    Some(HeapObject::Closure { .. })
+                        | Some(HeapObject::NativeFn { .. })
+                        | Some(HeapObject::NativeCtor { .. })
+                )
+            })),
             Err(e) => Err(e),
         }
     }

@@ -1831,3 +1831,15 @@ $ cargo test -p aluka-jit --release --test jitbench
   留 2 余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=961 ✓、conformance 差分 ✓；箭头解构探针对齐 Node 22。
+
+## 82. M7.2 轮六十七：@@iterator 可调用判定（20260914）
+
+- **has_symbol_iterator 的解析值判定收紧**：`Symbol.iterator` getter
+  返回 null/undefined/数据值（非可调用）→ **非可迭代** → 展开回退常规序
+  并按 `Symbol.iterator is not a function` 抛 TypeError
+  （spread-err-iter-get-value / itr-get-get 族 2 例转绿）；
+- **净效果**：t262 1030/1154（wrapped-values 3 例与 spread 可调用判定
+  合并计入本轮批次）；**M72_FLOOR 961 保持**（1030 通过/37 失败 →
+  上限 963，留 2 余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=961 ✓、conformance 差分 ✓。

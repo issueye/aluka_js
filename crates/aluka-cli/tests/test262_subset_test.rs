@@ -477,7 +477,7 @@ fn test262_subset_conformance() {
     );
     let m72_failures = failures.len() - hand_failures.len();
     // 随分桶修复逐级上调：轮五十九后真实基线 1025 通过/42 失败（1024→1025），
-    // 下限取可承受的 961（1030 通过/37 失败 → 上限 963，留 2 余量）——箭头函数解构参数闭环。
+    // 下限取可承受的 961（1030 通过/37 失败 → 上限 963，留 2 余量）——@@iterator 可调用判定。
     const M72_FLOOR: usize = 961;
     assert!(
         m72_failures <= 1000 - M72_FLOOR,
