@@ -1232,3 +1232,17 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 861 → 864**（理论上限 867 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=864 ✓、conformance 差分 ✓；原型链探针 5/5 对齐 Node 22。
+
+## 46. M7.2 轮卅一：类体访问器 + 计算键 + 原型链 setter（20260913）
+
+- **解析**（parse_class_stmt）：类体 `get x() {}` / `set x(v) {}` 访问器
+  前缀（仅当后随键名而非 `(`——`get()` 方法简写不受影响）+ 计算键
+  `get ['a']() {}`（字符串/数字/标识符字面量取文本为名，复杂表达式走
+  parse_expr 兜底）；kind 1/2 传入 ClassMethodDef（codegen 早已支持）；
+- **VM**（property.rs set_property）：setter 查找补**原型链**遍历——
+  此前仅查自层，类访问器挂在 C.prototype，实例写入静默落为数据属性
+  （`c.b = 5` 后 `c._b` undefined）；
+- **净效果**：t262 934 → **943/1154**（失败 133 → 124）；
+  **M72_FLOOR 864 → 873**（理论上限 876 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=873 ✓、conformance 差分 ✓；访问器探针 5/5 对齐 Node 22。

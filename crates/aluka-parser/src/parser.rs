@@ -1024,12 +1024,44 @@ impl<'src> Parser<'src> {
 
         while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
             let is_static = self.match_keyword("static");
+            // 访问器前缀：`get x() {}` / `set x(v) {}`（仅当后随键名而非 `(`）
+            let mut accessor_kind = 0u32;
+            if let TokenKind::Ident(prefix) = self.peek().kind.clone() {
+                if (prefix == "get" || prefix == "set") && !self.peek_ahead(1).is_punct("(") {
+                    self.advance();
+                    accessor_kind = if prefix == "get" { 1 } else { 2 };
+                }
+            }
             let m_name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
                 self.advance();
                 id
             } else if let TokenKind::Keyword(kw) = self.peek().kind.clone() {
                 self.advance();
                 kw
+            } else if self.check_punct("[") {
+                // 计算键：`get ['a']() {}`——以字面量文本为名（字符串/数字
+                // 字面量键的常见形态；复杂表达式取源码切片）
+                self.advance();
+                let key_txt = match self.peek().kind.clone() {
+                    TokenKind::String(s) => {
+                        self.advance();
+                        s
+                    }
+                    TokenKind::Ident(s) => {
+                        self.advance();
+                        s
+                    }
+                    TokenKind::Number(n) => {
+                        self.advance();
+                        format!("{n}")
+                    }
+                    _ => {
+                        let _ = self.parse_expr();
+                        String::new()
+                    }
+                };
+                let _ = self.expect_punct("]");
+                key_txt
             } else {
                 break;
             };
@@ -1072,7 +1104,7 @@ impl<'src> Parser<'src> {
                     params,
                     body,
                     is_static,
-                    kind: 0,
+                    kind: accessor_kind,
                 });
             }
         }

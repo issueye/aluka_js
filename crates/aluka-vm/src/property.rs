@@ -941,7 +941,7 @@ impl Vm {
         if let Some(r) = obj.as_object() {
             let idx = r.0 as usize;
             if idx < self.heap.len() {
-                // Setter 访问器优先：命中则调用（不写数据属性，对齐 JS [[Set]] 语义）
+                // Setter 访问器优先：自层命中则调用（不写数据属性，对齐 JS [[Set]]）
                 let setter = match &self.heap[idx] {
                     HeapObject::Ordinary { setters, .. } => setters.get(key).copied(),
                     _ => None,
@@ -949,6 +949,33 @@ impl Vm {
                 if let Some(s_val) = setter {
                     self.invoke_accessor(s_val, obj, &[val])?;
                     return Ok(());
+                }
+                // 原型链 setter：自层无同名数据属性时沿 [[Prototype]] 查找
+                //（`class C { set b(v){} }` 的 setter 挂在 C.prototype——
+                // 实例上写入须触发，S15.x class setter 桶）
+                if self.own_value(idx, key).is_none() {
+                    let mut cur = match &self.heap[idx] {
+                        HeapObject::Ordinary { proto, .. } => *proto,
+                        HeapObject::Array { proto, .. } => *proto,
+                        HeapObject::Closure { proto, .. } => *proto,
+                        _ => None,
+                    };
+                    for _ in 0..64 {
+                        let Some(c) = cur else { break };
+                        let mut hit = None;
+                        let mut next = None;
+                        if let Some(HeapObject::Ordinary { setters, proto, .. }) =
+                            self.heap.get(c.0 as usize)
+                        {
+                            hit = setters.get(key).copied();
+                            next = *proto;
+                        }
+                        if let Some(s_val) = hit {
+                            self.invoke_accessor(s_val, obj, &[val])?;
+                            return Ok(());
+                        }
+                        cur = next;
+                    }
                 }
                 match &mut self.heap[idx] {
                     HeapObject::Ordinary { props, deleted, .. } => {
