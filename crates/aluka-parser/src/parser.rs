@@ -1071,6 +1071,12 @@ impl<'src> Parser<'src> {
                     self.advance();
                     true
                 };
+            // 生成器前缀：`*m() {}` / `*['constructor']()`（`*` 后须跟随键名
+            // 或计算键；不识别会令类体 while 无进展挂死——generator 静态族）
+            let is_generator = self.check_punct("*") && !self.peek_ahead(1).is_punct("(") && {
+                self.advance();
+                true
+            };
             // 访问器前缀：`get x() {}` / `set x(v) {}`（仅当后随键名而非 `(`）
             let mut accessor_kind = 0u32;
             if let TokenKind::Ident(prefix) = self.peek().kind.clone() {
@@ -1151,7 +1157,7 @@ impl<'src> Parser<'src> {
                     params,
                     body,
                     is_static,
-                    is_generator: false,
+                    is_generator,
                     kind: accessor_kind,
                 });
             }

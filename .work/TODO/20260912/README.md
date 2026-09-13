@@ -1843,3 +1843,21 @@ $ cargo test -p aluka-jit --release --test jitbench
   上限 963，留 2 余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=961 ✓、conformance 差分 ✓。
+
+## 83. M7.2 轮六十九：类体生成器前缀 + 静态生成器名早错误（20260914）
+
+- **根因**：类体成员循环不识别 `*` 生成器前缀——`*` token 永不消耗致
+  while 无进展**挂死**（vm_rc=None 超时；static-generator 3 例 +
+  method-constructor-can-be-generator）；
+- **实现**：
+  - `*` 前缀限缩解析（`*` 后须跟随键名/计算键，避免与乘法歧义）；
+  - is_generator 传入 ClassMethodDef（kind 高位 0x10 编码跨 bytecode）；
+  - class.rs 装配期：静态生成器名 constructor/prototype → TypeError
+    （assert.throws(TypeError) 捕获语义；非静态 `*['constructor']()`
+    为合法定义，正常通过）；
+- **净效果**：t262 1030 → **1033/1154**（失败 37 → 34）；
+  **M72_FLOOR 961 → 964**（1033 通过/34 失败 → 上限 967，留 3 余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓（补齐新字段/表文档）、workspace
+  全量 0 失败 ✓、t262 FLOOR=964 ✓、conformance 差分 ✓、express e2e ✓；
+  generator 三形态探针（static *constructor / *prototype / 非静态）
+  全对齐 Node 22。
