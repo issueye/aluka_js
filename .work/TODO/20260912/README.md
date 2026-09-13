@@ -1039,3 +1039,7 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   conformance 差分 ✓、GC 压力 0 失败 ✓；不可写写入 5 例探针逐字节
   对齐 Node 22。
+
+### 33.1 提交证据
+
+- commit 2a0db75（fix(m7.2): 轮十八），FLOOR=820 门禁实测 ok。
