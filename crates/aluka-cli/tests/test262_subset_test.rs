@@ -81,6 +81,30 @@ fn find_kw(body: &str, key: &str) -> Option<String> {
     None
 }
 
+/// 解析 frontmatter 的 flags 列表（`flags: [a, b]` 行级扫描）。
+fn parse_flags(code: &str) -> Vec<String> {
+    let start = match code.find("/*---") {
+        Some(s) => s,
+        None => return Vec::new(),
+    };
+    let body = &code[start + 5..];
+    let end = match body.find("---*/") {
+        Some(e) => e,
+        None => return Vec::new(),
+    };
+    for line in body[..end].lines() {
+        let line = line.trim_start();
+        if let Some(rest) = line.strip_prefix("flags:") {
+            return rest
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
 /// 剥离 frontmatter 块（对齐 run.go 的 stripFrontmatter）。
 fn strip_frontmatter(code: &str) -> String {
     match (code.find("/*---"), code.find("---*/")) {
@@ -202,9 +226,24 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str, node: Option<&st
         .into_owned();
     let src = std::fs::read_to_string(case).expect("读用例");
     let negative = parse_negative(&src);
+    // onlyStrict 变体：strict 指令置于程序最前（test262 strict 变体语义
+    // ——node oracle 与 alukac 读同一文件，判定天然一致）。仅限 **parse
+    // 负例**注入：runtime strict 语义（原始值属性写入 TypeError 等）VM
+    // 尚未实现，正例注入会把 sloppy 下通过的正例翻转
+    let strict_prefix = if negative.as_ref().is_some_and(|n| n.phase == "parse")
+        && parse_flags(&src).iter().any(|f| f == "onlyStrict")
+    {
+        "\"use strict\";\n"
+    } else {
+        ""
+    };
     // harness + 剥离 frontmatter 的用例体
     let js = tmp.join(format!("{name}.js"));
-    std::fs::write(&js, format!("{HARNESS}\n{}", strip_frontmatter(&src))).expect("写临时用例");
+    std::fs::write(
+        &js,
+        format!("{strict_prefix}{HARNESS}\n{}", strip_frontmatter(&src)),
+    )
+    .expect("写临时用例");
 
     // node 侧 oracle 校验（M1 防假阳性口径）：正向用例 node 必须 rc=0，
     // 负向用例 node 必须非 0——node 与用例预期相悖时判 INVALID（不计入
@@ -478,7 +517,7 @@ fn test262_subset_conformance() {
     let m72_failures = failures.len() - hand_failures.len();
     // 随分桶修复逐级上调：轮五十九后真实基线 1025 通过/42 失败（1024→1025），
     // 下限取可承受的 963（1033 通过/34 失败 → 上限 966，留 3 余量）——类体生成器前缀闭环。
-    const M72_FLOOR: usize = 974;
+    const M72_FLOOR: usize = 984;
     assert!(
         m72_failures <= 1000 - M72_FLOOR,
         "test262 官方导入语料通过数低于基线下限 {M72_FLOOR}/1000（当前失败 {m72_failures}）"

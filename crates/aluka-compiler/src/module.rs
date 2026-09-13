@@ -334,6 +334,12 @@ impl ModuleCompiler {
         // 槽 0 保留给顶层 `this`（= 全局对象）：顶层绑定自槽 1 起分配——
         // 此前首个顶层 var 抢占槽 0，覆写 main 帧的 globalThis
         top_unit.locals = 1;
+        // eval 完成值槽：紧随 this 槽分配（绑定分配顺延），收口时
+        // LoadLocal+Return 返回链上末次表达式值
+        if self.preserve_completion_value {
+            top_unit.completion_slot = Some(top_unit.locals);
+            top_unit.locals += 1;
+        }
 
         // 顶层函数声明提升（JS hoisting）：function 声明的闭包绑定必须
         // 先于其余语句求值（真实包在声明位置之前引用函数）。
@@ -605,7 +611,12 @@ impl ModuleCompiler {
             top_unit.code[instr_idx].operand = child_idx as u32;
         }
 
-        if top_unit.code.is_empty()
+        if let Some(slot) = top_unit.completion_slot {
+            // eval 完成值链收口：恒以完成值槽内容返回（未写时为
+            // undefined——`eval('var z;')` 的完成值即 undefined）
+            top_unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+            top_unit.code.push(Instr::new(Op::Return, 0));
+        } else if top_unit.code.is_empty()
             || !matches!(
                 top_unit.code.last().map(|i| i.op),
                 Some(Op::Return | Op::ReturnUndef)

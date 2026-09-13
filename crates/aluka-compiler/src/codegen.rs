@@ -129,7 +129,11 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
     match stmt {
         Stmt::Expr(expr) => {
             compile_expr(expr, unit);
-            if !is_last {
+            if let Some(slot) = unit.completion_slot {
+                // eval 完成值链：表达式值写入完成值槽（声明语句不写——
+                // `eval('1; function f(){}')` 完成值应为 1）
+                unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+            } else if !is_last {
                 // 非末尾纯表达式语句，求值后弹栈保持栈平衡
                 unit.code.push(Instr::new(Op::Pop, 0));
             }

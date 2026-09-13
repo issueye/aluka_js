@@ -27,6 +27,9 @@ pub struct Parser<'src> {
     /// 普通函数（声明/表达式）体内 super 不可用（无 HomeObject）——
     /// super()/super.x 均为 SyntaxError；类体/对象字面量方法内恢复合法
     super_disallowed: bool,
+    /// 程序级 strict 语义（首 token 为 "use strict" 指令时置位）——
+    /// 简单形参名重复（StrictFormalParameters）等 strict 早错误判定用
+    strict: bool,
 }
 
 /// 解析源码文本为 AST 语法树。
@@ -77,6 +80,7 @@ impl<'src> Parser<'src> {
             line_no: 1,
             errors: Vec::new(),
             in_async: false,
+            strict: false,
             super_disallowed: false,
         }
     }
@@ -295,6 +299,14 @@ impl<'src> Parser<'src> {
 
     /// 解析完整 Program
     pub fn parse_program(&mut self) -> Program {
+        // 程序级 strict 指令：首个 token 为 "use strict" 字面量时全程序
+        // 按 strict 语义解析（onlyStrict 变体 / 顶层指令）
+        if matches!(
+            self.tokens.first().map(|t| &t.kind),
+            Some(TokenKind::String(s)) if s == "use strict"
+        ) {
+            self.strict = true;
+        }
         let mut body = Vec::new();
         loop {
             // 词法错误（未终止多行注释等）：任意位置判死
@@ -362,6 +374,13 @@ impl<'src> Parser<'src> {
             || self.peek().kind == TokenKind::Ident("export".to_owned())
         {
             return Self::at(line, self.parse_export_stmt());
+        }
+
+        // 空语句：`;` 独占语句位（零宽——编为空 Block，无指令、完成值
+        // 链不受影响；此前无臂致 `{};{x: 42}` 的 `;` 落入表达式路径误报
+        // "预期 ';'" SyntaxError）
+        if self.match_punct(";") {
+            return Self::at(line, Stmt::Block(Vec::new()));
         }
 
         if self.match_punct("{") {
@@ -611,7 +630,11 @@ impl<'src> Parser<'src> {
         }
 
         if self.match_keyword("async") {
-            if self.match_keyword("function") {
+            // 规范 AsyncFunctionDeclaration：async 与 function **同行**才
+            // 构成修饰符——换行后 function 是下一语句（ASI），async 自身
+            // 是标识符表达式语句（`async` 单独一行后跟 function 声明时
+            // 运行时 ReferenceError: async is not defined）
+            if !self.nl_before_current() && self.match_keyword("function") {
                 let is_generator = self.match_punct("*");
                 let mut def = self.parse_function_def(true);
                 def.is_async = true;
@@ -718,7 +741,21 @@ impl<'src> Parser<'src> {
                     continue;
                 }
                 if self.match_punct("...") {
-                    let name = if let TokenKind::Ident(id) = self.advance().kind {
+                    // rest 后可跟**嵌套模式**（`...[...[]]` / `...[a, ...c]`）：
+                    // `[`/`{` 走嵌套模式解析取占位名（不得误当 Ident 消耗
+                    // 起始括号——此前 `[` 被吞致括号失衡 SyntaxError）
+                    let name = if self.check_punct("[") || self.check_punct("{") {
+                        let nested = self.parse_var_pattern();
+                        match &nested {
+                            VarPattern::Object(props) => {
+                                props.first().map(|p| p.key.clone()).unwrap_or_default()
+                            }
+                            VarPattern::Array(els) => {
+                                els.first().map(|e| e.name.clone()).unwrap_or_default()
+                            }
+                            VarPattern::Ident(n) => n.clone(),
+                        }
+                    } else if let TokenKind::Ident(id) = self.advance().kind {
                         id
                     } else {
                         String::new()
@@ -1003,6 +1040,21 @@ impl<'src> Parser<'src> {
                 self.record_error(
                     "SyntaxError: 非简单参数列表的函数体不允许 use strict 指令".to_owned(),
                 );
+            }
+        } else {
+            // 简单参数列表：形参名重复仅 strict 语义报错
+            //（StrictFormalParameters——async/普通函数声明同规）
+            let mut seen = std::collections::HashSet::new();
+            if params.iter().any(|p| !seen.insert(p.clone())) {
+                let body_strict = body.iter().take_while(|s| Self::is_directive(s)).any(|s| {
+                    matches!(
+                        &s.stmt,
+                        Stmt::Expr(Expr::String(d)) if d == "use strict"
+                    )
+                });
+                if self.strict || body_strict {
+                    self.record_error("SyntaxError: strict 模式下简单形参名不得重复".to_owned());
+                }
             }
         }
         if !prologue_stmts.is_empty() {
@@ -1767,7 +1819,9 @@ impl<'src> Parser<'src> {
                         Expr::Function(def)
                     }
                     "async" => {
-                        if self.match_keyword("function") {
+                        // async 函数表达式：async 与 function **同行**才构
+                        // 成修饰符（换行后是 ASI 两语句——语句级同规）
+                        if !self.nl_before_current() && self.match_keyword("function") {
                             let is_generator = self.match_punct("*");
                             let mut def = self.parse_function_def(true);
                             def.is_async = true;

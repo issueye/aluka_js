@@ -218,7 +218,14 @@ impl Vm {
                 // ToString 全语义（用户自定义 toString 生效；符号 → TypeError）
                 let s = match args.first() {
                     None => String::new(),
-                    Some(v) => self.js_string(*v)?,
+                    Some(v) => {
+                        // 符号特例（SymbolDescriptiveString）；其余严格 ToString
+                        if self.is_symbol(*v) {
+                            self.format_value(*v)
+                        } else {
+                            self.js_string_strict(*v)?
+                        }
+                    }
                 };
                 let s = self.alloc_string(s);
                 return Ok(Value::Object(s));

@@ -345,9 +345,11 @@ impl Vm {
                             return Ok(self.to_property_key(w));
                         }
                     }
-                    return self.js_string(val);
+                    // 严格 ToString：无可原始化方法（null 原型对象等）
+                    // → TypeError（`x[Object.create(null)]` 规范即抛）
+                    return self.js_string_strict(val);
                 }
-                Some(HeapObject::Array { .. }) => return self.js_string(val),
+                Some(HeapObject::Array { .. }) => return self.js_string_strict(val),
                 _ => {}
             }
         }
@@ -1396,6 +1398,9 @@ impl Vm {
                     | HeapObject::NativeFn { .. }
                     | HeapObject::NativeCtor { .. },
                 ) => self.fn_proto,
+                // RegExp 实例无 proto 字段：取 VM 单例（与属性链同源——
+                // `Object.getPrototypeOf(/1/) === RegExp.prototype`）
+                Some(HeapObject::RegExp { .. }) => self.regexp_prototype,
                 _ => None,
             },
             _ => None,

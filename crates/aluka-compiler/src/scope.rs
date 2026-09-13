@@ -177,6 +177,11 @@ pub struct CompiledUnit {
     /// 隐式全局模式（eval 全局作用域求值用）：main 层未声明赋值与
     /// var/function 声明直接落全局表，而非 main 局部槽
     pub implicit_globals: bool,
+    /// 完成值槽位（eval 脚本完成值链）：Some(槽) 时表达式语句求值后写入
+    /// 该槽（声明语句不写——完成值跨函数声明保持），单元收口
+    /// LoadLocal(槽)+Return 返回链上末次表达式值（规范 UpdateEmpty 语义
+    /// 的槽位化实现；None 维持既有「末语句栈顶值」模型）
+    pub completion_slot: Option<usize>,
     /// LCOV 行覆盖表：(指令索引, 源码行号)。语句起始登记；空 = 无覆盖信息。
     pub line_table: Vec<(u32, u32)>,
     /// 行覆盖登记开关（ModuleCompiler.line_coverage 转发；默认关）

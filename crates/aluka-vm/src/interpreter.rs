@@ -4330,7 +4330,13 @@ impl Vm {
                         // String(value)：全局字符串转换（ToString 全语义——
                         // 用户自定义 toString 生效）
                         let v = args.first().copied().unwrap_or(Value::Undefined);
-                        let text = self.js_string(v)?;
+                        // String(sym) 是唯一允许符号转串的路径；其余对象走
+                        // 严格 ToString（null 原型等无可原始化方法 → TypeError）
+                        let text = if self.is_symbol(v) {
+                            self.format_value(v)
+                        } else {
+                            self.js_string_strict(v)?
+                        };
                         let s = self.alloc_string(text);
                         self.stack.push(Value::Object(s));
                     } else if self.is_native_fn(callee, "JSON.stringify") {

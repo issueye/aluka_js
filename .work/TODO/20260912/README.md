@@ -1917,3 +1917,50 @@ $ cargo test -p aluka-jit --release --test jitbench
   object-11.1.5 getter/setter 3 例、__proto__ 2 例、Array length 2^32-1
   1 例（4e6 上限保护为已登记差异）、spread-getter/asi/comments/hashbang/
   rest-array-pattern/types-list 等。
+
+## 85. M7.2 轮七十一：ASI async 同行 / strict 负例注入 / eval 完成值槽 / 空语句 / 嵌套 rest / RegExp 原型 / 严格 ToString（20260914）
+
+- **七桶修复（t262 1044 → 1054/1154，失败 23 → 13，+10 零回归）**：
+  1. **ASI async 修饰符**（async-function-syntax-declaration-no-line-
+     terminator）：`async` 与 function **同行**才构成修饰符——语句级与
+     表达式级两处 async+function 分派补 `!nl_before_current()` 守卫
+     （换行后是 ASI 两语句，`async` 标识符运行时 ReferenceError；此前
+     表达式级无守卫致箭头函数体内的 `async\nfunction foo(){}` 被吞为
+     async 函数表达式不抛）；
+  2. **strict 重复参数 SyntaxError**（async-function-early-errors-
+     declaration-duplicate-parameters）：parser 增程序级 strict 标记
+     （首 token 为 "use strict" 指令置位）+ 简单形参名重复 strict 早错误
+     （StrictFormalParameters）；runner 增 frontmatter `flags` 解析与
+     **onlyStrict parse 负例注入**（strict 指令置程序最前，node oracle 与
+     alukac 读同一文件判定一致；正例不注入——runtime strict 语义未实现，
+     注入会翻转 sloppy 下通过的正例，已实测并限定）；
+  3. **eval 完成值槽**（async-function-cptn-decl；statementList-eval-block
+     族的机制基础）：CompiledUnit 增 completion_slot（eval main 单元
+     preserve_completion_value 时分配，紧随 this 槽）——表达式语句求值后
+     StoreLocal 写槽（声明语句不写），单元收口 LoadLocal+Return；
+     `eval('1; async function f(){}')` → 1（声明不断链）、
+     `eval('var z;')` → undefined；
+  4. **空语句**（statementList-eval-block-block-with-labels + types-list-
+     S8.8_A2_T3 附带）：parse_stmt 缺 `;` 空语句臂——`;` 落入表达式路径
+     误报 "预期 ';'" SyntaxError（`{};{x: 42}` 解析失败）；补臂以零宽
+     空 Block 表示（无指令、完成值链不受影响）；
+  5. **嵌套 rest 模式**（rest-parameters-array-pattern）：`...[...[]]` 的
+     内层 rest 后跟 `[`/`{` 时被当 Ident 误消耗致括号失衡 SyntaxError；
+     rest 臂补嵌套模式解析（复用占位名旁路）；
+  6. **RegExp 实例原型**（statementList-eval-block-regexp-literal ×2）：
+     cached_proto_of 缺 RegExp 分支——`Object.getPrototypeOf(/1/)` 返回
+     null（属性链用的 regexp_prototype 单例未接入 get_prototype 兜底）；
+  7. **严格 ToString**（accessor-name-computed-err-to-prop-key +
+     Array-S15.4_A1.1_T9 附带）：to_property_key_full 与 String() 两处
+     直调路径改 js_string_strict（null 原型等无可原始化方法 → TypeError；
+     String(sym) 保留描述串特例）——`x[Object.create(null)]`、
+     `({get [np](){}})`、`String(np)` 全对齐 Node 22；
+- **M72_FLOOR 974 → 984**（1054 通过/13 失败 → 上限 987，留 3 余量）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
+  t262 FLOOR=984 ✓（1054/1154，87 invalid）、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8（cli+vm）0 失败 ✓；
+- **余量 13 例**：async-generator 默认参数同步求值（架构项——默认参数
+  编译为函数体 prologue，生成器惰性执行）、object-11.1.5 getter/setter
+  3 例（访问器对去重）、`__proto__` 2 例、spread-getter 1 例、asi/comments
+  torture 2 例（超时）、hashbang-eval-indirect、Array length 2³²−1
+  （4e6 上限为已登记差异）、accessor-yield-id/expr 2 例。
