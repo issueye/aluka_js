@@ -1262,3 +1262,16 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 873 → 879**（理论上限 882 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=879 ✓、conformance 差分 ✓；static/访问器探针 7/7 对齐。
+
+## 48. M7.2 轮卅三：Boolean.prototype 自身 this 缺省（20260913）
+
+- 规范：`Boolean.prototype.toString()` / `valueOf()` 的 this 为
+  **Boolean.prototype 自身**（无 [[BooleanValue]] 数据槽）时按 false
+  处理，不抛错（S15.6.4.2_A1 族）；上轮加入的 this 检查过严，
+  对原型自身误报 TypeError；
+- 修复：bool_method_dispatch 数据槽缺失时判 `vm.bool_proto == Some(r)`
+  → false，其余对象（如 String 包装借道）仍 TypeError（A2 族不回退）；
+- **净效果**：t262 949 → **953/1154**（失败 118 → 114）；
+  **M72_FLOOR 879 → 883**（理论上限 886 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=883 ✓、conformance 差分 ✓。

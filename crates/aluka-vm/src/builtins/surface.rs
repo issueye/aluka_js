@@ -724,18 +724,31 @@ pub(crate) fn bool_method_dispatch(vm: &mut Vm, _args: &[Value]) -> Result<Value
         .unwrap_or(&full)
         .to_owned();
     let this = super::current_receiver();
-    // thisBooleanValue：仅原始布尔或 [[BooleanData]] 包装实例合法——
-    // 其余（含 String 包装借道）一律 TypeError（S15.6.4.2_A2 族）
+    // thisBooleanValue：原始布尔或 [[BooleanValue]]/[[BooleanData]] 包装实例；
+    // **Boolean.prototype 自身**（无数据槽但即为本原型）按规范取 false；
+    // 其余（如 String 包装借道）TypeError（S15.6.4.2_A2 族）
     let v = match this.case() {
         ValueCase::Boolean(b) => b,
-        ValueCase::Object(r) => vm
-            .own_value(r.0 as usize, "[[BooleanData]]")
-            .or_else(|| vm.own_value(r.0 as usize, "[[BooleanValue]]"))
-            .and_then(|v| match v.case() {
-                ValueCase::Boolean(b) => Some(b),
-                _ => None,
-            })
-            .ok_or_else(|| vm.type_error("Boolean.prototype method called on non-boolean"))?,
+        ValueCase::Object(r) => {
+            let slot = vm
+                .own_value(r.0 as usize, "[[BooleanData]]")
+                .or_else(|| vm.own_value(r.0 as usize, "[[BooleanValue]]"))
+                .and_then(|v| match v.case() {
+                    ValueCase::Boolean(b) => Some(b),
+                    _ => None,
+                });
+            match slot {
+                Some(b) => b,
+                None => {
+                    let is_own_proto = vm.bool_proto == Some(r);
+                    if is_own_proto {
+                        false
+                    } else {
+                        return Err(vm.type_error("Boolean.prototype method called on non-boolean"));
+                    }
+                }
+            }
+        }
         _ => {
             return Err(vm.type_error("Boolean.prototype method called on non-boolean"));
         }
