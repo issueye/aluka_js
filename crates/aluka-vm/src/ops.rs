@@ -331,6 +331,11 @@ impl Vm {
         // 规范序：任一侧为字符串 → 先走 ToString 拼接（`1n + "1"` === "11"，
         // 字符串分支在 BigInt 混算拦截**之前**）
         if is_left_str || is_right_str || is_left_buf || is_right_buf {
+            // ToString(Symbol) 禁止：字符串拼接遇 Symbol → TypeError
+            //（`'' + Symbol()` / 模板串插值；Node 22 实测）
+            if self.is_symbol(left) || self.is_symbol(right) {
+                return Err(self.type_error("Cannot convert a Symbol value to a string"));
+            }
             let s1 = self.value_as_concat_text(left);
             let s2 = self.value_as_concat_text(right);
             let combined = format!("{s1}{s2}");
@@ -384,8 +389,13 @@ impl Vm {
         if let Some(r) = v.as_object() {
             if matches!(
                 self.heap.get(r.0 as usize),
-                Some(HeapObject::String(_)) | Some(HeapObject::BigInt(_))
+                Some(HeapObject::String(_))
+                    | Some(HeapObject::BigInt(_))
+                    | Some(HeapObject::Symbol { .. })
             ) {
+                // Symbol：ToPrimitive 经 @@toPrimitive 返回**符号本身**
+                //（不得调用 valueOf/toString——ToString(Symbol) 由调用方
+                // 判 TypeError）
                 return Ok(v);
             }
         }

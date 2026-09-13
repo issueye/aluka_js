@@ -3843,11 +3843,20 @@ impl Vm {
             // 字符串原始值是堆字符串由上面字符串链处理，此处仅
             // Number/Boolean——缺省仍按 undefined 返回。
             match receiver.case() {
-                ValueCase::Number(_) | ValueCase::Boolean(_) => {
+                ValueCase::Number(_) => {
                     crate::builtins::set_current_receiver(receiver);
                     let full = format!("Number.prototype.{method_name}");
                     crate::builtins::set_pending_native_name(&full);
                     let res = crate::builtins::surface::num_method_dispatch(self, args)?;
+                    Ok(res)
+                }
+                // 布尔原始值走 **Boolean** 原型面（`true.valueOf()` → true、
+                // `true.toString()` → "true"——此前误落数值面得 1/"1"）
+                ValueCase::Boolean(_) => {
+                    crate::builtins::set_current_receiver(receiver);
+                    let full = format!("Boolean.prototype.{method_name}");
+                    crate::builtins::set_pending_native_name(&full);
+                    let res = crate::builtins::surface::bool_method_dispatch(self, args)?;
                     Ok(res)
                 }
                 _ => Ok(Value::Undefined),

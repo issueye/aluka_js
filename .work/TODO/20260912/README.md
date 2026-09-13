@@ -1185,3 +1185,18 @@ $ cargo test -p aluka-jit --release --test jitbench
   登记为下一轮目标；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   conformance 差分 ✓。
+
+## 43. M7.2 轮廿八：Symbol ToString 限制 + 布尔原始值方法路由（20260913）
+
+- **ToPrimitive(Symbol) 原样返回**：符号堆对象在 to_primitive_number
+  早退（经 @@toPrimitive 语义）——此前调用 toString 并把 "Symbol(x)"
+  当原始值采纳，令 `'' + Symbol()` / 模板串插值静默产串；
+- **字符串拼接 Symbol 守卫**：add_values 字符串/Buffer 分支遇符号 →
+  TypeError "Cannot convert a Symbol value to a string"（对齐 Node 22）；
+- **布尔原始值方法路由**：`true.valueOf()`/`true.toString()` 此前误落
+  Number.prototype 面（得 1/"1"）——Boolean 接收者改走
+  Boolean.prototype 面（得 true/"true"）；
+- **净效果**：t262 927 → **928/1154**（失败 140 → 139）；
+  **M72_FLOOR 857 → 858**（理论上限 861 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=858 ✓、conformance 差分 ✓；Symbol/布尔探针 3+7 例对齐。
