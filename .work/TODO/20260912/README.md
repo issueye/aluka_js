@@ -1474,3 +1474,15 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 922 → 926**（理论上限 929 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=926 ✓、conformance 差分 ✓；Number/Infinity 探针 12/12 对齐。
+
+## 61. M7.2 轮卌七：JSON 命名空间语义（20260913）
+
+- **JSON 内建属性不可枚举**：stringify/parse（及 rawJSON/isRawJSON 占位）
+  改经 define_proto_method 挂载（enumerable:false）+ `_isJSON` 标记同样
+  不可枚举——`for (var p in JSON)` 计数为 0（S15.12.0-4 族）；
+- **`new JSON()` → TypeError**：JSON 是普通 Ordinary 命名空间对象（非
+  NativeCtor），do_construct 增加 `_isJSON` 标记判定早退（S15.12.0-2 族）；
+- **净效果**：t262 996 → **998/1154**（失败 71 → 69）；
+  **M72_FLOOR 926 → 928**（理论上限 931 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=928 ✓、conformance 差分 ✓；JSON 探针 3/3 对齐。

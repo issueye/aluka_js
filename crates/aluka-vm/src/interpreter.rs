@@ -1093,14 +1093,15 @@ impl Vm {
             "String" => self.proto_ctor_value("String"),
             "Symbol" => self.proto_ctor_value("Symbol"),
             "JSON" => {
-                // JSON 全局对象：stringify + parse
+                // JSON 全局对象：stringify + parse（规范：内建方法**不可枚举**
+                // ——`for (var p in JSON)` 计数为 0；`new JSON()` 抛 TypeError）
                 let obj = self.alloc_ordinary();
-                let _ = self.set_property(Value::Object(obj), "_isJSON", Value::Boolean(true));
-                let stringify = self.alloc_native_fn("JSON.stringify");
                 let _ =
-                    self.set_property(Value::Object(obj), "stringify", Value::Object(stringify));
-                let parse = self.alloc_native_fn("JSON.parse");
-                let _ = self.set_property(Value::Object(obj), "parse", Value::Object(parse));
+                    self.define_proto_method(Value::Object(obj), "_isJSON", Value::Boolean(true));
+                for name in ["stringify", "parse", "rawJSON", "isRawJSON"] {
+                    let f = self.alloc_native_fn(&format!("JSON.{name}"));
+                    let _ = self.define_proto_method(Value::Object(obj), name, Value::Object(f));
+                }
                 Value::Object(obj)
             }
             "require" => self

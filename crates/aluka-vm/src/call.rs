@@ -192,6 +192,10 @@ impl Vm {
             if ctor_name.as_deref() == Some("Array") {
                 return self.do_construct(callee, args);
             }
+            // `new JSON()`：JSON 是普通命名空间对象而非构造器 → TypeError
+            if matches!(ctor_name.as_deref(), Some("JSON")) {
+                return Err(self.type_error("JSON is not a constructor"));
+            }
             // Number(value)：无 new 直调 = ToNumeric 全语义（对象经 ToPrimitive
             // hint number、wrapper 槽直解；符号/无可原始化 → TypeError；
             // 无参 → +0）。此前用 to_number_value（&self）不做 ToPrimitive，
@@ -309,6 +313,10 @@ impl Vm {
             // Proxy 对象：经 construct trap 派发（未安装时转发 target 构造）
             if self.proxy_parts(r).is_some() {
                 return self.proxy_construct(r, args);
+            }
+            // JSON 命名空间对象（普通 Ordinary + `_isJSON` 标记）：不可 new
+            if self.has_own_slot(r.0 as usize, "_isJSON") {
+                return Err(self.type_error("JSON is not a constructor"));
             }
             let ctor_name = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
