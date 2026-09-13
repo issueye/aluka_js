@@ -21,6 +21,9 @@ pub struct Parser<'src> {
     /// 既有调用方）；`parse_strict`/`take_errors` 供 alukac 等需要拒绝
     /// 非法源码的入口使用。
     errors: Vec<String>,
+    /// 当前是否处于 async 函数体内（await 早错误判定：
+    /// async 上下文中 await 为保留字，不得作标识符/标签）
+    in_async: bool,
 }
 
 /// 解析源码文本为 AST 语法树。
@@ -70,6 +73,7 @@ impl<'src> Parser<'src> {
             line_pos: 0,
             line_no: 1,
             errors: Vec::new(),
+            in_async: false,
         }
     }
 
@@ -589,7 +593,7 @@ impl<'src> Parser<'src> {
         if self.match_keyword("async") {
             if self.match_keyword("function") {
                 let is_generator = self.match_punct("*");
-                let mut def = self.parse_function_def();
+                let mut def = self.parse_function_def(true);
                 def.is_async = true;
                 def.is_generator = is_generator;
                 return Self::at(line, Stmt::Function(def));
@@ -599,7 +603,7 @@ impl<'src> Parser<'src> {
 
         if self.match_keyword("function") {
             let is_generator = self.match_punct("*");
-            let mut def = self.parse_function_def();
+            let mut def = self.parse_function_def(false);
             def.is_generator = is_generator;
             return Self::at(line, Stmt::Function(def));
         }
@@ -813,7 +817,7 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn parse_function_def(&mut self) -> FunctionDef {
+    fn parse_function_def(&mut self, is_async: bool) -> FunctionDef {
         let name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
             self.advance();
             id
@@ -823,11 +827,18 @@ impl<'src> Parser<'src> {
         let _ = self.expect_punct("(");
         let mut params = Vec::new();
         let mut is_var_args = false;
+        let mut saw_default = false;
         let mut prologue_stmts = Vec::new();
+        let outer_async = self.in_async;
+        self.in_async = is_async;
 
         while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
-            if self.match_punct("...") {
+            let is_rest_iter = self.match_punct("...");
+            if is_rest_iter {
                 is_var_args = true;
+            } else if is_var_args {
+                // rest 参数后不得再有任何形参（`...a, b` → SyntaxError）
+                self.record_error("SyntaxError: rest 参数之后不允许再有形参".to_owned());
             }
             if self.check_punct("[") || self.check_punct("{") {
                 let pattern = self.parse_var_pattern();
@@ -842,12 +853,24 @@ impl<'src> Parser<'src> {
                     },
                 ));
                 self.skip_type_annotation();
+            } else if matches!(self.peek().kind, TokenKind::Keyword(ref k) if k == "await")
+                && is_async
+            {
+                // async 函数形参名不得为 await（await 为 Keyword token，
+                // 走不到下方 Ident 臂——需单独拦截）
+                self.advance();
+                self.record_error("SyntaxError: async 函数形参名不允许为 await".to_owned());
             } else if let TokenKind::Ident(param_name) = self.advance().kind {
                 params.push(param_name.clone());
                 self.skip_type_annotation();
                 // 默认参数 `param = default`：运行时参数为 undefined 时取默认值
                 //（对齐 Go 前端：函数体 prologue 注入条件赋值）
                 if self.match_punct("=") {
+                    if is_var_args {
+                        // rest 参数带默认值 → SyntaxError
+                        self.record_error("SyntaxError: rest 参数不允许有默认值".to_owned());
+                    }
+                    saw_default = true;
                     let default_expr = self.parse_expr();
                     let pline = self.cur_line();
                     prologue_stmts.push(Self::at(
@@ -883,9 +906,15 @@ impl<'src> Parser<'src> {
         };
         // 规范：非简单参数列表（解构/默认/剩余）的函数体不得含
         // "use strict" 指令（SyntaxError；M7.2 官方语料 async-function
-        // 语法族 ~28 例）
-        let non_simple = !prologue_stmts.is_empty() || is_var_args;
+        // 语法族 ~28 例）；非简单列表形参名亦不得重复
+        let non_simple = !prologue_stmts.is_empty() || is_var_args || saw_default;
         if non_simple {
+            let mut seen = std::collections::HashSet::new();
+            for p in &params {
+                if !seen.insert(p.clone()) {
+                    self.record_error(format!("SyntaxError: 非简单参数列表的形参名重复（{p}）"));
+                }
+            }
             let has_use_strict = body.iter().take_while(|s| Self::is_directive(s)).any(|s| {
                 matches!(
                     &s.stmt,
@@ -902,6 +931,7 @@ impl<'src> Parser<'src> {
             prologue_stmts.append(&mut body);
             body = prologue_stmts;
         }
+        self.in_async = outer_async;
         FunctionDef {
             name,
             params,
@@ -1317,6 +1347,21 @@ impl<'src> Parser<'src> {
 
     fn parse_unary(&mut self) -> Expr {
         if self.match_keyword("await") {
+            // async 函数体内 await 为保留字（AwaitExpression 需要操作数）：
+            // `void await;`/`await;` 等缺操作数形态 → SyntaxError（非 async
+            // 上下文中 await 是普通标识符，不受影响）
+            if self.in_async {
+                let cant_start = match &self.peek().kind {
+                    TokenKind::Punct(p) => {
+                        matches!(p.as_str(), ";" | ")" | "]" | "}" | "," | "=")
+                    }
+                    TokenKind::Eof => true,
+                    _ => false,
+                };
+                if cant_start {
+                    self.record_error("SyntaxError: async 函数中 await 缺少操作数".to_owned());
+                }
+            }
             let sub = self.parse_unary();
             return Expr::Await(Box::new(sub));
         }
@@ -1539,14 +1584,14 @@ impl<'src> Parser<'src> {
                     "super" => Expr::Super,
                     "function" => {
                         let is_generator = self.match_punct("*");
-                        let mut def = self.parse_function_def();
+                        let mut def = self.parse_function_def(false);
                         def.is_generator = is_generator;
                         Expr::Function(def)
                     }
                     "async" => {
                         if self.match_keyword("function") {
                             let is_generator = self.match_punct("*");
-                            let mut def = self.parse_function_def();
+                            let mut def = self.parse_function_def(true);
                             def.is_async = true;
                             def.is_generator = is_generator;
                             Expr::Function(def)
@@ -2164,7 +2209,7 @@ impl<'src> Parser<'src> {
         if self.match_keyword("default") {
             let expr = if self.match_keyword("function") {
                 let is_generator = self.match_punct("*");
-                let mut def = self.parse_function_def();
+                let mut def = self.parse_function_def(false);
                 def.is_generator = is_generator;
                 Expr::Function(def)
             } else {

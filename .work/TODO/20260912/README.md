@@ -1043,3 +1043,23 @@ $ cargo test -p aluka-jit --release --test jitbench
 ### 33.1 提交证据
 
 - commit 2a0db75（fix(m7.2): 轮十八），FLOOR=820 门禁实测 ok。
+
+## 34. M7.2 轮十九：async 函数早错误族（20260913）
+
+- **剩余 35 例 parse 负例分桶**：async-function 早错误 18（最大子族）、
+  BigInt 分隔符余量 6、line-terminators 余量 4、asi/comments 悬空 else
+  等余量；
+- **async 早错误实现**（Parser 新增 `in_async` 解析态，5 处
+  parse_function_def 调用点传 is_async，进出恢复外层）：
+  - 形参名 await（Keyword token 走不到 Ident 臂——单独拦截）；
+  - 非简单参数列表（默认/解构/rest）形参名重复
+    （`async function f(a, a = 1)` → SyntaxError）；
+  - rest 后再有形参（`...a, b`）、rest 带默认值（`...a = 1`）、
+    双 rest；
+  - 函数体内 await 缺操作数（`void await;`/`await;`——非 async 上下文
+    await 仍是普通标识符，不受影响）；
+- **净效果**：t262 890 → **896/1154**（失败 177 → 171）；
+  **M72_FLOOR 820 → 826**（理论上限 829 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=826 ✓、conformance 差分 ✓；async 早错误 5 负例 +
+  2 正例探针逐项对齐 Node 22。
