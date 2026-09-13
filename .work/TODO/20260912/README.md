@@ -1486,3 +1486,21 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 926 → 928**（理论上限 931 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=928 ✓、conformance 差分 ✓；JSON 探针 3/3 对齐。
+
+## 62. M7.2 轮卌八：eval 内 var 声明完成值（栈残留修复）（20260913）
+
+- **根因**：隐式全局模式（eval 求值域）下 `var z;`（无初始值器）的
+  codegen 在 StoreGlobal 之后**又压了一个 undefined** 充当"完成值"——
+  但 StoreGlobal 已消费栈顶，该值成为残留，污染调用方栈区：
+  `console.log("W:", eval("var z;"))` 实测输出 "undefined undefined"
+  且丢失 "W: " 前缀（eval 返回双值 → 实参错位）；
+- **规范依据**：VariableStatement 的完成值恒为 **empty**（非 undefined），
+  脚本收口由末尾 ReturnUndef 提供——此处不得再压值；
+- **修复**：移除多余 PushUndefined，eval 模块指令流由
+  `[PushUndefined, StoreGlobal, PushUndefined, ReturnUndef]`（4 条）
+  收敛为 `[PushUndefined, StoreGlobal, ReturnUndef]`（3 条，栈平衡）；
+- **净效果**：t262 998 → **999/1154**（失败 69 → 68）；
+  **M72_FLOOR 928 → 929**（理论上限 932 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=929 ✓、conformance 差分 ✓；eval/var 探针矩阵
+  （1+1/;/if/赋值/声明 五种源码）5/5 对齐 Node 22。

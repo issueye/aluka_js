@@ -476,9 +476,9 @@ fn test262_subset_conformance() {
         hand_failures.join("\n")
     );
     let m72_failures = failures.len() - hand_failures.len();
-    // 随分桶修复逐级上调：轮卌七后真实基线 998 通过/69 失败（996→998），
-    // 下限取可承受的 928（理论上限 931 留余量），目标 1000（M7.2 验收口径）。
-    const M72_FLOOR: usize = 928;
+    // 随分桶修复逐级上调：轮卌八后真实基线 999 通过/68 失败（998→999），
+    // 下限取可承受的 929（理论上限 932 留余量），目标 1000（M7.2 验收口径）。
+    const M72_FLOOR: usize = 929;
     assert!(
         m72_failures <= 1000 - M72_FLOOR,
         "test262 官方导入语料通过数低于基线下限 {M72_FLOOR}/1000（当前失败 {m72_failures}）"

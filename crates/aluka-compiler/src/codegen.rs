@@ -143,6 +143,13 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             // 不注册局部符号——后续标识符引用经 LoadGlobal 命中同一绑定
             // （let/const 不走此路径：eval 内块级声明保持求值域局部）
             if unit.implicit_globals && *var_kind == VarKind::Var {
+                // 隐式全局模式（eval 全局作用域求值）：var 声明直接落全局表。
+                // 完成值规范：无初始值器的 VarDecl 的完成值为 **empty**
+                // （不是 undefined）——eval 末语句为 `var z;` 时脚本完成值
+                // 应即 undefined；此前在 is_last 处**再压**一个 undefined，
+                // 令 eval 返回双值（调用侧实参错位：`console.log("W:", eval("var z;"))`
+                // 实测多一段 undefined 且丢前缀）
+                let had_init = init.is_some();
                 if let Some(init_expr) = init {
                     compile_expr(init_expr, unit);
                 } else {
@@ -150,9 +157,12 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                 }
                 let name_idx = add_constant(unit, Constant::String(name.clone()));
                 unit.code.push(Instr::new(Op::StoreGlobal, name_idx));
-                if is_last {
-                    unit.code.push(Instr::new(Op::PushUndefined, 0));
-                }
+                // 完成值：VarDecl 的完成值恒为 **empty**（规范），脚本收口由
+                // 末尾的 ReturnUndef 提供 undefined——此处**不得**再压值：
+                // StoreGlobal 已消费栈顶，多余压栈会成为残留值污染调用方
+                // 栈区（实测 `console.log("W:", eval("var z;"))` 输出
+                // "undefined undefined" 且丢前缀）
+                let _ = (is_last, had_init);
                 return;
             }
             let slot = if *var_kind != VarKind::Var && unit.block_depth > 0 {
