@@ -237,6 +237,12 @@ pub struct Vm {
     /// set_property 命中时 sloppy 语义静默忽略写入
     ///（`Math.E = 1` 后 `Math.E === __e` 必须成立——Sputnik S8.x 族）
     pub non_writable: std::collections::HashMap<usize, Vec<String>>,
+    /// 内建不可枚举键注册表（for-in 跳过——`for (p in Number)` 须为空，
+    /// Sputnik S8.6.1_A2 族）
+    pub non_enumerable: std::collections::HashMap<usize, Vec<String>>,
+    /// 内建不可配置键注册表（delete 返回 false——`delete Number.NaN ===
+    /// false`，Sputnik S8.6.1_A3 族）
+    pub non_configurable: std::collections::HashMap<usize, Vec<String>>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `process.env` 对象单例缓存（物化一次；键大小写不敏感语义见 property.rs）
@@ -387,6 +393,8 @@ impl Vm {
             date_proto: None,
             ctor_cache: std::collections::HashMap::new(),
             non_writable: std::collections::HashMap::new(),
+            non_enumerable: std::collections::HashMap::new(),
+            non_configurable: std::collections::HashMap::new(),
             process_object: None,
             env_object: None,
             path_module: None,
@@ -1907,14 +1915,33 @@ impl Vm {
             };
             let key = crate::symbol::mangled_key(iter_ref);
             let method = self.get_property(val, &key)?;
-            let is_closure = matches!(method.case(), ValueCase::Object(r)
+            let is_callable = matches!(method.case(), ValueCase::Object(r)
                     if matches!(
                         self.heap.get(r.0 as usize),
                         Some(HeapObject::Closure { .. })
+                            | Some(HeapObject::NativeFn { .. })
+                            | Some(HeapObject::NativeCtor { .. })
                     )
             );
-            if is_closure {
+            if is_callable {
                 let it = self.invoke_callable(method, val, &[])?;
+                // GetIterator 规范步：@@iterator() 返回值非对象 → TypeError
+                // （`iter[Symbol.iterator] = () => null` 形态；堆字符串/
+                // BigInt/Symbol 虽为 Object case 但语义是原始值）
+                let primitive = match it.case() {
+                    ValueCase::Object(rr) => matches!(
+                        self.heap.get(rr.0 as usize),
+                        Some(HeapObject::String(_))
+                            | Some(HeapObject::BigInt(_))
+                            | Some(HeapObject::Symbol { .. })
+                    ),
+                    _ => true,
+                };
+                if primitive {
+                    return Err(
+                        self.type_error("Result of the Symbol.iterator method is not an object")
+                    );
+                }
                 Ok(it)
             } else {
                 let msg = self.alloc_string("TypeError: value is not iterable".to_owned());
@@ -2664,7 +2691,7 @@ impl Vm {
                     Value::Undefined,
                     &[*elem, Value::Number(i as f64), Value::Undefined],
                 )?;
-                let key = self.to_property_key(key_val);
+                let key = self.to_property_key_full(key_val)?;
                 groups.entry(key).or_default().push(*elem);
             }
             let result = self.alloc_ordinary();
@@ -3972,62 +3999,32 @@ impl Vm {
                 Op::Sub => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Sub)? {
-                        self.stack.push(r);
-                        pc += 1;
-                        continue;
-                    }
-                    let a = self.numeric_operand(left)?;
-                    let b = self.numeric_operand(right)?;
-                    self.stack.push(Value::Number(a - b));
+                    let r = self.bigint_binary(left, right, BigIntArith::Sub)?;
+                    self.stack.push(r);
                 }
                 Op::Mul => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Mul)? {
-                        self.stack.push(r);
-                        pc += 1;
-                        continue;
-                    }
-                    let a = self.numeric_operand(left)?;
-                    let b = self.numeric_operand(right)?;
-                    self.stack.push(Value::Number(a * b));
+                    let r = self.bigint_binary(left, right, BigIntArith::Mul)?;
+                    self.stack.push(r);
                 }
                 Op::Div => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Div)? {
-                        self.stack.push(r);
-                        pc += 1;
-                        continue;
-                    }
-                    let a = self.numeric_operand(left)?;
-                    let b = self.numeric_operand(right)?;
-                    self.stack.push(Value::Number(a / b));
+                    let r = self.bigint_binary(left, right, BigIntArith::Div)?;
+                    self.stack.push(r);
                 }
                 Op::Mod => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Mod)? {
-                        self.stack.push(r);
-                        pc += 1;
-                        continue;
-                    }
-                    let a = self.numeric_operand(left)?;
-                    let b = self.numeric_operand(right)?;
-                    self.stack.push(Value::Number(a % b));
+                    let r = self.bigint_binary(left, right, BigIntArith::Mod)?;
+                    self.stack.push(r);
                 }
                 Op::Pow => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    if let Some(r) = self.bigint_binary(left, right, BigIntArith::Pow)? {
-                        self.stack.push(r);
-                        pc += 1;
-                        continue;
-                    }
-                    let a = self.numeric_operand(left)?;
-                    let b = self.numeric_operand(right)?;
-                    self.stack.push(Value::Number(a.powf(b)));
+                    let r = self.bigint_binary(left, right, BigIntArith::Pow)?;
+                    self.stack.push(r);
                 }
                 Op::Neg => {
                     let top = self.pop()?;
@@ -4624,7 +4621,7 @@ impl Vm {
                 Op::SetPropComputedObj => {
                     let val = self.pop()?;
                     let key_val = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     let obj = self.peek()?;
                     self.set_property(obj, &key, val)?;
                 }
@@ -4648,7 +4645,7 @@ impl Vm {
                 Op::GetElem => {
                     let key_val = self.pop()?;
                     let obj = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     let val = self.get_property(obj, &key)?;
                     self.stack.push(val);
                 }
@@ -4656,7 +4653,7 @@ impl Vm {
                     let val = self.pop()?;
                     let key_val = self.pop()?;
                     let obj = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     self.set_property(obj, &key, val)?;
                     self.stack.push(val);
                 }
@@ -4664,7 +4661,7 @@ impl Vm {
                     let key_val = self.pop()?;
                     let obj = self.pop()?;
                     let val = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     self.set_property(obj, &key, val)?;
                 }
                 Op::SetGetterObj => {
@@ -4708,7 +4705,7 @@ impl Vm {
                 Op::SetGetterComputedObj => {
                     let fn_val = self.pop()?;
                     let key_val = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     let obj = self.peek()?;
                     if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) =
                         (obj.case(), fn_val.case())
@@ -4728,7 +4725,7 @@ impl Vm {
                 Op::SetSetterComputedObj => {
                     let fn_val = self.pop()?;
                     let key_val = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     let obj = self.peek()?;
                     if let (ValueCase::Object(o_ref), ValueCase::Object(f_ref)) =
                         (obj.case(), fn_val.case())
@@ -4748,11 +4745,21 @@ impl Vm {
                 Op::DelProp => {
                     let key = constant_string(&constants, instr.operand as usize);
                     let obj = self.pop()?;
+                    let mut deleted = true;
                     if let Some(r) = obj.as_object() {
-                        // 删除不改 shape：清槽 + 记入删除集 + 代数递增（见 delete_property）
-                        self.delete_property(Value::Object(r), &key);
+                        // 内建不可配置键（Number.NaN 等）：delete 返回 false
+                        if self
+                            .non_configurable
+                            .get(&(r.0 as usize))
+                            .is_some_and(|ks| ks.iter().any(|k| k == &*key))
+                        {
+                            deleted = false;
+                        } else {
+                            // 删除不改 shape：清槽 + 记入删除集 + 代数递增（见 delete_property）
+                            self.delete_property(Value::Object(r), &key);
+                        }
                     }
-                    self.stack.push(Value::Boolean(true));
+                    self.stack.push(Value::Boolean(deleted));
                 }
                 Op::SetSuperProp => {
                     // `super.key = value`：沿 [[HomeObject]].__proto__ 查
@@ -4814,7 +4821,7 @@ impl Vm {
                 }
                 Op::DelElem => {
                     let key_val = self.pop()?;
-                    let key = self.to_property_key(key_val);
+                    let key = self.to_property_key_full(key_val)?;
                     let obj = self.pop()?;
                     if let Some(r) = obj.as_object() {
                         self.delete_property(Value::Object(r), &key);
@@ -4974,7 +4981,7 @@ impl Vm {
                 Op::In => {
                     let r = self.pop()?;
                     let l = self.pop()?;
-                    let key = self.to_property_key(l);
+                    let key = self.to_property_key_full(l)?;
                     let res = self.has_property(r, &key);
                     self.stack.push(Value::Boolean(res));
                 }

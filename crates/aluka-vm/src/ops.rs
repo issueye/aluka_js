@@ -512,27 +512,49 @@ impl Vm {
         self.typed_error("TypeError", msg)
     }
 
-    /// BigInt 二元算术（`-` `*` `/` `%` `**`）：两侧均 BigInt → 计算并
-    /// 返回结果；均非 BigInt → `None`（调用方继续常规数值路径）；**单侧
-    /// BigInt** → TypeError（规范禁止隐式混算）。对象参数先 ToPrimitive
-    /// （valueOf 产 BigInt 采纳——bigint-toprimitive 族）。
+    /// 二元算术（`-` `*` `/` `%` `**`）统一收口：两侧均 BigInt → BigInt
+    /// 结果；均非 BigInt → 直接完成数值运算；**单侧 BigInt** → TypeError
+    /// （规范禁止隐式混算）。对象参数先 ToPrimitive（valueOf 产 BigInt
+    /// 采纳——bigint-toprimitive 族）。
+    ///
+    /// 规范 ToNumeric 顺序：ToPrimitive(lhs) 及其 Symbol 拦截**完成于**
+    /// rhs 的 ToPrimitive 之前（order-of-evaluation 族——lhs valueOf
+    /// 抛错/返回 symbol 时 rhs valueOf 不得被调用）；且双侧非 BigInt 时
+    /// 在此直接出数值结果，调用方不重入 ToPrimitive（否则用户 valueOf
+    /// 会被二次调用）。
     pub(crate) fn bigint_binary(
         &mut self,
         left: Value,
         right: Value,
         op: BigIntArith,
-    ) -> Result<Option<Value>, VmError> {
+    ) -> Result<Value, VmError> {
         // wrapper 内部槽直解先于 ToPrimitive（r15 同教训：wrapper 的
         // valueOf 占位会被 invoke_callable 误调用）
         let left = self.wrapper_primitive(left).unwrap_or(left);
         let right = self.wrapper_primitive(right).unwrap_or(right);
-        let left = self.to_primitive_number(left)?;
-        let right = self.to_primitive_number(right)?;
-        let lb = self.bigint_text(&left);
-        let rb = self.bigint_text(&right);
+        let lprim = self.to_primitive_number(left)?;
+        if self.is_symbol(lprim) {
+            return Err(self.type_error("Cannot convert a Symbol value to a number"));
+        }
+        let rprim = self.to_primitive_number(right)?;
+        if self.is_symbol(rprim) {
+            return Err(self.type_error("Cannot convert a Symbol value to a number"));
+        }
+        let lb = self.bigint_text(&lprim);
+        let rb = self.bigint_text(&rprim);
         let (lb, rb) = match (lb, rb) {
             (Some(l), Some(r)) => (l, r),
-            (None, None) => return Ok(None),
+            (None, None) => {
+                let a = self.to_number_value(lprim);
+                let b = self.to_number_value(rprim);
+                return Ok(Value::Number(match op {
+                    BigIntArith::Sub => a - b,
+                    BigIntArith::Mul => a * b,
+                    BigIntArith::Div => a / b,
+                    BigIntArith::Mod => a % b,
+                    BigIntArith::Pow => a.powf(b),
+                }));
+            }
             _ => {
                 return Err(
                     self.type_error("Cannot mix BigInt and other types, use explicit conversions")
@@ -555,7 +577,7 @@ impl Vm {
                 text
             }
         };
-        Ok(Some(Value::Object(self.alloc_bigint(text))))
+        Ok(Value::Object(self.alloc_bigint(text)))
     }
 
     /// 二元/一元数值算子（`-` `*` `/` `%` `**` 位运算、一元 ±）的操作数
@@ -594,10 +616,10 @@ impl Vm {
         let sym_ref = sym.as_object().expect("知名符号必为堆对象");
         let key = crate::symbol::mangled_key(sym_ref);
         let f = self.get_property(v, &key)?;
-        // 宽松回退：@@toPrimitive 缺失或非可调用时返回 None（调用方走
-        // valueOf/toString 序）——严格 TypeError 形态会让既有语料
-        // （tp2 场景依赖宽松回退）回归 3 例，权衡后保留宽松
-        if f.is_undefined() {
+        // GetMethod 语义：undefined **与 null** 均视为缺失（回退
+        // valueOf/toString 序）；存在但**非可调用**（`{[Symbol.toPrimitive]: 1}`）
+        // 才按规范 ToPrimitive 抛 TypeError（BigInt 混算族）
+        if f.is_undefined() || f.is_null() {
             return Ok(None);
         }
         let callable = f.as_object().is_some_and(|o| {
@@ -609,7 +631,7 @@ impl Vm {
             )
         });
         if !callable {
-            return Ok(None);
+            return Err(self.type_error("Symbol.toPrimitive is not a function"));
         }
         let hint_val = self.alloc_string(hint.to_owned());
         let res = self.invoke_callable(f, v, &[Value::Object(hint_val)])?;
@@ -760,7 +782,9 @@ impl Vm {
             return self.js_string(v);
         }
         if self.is_symbol(v) {
-            return Ok(self.format_value(v));
+            // 严格 ToString：符号参数直接 TypeError（`Symbol.for(Symbol())`
+            // / `Symbol(Symbol())`——描述串形态仅 `String(sym)` 走 js_string）
+            return Err(self.type_error("Cannot convert a Symbol value to a string"));
         }
         for m in ["toString", "valueOf"] {
             let mv = self.get_property(v, m)?;

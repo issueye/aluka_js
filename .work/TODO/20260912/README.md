@@ -1861,3 +1861,59 @@ $ cargo test -p aluka-jit --release --test jitbench
   全量 0 失败 ✓、t262 FLOOR=964 ✓、conformance 差分 ✓、express e2e ✓；
   generator 三形态探针（static *constructor / *prototype / 非静态）
   全对齐 Node 22。
+
+## 84. M7.2 轮七十：ToPrimitive strict（GetMethod null=缺失）+ GetIterator 非对象 + ToNumeric 顺序 + 计算键 ToString + Number 描述符（20260914）
+
+- **五桶修复（t262 1033 → 1044/1154，失败 34 → 23，+11 零回归）**：
+  1. **@@toPrimitive 非可调用 TypeError**（addition-bigint-toprimitive，
+     BigInt 四则 toprimitive 族基底）：
+     - call_to_primitive 重新 strict 化——@@toPrimitive 存在但非可调用
+       （`{[Symbol.toPrimitive]: 1}`）→ TypeError；**GetMethod 语义：
+       undefined 与 null 均视为缺失**（回退 valueOf/toString）——首版
+       strict 漏掉 null 放行（`{[Symbol.toPrimitive]: null, valueOf}`
+       形态正向断言模块级逃逸）致 div/mod/mul/sub 4 例回归，补 null
+       分支后归零；
+  2. **GetIterator 返回值非对象 TypeError**（spread-err sngl/mult
+     iter-get-value 2 例）：`iter[Symbol.iterator] = () => null` 展开
+     原先静默空集；get_iterator_dispatch 调用后校验堆原始值
+     （String/BigInt/Symbol）/非对象 → TypeError；@@iterator 可调用
+     判定同步放宽 Closure/NativeFn/NativeCtor；
+  3. **非可迭代对象展开 TypeError**（同上 2 例的 getter 形态）：
+     collect_iter_values 自定义可迭代分支补最终 else——has_symbol_
+     iterator 为 false（缺失/getter 返回 null）→ TypeError
+     "object is not iterable"（`[...plainObj]` / `[0, ...getterNull]`）；
+  4. **二元算术 ToNumeric 规范顺序**（mul/mod/sub/div order-of-
+     evaluation 4 例中 3 例 + trace 双断言）：
+     - bigint_binary 重构为顺序 ToNumeric——lhs ToPrimitive + Symbol
+       拦截**完成于** rhs ToPrimitive 之前（原实现对两侧先 to_primitive
+       再查符号，rhs valueOf 被多调，trace "1234" ≠ 规范 "123"）；
+     - 双侧非 BigInt 时直接完成数值运算并返回
+       Result<Value>（原 Ok(None) 致调用方 numeric_operand 重入
+       ToPrimitive——用户 valueOf 双调）；5 个算术操作码调用点收口；
+  5. **计算键 ToString + Number 描述符**（Symbol-for-to-string-err、
+     number-duplicates [1e55]、S8.6.1_A2/A3、accessor-name-computed 附带
+     修复，共 5 例）：
+     - js_string_strict 符号参数 → TypeError（原先返回描述串——
+       `Symbol.for(Symbol('s'))` 未抛）；仅 String(sym) 走 js_string 特例；
+     - to_property_key_full(&mut) 变体：Ordinary/Array 经 ToPrimitive
+       （hint string）取键——`x[{}] = 0` 键 "[object Object]"
+       （interpreter 16 处计算键位点换用）；
+     - to_property_key Number 分支改 js_number_to_string 规范格式
+       （原 `n as i64` 在 ±2^63 饱和溢出 + 指数缺 "+"——`[1e55]` 键
+       "9223372036854775807" ≠ 规范 "1e+55"）；
+     - Vm 增 non_enumerable / non_configurable 注册表：Number 静态
+       常量/方法/prototype/name 登记——`for (p in Number)` 空集、
+       `delete Number.NaN === false`；
+- **M72_FLOOR 964 → 974**（1044 通过/23 失败 → 上限 977，留 3 余量）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok 0 失败 ✓、
+  t262 FLOOR=974 ✓（1044/1154，87 invalid）、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8（cli+vm）0 失败 ✓；
+- 探针对齐：ToPrimitive 七形态（callable-ret1/retObj/throw/noncallable/
+  valueOfNull/valueOfOne/valueOfWrap）、求值顺序 8 形态（trace 逐位
+  一致）、getter-null/data-null/getter-obj 展开、Symbol.for/obj-key/
+  1e55-key/delete-NaN/for-in-Number——全部与 Node 22 逐项一致；
+- **余量 23 例**：eval 深水项（statementList-eval-block-* 3 例，完成值
+  块内传播 + marker 名表时序，编译器重构）、async 族 4 例（解析器）、
+  object-11.1.5 getter/setter 3 例、__proto__ 2 例、Array length 2^32-1
+  1 例（4e6 上限保护为已登记差异）、spread-getter/asi/comments/hashbang/
+  rest-array-pattern/types-list 等。

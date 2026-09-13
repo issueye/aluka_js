@@ -74,6 +74,14 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     }
 
     // ---- Number ----
+    const METHODS: &[&str] = &[
+        "isInteger",
+        "isSafeInteger",
+        "isFinite",
+        "isNaN",
+        "parseInt",
+        "parseFloat",
+    ];
     let num_p = crate::builtins::surface::num_proto(vm);
     let number = vm.alloc_native_ctor("Number", Some(num_p));
     let statics: &[(&str, Value)] = &[
@@ -98,14 +106,20 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             .map(|(k, _)| (*k).to_owned())
             .collect::<Vec<_>>(),
     );
-    for method in [
-        "isInteger",
-        "isSafeInteger",
-        "isFinite",
-        "isNaN",
-        "parseInt",
-        "parseFloat",
-    ] {
+    // 规范描述符：静态常量/方法均不可枚举、不可配置
+    //（`for (p in Number)` 为空集——S8.6.1_A2；`delete Number.NaN ===
+    // false`——S8.6.1_A3）
+    let number_enum_keys: Vec<String> = statics
+        .iter()
+        .map(|(k, _)| (*k).to_owned())
+        .chain(METHODS.iter().map(|m| (*m).to_owned()))
+        .chain(["prototype", "name"].iter().map(|m| (*m).to_owned()))
+        .collect();
+    vm.non_enumerable
+        .insert(number.0 as usize, number_enum_keys.clone());
+    vm.non_configurable
+        .insert(number.0 as usize, number_enum_keys);
+    for method in METHODS {
         let f = vm.alloc_native_fn(&format!("Number.{method}"));
         let _ = vm.set_property(Value::Object(number), method, Value::Object(f));
         register_handler(registry, "Number", method, number::number_static);

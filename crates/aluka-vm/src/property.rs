@@ -296,13 +296,9 @@ impl Vm {
     /// 将任意值转换为属性键。
     pub fn to_property_key(&self, val: Value) -> String {
         match val.case() {
-            ValueCase::Number(n) => {
-                if n.fract() == 0.0 {
-                    format!("{}", n as i64)
-                } else {
-                    format!("{n}")
-                }
-            }
+            // ToString(Number) 规范格式（含指数符号 "1e+55" 与大数全数字
+            // 展开——i64 直转会在 ±2^63 处饱和溢出）
+            ValueCase::Number(n) => crate::ops::js_number_to_string(n),
             ValueCase::Boolean(b) => format!("{b}"),
             ValueCase::Null => "null".to_owned(),
             ValueCase::Undefined => "undefined".to_owned(),
@@ -333,6 +329,29 @@ impl Vm {
                 }
             }
         }
+    }
+
+    /// 完整 ToPropertyKey（&mut 变体）：普通对象/数组经 ToPrimitive
+    /// （hint string，toString 优先）取得键字符串——`x[{}] = 0` 键为
+    /// "[object Object]"；对象 toString 抛错沿错误通道传播。堆字符串/
+    /// BigInt/Symbol/可调用与非对象值维持 `to_property_key` 快路径。
+    pub fn to_property_key_full(&mut self, val: Value) -> Result<String, VmError> {
+        if let ValueCase::Object(r) = val.case() {
+            let idx = r.0 as usize;
+            match self.heap.get(idx) {
+                Some(HeapObject::Ordinary { .. }) => {
+                    for slot in ["[[NumberValue]]", "[[BooleanValue]]", "[[StringValue]]"] {
+                        if let Some(w) = self.own_value(idx, slot) {
+                            return Ok(self.to_property_key(w));
+                        }
+                    }
+                    return self.js_string(val);
+                }
+                Some(HeapObject::Array { .. }) => return self.js_string(val),
+                _ => {}
+            }
+        }
+        Ok(self.to_property_key(val))
     }
 
     /// 读取属性（含原型链查找、getter 触发与数组元素读取）。
@@ -1318,7 +1337,12 @@ impl Vm {
                 }
                 _ => (Vec::new(), None),
             };
+            // 内建不可枚举键注册表过滤（for (p in Number) 须为空——S8.6.1_A2）
+            let banned = self.non_enumerable.get(&idx);
             for k in keys {
+                if banned.is_some_and(|b| b.contains(&k)) {
+                    continue;
+                }
                 if seen.insert(k.clone()) {
                     out.push(k);
                 }

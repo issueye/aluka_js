@@ -513,6 +513,11 @@ impl Vm {
                                 out.push(v);
                             }
                         }
+                    } else {
+                        // 规范 GetIterator：@@iterator 缺失或非可调用
+                        // （含 `Object.defineProperty(o, Symbol.iterator,
+                        // {get: () => null})` 形态）→ TypeError
+                        return Err(self.type_error("object is not iterable"));
                     }
                 }
             }
