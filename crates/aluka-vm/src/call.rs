@@ -920,6 +920,14 @@ impl Vm {
                 .collect(),
             ..Default::default()
         });
+        // 脚本/CJS main 帧：顶层 `this` = 全局对象
+        //（`typeof this === "object"`，非函数内 this 的 undefined 语义）
+        if func.name == "main"
+            && let Some(gt) = self.globals.get("globalThis").copied()
+            && !self.locals.is_empty()
+        {
+            self.locals[0] = gt;
+        }
         let res = self.run_with_constants_rc(&func.code, constants, 0);
         let saved_frame = self.gc_saved_frames.pop().unwrap_or_default();
         self.locals = saved_frame.locals;
@@ -1053,9 +1061,11 @@ impl Vm {
                     .unwrap_or_default(),
             ),
         );
+        // CJS wrapper 的 this = **exports 对象**（`typeof this === "object"`，
+        // 与 modules.rs 的 require 加载路径一致；此前传 undefined）
         let ret = self.invoke_function(
             func_idx,
-            Value::Undefined,
+            exports,
             &[
                 Value::Object(require_fn),
                 module_obj,

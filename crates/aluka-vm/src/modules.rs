@@ -322,9 +322,12 @@ impl Vm {
                     .map(Path::to_path_buf)
                     .unwrap_or_else(|| PathBuf::from(".")),
             );
+            // CJS wrapper 的 this = **exports 对象**（规范：非严格函数的
+            // undefined this 绑定全局，但模块包装器以 exports 为 this 调用——
+            // `typeof this === "object"`；此前传 undefined）
             let wrapper_ret = self.invoke_function(
                 func_idx,
-                Value::Undefined,
+                exports,
                 &[
                     Value::Object(require_fn),
                     module_obj,

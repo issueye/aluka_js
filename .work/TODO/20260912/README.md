@@ -1786,3 +1786,21 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=957 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
   GC 压力 0 失败 ✓。
+
+## 78. M7.2 轮六十四：顶层 this 槽保留 + CJS wrapper this = exports（20260914）
+
+- **typeof this 误判双根因**：
+  1. **顶层 var 抢占 this 槽**：main unit 的 locals 从 0 起——首个顶层
+     `var x` 分到槽 0（this 槽）并 StoreLocal 覆写 → `typeof this` 得
+     "undefined"（该用例的 HARNESS 含顶层 var/函数声明即触发）；
+  2. **CJS wrapper 的 this 传 undefined**：modules.rs 的 require 加载
+     与 call.rs 的 invoke_cjs_entry 两处 `invoke_function(func_idx,
+     Value::Undefined, ...)`——规范应为 **exports 对象**
+     （`typeof this === "object"`）；两处同步修为 exports；
+- **修复**：compile_module 的 top_unit.locals = 1（槽 0 保留 this）+
+  两处 CJS this = exports；
+- **净效果**：t262 1026 → **1027/1154**（失败 40 → 39）；
+  **M72_FLOOR 957 → 958**（1027 通过/40 失败 → 上限 960，留 2 余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=958 ✓、conformance 差分 ✓、express e2e ✓；
+  顶层 this 探针（tt/tt2/hb2）对齐 Node 22。
