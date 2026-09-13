@@ -205,6 +205,10 @@ pub type GetProtoFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64) -> u64;
 
 /// `SET_PROTO_OBJ`：设对象 [[Prototype]]（弹 proto/obj，压回 obj）。
 pub type SetProtoObjFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, proto: u64) -> u64;
+
+/// `REQUIRE_OBJECT_COERCIBLE`：栈顶为 null/undefined → 抛 TypeError，
+/// 否则原样返回（解构声明前置检查）。
+pub type RequireCoercibleFn = unsafe extern "C" fn(ctx: *mut JitCtx, v: u64) -> u64;
 /// `INSTANCEOF`。
 pub type InstanceofFn = unsafe extern "C" fn(ctx: *mut JitCtx, l: u64, r: u64) -> u64;
 /// `IN`。
@@ -298,6 +302,8 @@ pub struct JitVtable {
     pub get_proto: GetProtoFn,
     /// `SET_PROTO_OBJ`（对象字面量 __proto__）
     pub set_proto_obj: SetProtoObjFn,
+    /// `REQUIRE_OBJECT_COERCIBLE`（解构前置检查）
+    pub require_coercible: RequireCoercibleFn,
     /// `INSTANCEOF`
     pub instanceof: InstanceofFn,
     /// `IN`

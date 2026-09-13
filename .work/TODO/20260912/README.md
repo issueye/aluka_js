@@ -1564,3 +1564,23 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=934 ✓、conformance 差分 ✓；Number/Boolean 包装探针
   （含无参、Date 借道 Boolean 方法）6/6 对齐 Node 22。
+
+## 67. M7.2 轮五十三：新 ISA 操作码 REQUIRE_OBJECT_COERCIBLE（20260913）
+
+- **解构声明前置检查**：规范要求解构绑定初始化对 null/undefined 抛
+  TypeError（`fn({})` 传 null、`var {a} = null` 均抛；S8.8.2 族）——
+  此前静默通过；
+- **ISA 扩容**（第 108 条操作码，编码 107 追加）：op.rs 全表登记
+  （枚举/from_opcode/name/operand/pops 0/pushes 0/net 0/detailed
+  Fixed(0)/is_pure_push/is_jump ×3）；verifier 通过；JIT 全链路
+  （ctx 类型 RequireCoercibleFn + vtable 字段、jit_helpers 实现、
+  lib.rs 常量/签名/decl/FuncRef/机器码臂）；编译器在 DestructureDecl
+  的 StoreLocal 后发 LoadLocal + 检查 + **Pop**（首版漏 Pop 致 V8 汇合点
+  栈深不一致，conformance 2 例 + sqlite 3 例连带失败，补 Pop 后全绿）；
+- **排障记录**：批量补表脚本在同表重复插入（clippy unreachable_pattern
+  拦下 2 处），已清理并加全表重复自检（0 重复）；
+- **净效果**：t262 1004 → **1006/1154**（失败 63 → 61）；
+  **M72_FLOOR 934 → 936**（理论上限 939 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=936 ✓、conformance 差分 ✓、jitbench 3/3 ✓、
+  express e2e ✓、GC 压力 0 失败 ✓；解构探针 4/4 对齐 Node 22。

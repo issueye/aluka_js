@@ -42,7 +42,7 @@ pub enum StackEffect {
     Variable,
 }
 
-/// 107 条完整 ISA 字节码操作码。
+/// 108 条完整 ISA 字节码操作码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Op {
@@ -261,6 +261,9 @@ pub enum Op {
     /// [106] SET_PROTO_OBJ - 弹值弹对象，将对象 [[Prototype]] 设为值（对象字面量
     /// `__proto__: v` 的规范语义：设原型而非建自有属性） (操作数: OperandNone)
     SetProtoObj = 106,
+    /// [107] REQUIRE_OBJECT_COERCIBLE - 检查**栈顶**非 null/undefined，否则
+    /// TypeError（解构声明的 RequireObjectCoercible；不改变栈） (操作数: OperandNone)
+    RequireObjectCoercible = 107,
 }
 
 impl Op {
@@ -381,6 +384,7 @@ impl Op {
             104 => Some(Op::EnumKeys),
             105 => Some(Op::End),
             106 => Some(Op::SetProtoObj),
+            107 => Some(Op::RequireObjectCoercible),
             _ => None,
         }
     }
@@ -496,6 +500,7 @@ impl Op {
             Op::EnumKeys => "ENUM_KEYS",
             Op::End => "END",
             Op::SetProtoObj => "SET_PROTO_OBJ",
+            Op::RequireObjectCoercible => "REQUIRE_OBJECT_COERCIBLE",
         }
     }
 
@@ -610,6 +615,7 @@ impl Op {
             Op::EnumKeys => OperandKind::None,
             Op::End => OperandKind::None,
             Op::SetProtoObj => OperandKind::None,
+            Op::RequireObjectCoercible => OperandKind::None,
         }
     }
 
@@ -734,6 +740,8 @@ impl Op {
             Op::End => 0,
             // 弹 proto/obj 两值，压回 obj → 净 -1
             Op::SetProtoObj => -1,
+            // 只检查栈顶，不改变栈深
+            Op::RequireObjectCoercible => 0,
         }
     }
 
@@ -849,6 +857,7 @@ impl Op {
             Op::End => StackEffect::Fixed(0),
             // 弹 proto/obj 两值，压回 obj → 净 -1
             Op::SetProtoObj => StackEffect::Fixed(-1),
+            Op::RequireObjectCoercible => StackEffect::Fixed(0),
         }
     }
 
@@ -958,6 +967,7 @@ impl Op {
             Op::SetSetterComputedObj => 2,
             // 弹 proto 与 obj 两值
             Op::SetProtoObj => 2,
+            Op::RequireObjectCoercible => 0,
             Op::GetPropLocal => 0,
             Op::CloseUpvalues => 0,
             Op::Inc => 1,
@@ -1077,7 +1087,8 @@ impl Op {
             Op::Dec => 1,
             Op::EnumKeys => 1,
             Op::End => 0,
-            Op::SetProtoObj => 0,
+            Op::SetProtoObj => 1,
+            Op::RequireObjectCoercible => 0,
         }
     }
 
@@ -1192,6 +1203,7 @@ impl Op {
             Op::EnumKeys => false,
             Op::End => false,
             Op::SetProtoObj => false,
+            Op::RequireObjectCoercible => false,
         }
     }
 
@@ -1306,6 +1318,7 @@ impl Op {
             Op::EnumKeys => false,
             Op::End => false,
             Op::SetProtoObj => false,
+            Op::RequireObjectCoercible => false,
         }
     }
 
@@ -1420,6 +1433,7 @@ impl Op {
             Op::EnumKeys => false,
             Op::End => false,
             Op::SetProtoObj => false,
+            Op::RequireObjectCoercible => false,
         }
     }
 }
@@ -1446,12 +1460,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opcodes_roundtrip_all_107_variants() {
-        for b in 0..=106u8 {
+    fn opcodes_roundtrip_all_108_variants() {
+        for b in 0..=107u8 {
             let op = Op::from_opcode(b).expect("必须成功解码有效操作码");
             assert_eq!(op.opcode(), b);
         }
-        assert_eq!(Op::from_opcode(107), None);
+        assert_eq!(Op::from_opcode(108), None);
         assert_eq!(Op::from_opcode(255), None);
     }
 

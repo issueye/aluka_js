@@ -230,6 +230,13 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             unit.locals += 1;
             unit.code.push(Instr::new(Op::StoreLocal, tmp_slot as u32));
 
+            // RequireObjectCoercible：null/undefined 解构 → TypeError
+            //（`fn({})` 传 null / `var {a} = null` 均抛；S8.8.2 族）。
+            // 检查后立即弹栈，保持栈平衡（此前漏弹致 V8 汇合点栈深不一致）
+            unit.code.push(Instr::new(Op::LoadLocal, tmp_slot as u32));
+            unit.code.push(Instr::new(Op::RequireObjectCoercible, 0));
+            unit.code.push(Instr::new(Op::Pop, 0));
+
             compile_bind_pattern(pattern, tmp_slot, unit);
 
             if is_last {

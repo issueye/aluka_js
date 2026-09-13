@@ -4754,6 +4754,16 @@ impl Vm {
                     }
                     self.stack.push(Value::Boolean(true));
                 }
+                Op::RequireObjectCoercible => {
+                    // 解构声明的 RequireObjectCoercible：栈顶为 null/undefined
+                    // → TypeError（规范 ToObject 前置检查）
+                    let top = self.peek()?;
+                    if matches!(top.case(), ValueCase::Undefined | ValueCase::Null) {
+                        let kind = if top.is_null() { "null" } else { "undefined" };
+                        return Err(self
+                            .type_error(&format!("Cannot destructure '{kind}' as it is {kind}.")));
+                    }
+                }
                 Op::SetProtoObj => {
                     // 对象字面量 `__proto__: v`：设 [[Prototype]]（值为
                     // 对象则采用；null 置空；其余忽略——规范语义，不建自有

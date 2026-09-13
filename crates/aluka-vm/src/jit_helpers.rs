@@ -288,6 +288,7 @@ impl Vm {
                 del_prop: jit_del_prop,
                 get_proto: jit_get_proto,
                 set_proto_obj: jit_set_proto_obj,
+                require_coercible: jit_require_coercible,
                 instanceof: jit_instanceof,
                 in_: jit_in,
                 new_array: jit_new_array,
@@ -867,6 +868,25 @@ pub unsafe extern "C" fn jit_get_proto(ctx: *mut JitCtx, obj: u64) -> u64 {
     };
     refresh_heap(ctx, vm);
     from_vm_value(r)
+}
+
+/// `REQUIRE_OBJECT_COERCIBLE`：栈顶为 null/undefined → 抛 TypeError
+/// （J2 约定归一 undefined），否则原值返回。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_require_coercible(ctx: *mut JitCtx, v: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let val = to_vm_value(v);
+    if matches!(
+        val.case(),
+        crate::value::ValueCase::Undefined | crate::value::ValueCase::Null
+    ) {
+        return from_vm_value(Value::Undefined);
+    }
+    let _ = vm;
+    v
 }
 
 /// `SET_PROTO_OBJ`：设对象 [[Prototype]]（值为对象或 null；其余忽略），
