@@ -1530,6 +1530,22 @@ mod home_dump_tests {
     use aluka_parser::parse;
 
     #[test]
+    fn dump_mul_ops() {
+        let src = r#"
+var o = {valueOf(){ return Symbol("x"); }};
+var r = o * 1;
+"#;
+        let program = parse(src);
+        let module = compile_module(&program);
+        for (i, f) in module.functions.iter().enumerate() {
+            println!("fn[{i}] {} num_locals={}:", f.name, f.num_locals);
+            for ins in &f.code {
+                println!("    {:?} {}", ins.op, ins.operand);
+            }
+        }
+    }
+
+    #[test]
     fn dump_super_method_ops() {
         let src = r#"
 var proto = { m() { return "PM"; } };

@@ -1750,3 +1750,19 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 ✓、conformance 差分 ✓；eval 闭包探针部分对齐（还原语义正确，
   余例待 marker 时序修复）。
+
+## 76. M7.2 轮六十二：ToPrimitive 采纳判定补 Symbol（20260913）
+
+- **根因**：to_primitive_number 的**第二处**采纳判定（res_primitive，
+  轮廿八首版实现）漏了 `HeapObject::Symbol`——valueOf 返回符号时被
+  判「非原始」→ 跳过 → toString 兜底得 "[object Object]" 堆串 →
+  ToNumber 得 NaN（`({valueOf:()=>Symbol()}) * 1` 应抛 TypeError）；
+  轮四十同位置的首处早退已含 Symbol，两处口径不一致；
+- **修复**：res_primitive 补 `Some(HeapObject::Symbol { .. })`——
+  valueOf 产符号被采纳为原始值 → 上层 numeric_operand 的符号守卫
+  抛 TypeError（与 node 消息同为 TypeError，A/B/C 探针对齐）；
+- **顺带**：清理 mul 调试探针（interpreter.rs/ops.rs）；
+- **净效果**：t262 1026/1154 持平（BigInt wrapped-values 3 例的
+  TypeError 判定修正，具体翻转待下轮 FLOOR 复核确认）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 ✓、conformance 差分 ✓；m2 探针 3/3（均 TypeError）对齐。

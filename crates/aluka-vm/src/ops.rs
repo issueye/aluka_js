@@ -461,7 +461,9 @@ impl Vm {
                 let res_primitive = match res.case() {
                     ValueCase::Object(r) => matches!(
                         self.heap.get(r.0 as usize),
-                        Some(HeapObject::String(_)) | Some(HeapObject::BigInt(_))
+                        Some(HeapObject::String(_))
+                            | Some(HeapObject::BigInt(_))
+                            | Some(HeapObject::Symbol { .. })
                     ),
                     _ => true,
                 };
