@@ -1552,3 +1552,15 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=933 ✓、conformance 差分 ✓；Symbol 三批探针
   （sy2/sy4/sy5 共 16 项）全对齐 Node 22。
+
+## 66. M7.2 轮五十二：new Number() 无参 + Number 包装 ToPrimitive（20260913）
+
+- **`new Number()` 无参 → [[NumberData]] = +0**（规范 S15.7.2.1）：此前经
+  `to_number_value(undefined)` 得 NaN，`x2.valueOf()` 断言失败；
+- **`new Number(v)` 的 v 经 ToNumeric**：与 `Number(v)` 直调同口径
+  （对象走 ToPrimitive、符号 → TypeError），不再用 &self 的 to_number_value；
+- **净效果**：t262 1003 → **1004/1154**（失败 64 → 63）；
+  **M72_FLOOR 933 → 934**（理论上限 937 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=934 ✓、conformance 差分 ✓；Number/Boolean 包装探针
+  （含无参、Date 借道 Boolean 方法）6/6 对齐 Node 22。

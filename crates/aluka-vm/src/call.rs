@@ -497,8 +497,13 @@ impl Vm {
                             _ => self.num_proto,
                         };
                         let inst = self.alloc_ordinary_with_proto(proto);
-                        let v =
-                            self.to_number_value(args.first().copied().unwrap_or(Value::Undefined));
+                        // 无参 → +0（规范 `new Number()` 的 [[NumberData]] 为 +0；
+                        // 此前经 to_number_value(undefined) 得 NaN，S15.7.2.1 族）
+                        let v = match args.first() {
+                            None => 0.0,
+                            Some(a) if a.is_undefined() => 0.0,
+                            Some(a) => self.numeric_operand(*a)?,
+                        };
                         // 数据槽直接以 Dict 模式承载（eq/方法分派的纯堆读取面）
                         if let Some(HeapObject::Ordinary { props, .. }) =
                             self.heap.get_mut(inst.0 as usize)
