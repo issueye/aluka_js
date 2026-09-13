@@ -1401,3 +1401,23 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 910 → 913**（理论上限 916 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=913 ✓、conformance 差分 ✓；索引/崩溃探针 4/4 对齐。
+
+## 57. M7.2 轮卌三：BigInt 全局函数 + prototype 面（20260913）
+
+- **实现 `BigInt(v)`**（invoke_callable 拦截，与 Symbol 同位置）：
+  - 数字须为整数（非整数/NaN/Infinity → RangeError）；
+  - 字符串按字面量解析（含 0x/0b/0o 前缀与空白裁剪；非法 → SyntaxError）；
+  - 布尔 → 0n/1n；BigInt 原样；其余 → TypeError；
+  - `new BigInt()` → TypeError（BigInt is not a constructor）；
+- **prototype 面**：bigint_ctor_value 建立独立原型（valueOf/toString/
+  toLocaleString）+ prototype.constructor 回指 + 静态 asIntN/asUintN 占位
+  ——express 依赖链的 object-inspect 以 `BigInt.prototype.valueOf` 探形，
+  注册只有 NativeCtor 无原型会致 `Cannot read properties of undefined`；
+- **排障记录**：先用 proto_ctor_value（prototype=None）注册致 express e2e
+  失败（`typeof BigInt === "undefined"` 分支变化后暴露缺原型）；
+  以 git stash 二分确认破坏源，改为专用 bigint_ctor_value 后回绿；
+- **净效果**：t262 983 → **984/1154**（失败 84 → 83）；
+  **M72_FLOOR 913 → 914**（理论上限 917 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=914 ✓、conformance 差分 ✓、jitbench 3/3 ✓、
+  express e2e ✓（回归已修）；BigInt 探针 7/7 对齐 Node 22。

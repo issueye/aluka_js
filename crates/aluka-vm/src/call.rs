@@ -220,6 +220,12 @@ impl Vm {
             if ctor_name.as_deref() == Some("Symbol") {
                 return self.symbol_create(args);
             }
+            // BigInt(value)：无 new 直调 = 转 BigInt（数字须为整数，
+            // 否则 RangeError；字符串按十进制/进制前缀解析；S20.2.1 族）
+            if ctor_name.as_deref() == Some("BigInt") {
+                let v = args.first().copied().unwrap_or(Value::Undefined);
+                return self.bigint_from_value(v);
+            }
             // Date(value) 无 new 直调等价 new Date(value)
             if ctor_name.as_deref() == Some("Date") {
                 return self.construct_date(args);
@@ -386,9 +392,12 @@ impl Vm {
                         }
                         return Ok(Value::Object(self.alloc_array(args.to_vec())));
                     }
-                    // Symbol 不可 new（规范 TypeError：Symbol is not a constructor）
+                    // Symbol/BigInt 不可 new（规范 TypeError）
                     "Symbol" => {
                         return Err(self.type_error("Symbol is not a constructor"));
+                    }
+                    "BigInt" => {
+                        return Err(self.type_error("BigInt is not a constructor"));
                     }
                     "Object" => {
                         // 规范：Object(v) 与 new Object(v) 同型——原始值造

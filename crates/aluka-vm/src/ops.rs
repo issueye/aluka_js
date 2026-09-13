@@ -538,6 +538,47 @@ impl Vm {
         Ok(self.to_number_value(p))
     }
 
+    /// `BigInt(v)`：数字须为整数（否则 RangeError）、字符串按字面量解析
+    /// （含 0x/0b/0o 前缀与空白裁剪）、布尔 → 0n/1n、BigInt 原样。
+    pub(crate) fn bigint_from_value(&mut self, v: Value) -> Result<Value, VmError> {
+        match v.case() {
+            ValueCase::Object(r) => match self.heap.get(r.index()) {
+                Some(HeapObject::BigInt(_)) => Ok(v),
+                Some(HeapObject::String(s)) => {
+                    let t = s.trim();
+                    if t.is_empty() {
+                        return Ok(Value::Object(self.alloc_bigint("0".to_owned())));
+                    }
+                    let norm = crate::bigdec::normalize_bigint_literal(t);
+                    // 归一化后仍含非数字字符 → 语法错误（SyntaxError）
+                    let digits = norm.strip_prefix('-').unwrap_or(&norm);
+                    let ok = !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit());
+                    if !ok {
+                        return Err(self.typed_error(
+                            "SyntaxError",
+                            &format!("Cannot convert {s} to a BigInt"),
+                        ));
+                    }
+                    Ok(Value::Object(self.alloc_bigint(norm)))
+                }
+                _ => Err(self.type_error("Cannot convert object to a BigInt")),
+            },
+            ValueCase::Number(n) => {
+                if !n.is_finite() || n.fract() != 0.0 {
+                    return Err(self.typed_error(
+                        "RangeError",
+                        "The number cannot be converted to a BigInt because it is not an integer",
+                    ));
+                }
+                Ok(Value::Object(self.alloc_bigint(format!("{}", n as i64))))
+            }
+            ValueCase::Boolean(b) => Ok(Value::Object(
+                self.alloc_bigint(if b { "1" } else { "0" }.to_owned()),
+            )),
+            _ => Err(self.type_error("Cannot convert undefined or null to a BigInt")),
+        }
+    }
+
     /// 值为 BigInt 堆对象时取其十进制文本。
     fn bigint_text(&self, v: &Value) -> Option<String> {
         match v.case() {

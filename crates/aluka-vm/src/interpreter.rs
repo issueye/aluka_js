@@ -884,6 +884,27 @@ impl Vm {
         Value::Object(c)
     }
 
+    /// BigInt 构造器单例：prototype 面（valueOf/toString）+ 静态
+    /// asIntN/asUintN 占位；`BigInt(v)` 直调语义在 invoke_callable 拦截。
+    pub(crate) fn bigint_ctor_value(&mut self) -> Value {
+        if let Some(c) = self.ctor_cache.get("BigInt") {
+            return Value::Object(*c);
+        }
+        let proto = self.alloc_ordinary();
+        for m in ["valueOf", "toString", "toLocaleString"] {
+            let f = self.alloc_native_fn(&format!("BigInt.prototype.{m}"));
+            let _ = self.define_proto_method(Value::Object(proto), m, Value::Object(f));
+        }
+        let c = self.alloc_native_ctor("BigInt", Some(proto));
+        let _ = self.set_property(Value::Object(proto), "constructor", Value::Object(c));
+        for m in ["asIntN", "asUintN"] {
+            let f = self.alloc_native_fn(&format!("BigInt.{m}"));
+            let _ = self.set_property(Value::Object(c), m, Value::Object(f));
+        }
+        self.ctor_cache.insert("BigInt".to_owned(), c);
+        Value::Object(c)
+    }
+
     /// Error 子类构造器单例（TypeError/RangeError/... 名 → NativeCtor；
     /// `new` 与无 new 直调都构造带子类 name 的 Error 实例）。
     pub(crate) fn error_subclass_ctor(&mut self, name: &str) -> Value {
@@ -1053,6 +1074,9 @@ impl Vm {
             }
             "Boolean" => self.proto_ctor_value("Boolean"),
             "Number" => self.proto_ctor_value("Number"),
+            // BigInt 全局函数（无 new；原型面挂 valueOf/toString——
+            // object-inspect 等包以 `BigInt.prototype.valueOf` 探形）
+            "BigInt" => self.bigint_ctor_value(),
             "WeakSet" => self.proto_ctor_value("WeakSet"),
             "WeakMap" => self.proto_ctor_value("WeakMap"),
             "WeakRef" => self.proto_ctor_value("WeakRef"),
