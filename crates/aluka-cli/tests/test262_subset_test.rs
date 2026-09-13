@@ -478,7 +478,7 @@ fn test262_subset_conformance() {
     let m72_failures = failures.len() - hand_failures.len();
     // 随分桶修复逐级上调：轮五十九后真实基线 1025 通过/42 失败（1024→1025），
     // 下限取可承受的 958（1027 通过/40 失败 → 上限 960，留 1 余量），轮六十四：super 赋值语义闭环（SET_SUPER_PROP 操作码，FLOOR 956→957）。
-    const M72_FLOOR: usize = 958;
+    const M72_FLOOR: usize = 959;
     assert!(
         m72_failures <= 1000 - M72_FLOOR,
         "test262 官方导入语料通过数低于基线下限 {M72_FLOOR}/1000（当前失败 {m72_failures}）"

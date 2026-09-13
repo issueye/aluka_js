@@ -526,8 +526,20 @@ impl<'src> Parser<'src> {
         }
 
         if self.match_keyword("continue") {
+            // 可选标签：`continue label;`（同行 Ident 才是标签——continue 为
+            // 受限产生式，换行后的 Ident 是**下一语句**的标识符，不得吞并）
+            let label = if let TokenKind::Ident(id) = self.peek().kind.clone() {
+                if !self.nl_before_current() {
+                    self.advance();
+                    Some(id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             self.eat_semi();
-            return Self::at(line, Stmt::Continue);
+            return Self::at(line, Stmt::Continue { label });
         }
 
         if self.match_keyword("throw") {

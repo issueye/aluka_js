@@ -107,6 +107,9 @@ pub struct LoopScope {
     pub break_jumps: Vec<usize>,
     /// 待回填至循环更新/步进位置的 continue 跳转指令索引
     pub continue_jumps: Vec<usize>,
+    /// 循环所属标签（`label: for(..){}`；裸循环为 None）——
+    /// `continue label` / `break label` 按此从栈顶向下匹配
+    pub label: Option<String>,
 }
 
 /// 父级词法作用域符号信息，支持多层嵌套闭包向外逐级捕获变量（直接局部变量或父级上值）。
@@ -152,6 +155,10 @@ pub struct CompiledUnit {
     /// 形式参数数量
     pub num_params: u32,
     /// 循环作用域上下文栈（break/continue 回填）
+    /// 待绑定标签：`label:` 与其循环之间的传递通道
+    /// （Labeled 编译时置位，循环 push 时取走）
+    pub pending_label: Option<String>,
+    /// 循环作用域栈（continue/break 的目标解析用）
     pub loop_stack: Vec<LoopScope>,
     /// 表达式闭包占位回填表项：(指令流索引, 函数定义, 创建时的父级作用域快照)
     pub closure_backpatches: Vec<(usize, FunctionDef, ParentScopeInfo)>,

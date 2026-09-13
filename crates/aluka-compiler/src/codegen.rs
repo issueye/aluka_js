@@ -293,7 +293,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             compile_expr(cond, unit);
             let exit_jmp_idx = emit_jump(unit, Op::JmpFalsePop);
 
-            unit.loop_stack.push(LoopScope::default());
+            unit.loop_stack.push(LoopScope {
+                label: unit.pending_label.take(),
+                ..Default::default()
+            });
             compile_stmt(body, unit, false);
             let scope = unit.loop_stack.pop().unwrap_or_default();
 
@@ -317,7 +320,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
         Stmt::DoWhile { body, cond } => {
             let loop_start = unit.code.len();
 
-            unit.loop_stack.push(LoopScope::default());
+            unit.loop_stack.push(LoopScope {
+                label: unit.pending_label.take(),
+                ..Default::default()
+            });
             compile_stmt(body, unit, false);
             let scope = unit.loop_stack.pop().unwrap_or_default();
 
@@ -381,7 +387,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                 unit.code.push(Instr::new(Op::LoadLocal, head_slot as u32));
                 unit.code.push(Instr::new(Op::StoreLocal, iter_slot as u32));
 
-                unit.loop_stack.push(LoopScope::default());
+                unit.loop_stack.push(LoopScope {
+                    label: unit.pending_label.take(),
+                    ..Default::default()
+                });
                 compile_stmt(body, unit, false);
                 let scope = unit.loop_stack.pop().unwrap_or_default();
 
@@ -436,7 +445,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                     None
                 };
 
-                unit.loop_stack.push(LoopScope::default());
+                unit.loop_stack.push(LoopScope {
+                    label: unit.pending_label.take(),
+                    ..Default::default()
+                });
                 compile_stmt(body, unit, false);
                 let scope = unit.loop_stack.pop().unwrap_or_default();
 
@@ -501,7 +513,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             unit.code.push(Instr::new(Op::Lt, 0));
             let exit_jmp = emit_jump(unit, Op::JmpFalsePop);
 
-            unit.loop_stack.push(LoopScope::default());
+            unit.loop_stack.push(LoopScope {
+                label: unit.pending_label.take(),
+                ..Default::default()
+            });
 
             unit.code.push(Instr::new(Op::LoadLocal, tmp_keys as u32));
             unit.code.push(Instr::new(Op::LoadLocal, tmp_idx as u32));
@@ -590,7 +605,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             unit.code.push(Instr::new(Op::GetProp, name_done));
             let exit_jmp = emit_jump(unit, Op::JmpTruePop);
 
-            unit.loop_stack.push(LoopScope::default());
+            unit.loop_stack.push(LoopScope {
+                label: unit.pending_label.take(),
+                ..Default::default()
+            });
 
             unit.code.push(Instr::new(Op::LoadLocal, tmp_result as u32));
             unit.code.push(Instr::new(Op::GetProp, name_value));
@@ -642,13 +660,31 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                 scope.break_jumps.push(jmp);
             }
         }
-        Stmt::Labeled { body, .. } => {
-            // 标签本身零宽：直接编译标注语句（无 `break label` 时语义等价）
+        Stmt::Labeled { label, body } => {
+            // 标签循环：标签传入循环作用域（`continue label`/`break label`
+            // 从栈顶向下按名匹配最近一层带该标签的循环）
+            unit.pending_label = Some(label.clone());
             compile_stmt(body, unit, is_last);
+            unit.pending_label = None;
         }
-        Stmt::Continue => {
+        Stmt::Continue { label } => {
             let jmp = emit_jump(unit, Op::Jmp);
-            if let Some(scope) = unit.loop_stack.last_mut() {
+            // 目标层：无标签 → 栈顶；带标签 → 从顶向下首个同名循环
+            //（单条 Jmp 直接跳到目标层 continue 位置，中间层被自然越过）
+            let target_rel = match &label {
+                Some(l) => unit
+                    .loop_stack
+                    .iter()
+                    .rev()
+                    .position(|s| s.label.as_ref() == Some(l)),
+                None => Some(0),
+            };
+            if let Some(rel) = target_rel {
+                let top = unit.loop_stack.len() - 1;
+                if let Some(scope) = unit.loop_stack.get_mut(top - rel) {
+                    scope.continue_jumps.push(jmp);
+                }
+            } else if let Some(scope) = unit.loop_stack.last_mut() {
                 scope.continue_jumps.push(jmp);
             }
         }
@@ -739,7 +775,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             unit.locals += 1;
             unit.code.push(Instr::new(Op::StoreLocal, disc_slot as u32));
 
-            unit.loop_stack.push(LoopScope::default());
+            unit.loop_stack.push(LoopScope {
+                label: unit.pending_label.take(),
+                ..Default::default()
+            });
 
             let mut case_jumps = Vec::new();
             let mut default_jump: Option<usize> = None;
@@ -1669,7 +1708,7 @@ fn stmt_has_closure_capturing(s: &SpannedStmt, target_name: &str) -> bool {
         }
         Stmt::Return(Some(expr)) => expr_has_closure_capturing(expr, target_name),
         Stmt::Throw(expr) => expr_has_closure_capturing(expr, target_name),
-        Stmt::Return(None) | Stmt::Break | Stmt::Continue => false,
+        Stmt::Return(None) | Stmt::Break | Stmt::Continue { .. } => false,
         Stmt::Labeled { body, .. } => stmt_has_closure_capturing(body, target_name),
         Stmt::For {
             init,

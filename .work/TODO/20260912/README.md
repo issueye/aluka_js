@@ -1804,3 +1804,17 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=958 ✓、conformance 差分 ✓、express e2e ✓；
   顶层 this 探针（tt/tt2/hb2）对齐 Node 22。
+
+## 80. M7.2 轮六十五：带标签 continue（跨层跳转）（20260914）
+
+- **AST**：`Stmt::Continue` 增 `label: Option<String>`（全 5 处匹配同步）；
+- **parser**：`continue label;`（**同行** Ident 才吞为标签——换行后的
+  Ident 是下一语句标识符，属 ASI，不得吞并）；
+- **codegen**：LoopScope 增 label 字段（Labeled 编译置 pending_label，
+  7 处循环 push 继承）；`continue label` 从栈顶向下匹配同名循环层，
+  Jmp 直跳目标层 continue 位置（中间层被自然越过）；无匹配标签回落
+  就近循环；
+- **净效果**：asi-S7.9_A1（continue label 跨层）转绿，t262 1028/1154；
+  **M72_FLOOR 957 → 959**（1028 通过/39 失败 → 上限 961，留 2 余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓（补齐新字段文档）、workspace 全量
+  0 失败 ✓、t262 FLOOR=959 ✓、conformance 差分 ✓。

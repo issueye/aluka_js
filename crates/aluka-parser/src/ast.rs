@@ -315,7 +315,11 @@ pub enum Stmt {
     /// Break 语句
     Break,
     /// Continue 语句
-    Continue,
+    /// continue 语句（label 为 `continue label;` 的目标标签）
+    Continue {
+        /// 目标标签（None = 就近循环）
+        label: Option<String>,
+    },
     /// 标签语句：`label: Statement`（标签仅作跳转目标标记，执行体为 body）
     Labeled {
         /// 标签名
