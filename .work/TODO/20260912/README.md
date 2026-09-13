@@ -982,3 +982,9 @@ $ cargo test -p aluka-jit --release --test jitbench
   （m2/m5 语义测试回绿）、t262 874 ✓、conformance 差分 ✓、jitbench
   3/3 ✓、GC 压力 ALUKA_GC_STRESS=8 0 失败 ✓；BigInt 16 例探针 + 算术
   15 例探针 + 克隆/原型 9 例探针逐字节对齐 Node 22。
+
+### 31.1 提交证据
+
+- commit 7fb8d89（fix(m7.2): 轮十六——BigInt 算术切片 + Error 子类独立
+  原型重构），9 files changed（bigdec/call/eval/interpreter/ops/prims/
+  property/worker_clone + TODO）。
