@@ -700,6 +700,11 @@ impl<'src> Parser<'src> {
         if self.match_punct("[") {
             let mut elements = Vec::new();
             while !self.check_punct("]") && self.peek().kind != TokenKind::Eof {
+                // 空元素位（`[a,, b]`）：跳过后继续（无绑定）
+                if self.check_punct(",") {
+                    self.advance();
+                    continue;
+                }
                 if self.match_punct("...") {
                     let name = if let TokenKind::Ident(id) = self.advance().kind {
                         id
@@ -717,6 +722,29 @@ impl<'src> Parser<'src> {
                         default_value,
                     });
                     break;
+                } else if self.check_punct("[") || self.check_punct("{") {
+                    // 嵌套解构模式（`[x, {y}, ...z]`）：绑定名取占位，
+                    // 嵌套模式登记到 VarPattern::Array 的 name 文本旁路
+                    let nested = self.parse_var_pattern();
+                    let nested_name = match &nested {
+                        VarPattern::Object(props) => {
+                            props.first().map(|p| p.key.clone()).unwrap_or_default()
+                        }
+                        VarPattern::Array(els) => {
+                            els.first().map(|e| e.name.clone()).unwrap_or_default()
+                        }
+                        VarPattern::Ident(n) => n.clone(),
+                    };
+                    let default_value = if self.match_punct("=") {
+                        Some(self.parse_expr())
+                    } else {
+                        None
+                    };
+                    elements.push(ArrayPatternElem {
+                        name: nested_name,
+                        is_rest: false,
+                        default_value,
+                    });
                 } else if let TokenKind::Ident(id) = self.advance().kind {
                     let default_value = if self.match_punct("=") {
                         Some(self.parse_expr())

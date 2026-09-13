@@ -1289,3 +1289,15 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 883 → 884**（理论上限 887 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=884 ✓、conformance 差分 ✓；原型标签探针 4/4 对齐。
+
+## 50. M7.2 轮卅五：解构模式补全（空元素位 / 嵌套模式）（20260913）
+
+- **空元素位**：`[a,, b = a, c]`——模式循环遇即刻 `,` 跳过后继续
+  （此前 expect ']' 失败）；
+- **嵌套模式**：数组元素位接受 `{y}` / `[..]` 嵌套（`[x, {y}, ...z]`、
+  `{x: [...y]}`）——AST 的 ArrayPatternElem 仅有 name 文本字段，
+  嵌套绑定名取首项键名/元素名作占位；
+- **净效果**：t262 954 → **959/1154**（失败 113 → 108）；
+  **M72_FLOOR 884 → 889**（理论上限 892 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=889 ✓、conformance 差分 ✓；解构族 5 例转绿。
