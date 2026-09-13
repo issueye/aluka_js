@@ -1275,3 +1275,17 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 879 → 883**（理论上限 886 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=883 ✓、conformance 差分 ✓。
+
+## 49. M7.2 轮卅四：包装原型单例内置数据槽（20260913）
+
+- 规范：Number/String/Boolean.prototype **本身是包装对象**
+  （[[NumberData]]=+0 / [[StringData]]="" / [[BooleanData]]=false）——
+  `Object.prototype.toString.call(Number.prototype)` → "[object Number]"、
+  `Number.prototype.valueOf()` → 0；此前三个原型为裸 Ordinary，
+  标签恒 "[object Object]"（S15.7.4-1 / S15.5.4 族）；
+- 新增 prime_wrapper_proto：为三个原型单例注入对应数据槽
+  （在 surface 装配末尾调用，原型已建）；
+- **净效果**：t262 953 → **954/1154**（失败 114 → 113）；
+  **M72_FLOOR 883 → 884**（理论上限 887 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=884 ✓、conformance 差分 ✓；原型标签探针 4/4 对齐。

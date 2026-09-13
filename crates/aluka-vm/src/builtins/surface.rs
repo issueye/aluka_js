@@ -197,6 +197,8 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         let _ = vm.define_proto_method(Value::Object(num_p), m, Value::Object(f));
         register_handler(registry, "Number.prototype", m, num_method_dispatch);
     }
+    // 包装原型内置数据槽（Number/String/Boolean.prototype 本身是包装对象）
+    prime_wrapper_proto(vm);
     // 包装原型 `constructor` 回指构造器（`new String().constructor === String`；
     // 此前缺失致 S15.5/S15.6/S15.7 的 constructor 恒等断言失败）
     for (proto, ctor_name) in [(str_p, "String"), (bool_p, "Boolean"), (num_p, "Number")] {
@@ -433,6 +435,22 @@ proto_getter!(str_proto, str_proto);
 proto_getter!(symbol_proto, symbol_proto);
 proto_getter!(bool_proto, bool_proto);
 proto_getter!(num_proto, num_proto);
+
+/// 包装原型单例（Number/String/Boolean.prototype）内置数据槽：规范这些
+/// 原型对象本身是**包装对象**（`[[NumberData]]=+0` 等）——
+/// `Object.prototype.toString.call(Number.prototype)` → "[object Number]"、
+/// `Number.prototype.valueOf()` → 0（S15.7.4-1 / S15.5.4 族）。
+pub(crate) fn prime_wrapper_proto(vm: &mut Vm) {
+    let prime = |vm: &mut Vm, proto: Option<ObjectRef>, key: &str, val: Value| {
+        if let Some(p) = proto {
+            let _ = vm.set_property(Value::Object(p), key, val);
+        }
+    };
+    prime(vm, vm.num_proto, "[[NumberValue]]", Value::Number(0.0));
+    let empty = vm.alloc_string(String::new());
+    prime(vm, vm.str_proto, "[[StringValue]]", Value::Object(empty));
+    prime(vm, vm.bool_proto, "[[BooleanData]]", Value::Boolean(false));
+}
 proto_getter!(fn_proto, fn_proto);
 proto_getter!(regexp_proto, regexp_proto);
 proto_getter!(array_proto, array_proto_surface);
