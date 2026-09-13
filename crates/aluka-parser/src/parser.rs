@@ -1023,7 +1023,14 @@ impl<'src> Parser<'src> {
         self.super_disallowed = false;
 
         while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
-            let is_static = self.match_keyword("static");
+            // `static` 非保留字（词法为 Ident）：仅在后随键名/访问器/计算键
+            // 时作修饰符——`static() {}` 是名为 static 的普通方法
+            let is_static = matches!(&self.peek().kind, TokenKind::Ident(s) if s == "static")
+                && !self.peek_ahead(1).is_punct("(")
+                && {
+                    self.advance();
+                    true
+                };
             // 访问器前缀：`get x() {}` / `set x(v) {}`（仅当后随键名而非 `(`）
             let mut accessor_kind = 0u32;
             if let TokenKind::Ident(prefix) = self.peek().kind.clone() {

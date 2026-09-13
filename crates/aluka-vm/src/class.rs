@@ -141,6 +141,13 @@ impl Vm {
                 m.name.clone()
             };
 
+            // 静态成员名不得为 `prototype`（规范 TypeError；
+            // `static ['prototype']() {}` 族用例断言此形态）
+            if m.is_static && name == "prototype" {
+                return Err(
+                    self.type_error("Classes may not have a static property named 'prototype'")
+                );
+            }
             let target = if m.is_static {
                 Value::Object(ctor_ref)
             } else {

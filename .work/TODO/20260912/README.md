@@ -1246,3 +1246,19 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 864 → 873**（理论上限 876 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=873 ✓、conformance 差分 ✓；访问器探针 5/5 对齐 Node 22。
+
+## 47. M7.2 轮卅二：类静态成员名 prototype 限制 + static 词法修正（20260913）
+
+- **parser**：`static` 非保留字（词法为 Ident，KEYWORDS 表无此项）——
+  类体修饰符判定原用 check_keyword 恒为假，`static x(){}` 被当作名为
+  static 的方法解析、后续 token 全乱（`static ['prototype']() {}` 直接
+  报"预期标点 ("）；改为 Ident 判定 + 下一 token 非 `(`（`static() {}`
+  仍是名为 static 的普通方法）；
+- **VM**（class.rs）：静态成员名 `prototype` → TypeError
+  （"Classes may not have a static property named 'prototype'"，
+  规范 ProtectedName 限制；覆盖字面量键、计算键 `['prototype']`、
+  getter/生成器等形态）；
+- **净效果**：t262 943 → **949/1154**（失败 124 → 118）；
+  **M72_FLOOR 873 → 879**（理论上限 882 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=879 ✓、conformance 差分 ✓；static/访问器探针 7/7 对齐。
