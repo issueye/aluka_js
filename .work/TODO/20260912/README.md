@@ -1440,3 +1440,22 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓
   （core_semantics 21/21）、t262 FLOOR=920 ✓、conformance 差分 ✓；
   String/Boolean 探针 7/7 对齐 Node 22。
+
+## 59. M7.2 轮卌五：内建实例原型回退 + instanceof 原始值判定（20260913）
+
+- **get_prototype 回退**（`&self` 版 cached_proto_of）：无 [[Prototype]]
+  字段的内建实例（字符串/符号/函数）回落 surface 原型单例——
+  `Object.getPrototypeOf(Symbol('66')) === Symbol.prototype`（S19.4.3
+  intrinsic 族）；**原始值分支保持 None**（返回包装原型会让
+  `(1) instanceof Object` 误真，conformance gen-eval-matrix-0009 实测）；
+- **包装实例原型**：alloc_primitive_wrapper 按内部槽挂对应原型
+  （`Object(Symbol())` 的 [[Prototype]] = Symbol.prototype）；
+- **instanceof 原始值判定**：check_instanceof 首行补非对象早退——且
+  NaN-box 下堆字符串/符号/BigInt 虽为 Object case 但语义是原始值，
+  一并排除（`"s" instanceof String`、`Symbol() instanceof Symbol`
+  均 false；conformance gen-eval-matrix-0010 实测）；
+- **净效果**：t262 990 → **992/1154**（失败 77 → 75）；
+  **M72_FLOOR 920 → 922**（理论上限 925 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=922 ✓、conformance 差分 ✓（两例回归已修）、jitbench 3/3 ✓；
+  原型链/instanceof 探针 9/9 对齐 Node 22。

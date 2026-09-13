@@ -1229,7 +1229,16 @@ impl Vm {
             },
             _ => "[[StringValue]]",
         };
-        let inst = self.alloc_ordinary();
+        // 包装实例的 [[Prototype]] 指向对应原型（`Object.getPrototypeOf(
+        // Object(Symbol())) === Symbol.prototype`；数字/布尔/字符串同理）
+        let proto = match key {
+            "[[NumberValue]]" => self.num_proto,
+            "[[BooleanValue]]" => self.bool_proto,
+            "[[StringValue]]" => self.str_proto,
+            "[[SymbolData]]" => self.symbol_proto,
+            _ => None,
+        };
+        let inst = self.alloc_ordinary_with_proto(proto);
         let _ = self.set_property(Value::Object(inst), key, v);
         inst
     }

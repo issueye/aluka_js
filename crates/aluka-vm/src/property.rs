@@ -1336,13 +1336,39 @@ impl Vm {
                     // `Object.getPrototypeOf(Array) === Function.prototype`
                     // 为 false——S15.3.3 族）
                     HeapObject::NativeCtor { .. } => self.fn_proto,
-                    _ => None,
+                    // 无 [[Prototype]] 字段的内建实例（字符串/符号/函数等）：
+                    // 取已缓存的 surface 原型单例（`getPrototypeOf(Symbol('x'))
+                    // === Symbol.prototype`——S19.4.3 intrinsic 族）
+                    _ => self.cached_proto_of(val),
                 }
             } else {
                 None
             }
         } else {
+            // 原始值：get_prototype 保持 None（`Object.getPrototypeOf(1)` 的
+            // 装箱由 builtin_proto_of 兜底；此处返回包装原型会让
+            // `(1) instanceof Object` 误真——InstanceOf 沿此链）
             None
+        }
+    }
+
+    /// `&self` 版本的内建原型查询（原型单例均已由 surface 装配期创建；
+    /// 未创建时返回 None，避免在只读路径上触发惰性分配）。
+    fn cached_proto_of(&self, obj: Value) -> Option<aluka_core::ObjectRef> {
+        match obj.case() {
+            ValueCase::Number(_) => self.num_proto,
+            ValueCase::Boolean(_) => self.bool_proto,
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(_)) => self.str_proto,
+                Some(HeapObject::Symbol { .. }) => self.symbol_proto,
+                Some(
+                    HeapObject::Closure { .. }
+                    | HeapObject::NativeFn { .. }
+                    | HeapObject::NativeCtor { .. },
+                ) => self.fn_proto,
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -1602,6 +1628,21 @@ impl Vm {
 
     /// 检查 l instanceof r（沿着 l 的原型链查找 r.prototype）。
     pub fn check_instanceof(&mut self, l: Value, r: Value) -> bool {
+        // 规范：左值为**非对象**时 instanceof 恒 false——NaN-box 下堆字符串/
+        // 符号/BigInt 亦为 Object case 但语义是原始值，须排除
+        //（`"s" instanceof String`、`Symbol() instanceof Symbol` 均为 false；
+        // InstanceOf 走 OrdinaryHasInstance，primitive 无 [[Prototype]] 链）
+        let is_primitive_heap = l.as_object().is_some_and(|r| {
+            matches!(
+                self.heap.get(r.index()),
+                Some(HeapObject::String(_))
+                    | Some(HeapObject::Symbol { .. })
+                    | Some(HeapObject::BigInt(_))
+            )
+        });
+        if !matches!(l.case(), ValueCase::Object(_)) || is_primitive_heap {
+            return false;
+        }
         // RegExp 实例（无原型链字段的堆形态）对 RegExp 构造器特判
         if let (ValueCase::Object(lr), ValueCase::Object(rr)) = (l.case(), r.case()) {
             if self.regexp_ctor == Some(rr)
