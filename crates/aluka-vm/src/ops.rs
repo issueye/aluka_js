@@ -593,9 +593,6 @@ impl Vm {
         let sym = self.well_known_symbol("toPrimitive");
         let sym_ref = sym.as_object().expect("知名符号必为堆对象");
         let key = crate::symbol::mangled_key(sym_ref);
-        if std::env::var("ALUKA_TP_DBG").is_ok() {
-            eprintln!("[tp2-dbg] hint={hint} key={} prop={:?}", key, self.get_property(v, &key));
-        }
         let f = self.get_property(v, &key)?;
         // 宽松回退：@@toPrimitive 缺失或非可调用时返回 None（调用方走
         // valueOf/toString 序）——严格 TypeError 形态会让既有语料
