@@ -24,6 +24,9 @@ pub struct Parser<'src> {
     /// 当前是否处于 async 函数体内（await 早错误判定：
     /// async 上下文中 await 为保留字，不得作标识符/标签）
     in_async: bool,
+    /// 普通函数（声明/表达式）体内 super 不可用（无 HomeObject）——
+    /// super()/super.x 均为 SyntaxError；类体/对象字面量方法内恢复合法
+    super_disallowed: bool,
 }
 
 /// 解析源码文本为 AST 语法树。
@@ -74,6 +77,7 @@ impl<'src> Parser<'src> {
             line_no: 1,
             errors: Vec::new(),
             in_async: false,
+            super_disallowed: false,
         }
     }
 
@@ -851,6 +855,9 @@ impl<'src> Parser<'src> {
         let mut prologue_stmts = Vec::new();
         let outer_async = self.in_async;
         self.in_async = is_async;
+        // 普通函数无 HomeObject：形参默认值与函数体内 super 均 SyntaxError
+        let outer_super = self.super_disallowed;
+        self.super_disallowed = true;
 
         while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
             let is_rest_iter = self.match_punct("...");
@@ -916,9 +923,14 @@ impl<'src> Parser<'src> {
                     ));
                 }
             }
-            if !self.match_punct(",") {
-                break;
+            if self.match_punct(",") {
+                if is_var_args && self.check_punct(")") {
+                    // rest 参数后不允许尾逗号（`...a,)` → SyntaxError）
+                    self.record_error("SyntaxError: rest 参数后不允许尾逗号".to_owned());
+                }
+                continue;
             }
+            break;
         }
         let _ = self.expect_punct(")");
         self.skip_type_annotation(); // 函数返回值类型
@@ -958,6 +970,7 @@ impl<'src> Parser<'src> {
             body = prologue_stmts;
         }
         self.in_async = outer_async;
+        self.super_disallowed = outer_super;
         FunctionDef {
             name,
             params,
@@ -984,6 +997,9 @@ impl<'src> Parser<'src> {
         let _ = self.expect_punct("{");
         let mut constructor = None;
         let mut methods = Vec::new();
+        // 类体方法有 HomeObject：super 合法——清除普通函数的禁用旗标
+        let outer_super = self.super_disallowed;
+        self.super_disallowed = false;
 
         while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
             let is_static = self.match_keyword("static");
@@ -1040,6 +1056,7 @@ impl<'src> Parser<'src> {
             }
         }
         let _ = self.expect_punct("}");
+        self.super_disallowed = outer_super;
 
         Stmt::Class {
             name,
@@ -1609,7 +1626,12 @@ impl<'src> Parser<'src> {
                     "null" => Expr::Null,
                     "undefined" => Expr::Undefined,
                     "this" => Expr::This,
-                    "super" => Expr::Super,
+                    "super" => {
+                        if self.super_disallowed {
+                            self.record_error("SyntaxError: 'super' 关键字在此不可用".to_owned());
+                        }
+                        Expr::Super
+                    }
                     // 纯语法关键字不得作标识符兜底（悬空 `else {}` 曾被
                     // 兜成 Ident 表达式静默接受——Node 22 报
                     // "Unexpected token 'else'"）
@@ -1759,6 +1781,9 @@ impl<'src> Parser<'src> {
                 self.advance();
                 let mut props = Vec::new();
                 let mut proto_seen = false;
+                // 对象字面量方法有 HomeObject：super 合法——清除禁用旗标
+                let outer_super = self.super_disallowed;
+                self.super_disallowed = false;
                 while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
                     // 0. 检查是否为对象展开属性: ...expr
                     if self.match_punct("...") {
@@ -1933,6 +1958,7 @@ impl<'src> Parser<'src> {
                     }
                 }
                 let _ = self.expect_punct("}");
+                self.super_disallowed = outer_super;
                 Expr::Object(props)
             }
             TokenKind::Punct(ref p) if p == "/" || p == "/=" => {

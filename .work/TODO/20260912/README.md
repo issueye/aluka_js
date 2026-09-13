@@ -1121,3 +1121,16 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 842 → 845**（理论上限 847 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=845 ✓、conformance 差分 ✓；探针 6/6 对齐 Node 22。
+
+## 39. M7.2 轮廿四：super 禁用旗标 + rest 尾逗号（20260913）
+
+- **super 早错误**：Parser 新增 `super_disallowed` 旗标——普通函数
+  （声明/表达式，无 HomeObject）形参默认值与函数体内 `super()`/
+  `super.x` 均 SyntaxError；类体与方法、对象字面量方法入口清除旗标
+  （super 合法，`class A { m() { return super.x } }` 不受影响）；
+- **rest 尾逗号**：`async function f(...a,)` → SyntaxError
+  （Node: Rest parameter must be last formal parameter）；
+- **净效果**：t262 914 → **919/1154**（失败 153 → 148）；
+  **M72_FLOOR 845 → 849**（理论上限 852 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=849 ✓、conformance 差分 ✓；super/rest 探针 5 向对齐 Node 22。
