@@ -2276,7 +2276,22 @@ impl<'src> Parser<'src> {
             if self.match_punct("...") {
                 is_var_args = true;
             }
-            if let TokenKind::Ident(p_name) = self.advance().kind {
+            if self.check_punct("[") || self.check_punct("{") {
+                // 解构参数：`([a,b]) => {}` / `({a}) => {}`——占位名 +
+                // DestructureDecl prologue（同具名函数路径）
+                let pattern = self.parse_var_pattern();
+                let param_name = format!("__param_{}__", params.len());
+                params.push(param_name.clone());
+                let dline = self.cur_line();
+                prologue_stmts.push(Self::at(
+                    dline,
+                    Stmt::DestructureDecl {
+                        pattern,
+                        init: Expr::Ident(param_name),
+                    },
+                ));
+                self.skip_type_annotation();
+            } else if let TokenKind::Ident(p_name) = self.advance().kind {
                 params.push(p_name.clone());
                 self.skip_type_annotation();
                 // 默认参数 `param = default`：与具名函数同款

@@ -1818,3 +1818,16 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 957 → 959**（1028 通过/39 失败 → 上限 961，留 2 余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓（补齐新字段文档）、workspace 全量
   0 失败 ✓、t262 FLOOR=959 ✓、conformance 差分 ✓。
+
+## 81. M7.2 轮六十六：箭头函数解构参数（20260914）
+
+- **根因**：parse_arrow_function_from_paren 的参数循环只认 Ident——
+  `([a,b]) => {}` / `({a}) => {}` 的解构参数解析失败（is_arrow_function
+  判定可命中但参数循环不支持）；
+- **修复**：参数循环补解构 pattern 分支（parse_var_pattern → 占位名
+  `__param_N__` + DestructureDecl prologue，同具名函数路径）；
+- **净效果**：t262 1028 → **1030/1154**（destructuring-arguments-length
+  2 例转绿）；**M72_FLOOR 959 → 961**（1030 通过/37 失败 → 上限 963，
+  留 2 余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=961 ✓、conformance 差分 ✓；箭头解构探针对齐 Node 22。
