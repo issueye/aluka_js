@@ -4718,6 +4718,18 @@ impl Vm {
                     }
                     self.stack.push(Value::Boolean(true));
                 }
+                Op::SetProtoObj => {
+                    // 对象字面量 `__proto__: v`：设 [[Prototype]]（值为
+                    // 对象则采用；null 置空；其余忽略——规范语义，不建自有
+                    // 属性，`getOwnPropertyDescriptor(o,'__proto__')` undefined）
+                    let proto_val = self.pop()?;
+                    let obj = self.pop()?;
+                    let proto = proto_val.as_object();
+                    if proto_val.is_null() || proto.is_some() {
+                        self.set_prototype_of(obj, proto);
+                    }
+                    self.stack.push(obj);
+                }
                 Op::DelElem => {
                     let key_val = self.pop()?;
                     let key = self.to_property_key(key_val);

@@ -287,6 +287,7 @@ impl Vm {
                 set_elem: jit_set_elem,
                 del_prop: jit_del_prop,
                 get_proto: jit_get_proto,
+                set_proto_obj: jit_set_proto_obj,
                 instanceof: jit_instanceof,
                 in_: jit_in,
                 new_array: jit_new_array,
@@ -866,6 +867,22 @@ pub unsafe extern "C" fn jit_get_proto(ctx: *mut JitCtx, obj: u64) -> u64 {
     };
     refresh_heap(ctx, vm);
     from_vm_value(r)
+}
+
+/// `SET_PROTO_OBJ`：设对象 [[Prototype]]（值为对象或 null；其余忽略），
+/// 返回原对象（栈语义：弹 proto/obj → 压 obj）。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_set_proto_obj(ctx: *mut JitCtx, obj: u64, proto: u64) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let obj_v = to_vm_value(obj);
+    let proto_v = to_vm_value(proto);
+    if proto_v.is_null() || proto_v.as_object().is_some() {
+        vm.set_prototype_of(obj_v, proto_v.as_object());
+    }
+    obj
 }
 
 /// `INSTANCEOF`：`check_instanceof` 全语义（bool 盒）。

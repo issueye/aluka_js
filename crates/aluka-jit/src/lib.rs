@@ -70,6 +70,7 @@ const GLOBAL_VALUE: i32 = std::mem::offset_of!(GlobalCell, value) as i32;
 /// helper 导入符号名（经 `symbol_lookup` 解析到 VM 的 `extern "C"` 函数）。
 pub(crate) const HELPER_GET_PROPERTY: &str = "aluka_jit.get_property";
 pub(crate) const HELPER_SET_PROPERTY: &str = "aluka_jit.set_property";
+pub(crate) const HELPER_SET_PROTO_OBJ: &str = "aluka_jit.set_proto_obj";
 pub(crate) const HELPER_ALLOC_ORDINARY: &str = "aluka_jit.alloc_ordinary";
 pub(crate) const HELPER_ADD: &str = "aluka_jit.add";
 pub(crate) const HELPER_EQ: &str = "aluka_jit.eq";
@@ -1112,6 +1113,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
         match name {
             HELPER_GET_PROPERTY => Some(v.get_property as *const u8),
             HELPER_SET_PROPERTY => Some(v.set_property as *const u8),
+            HELPER_SET_PROTO_OBJ => Some(v.set_proto_obj as *const u8),
             HELPER_ALLOC_ORDINARY => Some(v.alloc_ordinary as *const u8),
             HELPER_ADD => Some(v.add as *const u8),
             HELPER_EQ => Some(v.eq as *const u8),
@@ -1187,6 +1189,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     }
     let id_get_prop = decl(&mut module, HELPER_GET_PROPERTY, &sig_ivu)?;
     let id_set_prop = decl(&mut module, HELPER_SET_PROPERTY, &sig_ivuv)?;
+    let id_set_proto = decl(&mut module, HELPER_SET_PROTO_OBJ, &sig_ivv)?;
     let id_alloc = decl(&mut module, HELPER_ALLOC_ORDINARY, &sig_v)?;
     let id_add = decl(&mut module, HELPER_ADD, &sig_ivv)?;
     let id_eq = decl(&mut module, HELPER_EQ, &sig_ivv)?;
@@ -1262,6 +1265,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_set_prop = module.declare_func_in_func(id_set_prop, cg.fb.func);
     let fref_alloc = module.declare_func_in_func(id_alloc, cg.fb.func);
     let fref_add = module.declare_func_in_func(id_add, cg.fb.func);
+    let fref_set_proto = module.declare_func_in_func(id_set_proto, cg.fb.func);
     let fref_eq = module.declare_func_in_func(id_eq, cg.fb.func);
     let fref_strict_eq = module.declare_func_in_func(id_strict_eq, cg.fb.func);
     let fref_tonum = module.declare_func_in_func(id_tonum, cg.fb.func);
@@ -2112,6 +2116,22 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             Op::CloseUpvalues => {
                 // 机器帧不创建 open 单元格（MakeClosure 未接入前无 open 态），
                 // 且 open_upvalues 的生命周期由解释器帧管理——机器侧无操作
+            }
+            Op::SetProtoObj => {
+                // 对象字面量 __proto__：弹 proto 与 obj，设 [[Prototype]]，
+                // 压回 obj（helper 回退，语义与解释器同源）
+                let proto_val = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let obj = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                value_stack.push(emit_helper(
+                    &mut cg,
+                    fref_set_proto,
+                    ctx_val,
+                    &[obj, proto_val],
+                ));
             }
             Op::SetGetterObj | Op::SetSetterObj => {
                 // 操作数 = 名字常量下标；peek obj、pop fn

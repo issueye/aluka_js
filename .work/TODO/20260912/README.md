@@ -1301,3 +1301,27 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 884 → 889**（理论上限 892 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=889 ✓、conformance 差分 ✓；解构族 5 例转绿。
+
+## 51. M7.2 轮卅六：新 ISA 操作码 SET_PROTO_OBJ（对象字面量 __proto__）（20260913）
+
+- **动机**：对象字面量 `{ __proto__: v }` 的规范语义是**设 [[Prototype]]**
+  而非建自有属性——`Object.getPrototypeOf(o) === proto` 为 true 且
+  `getOwnPropertyDescriptor(o,'__proto__')` 为 undefined；此前一律落
+  SetPropObj 建自有属性（S11.1.5 / __proto__ 桶 5 例全灭）；
+- **ISA 扩容**（第 107 条操作码，编码 106 追加保持既有编码稳定）：
+  op.rs 全表登记（枚举/from_opcode/name/operand 种类/操作数字节数/
+  stack_effect 净 -1/pops 2/detailed/纯压栈判定×3）；verifier 通过
+  （**不入 requires_string 组**——操作数为 None，避免常量类型误判）；
+  JIT 侧全链路（ctx.rs 类型别名 SetProtoObjFn + vtable 字段、
+  jit_helpers 实现 jit_set_proto_obj、lib.rs 常量/签名/vtable 分派/
+  FuncRef 声明 + 机器码臂 helper 回退）；
+- **编译器**：codegen 对象字面量字面量键 `__proto__` 发 SetProtoObj；
+- **排障记录**：stack_effect 初填 -2（真实为弹 2 压回 1 净 -1）、
+  pops 初填 0（真实 2）导致 express e2e 4 模块 V8 汇合点栈深校验失败——
+  两处修正后回绿；同表重复插入被 clippy unreachable_pattern 拦下；
+- **净效果**：t262 959 → **961/1154**（失败 108 → 106）；
+  **M72_FLOOR 889 → 891**（理论上限 894 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=891 ✓、conformance 差分 ✓、jitbench 3/3 ✓、
+  express e2e ✓（栈深校验回归已修）、GC 压力 0 失败 ✓；
+  __proto__ 探针 5/5 对齐 Node 22。
