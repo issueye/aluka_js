@@ -658,10 +658,8 @@ impl<'src> Lexer<'src> {
                 {
                     self.pos += 1;
                 }
-                let raw_digits: String = self.src[start_digits..self.pos]
-                    .chars()
-                    .filter(|&c| c != '_')
-                    .collect();
+                let raw_scanned = self.src[start_digits..self.pos].to_owned();
+                let raw_digits: String = raw_scanned.chars().filter(|&c| c != '_').collect();
                 // BigInt 后缀（`0xFFn`）：进制数字循环按 alphanumeric 吞字，
                 // 后缀 `n`/`N` 落在 raw_digits 尾部（十六进制下 n 非法数字位，
                 // 二/八进制同）——剥后缀并以 `0x` 形态整串作 BigInt 载荷；
@@ -673,22 +671,32 @@ impl<'src> Lexer<'src> {
                     .map(|digits| (digits, format!("0{}{digits}", radix_char as char)));
                 if let Some((digits, payload)) = bigint_payload {
                     // 合法性（M7.2 语料）：数字位必须属于该进制；分隔符不得
-                    // 位于首尾或连续
+                    // 位于首尾或连续——位置校验必须基于**原始扫描串**
+                    //（raw_digits 已滤除 `_`，其上校验永不命中，
+                    // `0b0_n` 曾被静默接受）
+                    let raw_no_suffix = raw_scanned
+                        .strip_suffix('n')
+                        .or_else(|| raw_scanned.strip_suffix('N'))
+                        .unwrap_or(&raw_scanned);
+                    if raw_no_suffix.starts_with('_')
+                        || raw_no_suffix.ends_with('_')
+                        || raw_no_suffix.contains("__")
+                        || raw_no_suffix.is_empty()
+                    {
+                        return Token {
+                            kind: TokenKind::LexError(
+                                "BigInt 字面量的数字分隔符位置非法".to_owned(),
+                            ),
+                            text: self.src[start..self.pos].to_owned(),
+                            start,
+                        };
+                    }
                     if digits
                         .chars()
                         .any(|ch| ch != '_' && ch.to_digit(radix_from_char(radix_char)).is_none())
                     {
                         return Token {
                             kind: TokenKind::LexError("BigInt 字面量含无效进制数字".to_owned()),
-                            text: self.src[start..self.pos].to_owned(),
-                            start,
-                        };
-                    }
-                    if digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
-                        return Token {
-                            kind: TokenKind::LexError(
-                                "BigInt 字面量的数字分隔符位置非法".to_owned(),
-                            ),
                             text: self.src[start..self.pos].to_owned(),
                             start,
                         };

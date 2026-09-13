@@ -1063,3 +1063,16 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=826 ✓、conformance 差分 ✓；async 早错误 5 负例 +
   2 正例探针逐项对齐 Node 22。
+
+## 35. M7.2 轮二十：BigInt 分隔符位置校验复活（20260913）
+
+- **根因**：进制扫描先 `filter(|c| c != '_')` 再做分隔符位置校验——
+  raw 串已无 `_`，首尾/连续分隔符检查**永不命中**（死代码），
+  `0b0_n`/`0xFF_n` 等被静默接受为合法 BigInt；
+- **修复**：保留原始扫描串 `raw_scanned`，位置校验（首/尾 `_`、连续
+  `__`、空数字串）基于其上执行；数字位合法性仍用滤除后串；
+- **净效果**：t262 896 → **902/1154**（失败 171 → 165）；
+  **M72_FLOOR 826 → 832**（理论上限 835 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=832 ✓、conformance 差分 ✓；分隔符 4 负例 +
+  3 正例（0b101/0xFFn/1_000n）对齐 Node 22。
