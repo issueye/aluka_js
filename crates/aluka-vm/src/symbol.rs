@@ -106,14 +106,22 @@ impl Vm {
     }
 
     /// `Symbol([description])`：分配唯一符号。
-    pub(crate) fn symbol_create(&mut self, args: &[Value]) -> Value {
+    pub(crate) fn symbol_create(
+        &mut self,
+        args: &[Value],
+    ) -> Result<Value, crate::interpreter::VmError> {
+        // 规范：description 若为符号 → TypeError（Symbol(sym) 非法——
+        // 符号不能经 ToString 转描述，S19.4.1.1 族）
         let description = match args.first() {
             None => String::new(),
             Some(v) if v.is_undefined() => String::new(),
+            Some(v) if self.is_symbol(*v) => {
+                return Err(self.type_error("Cannot convert a Symbol value to a string"));
+            }
             Some(v) => self.format_value(*v),
         };
         let id = NEXT_SYM_ID.fetch_add(1, Ordering::Relaxed);
-        Value::Object(self.alloc_symbol(id, description))
+        Ok(Value::Object(self.alloc_symbol(id, description)))
     }
 
     /// `Symbol.for(key)`：注册表幂等分配。
@@ -121,10 +129,15 @@ impl Vm {
         &mut self,
         args: &[Value],
     ) -> Result<Value, crate::interpreter::VmError> {
-        let key = args
-            .first()
-            .map(|v| self.format_value(*v))
-            .unwrap_or_default();
+        // 规范：Symbol.for(key) 的 key 必须为 string（否则 TypeError）
+        let key = match args.first() {
+            None => String::new(),
+            Some(v) if v.is_undefined() => "undefined".to_owned(),
+            Some(v) if self.is_symbol(*v) => {
+                return Err(self.type_error("Cannot convert a Symbol value to a string"));
+            }
+            Some(v) => self.format_value(*v),
+        };
         if let Some(handle) = FOR_REGISTRY.with(|c| c.borrow().get(&key).copied()) {
             return Ok(Value::Object(handle));
         }
@@ -140,9 +153,10 @@ impl Vm {
         &mut self,
         args: &[Value],
     ) -> Result<Value, crate::interpreter::VmError> {
+        // 规范：keyFor 参数必须为 symbol（否则 TypeError；非注册符号 → undefined）
         let arg = args.first().copied().unwrap_or(Value::Undefined);
         if !self.is_symbol(arg) {
-            return Ok(Value::Undefined);
+            return Err(self.type_error("Symbol.keyFor requires that 'this' be a Symbol"));
         }
         let registered = match arg.case() {
             ValueCase::Object(r) => FOR_BY_HANDLE.with(|c| c.borrow().get(&r.0).cloned()),

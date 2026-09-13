@@ -167,10 +167,26 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
 
     // Symbol 实例方法面（toString/valueOf/description）
     let sym_p = symbol_proto(vm);
-    for m in ["toString", "valueOf", "description"] {
+    for m in ["toString", "valueOf"] {
         let f = vm.alloc_native_fn(&format!("Symbol.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(sym_p), m, Value::Object(f));
         register_handler(registry, "Symbol.prototype", m, symbol_method_dispatch);
+    }
+    // `description` 是**访问器**（getter；符号返回描述串、非符号 → undefined）
+    {
+        let f = vm.alloc_native_fn("get Symbol.prototype.description");
+        register_handler(
+            registry,
+            "Symbol.prototype",
+            "description",
+            symbol_description_get,
+        );
+        let desc = vm.alloc_ordinary();
+        let _ = vm.set_property(Value::Object(desc), "get", Value::Object(f));
+        let _ = vm.set_property(Value::Object(desc), "enumerable", Value::Boolean(false));
+        let _ = vm.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
+        let _ =
+            vm.ordinary_define_property(Value::Object(sym_p), "description", Value::Object(desc));
     }
     for m in ["for", "keyFor"] {
         let f = vm.alloc_native_fn(&format!("Symbol.prototype.{m}"));
@@ -689,6 +705,26 @@ fn str_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             let msg = vm.alloc_string(format!("String.prototype.{name} is not a function"));
             Err(VmError::Thrown(Value::Object(msg)))
         }
+    }
+}
+
+/// `Symbol.prototype.description` 访问器：符号 → 描述串（无描述 → undefined）；
+/// 非符号 this → undefined（规范 getter 语义，不抛错）。
+pub(crate) fn symbol_description_get(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = super::current_receiver();
+    let ValueCase::Object(r) = this.case() else {
+        return Ok(Value::Undefined);
+    };
+    match vm.heap.get(r.0 as usize) {
+        Some(HeapObject::Symbol { description, .. }) => {
+            if description.is_empty() {
+                Ok(Value::Undefined)
+            } else {
+                let s = vm.alloc_string(description.clone());
+                Ok(Value::Object(s))
+            }
+        }
+        _ => Ok(Value::Undefined),
     }
 }
 

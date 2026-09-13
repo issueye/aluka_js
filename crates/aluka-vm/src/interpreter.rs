@@ -4309,7 +4309,7 @@ impl Vm {
                         self.stack.push(out);
                     } else if self.is_symbol_ctor(callee) {
                         // Symbol([description])：唯一符号原语
-                        let sym = self.symbol_create(args);
+                        let sym = self.symbol_create(args)?;
                         self.stack.push(sym);
                     } else if let Some(r) = callee.as_object() {
                         let callee_ref = r.0 as usize;

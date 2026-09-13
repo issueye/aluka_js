@@ -1343,3 +1343,17 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=894 ✓、conformance 差分 ✓、jitbench 3/3 ✓；
   生成器/constructor 探针 6/6 对齐 Node 22。
+
+## 53. M7.2 轮卅九：Symbol 构造与访问器语义（20260913）
+
+- **Symbol(description)**：description 为符号 → TypeError
+  （Cannot convert a Symbol value to a string；symbol_create 改带错误通道）；
+- **new Symbol()** → TypeError（Symbol is not a constructor）；
+- **Symbol.keyFor(x)**：非符号 → TypeError（此前静默 undefined）；
+- **Symbol.for(key)**：key 为符号 → TypeError；
+- **Symbol.prototype.description 访问器**：getter 语义（符号 → 描述串、
+  无描述/非符号 → undefined）——经 accessor 描述符定义；
+- **净效果**：t262 964 → **966/1154**（失败 103 → 101）；
+  **M72_FLOOR 894 → 896**（理论上限 899 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=896 ✓、conformance 差分 ✓；Symbol 探针 6/6 对齐。

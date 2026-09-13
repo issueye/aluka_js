@@ -218,7 +218,7 @@ impl Vm {
             }
             // Symbol([description])：无 new 直调 = 创建符号
             if ctor_name.as_deref() == Some("Symbol") {
-                return Ok(self.symbol_create(args));
+                return self.symbol_create(args);
             }
             // Date(value) 无 new 直调等价 new Date(value)
             if ctor_name.as_deref() == Some("Date") {
@@ -385,6 +385,10 @@ impl Vm {
                             return Err(VmError::Thrown(Value::Object(err)));
                         }
                         return Ok(Value::Object(self.alloc_array(args.to_vec())));
+                    }
+                    // Symbol 不可 new（规范 TypeError：Symbol is not a constructor）
+                    "Symbol" => {
+                        return Err(self.type_error("Symbol is not a constructor"));
                     }
                     "Object" => {
                         // 规范：Object(v) 与 new Object(v) 同型——原始值造
