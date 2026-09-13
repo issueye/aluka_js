@@ -5063,9 +5063,13 @@ impl Vm {
                 }
                 Op::SpreadObject => {
                     // { ...src }：把 src 自有属性逐个写入栈顶 dst（dst 不弹出）
+                    // 规范 CopyDataProperties：键来自自有可枚举面，**值经
+                    // Get 取**——访问器（getter）在此调用（
+                    // `{...{get y(){return 2}}}` → y:2，而非拷贝 getter 函数）
                     let src = self.pop()?;
                     let dst = self.peek()?;
-                    for (k, v) in self.own_properties(src) {
+                    for (k, _) in self.own_properties(src) {
+                        let v = self.get_property(src, &k)?;
                         self.set_property(dst, &k, v)?;
                     }
                 }

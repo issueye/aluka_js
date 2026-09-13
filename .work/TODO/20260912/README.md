@@ -1994,3 +1994,42 @@ $ cargo test -p aluka-jit --release --test jitbench
   对象字面量 async/生成器方法（__proto__-permitted-dup、accessor-yield
   2 例）、spread getter 求值序、asi/comments torture 2 例（超时）、
   Array length 2³²−1（4e6 上限为已登记差异）。
+
+## 87. M7.2 轮七十三：yield 标识符化 / 生成器语境跟踪 / async 对象方法 / spread getter / fromCharCode ToNumber / CR 行终结符（20260914）
+
+- **五桶修复（t262 1057 → 1061/1154，失败 10 → 6，+4 零回归）**：
+  1. **yield 标识符化 + 生成器语境跟踪**（accessor-name-computed-yield-id）：
+     Parser 增 in_generator 状态（parse_function_def 传参设置/恢复，5 调用
+     点同步）；parse_assignment 的 yield 运算符以 in_generator 门控——非
+     生成器语境 `yield` 是普通标识符（`var yield = 'y'`、计算访问器键
+     `get [yield]()`；此前被误解析为 yield 运算符，挂起信号逃逸到顶层
+     致 VM 报错/超时）；var 声明接受 yield 变量名；
+  2. **async/生成器对象方法**（object-__proto__-permitted-dup）：
+     对象字面量方法简写补 async 修饰符（`async foo() {}`——async 后随
+     方法名而非 : , } ( => 才构成修饰符）与生成器前缀（`*foo() {}` /
+     `async *foo() {}`）；注意 `async` 为 Keyword token（Ident 匹配不
+     生效）；VM async 方法经既有 tmpl.is_async 路径包装 Promise；
+  3. **spread getter 调用**（array-spread-obj-mult-spread-getter）：
+     SpreadObject 改规范 CopyDataProperties 语义——键取自有可枚举面，
+     **值经 Get 取**（`{...{get y(){return 2}}}` → y:2，此前拷贝 getter
+     函数本身）；
+  4. **fromCharCode/fromCodePoint ToNumber**（comments-S7.4_A5）：
+     字符串参数按 JS 数字字面量解析（`String.fromCharCode("0x41")` →
+     'A'；此前字符串恒 NaN → 全部产出 U+FFFD）——该用例逐码点构造
+     `eval("//var " + xx + "yy = -1")`，0x000A 形态此前因 xx 变 NUL 而
+     注释吞掉赋值语句；
+  5. **CR 行终结符**（同上用例 0x000D 形态）：单行注释终止条件补 CR
+     （`//c<CR>code` 的 code 是代码非注释——LF/LS/PS 已认、CR 漏）；
+- **M72_FLOOR 987 → 991**（1061 通过/6 失败 → 上限 994，留 3 余量）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓（清理 to_number 未用导入）、
+  workspace 92 目标全 ok ✓、t262 FLOOR=991 ✓（1061/1154，87 invalid）、
+  conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
+  ALUKA_GC_STRESS=8（cli+vm）0 失败 ✓；
+- 探针对齐：`o.asyncFoo()`/`g.genNext()`/`agNext`、yield 计算键 get/set、
+  spread getter 求值（1/2）、fromCharCode 十六进制/换行/CR——全部与
+  Node 22 逐项一致；
+- **余量 6 例（均架构项）**：direct eval 转义闭包绑定共享 ×2
+  （object-11.1.5-0-1/0-2）、async generator 默认参数同步求值 ×1
+  （默认参数为函数体 prologue，生成器惰性执行）、生成器内 yield 计算
+  键 ×1（accessor-yield-expr）、asi torture 超时 ×1（S7.9_A2）、
+  Array length 2³²−1 ×1（4e6 上限为已登记差异）。

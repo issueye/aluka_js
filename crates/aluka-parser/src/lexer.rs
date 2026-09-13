@@ -236,7 +236,10 @@ impl<'src> Lexer<'src> {
             if self.pos + 1 < bytes.len() && bytes[self.pos] == b'/' && bytes[self.pos + 1] == b'/'
             {
                 self.pos += 2;
-                while self.pos < bytes.len() && bytes[self.pos] != b'\n' {
+                // LF 与 CR 均为行终结符（`//c<CR>code` 的 code 是代码非注释
+                // ——S7.4 注释语料 0x000D 形态）
+                while self.pos < bytes.len() && bytes[self.pos] != b'\n' && bytes[self.pos] != b'\r'
+                {
                     // LS/PS（E2 80 A8/A9）同为行终结符：注释在此终止，
                     // 其后内容为代码（invalid-comment-single-ls/ps 负例）
                     if bytes[self.pos] == 0xE2

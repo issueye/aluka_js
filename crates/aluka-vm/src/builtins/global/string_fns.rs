@@ -1,13 +1,15 @@
 //! String 构造器静态方法：fromCharCode / fromCodePoint。
 
 use crate::interpreter::{Vm, VmError};
-use crate::ops::to_number;
 use crate::value::Value;
 
 pub(crate) fn string_from_char_code(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut s = String::with_capacity(args.len());
     for arg in args {
-        let code = to_number(*arg) as u32;
+        // ToNumber 全语义：字符串参数按 JS 数字字面量解析（十六进制
+        // "0x41" 形态——`String.fromCharCode("0x41")` → 'A'；此前字符串
+        // 恒 NaN → 全部产出 U+FFFD）
+        let code = vm.to_number_value(*arg) as u32;
         if code < 0x10000 {
             s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
         } else if code < 0x110000 {
@@ -25,7 +27,7 @@ pub(crate) fn string_from_char_code(vm: &mut Vm, args: &[Value]) -> Result<Value
 pub(crate) fn string_from_code_point(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut s = String::with_capacity(args.len());
     for arg in args {
-        let code = to_number(*arg) as u32;
+        let code = vm.to_number_value(*arg) as u32;
         s.push(char::from_u32(code).unwrap_or('\u{FFFD}'));
     }
     Ok(Value::Object(vm.alloc_string(s)))

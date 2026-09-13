@@ -30,6 +30,9 @@ pub struct Parser<'src> {
     /// 程序级 strict 语义（首 token 为 "use strict" 指令时置位）——
     /// 简单形参名重复（StrictFormalParameters）等 strict 早错误判定用
     strict: bool,
+    /// 是否处于生成器函数体内（yield 为生成器运算符；非生成器语境
+    /// `yield` 是普通标识符——`var yield = 'y'` / `get [yield]()`）
+    in_generator: bool,
 }
 
 /// 解析源码文本为 AST 语法树。
@@ -81,6 +84,7 @@ impl<'src> Parser<'src> {
             errors: Vec::new(),
             in_async: false,
             strict: false,
+            in_generator: false,
             super_disallowed: false,
         }
     }
@@ -636,7 +640,7 @@ impl<'src> Parser<'src> {
             // 运行时 ReferenceError: async is not defined）
             if !self.nl_before_current() && self.match_keyword("function") {
                 let is_generator = self.match_punct("*");
-                let mut def = self.parse_function_def(true);
+                let mut def = self.parse_function_def(true, is_generator);
                 def.is_async = true;
                 def.is_generator = is_generator;
                 return Self::at(line, Stmt::Function(def));
@@ -646,7 +650,7 @@ impl<'src> Parser<'src> {
 
         if self.match_keyword("function") {
             let is_generator = self.match_punct("*");
-            let mut def = self.parse_function_def(false);
+            let mut def = self.parse_function_def(false, is_generator);
             def.is_generator = is_generator;
             return Self::at(line, Stmt::Function(def));
         }
@@ -867,10 +871,12 @@ impl<'src> Parser<'src> {
         }
 
         // `from` 为上下文关键字（import ... from），可作合法变量名
-        // （mime-types 等真实包存在 `var from = ...`）
+        // （mime-types 等真实包存在 `var from = ...`）；`yield` 在非生成器
+        // 语境同为普通标识符（`var yield = 'y'` + 计算访问器键
+        // `get [yield]()` 语料形态）
         let name = match self.advance().kind {
             TokenKind::Ident(id) => id,
-            TokenKind::Keyword(kw) if kw == "from" => kw,
+            TokenKind::Keyword(kw) if kw == "from" || kw == "yield" => kw,
             other => {
                 let message = format!("var/let/const 声明缺少变量名，实为 {other:?}");
                 self.record_error(message);
@@ -913,7 +919,7 @@ impl<'src> Parser<'src> {
         }
     }
 
-    fn parse_function_def(&mut self, is_async: bool) -> FunctionDef {
+    fn parse_function_def(&mut self, is_async: bool, is_generator: bool) -> FunctionDef {
         let name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
             self.advance();
             // async 函数绑定名不得为 arguments/eval（规范早错误；
@@ -932,6 +938,9 @@ impl<'src> Parser<'src> {
         let mut prologue_stmts = Vec::new();
         let outer_async = self.in_async;
         self.in_async = is_async;
+        // 生成器语境：体内 `yield` 为生成器运算符（存续到体解析结束）
+        let outer_generator = self.in_generator;
+        self.in_generator = is_generator;
         // 普通函数无 HomeObject：形参默认值与函数体内 super 均 SyntaxError
         let outer_super = self.super_disallowed;
         self.super_disallowed = true;
@@ -1063,6 +1072,7 @@ impl<'src> Parser<'src> {
             body = prologue_stmts;
         }
         self.in_async = outer_async;
+        self.in_generator = outer_generator;
         self.super_disallowed = outer_super;
         // 体**顶层** let/const 不得与形参重名（`foo(bar){ let bar; }` →
         // SyntaxError；嵌套块内 let 遮蔽合法，不在此查）
@@ -1232,7 +1242,11 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_assignment(&mut self) -> Expr {
-        if self.match_keyword("yield") {
+        // 生成器语境的 `yield` 才是生成器运算符；非生成器语境 `yield`
+        // 是普通标识符（此前顶层/普通函数内 `get [yield]()` 被误解析为
+        // yield 运算符——挂起信号逃逸到顶层致 VM 报错）
+        if self.check_keyword("yield") && self.in_generator {
+            self.advance();
             let delegate = self.match_punct("*");
             let value = if !self.check_punct(";")
                 && !self.check_punct(")")
@@ -1815,7 +1829,7 @@ impl<'src> Parser<'src> {
                     }
                     "function" => {
                         let is_generator = self.match_punct("*");
-                        let mut def = self.parse_function_def(false);
+                        let mut def = self.parse_function_def(false, is_generator);
                         def.is_generator = is_generator;
                         Expr::Function(def)
                     }
@@ -1824,7 +1838,7 @@ impl<'src> Parser<'src> {
                         // 成修饰符（换行后是 ASI 两语句——语句级同规）
                         if !self.nl_before_current() && self.match_keyword("function") {
                             let is_generator = self.match_punct("*");
-                            let mut def = self.parse_function_def(true);
+                            let mut def = self.parse_function_def(true, is_generator);
                             def.is_async = true;
                             def.is_generator = is_generator;
                             Expr::Function(def)
@@ -2078,6 +2092,28 @@ impl<'src> Parser<'src> {
                     }
 
                     // 2. 普通属性、计算属性或方法简写
+                    // async 方法修饰符：`async foo() {}` / `async *foo() {}`
+                    // （async 后随方法名而非 : , } ( => 才构成修饰符）；
+                    // 生成器前缀 `*foo() {}` 同点支持
+                    let mut m_is_async = false;
+                    let mut m_is_generator = false;
+                    if self.check_keyword("async")
+                        && !self.peek_ahead(1).is_punct(":")
+                        && !self.peek_ahead(1).is_punct(",")
+                        && !self.peek_ahead(1).is_punct("}")
+                        && !self.peek_ahead(1).is_punct("(")
+                        && !self.peek_ahead(1).is_punct("=>")
+                    {
+                        self.advance();
+                        m_is_async = true;
+                        m_is_generator = self.match_punct("*");
+                    } else if self.check_punct("*")
+                        && !self.peek_ahead(1).is_punct("(")
+                        && !self.peek_ahead(1).is_punct(":")
+                    {
+                        self.advance();
+                        m_is_generator = true;
+                    }
                     let key = self.parse_prop_key();
                     if self.match_punct("(") {
                         let mut params = Vec::new();
@@ -2115,8 +2151,8 @@ impl<'src> Parser<'src> {
                                 params,
                                 is_var_args,
                                 body,
-                                is_async: false,
-                                is_generator: false,
+                                is_async: m_is_async,
+                                is_generator: m_is_generator,
                                 is_arrow: false,
                             })),
                         });
@@ -2501,7 +2537,7 @@ impl<'src> Parser<'src> {
         if self.match_keyword("default") {
             let expr = if self.match_keyword("function") {
                 let is_generator = self.match_punct("*");
-                let mut def = self.parse_function_def(false);
+                let mut def = self.parse_function_def(false, is_generator);
                 def.is_generator = is_generator;
                 Expr::Function(def)
             } else {
