@@ -1325,6 +1325,12 @@ impl<'src> Parser<'src> {
             if op == "++" || op == "--" {
                 self.advance();
                 let sub = self.parse_unary();
+                // `++;` 等前缀缺操作数形态：primary 兜底臂吞掉意外 token
+                // 返回 Undefined——此处补记 SyntaxError（受限产生式负例
+                // `x\n++;` 依赖该报错；容错解析其余行为不受影响）
+                if matches!(sub, Expr::Undefined) {
+                    self.record_error("SyntaxError: ++/-- 缺少操作数".to_owned());
+                }
                 return Expr::Update {
                     op,
                     target: Box::new(sub),
@@ -1440,16 +1446,24 @@ impl<'src> Parser<'src> {
         }
 
         // 后缀自增自减：i++ 或 i--
-        if let TokenKind::Punct(p) = &self.peek().kind {
-            if p == "++" || p == "--" {
-                let op = p.clone();
-                self.advance();
-                return Expr::Update {
-                    op,
-                    target: Box::new(expr),
-                    prefix: false,
-                };
+        // 受限产生式：后缀 ++/-- 前不得有行终止符——换行后的 ++/-- 不
+        // 作为后缀继续解析（表达式在此结束，ASI 于 eat_semi 生效；++
+        // 留给下一语句作前缀，`var z = 1\n++z` 合法；而 `x\n++;` 因
+        // `++` 无操作数由后续解析自然报 SyntaxError——S7.9_A5.x 族）
+        let post_op = match &self.peek().kind {
+            TokenKind::Punct(p) if p == "++" || p == "--" => Some(p.clone()),
+            _ => None,
+        };
+        if let Some(op) = post_op {
+            if self.nl_before_current() {
+                return expr;
             }
+            self.advance();
+            return Expr::Update {
+                op,
+                target: Box::new(expr),
+                prefix: false,
+            };
         }
 
         expr

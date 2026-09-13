@@ -988,3 +988,22 @@ $ cargo test -p aluka-jit --release --test jitbench
 - commit 7fb8d89（fix(m7.2): 轮十六——BigInt 算术切片 + Error 子类独立
   原型重构），9 files changed（bigdec/call/eval/interpreter/ops/prims/
   property/worker_clone + TODO）。
+
+## 32. M7.2 轮十七：后缀 ++/-- 受限产生式（ASI 语义）（20260913）
+
+- **根因**：parse_postfix 对 `++`/`--` 无条件作后缀解析——`x\n++;`
+  被容错接受（规范：后缀 ++/-- 为受限产生式，换行后不构成后缀更新，
+  该程序必须报 SyntaxError）；同时前缀 `++` 缺操作数（`++;`）被
+  parse_expr_primary 兜底臂（吞意外 token 返回 Undefined）静默接受；
+- **修复（两臂）**：
+  - parse_postfix：`++`/`--` 前有行终止符时**不作后缀**——表达式在
+    此结束，ASI 于 eat_semi 生效，`++` 留给下一语句作前缀
+    （`var z = 1\n++z` 合法，node 22 实测 2/2）；`x\n++;` 因 `++`
+    无操作数由前缀校验报 SyntaxError；
+  - parse_unary 前缀 `++`/`--`：操作数解析为 Undefined（兜底臂产物）
+    时补记 SyntaxError（`++;` 报错）；
+- **净效果**：t262 874 → **879/1154**（失败清单 194 → 188，$DONOTEVALUATE
+  parse 负例桶转绿 6 例、零误伤）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  conformance 差分 ✓、GC 压力 0 失败 ✓；ASI 四向探针（换行后缀报错/
+  同行后缀通过/换行前缀通过/裸 ++ 报错）逐项对齐 Node 22。
