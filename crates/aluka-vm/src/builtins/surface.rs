@@ -542,6 +542,34 @@ fn obj_to_string_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
             // Date 实例（`_isDate` 标记；Node 的 tag 来自 [[DateValue]] 内部槽，
             // 而非 `Date.prototype[Symbol.toStringTag]`——后者在 Node 22 为 undefined）
             Some(HeapObject::Ordinary { .. }) if vm.has_own_slot(r.0 as usize, "_isDate") => "Date",
+            // 包装实例：tag 来自内部数据槽（delete Boolean.prototype.toString
+            // 后 obj.toString() 沿链命中 Object.prototype.toString，
+            // `new Boolean()` → "[object Boolean]"）
+            Some(HeapObject::Ordinary { .. })
+                if vm.own_value(r.0 as usize, "[[BooleanData]]").is_some() =>
+            {
+                "Boolean"
+            }
+            Some(HeapObject::Ordinary { .. })
+                if vm.own_value(r.0 as usize, "[[NumberValue]]").is_some() =>
+            {
+                "Number"
+            }
+            Some(HeapObject::Ordinary { .. })
+                if vm.own_value(r.0 as usize, "[[StringValue]]").is_some() =>
+            {
+                "String"
+            }
+            Some(HeapObject::Ordinary { .. })
+                if vm.own_value(r.0 as usize, "[[SymbolData]]").is_some() =>
+            {
+                "Symbol"
+            }
+            Some(HeapObject::Ordinary { .. })
+                if vm.own_value(r.0 as usize, "[[BigIntData]]").is_some() =>
+            {
+                "BigInt"
+            }
             _ => "Object",
         },
     };
@@ -659,19 +687,21 @@ pub(crate) fn bool_method_dispatch(vm: &mut Vm, _args: &[Value]) -> Result<Value
         .unwrap_or(&full)
         .to_owned();
     let this = super::current_receiver();
+    // thisBooleanValue：仅原始布尔或 [[BooleanData]] 包装实例合法——
+    // 其余（含 String 包装借道）一律 TypeError（S15.6.4.2_A2 族）
     let v = match this.case() {
         ValueCase::Boolean(b) => b,
-        ValueCase::Object(r) => match vm.heap.get(r.0 as usize) {
-            Some(HeapObject::Ordinary { .. }) => vm
-                .own_value(r.0 as usize, "[[BooleanValue]]")
-                .and_then(|v| match v.case() {
-                    ValueCase::Boolean(b) => Some(b),
-                    _ => None,
-                })
-                .unwrap_or(false),
-            _ => false,
-        },
-        _ => false,
+        ValueCase::Object(r) => vm
+            .own_value(r.0 as usize, "[[BooleanData]]")
+            .or_else(|| vm.own_value(r.0 as usize, "[[BooleanValue]]"))
+            .and_then(|v| match v.case() {
+                ValueCase::Boolean(b) => Some(b),
+                _ => None,
+            })
+            .ok_or_else(|| vm.type_error("Boolean.prototype method called on non-boolean"))?,
+        _ => {
+            return Err(vm.type_error("Boolean.prototype method called on non-boolean"));
+        }
     };
     match name.as_str() {
         "toString" => Ok(Value::Object(

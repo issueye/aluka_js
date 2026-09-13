@@ -1152,3 +1152,19 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=853 ✓、conformance 差分 ✓、GC 压力 0 失败 ✓；
   探针（LS 注释/`-->` 三向/形参重名）逐项对齐 Node 22。
+
+## 41. M7.2 轮廿六：Object.prototype.toString 槽位标签 + Boolean this 检查（20260913）
+
+- **obj_to_string_tag 补 wrapper 内部槽标签**：[[BooleanData]]/
+  [[NumberValue]]/[[StringValue]]/[[SymbolData]]/[[BigIntData]] →
+  "[object Boolean/Number/String/Symbol/BigInt]"——
+  `delete Boolean.prototype.toString` 后 `obj.toString()` 沿链命中
+  Object.prototype.toString 仍须产正确标签（S15.6.2.1_A4 族）；
+- **Boolean.prototype.{toString,valueOf} this 检查**：仅原始布尔或
+  [[BooleanData]]/[[BooleanValue]] 包装实例合法，其余（含 String 包装
+  借道 `s.myToString = Boolean.prototype.toString`）→ TypeError
+  （S15.6.4.2_A2 族）；
+- **净效果**：t262 923 → **927/1154**（失败 144 → 140）；
+  **M72_FLOOR 853 → 857**（理论上限 860 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=857 ✓、conformance 差分 ✓；Boolean 7 探针对齐 Node 22。
