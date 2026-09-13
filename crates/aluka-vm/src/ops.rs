@@ -106,6 +106,24 @@ pub fn parse_js_number(s: &str) -> f64 {
             .map(|v| v as f64)
             .unwrap_or(f64::NAN);
     }
+    // 规范只认精确的 "Infinity"（含前导 +/-）；Rust 的 f64::parse 还接受
+    // "INFINITY"/"inf"/"infinity"/"NaN" 等——先拦下这些宽松形态，避免
+    // `Number("INFINITY")` 误得 Infinity（应为 NaN，S15.7.1.1 族）
+    let (sign_ok, body) = match t.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (true, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let _ = sign_ok;
+    let lower = body.to_ascii_lowercase();
+    if lower.starts_with("inf") || lower.starts_with("nan") {
+        return if t == "Infinity" || t == "+Infinity" {
+            f64::INFINITY
+        } else if t == "-Infinity" {
+            f64::NEG_INFINITY
+        } else {
+            f64::NAN
+        };
+    }
     t.parse::<f64>().unwrap_or(f64::NAN)
 }
 
@@ -535,6 +553,11 @@ impl Vm {
             return Ok(self.to_number_value(w));
         }
         let p = self.to_primitive_number(v)?;
+        // ToNumber(Symbol) → TypeError（symbol 在 to_primitive_number 中
+        // 原样返回，此处须拦——`Number(Symbol())`/`+Symbol()` 均抛）
+        if self.is_symbol(p) {
+            return Err(self.type_error("Cannot convert a Symbol value to a number"));
+        }
         Ok(self.to_number_value(p))
     }
 

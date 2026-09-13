@@ -192,12 +192,14 @@ impl Vm {
             if ctor_name.as_deref() == Some("Array") {
                 return self.do_construct(callee, args);
             }
-            // Number(value)/Boolean(value)：转换为原始值（不加 new 语义）；
-            // `Number()` 无参按规范返回 +0（此前落 undefined → NaN）
+            // Number(value)：无 new 直调 = ToNumeric 全语义（对象经 ToPrimitive
+            // hint number、wrapper 槽直解；符号/无可原始化 → TypeError；
+            // 无参 → +0）。此前用 to_number_value（&self）不做 ToPrimitive，
+            // `Number({valueOf:()=>1})` 得 NaN（S8.12.8 / S9.1 族）
             if ctor_name.as_deref() == Some("Number") {
                 let v = match args.first() {
                     None => 0.0,
-                    Some(v) => self.to_number_value(*v),
+                    Some(v) => self.numeric_operand(*v)?,
                 };
                 return Ok(Value::Number(v));
             }

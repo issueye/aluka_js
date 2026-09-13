@@ -1459,3 +1459,18 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=922 ✓、conformance 差分 ✓（两例回归已修）、jitbench 3/3 ✓；
   原型链/instanceof 探针 9/9 对齐 Node 22。
+
+## 60. M7.2 轮卌六：Number() ToNumeric 全语义 + Infinity 严格解析（20260913）
+
+- **Number(value) 升级为 ToNumeric 全语义**（原用 &self 的 to_number_value，
+  不做 ToPrimitive）：对象经 ToPrimitive hint number（自定义 valueOf 生效）、
+  wrapper 槽直解、无参 → +0；新增 numeric_operand 的符号守卫
+  （ToNumber(Symbol) → TypeError；`Number(Symbol())`/`+Symbol()` 均抛）；
+- **字符串 "Infinity" 严格化**：Rust f64::parse 接受 "INFINITY"/"inf"/
+  "infinity"/"NaN" 等宽松形态，先拦下——只认精确
+  `Infinity`/`+Infinity`/`-Infinity`，其余含 inf/nan 前缀一律 NaN
+  （`Number("INFINITY")` 应为 NaN，S15.7.1.1 族）；
+- **净效果**：t262 992 → **996/1154**（失败 75 → 71）；
+  **M72_FLOOR 922 → 926**（理论上限 929 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=926 ✓、conformance 差分 ✓；Number/Infinity 探针 12/12 对齐。
