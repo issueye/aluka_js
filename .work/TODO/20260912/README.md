@@ -1684,3 +1684,25 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=954 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
   GC 压力 0 失败 ✓；super 探针（sm/sm2/sm3）对齐 Node 22。
+
+## 72. M7.2 轮五十八：对象字面量方法 HomeObject（super.m）（20260913）
+
+- **对象字面量方法的 `super.m()` 此前编译为 PushUndefined**——
+  MethodCall 的 Super receiver 分支只实现了类机制（`__home_proto_{cid}__`），
+  对象字面量走 else 得 undefined → `Cannot read properties of undefined
+  (reading 'm')`（computed-property-names-object-*-super 3 例）；
+- **实现**：
+  - 对象字面量含方法简写/访问器时绑 **HomeObject 槽**
+    （`HOME_OBJECT_SYM = "__aluka_home_object__"`）：NewObject 后
+    Dup + StoreLocal；嵌套对象字面量由 symbol_map 覆盖/恢复保证内层绑定；
+  - `super.m` 编译：方法 unit 经 upvalue 捕获外层槽
+    （compile_method_function 通用预置：class_id 为 None 且
+    parent_info.locals 含该名时），LoadUpvalue/LoadLocal → **GetProto**
+    → GetProp；`super.m()` 的 this 保持调用方 this（CallThis 语义）；
+  - **关键修正**：首版补丁漏发 GetProto 指令——super.m 直接读到对象
+    自身同名方法 → 无限递归栈溢出（bc 指令 dump 定位）；
+- **净效果**：t262 1020 → **1024/1154**（失败 47 → 43）；
+  **M72_FLOOR 951 → 954**（理论上限 957 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=954 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
+  GC 压力 0 失败 ✓；super 探针（sm/sm2/sm3）对齐 Node 22。
