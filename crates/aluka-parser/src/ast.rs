@@ -425,6 +425,8 @@ pub struct ClassMethodDef {
     pub body: Vec<SpannedStmt>,
     /// 是否为静态方法
     pub is_static: bool,
+    /// 是否为生成器方法（`*m() {}`）
+    pub is_generator: bool,
     /// 方法类型（0=普通方法, 1=Getter, 2=Setter）
     pub kind: u32,
 }

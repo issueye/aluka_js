@@ -1151,6 +1151,7 @@ impl<'src> Parser<'src> {
                     params,
                     body,
                     is_static,
+                    is_generator: false,
                     kind: accessor_kind,
                 });
             }

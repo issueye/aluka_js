@@ -148,6 +148,19 @@ impl Vm {
                     self.type_error("Classes may not have a static property named 'prototype'")
                 );
             }
+            // 静态生成器名不得为 constructor/prototype（规范 TypeError：
+            // 生成器无 [[Construct]]，`static *['constructor']()` 非法）。
+            // 生成器标志经 parser kind 高位 0x10 编码跨 bytecode 传递
+            if m.is_static && name == "constructor" {
+                return Err(
+                    self.type_error("Classes may not have a static property named 'constructor'")
+                );
+            }
+            if m.kind & 0x10 != 0 && matches!(name.as_str(), "constructor" | "prototype") {
+                return Err(self.type_error(
+                    "Classes may not have a static generator named 'constructor'/'prototype'",
+                ));
+            }
             let target = if m.is_static {
                 Value::Object(ctor_ref)
             } else {
