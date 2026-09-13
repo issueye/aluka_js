@@ -626,12 +626,9 @@ fn obj_is_proto_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         cur = match vm.heap.get(c.0 as usize) {
             Some(HeapObject::Ordinary { proto: p, .. }) => *p,
             Some(HeapObject::Array { proto: p, .. }) => *p,
-            Some(HeapObject::NativeCtor { properties, .. }) => {
-                properties.get("prototype").and_then(|v| match v.case() {
-                    ValueCase::Object(r) => Some(r),
-                    _ => None,
-                })
-            }
+            // 原生构造器：[[Prototype]] 恒为 Function.prototype
+            //（**不是**其 prototype 属性——后者是其产物的原型）
+            Some(HeapObject::NativeCtor { .. }) => vm.fn_proto,
             Some(HeapObject::Closure { properties, .. })
             | Some(HeapObject::NativeFn { properties, .. }) => {
                 properties.get("prototype").and_then(|v| match v.case() {

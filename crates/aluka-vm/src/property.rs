@@ -1273,6 +1273,11 @@ impl Vm {
                     HeapObject::Ordinary { proto, .. } => *proto,
                     HeapObject::Closure { proto, .. } => *proto,
                     HeapObject::Array { proto, .. } => *proto,
+                    // 原生构造器自身的 [[Prototype]] 恒为 Function.prototype
+                    //（Function 自身亦然；此前返回 None 致
+                    // `Object.getPrototypeOf(Array) === Function.prototype`
+                    // 为 false——S15.3.3 族）
+                    HeapObject::NativeCtor { .. } => self.fn_proto,
                     _ => None,
                 }
             } else {

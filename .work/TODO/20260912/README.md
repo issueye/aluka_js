@@ -1212,3 +1212,23 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 858 → 861**（理论上限 864 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=861 ✓、conformance 差分 ✓；length setter 4 探针对齐。
+
+## 45. M7.2 轮三十：原生构造器 [[Prototype]] 解析（20260913）
+
+- **根因**：NativeCtor 堆变体只存自有属性（含 `prototype`），无自身
+  `[[Prototype]]` 字段——get_prototype / isPrototypeOf 对原生构造器
+  返回 None，令 `Function.prototype.isPrototypeOf(Array)` false、
+  `Object.getPrototypeOf(Array) === Function.prototype` false；
+  且旧实现把 `properties["prototype"]`（**产物的**原型）误当构造器自身
+  原型（`Array.prototype.isPrototypeOf(Array)` 反而 true）；
+- **修复（动态解析，不动 45 处构造点）**：get_prototype 与
+  obj_is_proto_of 的 NativeCtor 分支统一返回 `vm.fn_proto`
+  （规范：所有内置构造器 [[Prototype]] ≡ Function.prototype，
+  Function 自身亦然）；
+- **排障记录**：曾尝试给 alloc_native_ctor 增 ctor_proto 参数，
+  正则批量改写破坏嵌套括号调用点（44 处语法错误）后整批回滚，
+  改采动态解析——避免侵入式签名变更与借用冲突；
+- **净效果**：t262 931 → **934/1154**（失败 136 → 133）；
+  **M72_FLOOR 861 → 864**（理论上限 867 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=864 ✓、conformance 差分 ✓；原型链探针 5/5 对齐 Node 22。
