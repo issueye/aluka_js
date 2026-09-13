@@ -122,10 +122,17 @@ impl Vm {
                 return Err(self.type_error("Cannot convert a Symbol value to a string"));
             }
             Some(v) => {
-                // ToSymbolDescription：对象经 ToPrimitive，结果为符号 → TypeError
-                //（`Symbol({toString:()=>Symbol()})` 非法）；字符串直通不走原型
-                let prim = if matches!(v.case(), ValueCase::Object(_)) {
-                    self.to_primitive_number(*v)?
+                // ToSymbolDescription：对象经 **ToPrimitive(hint string)**
+                // ——先 toString 后 valueOf（`Symbol({toString:()=>"toStr",
+                // valueOf:()=>"valueOf"})` 的描述为 "toStr"）；结果为符号 →
+                // TypeError（`Symbol({toString:()=>Symbol()})` 非法）。
+                // 堆字符串直通（其 toString 是原型占位）
+                let is_heap_str = v.as_object().is_some_and(|r| {
+                    matches!(self.heap.get(r.index()), Some(HeapObject::String(_)))
+                });
+                let prim = if matches!(v.case(), ValueCase::Object(_)) && !is_heap_str {
+                    let sv = self.js_string(*v)?;
+                    Value::Object(self.alloc_string(sv))
                 } else {
                     *v
                 };
@@ -148,14 +155,32 @@ impl Vm {
         &mut self,
         args: &[Value],
     ) -> Result<Value, crate::interpreter::VmError> {
-        // 规范：Symbol.for(key) 的 key 必须为 string（否则 TypeError）
+        // 规范：Symbol.for(key) 的 key 经 **ToString** 转换（对象走其
+        // toString）；结果为符号 → TypeError（`Symbol.for(Symbol())` 与
+        // toString 产符号两形态）
         let key = match args.first() {
-            None => String::new(),
+            None => "undefined".to_owned(),
             Some(v) if v.is_undefined() => "undefined".to_owned(),
-            Some(v) if self.is_symbol(*v) => {
-                return Err(self.type_error("Cannot convert a Symbol value to a string"));
+            Some(v) => {
+                // 仅"真对象"（非堆字符串/符号原语）才需 ToPrimitive——
+                // 堆字符串与符号原语直通（其 toString 为原型占位）
+                let needs_prim = match v.case() {
+                    ValueCase::Object(r) => !matches!(
+                        self.heap.get(r.index()),
+                        Some(HeapObject::String(_)) | Some(HeapObject::Symbol { .. })
+                    ),
+                    _ => false,
+                };
+                let prim = if needs_prim {
+                    self.to_primitive_number(*v)?
+                } else {
+                    *v
+                };
+                if self.is_symbol(prim) {
+                    return Err(self.type_error("Cannot convert a Symbol value to a string"));
+                }
+                self.js_string(prim)?
             }
-            Some(v) => self.format_value(*v),
         };
         if let Some(handle) = FOR_REGISTRY.with(|c| c.borrow().get(&key).copied()) {
             return Ok(Value::Object(handle));

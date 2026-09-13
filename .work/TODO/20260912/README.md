@@ -1522,3 +1522,19 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 929 → 931**（理论上限 934 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=931 ✓、conformance 差分 ✓；Symbol 探针 6/6 对齐 Node 22。
+
+## 64. M7.2 轮五十：Symbol.for/描述 ToString 序（20260913）
+
+- **Symbol.for(key) 经 ToString**：对象走其 toString
+  （`Symbol.for({toString:()=>"test2"}) === Symbol.for("test2")`）；
+  结果为符号 → TypeError（`Symbol.for(Symbol("s"))` 与 toString 产符号
+  两形态）；此前用 format_value 得 "[object Object]"（注册表键错乱）；
+- **ToSymbolDescription 改 hint string 序**：描述对象经 toString 优先
+  （`Symbol({toString:()=>"toStr", valueOf:()=>"valueOf"}).description`
+  === "toStr"，此前误得 "valueOf"）——与 ToPrimitive(hint number) 区分；
+- **代码可读性**：Symbol.for 的"是否需 ToPrimitive"判定简化为
+  「Object case 且非堆字符串/符号原语」；
+- **净效果**：t262 1001 → **1002/1154**（失败 66 → 65）；
+  **M72_FLOOR 931 → 932**（理论上限 935 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=932 ✓、conformance 差分 ✓；Symbol.for/描述探针 6/6 对齐。
