@@ -118,6 +118,10 @@ pub struct ParentScopeInfo {
     pub upvalues: HashMap<String, usize>,
 }
 
+/// 对象字面量方法绑定的 HomeObject 槽名（`super.m` 解析用；
+/// `__aluka_` 前缀避免与用户标识符冲突）。
+pub const HOME_OBJECT_SYM: &str = "__aluka_home_object__";
+
 impl ParentScopeInfo {
     /// 创建新的父级作用域快照
     #[must_use]

@@ -1,5 +1,5 @@
 use crate::module::collect_ident_uses;
-use crate::scope::{CompiledUnit, LoopScope, ParentScopeInfo};
+use crate::scope::{CompiledUnit, HOME_OBJECT_SYM, LoopScope, ParentScopeInfo};
 use aluka_bytecode::{Constant, Instr, Op, TryEntry};
 use aluka_parser::ast::{
     Expr, Program, PropKey, PropValue, SpannedStmt, Stmt, VarKind, VarPattern,
@@ -1169,7 +1169,28 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             backpatch_jump(unit, jmp_end_idx, end_idx);
         }
         Expr::Object(props) => {
+            // 含方法简写/访问器的对象字面量：绑 **HomeObject** 槽——方法体内
+            // `super.m` 按 [[HomeObject]].__proto__ 动态解析（对象可在创建后
+            // 才 setPrototypeOf，须存对象引用而非原型快照；嵌套对象字面量
+            // 由 symbol_map 覆盖/恢复保证内层绑定）
+            let has_method = props.iter().any(|p| {
+                matches!(p.value, PropValue::Getter(_) | PropValue::Setter(_))
+                    || matches!(&p.value, PropValue::Expr(Expr::Function(_)))
+            });
+            let prev_home = unit.symbol_map.get(HOME_OBJECT_SYM).copied();
+            let home_slot = if has_method {
+                let s = unit.locals;
+                unit.locals += 1;
+                unit.symbol_map.insert(HOME_OBJECT_SYM.to_owned(), s);
+                Some(s)
+            } else {
+                None
+            };
             unit.code.push(Instr::new(Op::NewObject, 0));
+            if let Some(s) = home_slot {
+                unit.code.push(Instr::new(Op::Dup, 0));
+                unit.code.push(Instr::new(Op::StoreLocal, s as u32));
+            }
             for prop in props {
                 match (&prop.key, &prop.value) {
                     (PropKey::Literal(k), PropValue::Expr(v)) => {
@@ -1238,6 +1259,17 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                     }
                 }
             }
+            // 恢复外层 HomeObject 绑定（嵌套对象字面量安全）
+            if home_slot.is_some() {
+                match prev_home {
+                    Some(prev) => {
+                        unit.symbol_map.insert(HOME_OBJECT_SYM.to_owned(), prev);
+                    }
+                    None => {
+                        unit.symbol_map.remove(HOME_OBJECT_SYM);
+                    }
+                }
+            }
         }
         Expr::Array(elems) => {
             let has_spread = elems.iter().any(|e| matches!(e, Expr::Spread(_)));
@@ -1273,6 +1305,17 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                     } else {
                         unit.code.push(Instr::new(Op::PushUndefined, 0));
                     }
+                } else if let Some(&slot) = unit.symbol_map.get(HOME_OBJECT_SYM) {
+                    // 对象字面量方法：[[HomeObject]] 槽（本地或上值捕获），
+                    // super.m 动态取其 __proto__ 上的 m（对象可创建后才
+                    // setPrototypeOf——每次调用解析而非快照）
+                    if unit.upvalue_map.contains_key(HOME_OBJECT_SYM) {
+                        let uv_idx = unit.upvalue_map[HOME_OBJECT_SYM];
+                        unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                    } else {
+                        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                    }
+                    unit.code.push(Instr::new(Op::GetProto, 0));
                 } else {
                     unit.code.push(Instr::new(Op::PushUndefined, 0));
                 }
@@ -1381,6 +1424,21 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                     } else {
                         unit.code.push(Instr::new(Op::PushUndefined, 0));
                     }
+                } else if unit.upvalue_map.contains_key(HOME_OBJECT_SYM)
+                    || unit.symbol_map.contains_key(HOME_OBJECT_SYM)
+                {
+                    // 对象字面量方法：[[HomeObject]] 经上值捕获/本地槽，
+                    // super.m 动态取其 __proto__ 上的 m（每次调用解析）
+                    if let Some(&uv_idx) = unit.upvalue_map.get(HOME_OBJECT_SYM) {
+                        unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                    } else if let Some(&slot) = unit.symbol_map.get(HOME_OBJECT_SYM) {
+                        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                    } else {
+                        unit.code.push(Instr::new(Op::PushUndefined, 0));
+                    }
+                    // [[HomeObject]].__proto__：super 属性解析起点
+                    //（**缺此指令会读到对象自身的同名方法 → 无限递归**）
+                    unit.code.push(Instr::new(Op::GetProto, 0));
                 } else {
                     unit.code.push(Instr::new(Op::PushUndefined, 0));
                 }
@@ -1389,6 +1447,7 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                 for arg in args {
                     compile_expr(arg, unit);
                 }
+                // super.m() 的 this 是**调用方 this**（非原型对象）
                 unit.code.push(Instr::new(Op::CallThis, args.len() as u32));
             } else {
                 let name_idx = add_constant(unit, Constant::String(method.clone()));
