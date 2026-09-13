@@ -16,6 +16,9 @@ pub enum Expr {
     Null,
     /// 未定义字面量
     Undefined,
+    /// 逗号序列表达式：`(a, b, c)` 逐项求值，完成值为最后一项
+    ///（括号分组内 `(0, eval)` 间接调用惯用法依赖此形态）
+    Seq(Vec<Expr>),
     /// this 表达式引用
     This,
     /// 字符串字面量

@@ -4819,7 +4819,18 @@ impl Vm {
                     // 属性，`getOwnPropertyDescriptor(o,'__proto__')` undefined）
                     let proto_val = self.pop()?;
                     let obj = self.pop()?;
-                    let proto = proto_val.as_object();
+                    // 堆字符串/BigInt/Symbol 虽为 Object case 但语义是原始值：
+                    // 不得作为 [[Prototype]] 候选（`{__proto__: Symbol('')}`
+                    // 的原型须保持 Object.prototype）
+                    let proto = match proto_val.case() {
+                        ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                            Some(HeapObject::String(_))
+                            | Some(HeapObject::BigInt(_))
+                            | Some(HeapObject::Symbol { .. }) => None,
+                            _ => Some(r),
+                        },
+                        _ => None,
+                    };
                     if proto_val.is_null() || proto.is_some() {
                         self.set_prototype_of(obj, proto);
                     }

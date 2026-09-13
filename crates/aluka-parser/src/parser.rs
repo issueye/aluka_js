@@ -965,11 +965,12 @@ impl<'src> Parser<'src> {
                 self.advance();
                 self.record_error("SyntaxError: async 函数形参名不允许为 await".to_owned());
             } else if let TokenKind::Ident(param_name) = self.advance().kind {
-                // async 形参名不得为 arguments/eval（规范早错误）
-                if is_async && matches!(param_name.as_str(), "arguments" | "eval") {
-                    self.record_error(format!(
-                        "SyntaxError: async 函数形参名不允许为 {param_name}"
-                    ));
+                // async 形参名不得为 arguments/eval（规范早错误）；
+                // strict 语义下**所有**函数形参名均不得为 arguments/eval
+                //（StrictFormalParameters——onlyStrict 变体负例族）
+                if (is_async || self.strict) && matches!(param_name.as_str(), "arguments" | "eval")
+                {
+                    self.record_error(format!("SyntaxError: 形参名不允许为 {param_name}"));
                 }
                 params.push(param_name.clone());
                 self.skip_type_annotation();
@@ -1919,9 +1920,21 @@ impl<'src> Parser<'src> {
                     self.parse_arrow_function_from_paren(false)
                 } else {
                     self.advance();
-                    let expr = self.parse_expr();
+                    // 逗号序列：`(a, b, c)` 逐项求值取末项（单表达式退化为
+                    // 原形态；`(0, eval)` 间接调用惯用法依赖此形态）
+                    let mut exprs = vec![self.parse_expr()];
+                    while self.match_punct(",") {
+                        if self.check_punct(")") {
+                            break;
+                        }
+                        exprs.push(self.parse_expr());
+                    }
                     let _ = self.expect_punct(")");
-                    expr
+                    if exprs.len() == 1 {
+                        exprs.pop().unwrap()
+                    } else {
+                        Expr::Seq(exprs)
+                    }
                 }
             }
             TokenKind::Punct(p) if p == "[" => {
@@ -2020,6 +2033,14 @@ impl<'src> Parser<'src> {
                             let key = self.parse_prop_key();
                             let _ = self.expect_punct("(");
                             let param = if let TokenKind::Ident(param_name) = self.advance().kind {
+                                // strict 语义：setter 形参名不得为 arguments/eval
+                                if self.strict
+                                    && matches!(param_name.as_str(), "arguments" | "eval")
+                                {
+                                    self.record_error(format!(
+                                        "SyntaxError: 形参名不允许为 {param_name}"
+                                    ));
+                                }
                                 param_name
                             } else {
                                 String::new()

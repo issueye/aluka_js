@@ -1964,3 +1964,33 @@ $ cargo test -p aluka-jit --release --test jitbench
   3 例（访问器对去重）、`__proto__` 2 例、spread-getter 1 例、asi/comments
   torture 2 例（超时）、hashbang-eval-indirect、Array length 2³²−1
   （4e6 上限为已登记差异）、accessor-yield-id/expr 2 例。
+
+## 86. M7.2 轮七十二：strict 访问器形参 / 序列表达式 / SetProtoObj 原始值守卫（20260914）
+
+- **三桶修复（t262 1054 → 1057/1154，失败 13 → 10，+3 零回归）**：
+  1. **strict 访问器形参名**（object-11.1.5-1gs）：对象字面量 setter 参数
+     走独立解析路径（不经 parse_function_def）——补 strict 语义下
+     arguments/eval 形参名早错误（`{set f(eval) {}}` onlyStrict 变体）；
+  2. **序列表达式**（comments-hashbang-eval-indirect）：`Expr::Seq(Vec<Expr>)`
+     新变体 + 括号分组内逗号序列解析（`(a, b, c)` 逐项求值取末项；单表达
+     式退化原形态）——codegen 逐项求值非末项 Pop；`(0, eval)` 间接调用
+     惯用法此前直接 SyntaxError；
+  3. **SetProtoObj 原始值守卫**（object-__proto__-value-non-object）：
+     `{__proto__: v}` 的原型候选判定补堆原始值排除——字符串/BigInt/
+     Symbol 虽为 Object case 但语义是原始值，此前 Symbol 形态被当作对象
+     设入 [[Prototype]]（`Object.getPrototypeOf(o) === Object.prototype`
+     为 false；null 置空、非对象忽略的规范语义补齐）；
+- **M72_FLOOR 984 → 987**（1057 通过/10 失败 → 上限 990，留 3 余量）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
+  t262 FLOOR=987 ✓（1057/1154，87 invalid）、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8（cli+vm）0 失败 ✓；
+- 探针对齐：`(0, eval)("7")`/`(1,2)` 完成值、null 原型 SetElem/数据键/
+  get/set 访问器/String()/拼接五形态、`{__proto__:"s"/Symbol('')/5}` 的
+  原型与描述符——全部与 Node 22 逐项一致；
+- **余量 10 例（均为深水/架构项）**：direct eval 转义闭包绑定共享
+  （object-11.1.5-0-1/0-2，setter 写外层局部不回写——快照注入全局表 +
+  退出写回模型无法覆盖 eval 返回后执行的闭包写入）、async generator
+  默认参数同步求值（默认参数为函数体 prologue，生成器惰性执行）、
+  对象字面量 async/生成器方法（__proto__-permitted-dup、accessor-yield
+  2 例）、spread getter 求值序、asi/comments torture 2 例（超时）、
+  Array length 2³²−1（4e6 上限为已登记差异）。

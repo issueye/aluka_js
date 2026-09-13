@@ -980,6 +980,17 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
         Expr::Undefined => {
             unit.code.push(Instr::new(Op::PushUndefined, 0));
         }
+        Expr::Seq(exprs) => {
+            // 逗号序列：逐项求值、非末项弹栈，完成值为最后一项
+            //（`(0, eval)` 间接调用惯用法）
+            let n = exprs.len();
+            for (i, e) in exprs.iter().enumerate() {
+                compile_expr(e, unit);
+                if i + 1 < n {
+                    unit.code.push(Instr::new(Op::Pop, 0));
+                }
+            }
+        }
         Expr::This => {
             unit.code.push(Instr::new(Op::LoadLocal, 0));
         }
