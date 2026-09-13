@@ -264,13 +264,12 @@ impl Vm {
                         vm.locals[*slot] = updated;
                     }
                 }
-                match old_global {
-                    Some(v) => {
-                        vm.globals.insert(name.clone(), *v);
-                    }
-                    None => {
-                        vm.globals.remove(name);
-                    }
+                // 全局原本无此名（eval 局部经快照注入）：**保留注入值**
+                // 而非移除——eval 内定义的函数/访问器闭包（如 getter）返回后
+                // 仍引用这些名字，移除会令调用报 ReferenceError
+                //（node 语义：闭包捕获局部作用域，S10.4.2.1 族）
+                if let Some(v) = old_global {
+                    vm.globals.insert(name.clone(), *v);
                 }
             }
             for (uv_idx, name, old_global) in &uv_scope {

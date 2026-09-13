@@ -1734,3 +1734,19 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 955 → 956**（1026 通过/41 失败 → 上限 959，留 3 余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=956 ✓、conformance 差分 ✓；Date() 探针 3/3 对齐 Node 22。
+
+## 75. M7.2 轮六十一：direct eval 闭包保留注入局部（20260913）
+
+- **修复**：direct eval 的写回逻辑对「全局原本无此名的快照注入项」
+  **保留注入值**而非移除——eval 内定义的函数/访问器闭包返回后仍引用
+  注入的局部名，移除会令调用报 ReferenceError
+  （`eval("o = {get foo(){ return s1;}}")` 后 `o.foo` 读 s1；
+  S10.4.2.1 族 2 例）；
+- **排障记录（深水项登记）**：同族余例 `s1 is not defined` 的根因更深——
+  顶层 `var s1` 的槽位注册与 direct eval marker 名表时序交互
+  （实测 eval 快照 names=["getter","e"] 不含 s1），需编译器层面
+  统一顶层 var 的槽位注册路径后才能闭环（登记 eval 语义深水项）；
+- **净效果**：t262 1026/1154 持平（getter 语义修复为后续用例铺路）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 ✓、conformance 差分 ✓；eval 闭包探针部分对齐（还原语义正确，
+  余例待 marker 时序修复）。
