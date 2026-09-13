@@ -27,6 +27,33 @@ use std::collections::{HashMap, HashSet};
 // （可读、可调、自迭代），仅属性归属不同——属可接受折衷，如实登记。
 
 impl Vm {
+    /// 对象是否定义了 `Symbol.iterator`（自有或沿原型链）——判定自定义可迭代，
+    /// 用于展开/for-of 的协议回退路径。
+    pub(crate) fn has_symbol_iterator(&self, val: Value) -> bool {
+        let Some(obj) = val.as_object() else {
+            return false;
+        };
+        // 知名符号迭代器在 WELL_KNOWN 缓存中（已物化时直接查键）
+        let Some(sym) = Vm::well_known_cached("iterator") else {
+            return false;
+        };
+        let key = crate::symbol::mangled_key(sym);
+        let mut cur = Some(obj);
+        for _ in 0..64 {
+            let Some(c) = cur else { break };
+            if self.own_value(c.index(), &key).is_some() {
+                return true;
+            }
+            cur = match self.heap.get(c.index()) {
+                Some(HeapObject::Ordinary { proto, .. }) => *proto,
+                Some(HeapObject::Array { proto, .. }) => *proto,
+                Some(HeapObject::Closure { proto, .. }) => *proto,
+                _ => None,
+            };
+        }
+        false
+    }
+
     /// 为内建迭代器对象挂 `next` / `Symbol.iterator` 真实属性（偏离见上方登记）。
     fn attach_iterator_surface(&mut self, obj: ObjectRef) {
         let next = self.alloc_native_fn("Iterator.prototype.next");
@@ -445,6 +472,32 @@ impl Vm {
                                         .get_property(Value::Object(res), "done")
                                         .map(|x| matches!(x.case(), ValueCase::Boolean(true)))
                                         .unwrap_or(true);
+                                    (v, d)
+                                }
+                                _ => (Value::Undefined, true),
+                            };
+                            if d {
+                                done = true;
+                            } else {
+                                out.push(v);
+                            }
+                        }
+                    } else if self.has_symbol_iterator(val) {
+                        // 自定义可迭代：Symbol.iterator() 取得迭代器后按
+                        // `next()` 协议驱动（`[...obj]`——对象字面量自定义
+                        // Symbol.iterator；方法体抛错沿 `?` 传播，
+                        // spread-err 族期望该异常穿透）
+                        let it = self.get_iterator_dispatch(val)?;
+                        let mut done = false;
+                        while !done {
+                            let step = self.call_method_dispatch(it, "next", &[], 0)?;
+                            let (v, d) = match step.case() {
+                                ValueCase::Object(res) => {
+                                    let v = self.get_property(Value::Object(res), "value")?;
+                                    let d = self
+                                        .get_property(Value::Object(res), "done")
+                                        .map(|x| matches!(x.case(), ValueCase::Boolean(true)))
+                                        .unwrap_or(false);
                                     (v, d)
                                 }
                                 _ => (Value::Undefined, true),

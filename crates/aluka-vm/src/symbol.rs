@@ -168,6 +168,11 @@ impl Vm {
         })
     }
 
+    /// 已物化的知名符号（未物化返回 None，不触发创建）。
+    pub(crate) fn well_known_cached(name: &str) -> Option<aluka_core::ObjectRef> {
+        WELL_KNOWN.with(|c| c.borrow().get(name).copied())
+    }
+
     /// 知名符号（`Symbol.iterator` 等）：缓存幂等。
     pub(crate) fn well_known_symbol(&mut self, name: &str) -> Value {
         if let Some(handle) = WELL_KNOWN.with(|c| c.borrow().get(name).copied()) {

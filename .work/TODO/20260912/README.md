@@ -1371,3 +1371,19 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 896 → 903**（理论上限 906 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=903 ✓、conformance 差分 ✓。
+
+## 55. M7.2 轮卌一：Symbol.iterator 协议接入展开/迭代（20260913）
+
+- **根因**：collect_iter_values（`[...x]` / for-of / Array.from 的物化
+  入口）只认 Array/Map/Set/String/typed array/生成器快路径，**自定义
+  可迭代**（对象字面量定义 Symbol.iterator）一律得空数组，且
+  `Symbol.iterator` 方法体内的抛错被完全吞掉（spread-err 族 10 例）；
+- **实现**：新增 `has_symbol_iterator`（沿原型链查 mangled 键）+
+  `Vm::well_known_cached`（不触发创建的已物化符号查询）；判定命中后
+  经 `get_iterator_dispatch` 取迭代器、按 `next()` 协议驱动至 done——
+  方法体抛错沿 `?` 传播（`[...iter]` 的异常穿透语义）；
+- **净效果**：t262 973 → **980/1154**（失败 94 → 87）；
+  **M72_FLOOR 903 → 910**（理论上限 913 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=910 ✓、conformance 差分 ✓；可迭代探针 3/3 对齐
+  （含异常穿透与生成器方法体）。
