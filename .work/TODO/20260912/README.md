@@ -1007,3 +1007,7 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   conformance 差分 ✓、GC 压力 0 失败 ✓；ASI 四向探针（换行后缀报错/
   同行后缀通过/换行前缀通过/裸 ++ 报错）逐项对齐 Node 22。
+
+### 32.1 提交证据
+
+- commit 4eea8b7（fix(m7.2): 轮十七——后缀 ++/-- 受限产生式）。
