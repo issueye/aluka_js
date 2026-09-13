@@ -994,6 +994,16 @@ impl ModuleCompiler {
         // 若类拥有父类，将外层声明的 __home_ctor_{cid}__ 和 __home_proto_{cid}__ 预置为闭包 Upvalue
         // 对象字面量方法的 HomeObject：外层（对象字面量编译期）绑定的
         // 槽位预置为上值捕获（super.m 经 [[HomeObject]].__proto__ 解析）
+        if std::env::var("ALUKA_HOME_DBG").is_ok() {
+            eprintln!(
+                "[home-dbg] class_id={class_id:?} def={} parent_has_home={} upv_pre={}",
+                def.name,
+                parent_scope
+                    .map(|p| p.locals.contains_key(crate::scope::HOME_OBJECT_SYM))
+                    .unwrap_or(false),
+                unit.upvalue_map.contains_key(crate::scope::HOME_OBJECT_SYM)
+            );
+        }
         if class_id.is_none()
             && let Some(parent_info) = parent_scope
             && let Some(&parent_slot) = parent_info.locals.get(crate::scope::HOME_OBJECT_SYM)
@@ -1522,42 +1532,4 @@ fn attach_direct_eval_marker(
     }
     let marker = format!("__aluka_locals__\u{1}{}", names.join("\u{1}"));
     func_tpl.constants.push(Constant::String(marker));
-}
-
-#[cfg(test)]
-mod home_dump_tests {
-    use super::*;
-    use aluka_parser::parse;
-
-    #[test]
-    fn dump_mul_ops() {
-        let src = r#"
-var o = {valueOf(){ return Symbol("x"); }};
-var r = o * 1;
-"#;
-        let program = parse(src);
-        let module = compile_module(&program);
-        for (i, f) in module.functions.iter().enumerate() {
-            println!("fn[{i}] {} num_locals={}:", f.name, f.num_locals);
-            for ins in &f.code {
-                println!("    {:?} {}", ins.op, ins.operand);
-            }
-        }
-    }
-
-    #[test]
-    fn dump_super_method_ops() {
-        let src = r#"
-var proto = { m() { return "PM"; } };
-var obj = { m() { return super.m(); } };
-"#;
-        let program = parse(src);
-        let module = compile_module(&program);
-        for (i, f) in module.functions.iter().enumerate() {
-            println!("fn[{i}] name={} num_locals={} code:", f.name, f.num_locals);
-            for ins in &f.code {
-                println!("    {:?} {}", ins.op, ins.operand);
-            }
-        }
-    }
 }

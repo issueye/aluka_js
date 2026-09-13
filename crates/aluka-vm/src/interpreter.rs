@@ -4754,6 +4754,42 @@ impl Vm {
                     }
                     self.stack.push(Value::Boolean(true));
                 }
+                Op::SetSuperProp => {
+                    // `super.key = value`：沿 [[HomeObject]].__proto__ 查
+                    // setter，命中则以 this 调用；未命中则在 this 上定义
+                    // 数据属性（规范 receiver 语义的近似——链尾 setter 缺失
+                    // 时规范要求 this 定义 ✓ 一致）
+                    let key = constant_string(&constants, instr.operand as usize);
+                    let value = self.pop()?;
+                    let this_val = self.pop()?;
+                    let home_proto = self.pop()?;
+                    if let Some(ValueCase::Object(mut cur)) = Some(home_proto.case()) {
+                        let mut done = false;
+                        for _ in 0..64 {
+                            let mut hit = None;
+                            let mut next = None;
+                            if let Some(HeapObject::Ordinary {
+                                setters, proto: p, ..
+                            }) = self.heap.get(cur.0 as usize)
+                            {
+                                hit = setters.get(key.as_ref()).copied();
+                                next = *p;
+                            }
+                            if let Some(s_val) = hit {
+                                self.invoke_accessor(s_val, this_val, &[value])?;
+                                done = true;
+                                break;
+                            }
+                            match next {
+                                Some(n) => cur = n,
+                                None => break,
+                            }
+                        }
+                        if !done {
+                            self.set_property(this_val, &key, value)?;
+                        }
+                    }
+                }
                 Op::RequireObjectCoercible => {
                     // 解构声明的 RequireObjectCoercible：栈顶为 null/undefined
                     // → TypeError（规范 ToObject 前置检查）

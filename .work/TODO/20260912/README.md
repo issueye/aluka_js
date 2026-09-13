@@ -1766,3 +1766,23 @@ $ cargo test -p aluka-jit --release --test jitbench
   TypeError 判定修正，具体翻转待下轮 FLOOR 复核确认）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 ✓、conformance 差分 ✓；m2 探针 3/3（均 TypeError）对齐。
+
+## 77. M7.2 轮六十三：super 赋值语义闭环（20260914）
+
+- **对象访问器 setter 的 `super.s = v` 闭环**：解析（MemberAssign 的
+  Super obj）→ 求值（home upvalue → GetProto → GetProp setter）→
+  调用（CallThis 栈序 [this][setter][value]）三层修正——首版 obj 二次
+  压栈致栈序错乱、GetProp 读 setter-only 属性得 undefined 致静默；
+- **ISA 第 109 条操作码 SET_SUPER_PROP**：栈 [home_proto][this][value]
+  + key 常量索引——op.rs 全表登记（pops 2/net -1/pushes 0/is_pure
+  false/is_jump false ×3）；VM 臂沿 home 原型链查 setter 以 this 调用、
+  无 setter 则 this 定义数据属性；JIT helper 全链路（4 参签名 + iconst
+  key_idx + ctx 常量池解析）；
+- **修复过程自纠**：批量补表脚本同表重复插入（clippy
+  unreachable_pattern 拦下），以「函数边界 + Counter」全表审计修复并
+  确认 9 表零重复；dump 调试模块用后即删；
+- **净效果**：t262 1026/1154 持平（访问器 super 探针 3/3 对齐）；
+  **M72_FLOOR 956 → 957**（理论上限 960 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=957 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
+  GC 压力 0 失败 ✓。

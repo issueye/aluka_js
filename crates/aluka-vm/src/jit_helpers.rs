@@ -289,6 +289,7 @@ impl Vm {
                 get_proto: jit_get_proto,
                 set_proto_obj: jit_set_proto_obj,
                 require_coercible: jit_require_coercible,
+                set_super_prop: jit_set_super_prop,
                 instanceof: jit_instanceof,
                 in_: jit_in,
                 new_array: jit_new_array,
@@ -887,6 +888,62 @@ pub unsafe extern "C" fn jit_require_coercible(ctx: *mut JitCtx, v: u64) -> u64 
     }
     let _ = vm;
     v
+}
+
+/// `SET_SUPER_PROP`：`super.key = value`——沿 home 原型链查 setter
+/// 以 this 调用；未命中则在 this 上定义数据属性；返回 this。
+///
+/// # Safety
+/// 见模块文档。
+pub unsafe extern "C" fn jit_set_super_prop(
+    ctx: *mut JitCtx,
+    home: u64,
+    this_v: u64,
+    value: u64,
+    key_idx: i32,
+) -> u64 {
+    // SAFETY: 见模块文档
+    let vm = unsafe { &mut *((*ctx).vm as *mut Vm) };
+    let home_v = to_vm_value(home);
+    let this_val = to_vm_value(this_v);
+    let value_val = to_vm_value(value);
+    // key 从当前函数常量池取
+    let key = ctx_constants(ctx)
+        .get(key_idx.unsigned_abs() as usize)
+        .and_then(|c| match c {
+            aluka_bytecode::Constant::String(s) => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let proto = vm.get_prototype(home_v);
+    if let Some(mut cur) = proto {
+        let mut done = false;
+        for _ in 0..64 {
+            let mut hit = None;
+            let mut next = None;
+            if let Some(crate::heap::HeapObject::Ordinary {
+                setters, proto: p, ..
+            }) = vm.heap.get(cur.index())
+            {
+                hit = setters.get(key.as_str()).copied();
+                next = *p;
+            }
+            if let Some(s_val) = hit {
+                let _ = vm.invoke_accessor(s_val, this_val, &[value_val]);
+                done = true;
+                break;
+            }
+            match next {
+                Some(n) => cur = n,
+                None => break,
+            }
+        }
+        if !done {
+            let _ = vm.set_property(this_val, &key, value_val);
+        }
+    }
+    refresh_heap(ctx, vm);
+    this_v
 }
 
 /// `SET_PROTO_OBJ`：设对象 [[Prototype]]（值为对象或 null；其余忽略），

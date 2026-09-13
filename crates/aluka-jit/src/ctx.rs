@@ -209,6 +209,11 @@ pub type SetProtoObjFn = unsafe extern "C" fn(ctx: *mut JitCtx, obj: u64, proto:
 /// `REQUIRE_OBJECT_COERCIBLE`：栈顶为 null/undefined → 抛 TypeError，
 /// 否则原样返回（解构声明前置检查）。
 pub type RequireCoercibleFn = unsafe extern "C" fn(ctx: *mut JitCtx, v: u64) -> u64;
+
+/// `SET_SUPER_PROP`：`super.key = value`（沿 home 原型链查 setter；
+/// 返回 this）。key 以常量索引传入。
+pub type SetSuperPropFn =
+    unsafe extern "C" fn(ctx: *mut JitCtx, home: u64, this_v: u64, value: u64, key_idx: i32) -> u64;
 /// `INSTANCEOF`。
 pub type InstanceofFn = unsafe extern "C" fn(ctx: *mut JitCtx, l: u64, r: u64) -> u64;
 /// `IN`。
@@ -304,6 +309,8 @@ pub struct JitVtable {
     pub set_proto_obj: SetProtoObjFn,
     /// `REQUIRE_OBJECT_COERCIBLE`（解构前置检查）
     pub require_coercible: RequireCoercibleFn,
+    /// `SET_SUPER_PROP`（super.key = value）
+    pub set_super_prop: SetSuperPropFn,
     /// `INSTANCEOF`
     pub instanceof: InstanceofFn,
     /// `IN`

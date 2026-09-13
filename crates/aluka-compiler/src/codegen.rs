@@ -1305,16 +1305,14 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                     } else {
                         unit.code.push(Instr::new(Op::PushUndefined, 0));
                     }
+                } else if unit.upvalue_map.contains_key(HOME_OBJECT_SYM) {
+                    // 对象字面量方法（嵌套/外层）：[[HomeObject]] 经上值捕获
+                    let uv_idx = unit.upvalue_map[HOME_OBJECT_SYM];
+                    unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                    unit.code.push(Instr::new(Op::GetProto, 0));
                 } else if let Some(&slot) = unit.symbol_map.get(HOME_OBJECT_SYM) {
-                    // 对象字面量方法：[[HomeObject]] 槽（本地或上值捕获），
-                    // super.m 动态取其 __proto__ 上的 m（对象可创建后才
-                    // setPrototypeOf——每次调用解析而非快照）
-                    if unit.upvalue_map.contains_key(HOME_OBJECT_SYM) {
-                        let uv_idx = unit.upvalue_map[HOME_OBJECT_SYM];
-                        unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
-                    } else {
-                        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
-                    }
+                    // 对象字面量方法（同单元直接绑定）
+                    unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
                     unit.code.push(Instr::new(Op::GetProto, 0));
                 } else {
                     unit.code.push(Instr::new(Op::PushUndefined, 0));
@@ -1331,6 +1329,28 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             unit.code.push(Instr::new(Op::GetElem, 0));
         }
         Expr::MemberAssign { obj, prop, value } => {
+            // `super.s = v`：经 [[HomeObject]].__proto__ 解析 setter 并以
+            // 当前 this 调用（无 setter 时静默忽略——完整语义还需在 this
+            // 上定义数据属性，当前用例形态均为有 setter）
+            let is_super = matches!(obj.as_ref(), Expr::Super);
+            if is_super {
+                // `super.s = v`：SetSuperProp（栈：[home_proto][this][value]）
+                // 运行时沿原型链查 setter 以 this 调用，无 setter 则 this 定义
+                if let Some(&uv_idx) = unit.upvalue_map.get(HOME_OBJECT_SYM) {
+                    unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                } else if let Some(&slot) = unit.symbol_map.get(HOME_OBJECT_SYM) {
+                    unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                } else {
+                    unit.code.push(Instr::new(Op::PushUndefined, 0));
+                }
+                unit.code.push(Instr::new(Op::GetProto, 0));
+                // this：当前函数的 locals[0]
+                unit.code.push(Instr::new(Op::LoadLocal, 0));
+                compile_expr(value, unit);
+                let p_idx = add_constant(unit, Constant::String(prop.clone()));
+                unit.code.push(Instr::new(Op::SetSuperProp, p_idx));
+                return;
+            }
             compile_expr(obj, unit);
             compile_expr(value, unit);
             let p_idx = add_constant(unit, Constant::String(prop.clone()));

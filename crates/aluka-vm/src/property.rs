@@ -1399,7 +1399,7 @@ impl Vm {
     /// 访问器表存闭包对象值：闭包须携带 upvalue 捕获（延迟调用时闭包引用
     /// 的模块/外层变量仍可解析，如 body-parser 的 getter → loadParser）；
     /// 其余可调用形态（原生函数等）走通用调用协议。
-    fn invoke_accessor(
+    pub(crate) fn invoke_accessor(
         &mut self,
         val: Value,
         this: Value,

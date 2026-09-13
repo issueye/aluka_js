@@ -72,6 +72,7 @@ pub(crate) const HELPER_GET_PROPERTY: &str = "aluka_jit.get_property";
 pub(crate) const HELPER_SET_PROPERTY: &str = "aluka_jit.set_property";
 pub(crate) const HELPER_SET_PROTO_OBJ: &str = "aluka_jit.set_proto_obj";
 pub(crate) const HELPER_REQUIRE_COERCIBLE: &str = "aluka_jit.require_coercible";
+pub(crate) const HELPER_SET_SUPER_PROP: &str = "aluka_jit.set_super_prop";
 pub(crate) const HELPER_ALLOC_ORDINARY: &str = "aluka_jit.alloc_ordinary";
 pub(crate) const HELPER_ADD: &str = "aluka_jit.add";
 pub(crate) const HELPER_EQ: &str = "aluka_jit.eq";
@@ -1116,6 +1117,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
             HELPER_SET_PROPERTY => Some(v.set_property as *const u8),
             HELPER_SET_PROTO_OBJ => Some(v.set_proto_obj as *const u8),
             HELPER_REQUIRE_COERCIBLE => Some(v.require_coercible as *const u8),
+            HELPER_SET_SUPER_PROP => Some(v.set_super_prop as *const u8),
             HELPER_ALLOC_ORDINARY => Some(v.alloc_ordinary as *const u8),
             HELPER_ADD => Some(v.add as *const u8),
             HELPER_EQ => Some(v.eq as *const u8),
@@ -1193,6 +1195,8 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let id_set_prop = decl(&mut module, HELPER_SET_PROPERTY, &sig_ivuv)?;
     let id_set_proto = decl(&mut module, HELPER_SET_PROTO_OBJ, &sig_ivv)?;
     let id_req_coercible = decl(&mut module, HELPER_REQUIRE_COERCIBLE, &sig_i)?;
+    let sig_set_super = mk_sig(&[ptr_type, types::I64, types::I64, types::I64, types::I32]);
+    let id_set_super = decl(&mut module, HELPER_SET_SUPER_PROP, &sig_set_super)?;
     let id_alloc = decl(&mut module, HELPER_ALLOC_ORDINARY, &sig_v)?;
     let id_add = decl(&mut module, HELPER_ADD, &sig_ivv)?;
     let id_eq = decl(&mut module, HELPER_EQ, &sig_ivv)?;
@@ -1270,6 +1274,7 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
     let fref_add = module.declare_func_in_func(id_add, cg.fb.func);
     let fref_set_proto = module.declare_func_in_func(id_set_proto, cg.fb.func);
     let fref_require_coercible = module.declare_func_in_func(id_req_coercible, cg.fb.func);
+    let fref_set_super = module.declare_func_in_func(id_set_super, cg.fb.func);
     let fref_eq = module.declare_func_in_func(id_eq, cg.fb.func);
     let fref_strict_eq = module.declare_func_in_func(id_strict_eq, cg.fb.func);
     let fref_tonum = module.declare_func_in_func(id_tonum, cg.fb.func);
@@ -2150,6 +2155,27 @@ pub fn jit_compile(func: &FuncTemplate, vtable: &JitVtable) -> Result<JittedFn, 
                     ctx_val,
                     &[obj, proto_val],
                 ));
+            }
+            Op::SetSuperProp => {
+                // super.key = value：栈序 [home_proto][this][value]，
+                // key 以常量索引进 helper（helper 经 ctx 常量池解析）
+                let value = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let this_v = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let home = value_stack
+                    .pop()
+                    .ok_or_else(|| JitError::Codegen("栈下溢".into()))?;
+                let key_idx = cg.fb.ins().iconst(types::I64, instr.operand as i64);
+                let ret = emit_helper(
+                    &mut cg,
+                    fref_set_super,
+                    ctx_val,
+                    &[home, this_v, value, key_idx],
+                );
+                value_stack.push(ret);
             }
             Op::SetGetterObj | Op::SetSetterObj => {
                 // 操作数 = 名字常量下标；peek obj、pop fn
