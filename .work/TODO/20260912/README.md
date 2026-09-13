@@ -1357,3 +1357,17 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 894 → 896**（理论上限 899 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=896 ✓、conformance 差分 ✓；Symbol 探针 6/6 对齐。
+
+## 54. M7.2 轮四十：未捕获错误渲染回退 toString（20260913）
+
+- **根因**：官方语料的 Test262Error 常**只定义 toString**（不设 name）——
+  未捕获错误渲染取 `e.name` 得 undefined 串，输出 "[object Object]"；
+  测试框架的 runtime 负例判定要求输出含类型名（`Test262Error`），
+  故整族（line-terminators-comment 7 例等）误判失败；
+- **修复**：format_uncaught（bc_entry + lib.rs 两处）在 name 缺失时回退
+  调用 toString 取结果；新增 Vm::call_to_string 公开方法
+  （get_property + invoke_callable 封装）；
+- **净效果**：t262 966 → **973/1154**（失败 101 → 94）；
+  **M72_FLOOR 896 → 903**（理论上限 906 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=903 ✓、conformance 差分 ✓。

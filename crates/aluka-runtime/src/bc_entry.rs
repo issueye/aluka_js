@@ -139,6 +139,16 @@ fn format_uncaught(vm: &mut Vm, exc: Value) -> String {
             .ok()
             .map(|v| vm.format_value(v))
             .unwrap_or_default();
+        // name 缺失（自定义错误类只定义了 toString 时）：回退调用
+        // toString —— 官方 assert.throws 判定与 Node 渲染均依赖其
+        // 输出含类型名（`Test262Error: ...`）
+        if name.is_empty() || name == "undefined" {
+            if let Some(t) = vm.call_to_string(exc) {
+                if !t.is_empty() && t != "[object Object]" {
+                    return t;
+                }
+            }
+        }
         let message = vm
             .get_property(exc, "message")
             .ok()

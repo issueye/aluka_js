@@ -327,6 +327,22 @@ impl Vm {
 
     /// 读取属性（含原型链查找、getter 触发与数组元素读取）。
     /// 属性读取（调试包装：ALUKA_GETPROP_DEBUG 时打印 key 与结果）。
+    /// 调用对象的 `toString` 并取其字符串结果（未捕获异常渲染用；
+    /// 无 toString 或调用失败返回 None）。
+    pub fn call_to_string(&mut self, obj: Value) -> Option<String> {
+        let f = self.get_property(obj, "toString").ok()?;
+        let r = self.invoke_callable(f, obj, &[]).ok()?;
+        if r.is_object() {
+            match self.heap.get(r.as_object()?.index()) {
+                Some(crate::heap::HeapObject::String(s)) => Some(s.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// 读取属性（含原型链、访问器与内置面的完整语义）。
     pub fn get_property(&mut self, obj: Value, key: &str) -> Result<Value, VmError> {
         let __dbg = std::env::var("ALUKA_GETPROP_DEBUG").is_ok();
         let r = self.get_property_inner(obj, key);

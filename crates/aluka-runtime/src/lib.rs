@@ -328,6 +328,18 @@ fn format_uncaught_with_vm(vm: &mut Vm, exc: Value, path: &Path) -> String {
             .ok()
             .map(|v| vm.format_value(v))
             .unwrap_or_default();
+        // name 缺失：回退 toString（自定义错误类只定义 toString 时）
+        if name.is_empty() || name == "undefined" {
+            if let Some(t) = vm.call_to_string(exc) {
+                if !t.is_empty() && t != "[object Object]" {
+                    return format!(
+                        "{t}
+    at <module> ({})",
+                        path.display()
+                    );
+                }
+            }
+        }
         let message = vm
             .get_property(exc, "message")
             .ok()
