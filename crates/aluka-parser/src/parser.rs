@@ -1610,6 +1610,14 @@ impl<'src> Parser<'src> {
                     "undefined" => Expr::Undefined,
                     "this" => Expr::This,
                     "super" => Expr::Super,
+                    // 纯语法关键字不得作标识符兜底（悬空 `else {}` 曾被
+                    // 兜成 Ident 表达式静默接受——Node 22 报
+                    // "Unexpected token 'else'"）
+                    "else" | "in" | "instanceof" | "typeof" | "void" | "delete" | "case"
+                    | "catch" | "finally" | "do" | "default" | "extends" | "with" | "enum" => {
+                        self.record_error(format!("SyntaxError: 意外的关键字 '{kw}'"));
+                        Expr::Ident(kw)
+                    }
                     "function" => {
                         let is_generator = self.match_punct("*");
                         let mut def = self.parse_function_def(false);
@@ -1750,6 +1758,7 @@ impl<'src> Parser<'src> {
             TokenKind::Punct(p) if p == "{" => {
                 self.advance();
                 let mut props = Vec::new();
+                let mut proto_seen = false;
                 while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
                     // 0. 检查是否为对象展开属性: ...expr
                     if self.match_punct("...") {
@@ -1902,6 +1911,16 @@ impl<'src> Parser<'src> {
                             value: PropValue::Expr(Expr::Ident(n)),
                         });
                     } else {
+                        // 冒号形态的重复 __proto__（含字符串键 `'__proto__':`）
+                        // → SyntaxError（Node 22: Duplicate __proto__ fields）
+                        if matches!(&key, PropKey::Literal(n) if n == "__proto__") {
+                            if proto_seen {
+                                self.record_error(
+                                    "SyntaxError: 对象字面量不允许重复的 __proto__ 属性".to_owned(),
+                                );
+                            }
+                            proto_seen = true;
+                        }
                         let _ = self.expect_punct(":");
                         let val = self.parse_expr();
                         props.push(ObjectProp {

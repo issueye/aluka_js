@@ -1106,3 +1106,18 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 836 → 842**（理论上限 845 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=842 ✓、conformance 差分 ✓。
+
+## 38. M7.2 轮廿三：悬空 else + 重复 __proto__（20260913）
+
+- **悬空 else**（asi-S7.9.2_A1_T6 / S7.9_A11_T8）：`if (false) {};\nelse
+  {}` 与 `if (false)\nelse {}` 被 Keyword 兜底臂吞成 Ident 表达式静默
+  接受——纯语法关键字（else/in/typeof/void/delete/case/catch/finally/
+  do/default/extends/with/instanceof/enum）在表达式主位补记 SyntaxError
+  （Node 22: "Unexpected token 'else'"）；正常 if-else 不受影响；
+- **重复 __proto__**：对象字面量冒号形态（含字符串键 `'__proto__':`）
+  重复 → SyntaxError（Node: Duplicate __proto__ fields）；简写/计算键
+  不受影响（`{["__proto__"]: 1}` 合法）；
+- **净效果**：t262 912 → **914/1154**（失败 155 → 153）；
+  **M72_FLOOR 842 → 845**（理论上限 847 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=845 ✓、conformance 差分 ✓；探针 6/6 对齐 Node 22。
