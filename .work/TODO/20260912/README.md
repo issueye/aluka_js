@@ -1644,3 +1644,21 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 948 → 950**（理论上限 953 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=950 ✓、conformance 差分 ✓；getter 抛错探针对齐 Node 22。
+
+## 71. M7.2 轮五十七：Symbol.for 键语义 + 符号不可构造（20260913）
+
+- **Symbol.for(key) 键经 ToString**：改用 js_string_strict（hint string，
+  toString 优先——`Symbol.for({toString:()=>'test262'}).description`
+  === "test262"，此前用 format_value 得 "[object Object]"）；
+- **注册符号描述即其 key**：alloc_symbol_described(..., true)——
+  `Symbol.for("k").description` → "k"（此前 undefined，has_desc 未置）；
+- **符号不可构造**：
+  - `new Object(Symbol())()`（符号包装实例再 new）→ TypeError
+    （do_construct 增 [[SymbolData]] 槽判定）；
+  - `new sym()`（符号**原始值**作 callee）→ TypeError
+    （do_construct 尾段通用路径增符号早退，不再静默产对象）；
+- **净效果**：t262 1020 → **1021/1154**（失败 47 → 46）；
+  **M72_FLOOR 950 → 951**（理论上限 954 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=951 ✓、conformance 差分 ✓、express e2e ✓；
+  Symbol 探针两批（sy6/sy7 共 9 项）全对齐 Node 22。

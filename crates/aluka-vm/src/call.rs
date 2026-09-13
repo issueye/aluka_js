@@ -318,6 +318,11 @@ impl Vm {
             if self.has_own_slot(r.0 as usize, "_isJSON") {
                 return Err(self.type_error("JSON is not a constructor"));
             }
+            // 符号包装实例（`Object(Symbol())` 产物）：不可作为构造器
+            //（S19.4.3 族——`new Object(Symbol())` 的实例再 new 抛 TypeError）
+            if self.has_own_slot(r.0 as usize, "[[SymbolData]]") {
+                return Err(self.type_error("Symbol is not a constructor"));
+            }
             let ctor_name = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::NativeCtor { name, .. }) => Some(name.clone()),
                 Some(HeapObject::NativeFn { name, .. }) => Some(name.clone()),
@@ -604,6 +609,12 @@ impl Vm {
                     return handler(self, args);
                 }
             }
+        }
+        // 非对象 callee（符号/数字/字符串等原始值）不可构造：
+        // `new Symbol()(符号原始值)` / `new Object(Symbol())()` 等 → TypeError
+        // （规范 IsConstructor 对非对象恒 false，S19.4.3 族）
+        if self.is_symbol(callee) {
+            return Err(self.type_error("Symbol is not a constructor"));
         }
         let proto_ref = match self.get_property(callee, "prototype").map(|v| v.case()) {
             Ok(ValueCase::Object(p)) => Some(p),

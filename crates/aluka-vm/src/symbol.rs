@@ -164,31 +164,20 @@ impl Vm {
             None => "undefined".to_owned(),
             Some(v) if v.is_undefined() => "undefined".to_owned(),
             Some(v) => {
-                // 仅"真对象"（非堆字符串/符号原语）才需 ToPrimitive——
-                // 堆字符串与符号原语直通（其 toString 为原型占位）
-                let needs_prim = match v.case() {
-                    ValueCase::Object(r) => !matches!(
-                        self.heap.get(r.index()),
-                        Some(HeapObject::String(_)) | Some(HeapObject::Symbol { .. })
-                    ),
-                    _ => false,
-                };
-                let prim = if needs_prim {
-                    self.to_primitive_number(*v)?
-                } else {
-                    *v
-                };
-                if self.is_symbol(prim) {
-                    return Err(self.type_error("Cannot convert a Symbol value to a string"));
-                }
-                self.js_string(prim)?
+                // ToString(key)：对象经 **hint string**（toString 优先——
+                // `Symbol.for({toString:()=>'test262'})` 的 key 为 'test262'）；
+                // 结果为符号 → TypeError。js_string_strict 同时覆盖
+                // "无可原始化方法 → TypeError" 与"结果符号 → TypeError"
+                self.js_string_strict(*v)?
             }
         };
         if let Some(handle) = FOR_REGISTRY.with(|c| c.borrow().get(&key).copied()) {
             return Ok(Value::Object(handle));
         }
         let id = NEXT_SYM_ID.fetch_add(1, Ordering::Relaxed);
-        let handle = self.alloc_symbol(id, key.clone());
+        // 注册符号的描述即其 key（`Symbol.for("k").description` → "k"），
+        // 且视为"已提供描述"（has_desc=true——否则 description 读作 undefined）
+        let handle = self.alloc_symbol_described(id, key.clone(), true);
         FOR_REGISTRY.with(|c| c.borrow_mut().insert(key.clone(), handle));
         FOR_BY_HANDLE.with(|c| c.borrow_mut().insert(handle.0, key));
         Ok(Value::Object(handle))
