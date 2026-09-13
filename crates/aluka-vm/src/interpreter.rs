@@ -232,6 +232,11 @@ pub struct Vm {
     pub date_proto: Option<ObjectRef>,
     /// 原型面构造器单例缓存（String/Boolean/Number/Set/Map/... 名 → NativeCtor）
     pub ctor_cache: std::collections::HashMap<String, ObjectRef>,
+    /// 内建单例不可写键登记（对象堆下标 → 键集）：`Math.E/PI`、
+    /// `Number.NaN/MAX_SAFE_INTEGER` 等规范 writable:false 常量——
+    /// set_property 命中时 sloppy 语义静默忽略写入
+    ///（`Math.E = 1` 后 `Math.E === __e` 必须成立——Sputnik S8.x 族）
+    pub non_writable: std::collections::HashMap<usize, Vec<String>>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `process.env` 对象单例缓存（物化一次；键大小写不敏感语义见 property.rs）
@@ -381,6 +386,7 @@ impl Vm {
             symbol_proto: None,
             date_proto: None,
             ctor_cache: std::collections::HashMap::new(),
+            non_writable: std::collections::HashMap::new(),
             process_object: None,
             env_object: None,
             path_module: None,
@@ -453,6 +459,21 @@ impl Vm {
             ] {
                 let _ = vm.set_property(Value::Object(mo), key, Value::Number(value));
             }
+            // 规范 writable:false 常量登记：写入静默忽略（`Math.E = 1`
+            // 后 `Math.E === __e` 必须成立）
+            vm.non_writable.insert(
+                mo.0 as usize,
+                vec![
+                    "E".to_owned(),
+                    "LN10".to_owned(),
+                    "LN2".to_owned(),
+                    "LOG10E".to_owned(),
+                    "LOG2E".to_owned(),
+                    "PI".to_owned(),
+                    "SQRT1_2".to_owned(),
+                    "SQRT2".to_owned(),
+                ],
+            );
             for method in [
                 "abs", "acos", "acosh", "asin", "asinh", "atan", "atanh", "atan2", "cbrt", "ceil",
                 "clz32", "cos", "cosh", "exp", "expm1", "floor", "fround", "hypot", "imul", "log",
@@ -832,6 +853,33 @@ impl Vm {
             _ => None,
         };
         let c = self.alloc_native_ctor(name, proto);
+        // Number 静态常量（规范 writable:false）：`Number.NaN = 1` 等写入
+        // 须静默忽略——此前常量缺失且写入落为自有属性
+        if name == "Number" {
+            for (key, value) in [
+                ("NaN", Value::Number(f64::NAN)),
+                ("Infinity", Value::Number(f64::INFINITY)),
+                ("EPSILON", Value::Number(f64::EPSILON)),
+                ("MAX_SAFE_INTEGER", Value::Number(9_007_199_254_740_991.0)),
+                ("MIN_SAFE_INTEGER", Value::Number(-9_007_199_254_740_991.0)),
+                ("MAX_VALUE", Value::Number(f64::MAX)),
+                ("MIN_VALUE", Value::Number(5e-324)),
+            ] {
+                let _ = self.set_property(Value::Object(c), key, value);
+            }
+            self.non_writable.insert(
+                c.0 as usize,
+                vec![
+                    "NaN".to_owned(),
+                    "Infinity".to_owned(),
+                    "EPSILON".to_owned(),
+                    "MAX_SAFE_INTEGER".to_owned(),
+                    "MIN_SAFE_INTEGER".to_owned(),
+                    "MAX_VALUE".to_owned(),
+                    "MIN_VALUE".to_owned(),
+                ],
+            );
+        }
         self.ctor_cache.insert(name.to_owned(), c);
         Value::Object(c)
     }

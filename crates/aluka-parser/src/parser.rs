@@ -1033,6 +1033,17 @@ impl<'src> Parser<'src> {
                     index,
                     value: Box::new(val),
                 },
+                // 赋值目标为字面量（`true = 1`、`1 = x`、`"s" = y` 等）：
+                // 规范 Invalid left-hand side → SyntaxError（S8.x 负例族；
+                // 此前静默丢弃赋值右侧）
+                Expr::Boolean(_)
+                | Expr::Null
+                | Expr::Number(_)
+                | Expr::BigInt(_)
+                | Expr::String(_) => {
+                    self.record_error("SyntaxError: 赋值目标不能为字面量".to_owned());
+                    expr
+                }
                 other => other,
             };
         }
@@ -1836,11 +1847,24 @@ impl<'src> Parser<'src> {
                 if let Some(regex) = self.parse_regexp_literal() {
                     regex
                 } else {
+                    // 主位的 `/` 只能是正则字面量起点；解析失败（含行终结符
+                    // 等非法形态）即 SyntaxError——兜底静默会让
+                    // `/a<LF>/` 负例被接受
+                    self.record_error("SyntaxError: 非法的正则字面量".to_owned());
                     self.advance();
                     Expr::Undefined
                 }
             }
             _ => {
+                // 表达式主位遇到词法错误 token（未终止字符串、非法 BigInt
+                // 分隔符等）：判死——语句首已有判死通道，此处补表达式中间
+                // 形态（`0b0_n;` 等曾被兜底臂静默吞掉）
+                if let TokenKind::LexError(msg) = &self.peek().kind {
+                    let msg = msg.clone();
+                    self.record_error(format!("SyntaxError: {msg}"));
+                    self.advance();
+                    return Expr::Undefined;
+                }
                 self.advance();
                 Expr::Undefined
             }
@@ -1861,6 +1885,14 @@ impl<'src> Parser<'src> {
         while idx < bytes.len() {
             let b = bytes[idx];
             if b == b'\n' || b == b'\r' {
+                break;
+            }
+            // U+2028/U+2029（LS/PS，UTF-8: E2 80 A8/A9）同为行终结符——
+            // 正则字面量禁止（invalid-regexp-ls/ps 负例）
+            if b == 0xE2
+                && bytes.get(idx + 1) == Some(&0x80)
+                && matches!(bytes.get(idx + 2), Some(0xA8) | Some(0xA9))
+            {
                 break;
             }
             if b == b'\\' {

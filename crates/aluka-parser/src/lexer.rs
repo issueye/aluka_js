@@ -472,11 +472,20 @@ impl<'src> Lexer<'src> {
         }
 
         // 2. 普通字符串字面量 ("..." 或 '...')
+        // 规范：字符串字面量不得含未转义的 <LF>/<CR>，且必须闭合
+        //（违例判死 LexError——test262 line-terminators-invalid-string 族）
         if first == b'"' || first == b'\'' {
             let quote = first;
             self.pos += 1;
             let mut s = String::new();
             while self.pos < bytes.len() && bytes[self.pos] != quote {
+                if bytes[self.pos] == b'\n' || bytes[self.pos] == b'\r' {
+                    return Token {
+                        kind: TokenKind::LexError("字符串字面量包含行终结符".to_owned()),
+                        text: self.src[start..self.pos].to_owned(),
+                        start,
+                    };
+                }
                 if bytes[self.pos] == b'\\' && self.pos + 1 < bytes.len() {
                     self.pos += 1;
                     match bytes[self.pos] {
@@ -572,9 +581,15 @@ impl<'src> Lexer<'src> {
                 }
                 self.pos += 1;
             }
-            if self.pos < bytes.len() && bytes[self.pos] == quote {
-                self.pos += 1;
+            if self.pos >= bytes.len() {
+                // 未终止字符串字面量：规范 SyntaxError
+                return Token {
+                    kind: TokenKind::LexError("未终止的字符串字面量".to_owned()),
+                    text: self.src[start..self.pos].to_owned(),
+                    start,
+                };
             }
+            self.pos += 1;
             return Token {
                 kind: TokenKind::String(s),
                 text: self.src[start..self.pos].to_owned(),

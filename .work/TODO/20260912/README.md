@@ -1011,3 +1011,31 @@ $ cargo test -p aluka-jit --release --test jitbench
 ### 32.1 提交证据
 
 - commit 4eea8b7（fix(m7.2): 轮十七——后缀 ++/-- 受限产生式）。
+
+## 33. M7.2 轮十八：不可写键写入静默化 + parse 负例三族（20260913）
+
+- **失败清单重分桶**（188 例）：[object Object] 92、parse 负例 44、
+  超时 32、TypeError 8、其余小桶；
+- **不可写键写入静默化（Math.E/PI、Number.NaN 等）**：
+  - Vm 新增 `non_writable: HashMap<usize, Vec<String>>` 登记
+    （Math 8 常量 + Number 静态 8 常量 + globalThis 的
+    undefined/NaN/Infinity）；
+  - set_property 与 **set_property_ic** 双守卫（后者必须先于 shape 槽
+    直写——实测 `Number.NaN = 1` 经 IC 快路径绕过慢路径守卫，写入落为
+    自有属性）；`Math.E = 1` 后 `Math.E === __e` 必须成立；
+  - 排障发现：Number ctor 真实构造点在 builtins/global/mod.rs 装配期
+    （resolve_global 的 globals 命中使 proto_ctor_value 不可达）——
+    登记补在装配点；
+- **parse 负例三族**：
+  - 字符串字面量裸 <LF>/<CR> 与未终止形态 → LexError（lexer）；
+  - 正则字面量：主位 `/` 解析失败补记 SyntaxError（此前兜底臂静默吞）；
+    扫描补 U+2028/U+2029 行终结符检测；
+  - 表达式主位遇 LexError token 判死（`0b0_n;` 曾被 primary 兜底臂
+    静默吞掉——BigInt 分隔符校验早已存在，败在错误未传导）；
+  - 字面量赋值（`true = 1`）→ SyntaxError（Invalid left-hand side）；
+- **净效果**：t262 879 → **890/1154**（失败 188 → 177）；
+  **M72_FLOOR 770 → 820**（按真实基线 890 通过/177 失败上调，上限
+  823 留 3 例余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  conformance 差分 ✓、GC 压力 0 失败 ✓；不可写写入 5 例探针逐字节
+  对齐 Node 22。

@@ -245,6 +245,14 @@ impl Vm {
         val: Value,
         site: u64,
     ) -> Result<(), VmError> {
+        // 内建单例不可写键（Math.E/Number.NaN 等）：写守卫须**先于** IC
+        // 快路径——否则 shape 槽直写绕过 set_property 的登记检查
+        if let Some(r) = obj.as_object()
+            && let Some(keys) = self.non_writable.get(&r.index())
+            && keys.iter().any(|k| k == key)
+        {
+            return Ok(());
+        }
         let base = (site as usize & (PIC_GROUPS - 1)) * PIC_WAYS;
         if let Some(r) = obj.as_object()
             && let Some(HeapObject::Ordinary {

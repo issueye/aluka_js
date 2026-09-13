@@ -476,10 +476,9 @@ fn test262_subset_conformance() {
         hand_failures.join("\n")
     );
     let m72_failures = failures.len() - hand_failures.len();
-    // 800 曾按「837 通过 ⇒ 失败 ≤200」误推；实际 1154−837−87(invalid)=230，
-    // 该门禁自设定起从未绿过。回落到真实基线（841 通过/226 失败）可承受的
-    // 770，随分桶修复逐级上调回 1000（M7.2 验收口径）。
-    const M72_FLOOR: usize = 770;
+    // 随分桶修复逐级上调：轮十八后真实基线 890 通过/177 失败（841→890），
+    // 下限取可承受的 820（理论上限 823 留余量），目标 1000（M7.2 验收口径）。
+    const M72_FLOOR: usize = 820;
     assert!(
         m72_failures <= 1000 - M72_FLOOR,
         "test262 官方导入语料通过数低于基线下限 {M72_FLOOR}/1000（当前失败 {m72_failures}）"

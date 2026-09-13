@@ -878,11 +878,24 @@ impl Vm {
                 }
             }
         }
-        // globalThis：属性写入直通全局变量表
+        // globalThis：属性写入直通全局变量表；undefined/NaN/Infinity 为
+        // 规范不可写全局——写入静默忽略（`undefined = 1` 后 `undefined`
+        // 仍为 undefined）
         if let Some(r) = obj.as_object() {
             if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
+                if matches!(key, "undefined" | "NaN" | "Infinity") {
+                    return Ok(());
+                }
                 self.globals.insert(key.to_owned(), val);
                 return Ok(());
+            }
+        }
+        // 内建单例不可写键（Math.E/PI、Number.NaN 等）：sloppy 写入静默忽略
+        if let Some(r) = obj.as_object() {
+            if let Some(keys) = self.non_writable.get(&(r.0 as usize)) {
+                if keys.iter().any(|k| k == key) {
+                    return Ok(());
+                }
             }
         }
         // RegExp 实例的 lastIndex：写线程局部状态表（堆对象无可变属性）

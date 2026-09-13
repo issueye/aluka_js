@@ -89,6 +89,15 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     for (key, value) in statics {
         let _ = vm.set_property(Value::Object(number), key, *value);
     }
+    // 规范 writable:false 静态常量登记：写入静默忽略（`Number.NaN = 1`
+    // 后 `Number.NaN` 仍为 NaN——Sputnik S8.5 族；守卫须覆盖 IC 快路径）
+    vm.non_writable.insert(
+        number.0 as usize,
+        statics
+            .iter()
+            .map(|(k, _)| (*k).to_owned())
+            .collect::<Vec<_>>(),
+    );
     for method in [
         "isInteger",
         "isSafeInteger",
