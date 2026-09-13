@@ -320,14 +320,24 @@ impl Vm {
 
     /// 执行加法运算（支持数值相加与 ECMAScript 字符串自动拼接）。
     pub fn add_values(&mut self, left: Value, right: Value) -> Result<Value, VmError> {
-        // ToPrimitive 快路径：包装对象（`new Boolean/Number/String`）与 Date
-        // 先解包为原始值，再走下方原始值/字符串拼接逻辑
-        let left = self.wrapper_primitive(left).unwrap_or(left);
-        let right = self.wrapper_primitive(right).unwrap_or(right);
-        // ToPrimitive(hint number)：普通对象按 valueOf → toString 序解包
-        //（M7.2 语料 `{valueOf:()=>1} + 1 === 2` 算术五则族）
-        let left = self.to_primitive_number(left)?;
-        let right = self.to_primitive_number(right)?;
+        // ToPrimitive 快路径：包装对象（`new Boolean/Number/String`）解包为
+        // 原始值。**Date 不在此列**——其 hint default 走 toString 得日期串
+        //（`date + 1` 是字符串拼接；解包成 _timeValue 会得数字，S11.6.1_A2.2_T2）
+        let unwrap_wrapper = |vm: &Self, v: Value| -> Value {
+            if v.as_object()
+                .is_some_and(|r| vm.has_own_slot(r.index(), "_isDate"))
+            {
+                return v;
+            }
+            vm.wrapper_primitive(v).unwrap_or(v)
+        };
+        let left = unwrap_wrapper(self, left);
+        let right = unwrap_wrapper(self, right);
+        // ToPrimitive(hint default)：`+` 的规范 hint 是 default——先
+        // @@toPrimitive（hint "default"），再 Date→toString / 其余 valueOf→toString
+        //（`date + 1` 得日期串、`{[Symbol.toPrimitive]:h=>h} + ""` 得 "default"）
+        let left = self.to_primitive_default(left)?;
+        let right = self.to_primitive_default(right)?;
         if let (ValueCase::Number(a), ValueCase::Number(b)) = (left.case(), right.case()) {
             return Ok(Value::Number(a + b));
         }
@@ -420,7 +430,14 @@ impl Vm {
         if !matches!(v.case(), ValueCase::Object(_)) {
             return Ok(v);
         }
+        // @@toPrimitive：对象自定义转换协议优先于 valueOf/toString
+        // （`{[Symbol.toPrimitive]: h => h}`；hint 为 "number"/"string"/"default"）
+        if let Some(p) = self.call_to_primitive(v, "number")? {
+            return Ok(p);
+        }
         let r = v.as_object().expect("原始值早退后必为堆对象");
+        // hint number：Date 例外——其 [[DefaultValue]] 走 hint string
+        //（`date + 1` 得日期串而非时间值；S11.6.1_A2.2_T2 族）
         let is_date = self.has_own_slot(r.0 as usize, "_isDate");
         let (first, second) = if is_date {
             ("toString", "valueOf")
@@ -561,6 +578,106 @@ impl Vm {
         Ok(self.to_number_value(p))
     }
 
+    /// `@@toPrimitive`（`Symbol.toPrimitive`）协议：对象定义该方法时按其
+    /// 结果作为 ToPrimitive 输出（返回非原始值 → TypeError）；未定义 → None
+    /// （调用方回退 valueOf/toString 序）。
+    pub(crate) fn call_to_primitive(
+        &mut self,
+        v: Value,
+        hint: &str,
+    ) -> Result<Option<Value>, VmError> {
+        let Some(sym) = Vm::well_known_cached("toPrimitive") else {
+            return Ok(None);
+        };
+        let key = crate::symbol::mangled_key(sym);
+        let f = self.get_property(v, &key)?;
+        let callable = f.as_object().is_some_and(|o| {
+            matches!(
+                self.heap.get(o.index()),
+                Some(HeapObject::Closure { .. })
+                    | Some(HeapObject::NativeFn { .. })
+                    | Some(HeapObject::NativeCtor { .. })
+            )
+        });
+        if !callable {
+            return Ok(None);
+        }
+        let hint_val = self.alloc_string(hint.to_owned());
+        let res = self.invoke_callable(f, v, &[Value::Object(hint_val)])?;
+        let primitive = match res.case() {
+            ValueCase::Object(rr) => matches!(
+                self.heap.get(rr.index()),
+                Some(HeapObject::String(_))
+                    | Some(HeapObject::BigInt(_))
+                    | Some(HeapObject::Symbol { .. })
+            ),
+            _ => true,
+        };
+        if !primitive {
+            return Err(self.type_error("Cannot convert object to primitive value"));
+        }
+        Ok(Some(res))
+    }
+
+    /// ToPrimitive(hint default)：`+` 运算符与 `==` 用——先 `@@toPrimitive`
+    /// （hint "default"，Date 在协议内部走 hint string），再按 Date 特例
+    /// 取 toString、其余取 valueOf → toString。
+    ///
+    /// 命名偏离 to_* 惯例以规避 wrong_self_convention（&mut self 为必需）。
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn to_primitive_default(&mut self, v: Value) -> Result<Value, VmError> {
+        if !matches!(v.case(), ValueCase::Object(_)) {
+            return Ok(v);
+        }
+        if let Some(p) = self.call_to_primitive(v, "default")? {
+            return Ok(p);
+        }
+        if let Some(r) = v.as_object()
+            && matches!(
+                self.heap.get(r.index()),
+                Some(HeapObject::String(_))
+                    | Some(HeapObject::BigInt(_))
+                    | Some(HeapObject::Symbol { .. })
+            )
+        {
+            return Ok(v);
+        }
+        let r = v.as_object().expect("对象分支");
+        let is_date = self.has_own_slot(r.index(), "_isDate");
+        let (first, second) = if is_date {
+            ("toString", "valueOf")
+        } else {
+            ("valueOf", "toString")
+        };
+        for m in [first, second] {
+            let mv = self.get_property(v, m)?;
+            let callable = mv.as_object().is_some_and(|f| {
+                matches!(
+                    self.heap.get(f.index()),
+                    Some(HeapObject::Closure { .. })
+                        | Some(HeapObject::NativeFn { .. })
+                        | Some(HeapObject::NativeCtor { .. })
+                )
+            });
+            if callable {
+                let res = self.invoke_callable(mv, v, &[])?;
+                let primitive = match res.case() {
+                    ValueCase::Object(rr) => matches!(
+                        self.heap.get(rr.index()),
+                        Some(HeapObject::String(_))
+                            | Some(HeapObject::BigInt(_))
+                            | Some(HeapObject::Symbol { .. })
+                    ),
+                    _ => true,
+                };
+                if primitive {
+                    return Ok(res);
+                }
+            }
+        }
+        Err(self.type_error("Cannot convert object to primitive value"))
+    }
+
     /// ToString（hint string，全语义）：对象按 `toString` → `valueOf` 序
     /// 取原始值后转串（用户自定义 toString 生效——`String({toString(){...}})`
     /// / `new String(obj)`）；数组/Date 等经其原型方法；皆非原始 → TypeError。
@@ -583,6 +700,13 @@ impl Vm {
         // add_values 字符串分支单独拦截抛 TypeError
         if self.is_symbol(v) {
             return Ok(self.format_value(v));
+        }
+        // @@toPrimitive（hint "string"）优先于 toString/valueOf 序
+        if let Some(p) = self.call_to_primitive(v, "string")? {
+            if self.is_symbol(p) {
+                return Ok(self.format_value(p));
+            }
+            return Ok(self.format_value(p));
         }
         // hint string：toString → valueOf（Date 同序——hint string 下
         // Date.prototype.toString 即日期可读形式）

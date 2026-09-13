@@ -1609,3 +1609,25 @@ $ cargo test -p aluka-jit --release --test jitbench
   workspace 全量 0 失败 ✓、t262 FLOOR=938 ✓、conformance 差分 ✓
   （3 例回归已修）、express e2e ✓；覆写探针 3 批（bp5/bp6/bp9）
   全对齐 Node 22。
+
+## 69. M7.2 轮五十五：@@toPrimitive 协议 + `+` 用 hint default（20260913）
+
+- **`@@toPrimitive` 接入**（此前知名符号存在但 ToPrimitive 从不查找）：
+  - 新增 `call_to_primitive(v, hint)`：对象定义 `Symbol.toPrimitive` 时按
+    其结果作为 ToPrimitive 输出（hint 传 "number"/"string"/"default"；
+    返回非原始值 → TypeError）；未定义 → None 回退常规序；
+  - 接入点：`to_primitive_number`（hint number）、新增
+    `to_primitive_default`（hint default）、`js_string`（hint string）；
+- **`+` 改用 hint default**：add_values 的 ToPrimitive 由 hint number 改
+  default（规范 `+` 用 default）——**Date 特例**：hint default/number 下
+  Date 走 toString 得日期串（`date + 1` 是字符串拼接，S11.6.1_A2.2_T2 族）；
+  同时把 Date 排除出 add_values 的 `wrapper_primitive` 快路径
+  （`_timeValue` 提前解包成数字会破坏该语义）；
+- **净效果**：t262 1008 → **1018/1154**（失败 59 → 49，本会话单轮最大 +10）；
+  **M72_FLOOR 938 → 948**（理论上限 951 留余量）；
+- 排障记录：own-key 复核一度加错到 `get_property_ic`（数据槽直读路径），
+  致 pic 单测 2 例失败（`pic_hits` 恒 0）；按函数边界精确定位后移入
+  `get_method_ic` 原型槽读取处，vm 单测 182/0 恢复；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=948 ✓、conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓；
+  @@toPrimitive/Date 探针全对齐（Date 时区口径为项目已登记偏离）。
