@@ -898,6 +898,26 @@ impl Vm {
                 }
             }
         }
+        // Array 实例 length 写入：截断/扩展 + 长度校验（ES §23.1.4）——
+        // `x.length = 1` 截断元素、`y.length = 3` 以 undefined 扩展、
+        // 非法长度（NaN/负数/非整数/≥2^32）→ RangeError（S15.4.5.2 族）
+        if key == "length" {
+            if let Some(r) = obj.as_object() {
+                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Array { .. })) {
+                    let n = self.numeric_operand(val)?;
+                    if n.is_nan() || n < 0.0 || n.fract() != 0.0 || n >= 4294967296.0 {
+                        return Err(self.typed_error("RangeError", "Invalid array length"));
+                    }
+                    let newlen = n as usize;
+                    if let Some(HeapObject::Array { elements, .. }) =
+                        self.heap.get_mut(r.0 as usize)
+                    {
+                        elements.resize(newlen, Value::Undefined);
+                    }
+                    return Ok(());
+                }
+            }
+        }
         // RegExp 实例的 lastIndex：写线程局部状态表（堆对象无可变属性）
         if key == "lastIndex" {
             if let Some(r) = obj.as_object() {

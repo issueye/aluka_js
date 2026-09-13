@@ -1200,3 +1200,15 @@ $ cargo test -p aluka-jit --release --test jitbench
   **M72_FLOOR 857 → 858**（理论上限 861 留余量）；
 - 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
   t262 FLOOR=858 ✓、conformance 差分 ✓；Symbol/布尔探针 3+7 例对齐。
+
+## 44. M7.2 轮廿九：Array length setter（20260913）
+
+- set_property 补 Array 实例 length 写入：截断（`x.length = 1` 移除
+  越界元素）/ 扩展（`y.length = 3` 以 undefined 填充）/ 长度校验
+  （NaN/负数/非整数/≥2^32 → RangeError "Invalid array length"）/
+  wrapper 参数经 numeric_operand 解包（`x.length = new Number(2)`）；
+- 此前写入被静默忽略（读回仍是真实长度）——S15.4.5.1/5.2 族全灭；
+- **净效果**：t262 928 → **931/1154**（失败 139 → 136）；
+  **M72_FLOOR 858 → 861**（理论上限 864 留余量）；
+- 门禁证据：fmt ✓、clippy exit 0 ✓、workspace 全量 0 失败 ✓、
+  t262 FLOOR=861 ✓、conformance 差分 ✓；length setter 4 探针对齐。
