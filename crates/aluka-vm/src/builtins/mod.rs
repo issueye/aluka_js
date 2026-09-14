@@ -524,9 +524,19 @@ pub fn try_dispatch(
                 return None;
             }
         }
+        // 构造器静态面：模块名键（`Reflect.apply` 等）优先；未登记模块的
+        // 全局构造器（Number/Boolean/String/Array 等）回退 `Object.prototype`
+        // 的通用方法（`Number.hasOwnProperty("MAX_VALUE")`、
+        // `Boolean.hasOwnProperty("prototype")`——S15.7.3/S15.6.3 族）
         HeapObject::NativeCtor { .. } => {
             if let Some(module_name) = vm.builtin_registry.module_of(r) {
                 format!("{module_name}.{method}")
+            } else if vm
+                .builtin_registry
+                .dispatch
+                .contains_key(&format!("Object.prototype.{method}"))
+            {
+                format!("Object.prototype.{method}")
             } else {
                 return None;
             }
@@ -537,6 +547,10 @@ pub fn try_dispatch(
         HeapObject::Readable { .. } => {
             format!("stream.{method}")
         }
+        // 字符串原始值（堆字符串）：按 String.prototype 分派
+        //（`"abc".toString()` / `s.valueOf()` / `s.charAt(0)` 等——
+        // 此前落 `return None` 致 CALL_METHOD 报 "is not a function"）
+        HeapObject::String(_) => format!("String.prototype.{method}"),
         _ => return None,
     };
     let handler = vm.builtin_registry.lookup(&key)?;

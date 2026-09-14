@@ -99,7 +99,7 @@ impl Vm {
 
         // 3. 安装方法与访问器
         let mut computed_pos = 0;
-        for (mi, m) in class_tpl.methods.iter().enumerate() {
+        for m in class_tpl.methods.iter() {
             let m_func_idx = m.func_index as usize;
             let m_tmpl = self
                 .module_functions
@@ -131,9 +131,11 @@ impl Vm {
                 }
             }
             let m_ref = self.alloc_closure_with_upvalues(m_func_idx, m_captured);
-            let name = if computed_pos < class_tpl.computed_indices.len()
-                && class_tpl.computed_indices[computed_pos] as usize == mi
-            {
+            // 计算键标记经方法 kind 高位 0x20 传递（字面量键为 0）
+            let is_computed = m.kind & 0x20 != 0;
+            // 计算键（kind 0x20）的字面量文本由编译期写入 m.name（栈上
+            // 值形态由 computed_keys 覆盖——两者一致时以栈值为准）
+            let name = if is_computed && computed_pos < computed_keys.len() {
                 let n = computed_keys[computed_pos].clone();
                 computed_pos += 1;
                 n
@@ -151,12 +153,15 @@ impl Vm {
             // 静态生成器名不得为 constructor/prototype（规范 TypeError：
             // 生成器无 [[Construct]]，`static *['constructor']()` 非法）。
             // 生成器标志经 parser kind 高位 0x10 编码跨 bytecode 传递
-            if m.is_static && name == "constructor" {
+            if m.is_static && name == "constructor" && !is_computed {
                 return Err(
                     self.type_error("Classes may not have a static property named 'constructor'")
                 );
             }
-            if m.kind & 0x10 != 0 && matches!(name.as_str(), "constructor" | "prototype") {
+            if m.kind & 0x10 != 0
+                && !is_computed
+                && matches!(name.as_str(), "constructor" | "prototype")
+            {
                 return Err(self.type_error(
                     "Classes may not have a static generator named 'constructor'/'prototype'",
                 ));
@@ -167,7 +172,9 @@ impl Vm {
                 Value::Object(proto_ref)
             };
 
-            match m.kind {
+            // 屏蔽高位标记（0x10 生成器 / 0x20 计算键），仅取低位的
+            // 访问器类型（0=方法, 1=getter, 2=setter）
+            match m.kind & 0x0F {
                 0 => {
                     // 普通方法
                     self.set_property(target, &name, Value::Object(m_ref))?;

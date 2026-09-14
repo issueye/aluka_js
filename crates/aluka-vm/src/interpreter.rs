@@ -1232,6 +1232,30 @@ impl Vm {
         None
     }
 
+    /// 非严格相等的包装解包：Ordinary 对象带包装数据槽时返回槽内原始值。
+    ///
+    /// 与 `wrapper_primitive` 同源，但排除 `_timeValue`（Date 的 == 语义
+    /// 经 ToPrimitive 而非数据槽直解，避免 `d == 0` 误判）。
+    pub(crate) fn unwrap_primitive_slot(&self, val: Value) -> Value {
+        let Some(r) = val.as_object() else {
+            return val;
+        };
+        for key in [
+            "[[NumberValue]]",
+            "[[BooleanValue]]",
+            // 包装原型单例（Boolean.prototype 等）由 prime_wrapper_proto
+            // 以 [[BooleanData]] 键挂槽——与实例的 [[BooleanValue]] 并存
+            "[[BooleanData]]",
+            "[[StringValue]]",
+            "[[BigIntData]]",
+        ] {
+            if let Some(w) = self.own_value(r.0 as usize, key) {
+                return w;
+            }
+        }
+        val
+    }
+
     /// 原始值包装实例分配（`Object(v)` 直调/`new Object(v)` 对原始值参数）：
     /// 数值/布尔/堆字符串/BigInt 分别落 `[[NumberValue]]`/`[[BooleanValue]]`/
     /// `[[StringValue]]`/`[[BigIntData]]` 数据槽——算术族经 wrapper_primitive
@@ -2197,6 +2221,22 @@ impl Vm {
                 }
                 _ => Ok(Value::Undefined),
             }
+        } else if method_name == "isRawJSON" && self.is_json_object(receiver) {
+            // JSON.isRawJSON(O)：Type(O) 为 Object 且带 [[IsRawJSON]] 槽
+            let v = args.first().copied().unwrap_or(Value::Undefined);
+            let is_raw = v
+                .as_object()
+                .is_some_and(|r| self.has_own_slot(r.0 as usize, "_isRawJSON"));
+            Ok(Value::Boolean(is_raw))
+        } else if method_name == "rawJSON" && self.is_json_object(receiver) {
+            // JSON.rawJSON(text)：带 [[IsRawJSON]] 标记的对象，rawJSON 属性持源文本
+            let text = args.first().copied().unwrap_or(Value::Undefined);
+            let s = self.js_string(text)?;
+            let obj = self.alloc_ordinary();
+            let raw = self.alloc_string(s);
+            let _ = self.set_property(Value::Object(obj), "rawJSON", Value::Object(raw));
+            let _ = self.set_property(Value::Object(obj), "_isRawJSON", Value::Boolean(true));
+            Ok(Value::Object(obj))
         } else if self.is_string_value(receiver) {
             // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
             let text = match &receiver.case() {
@@ -4139,12 +4179,20 @@ impl Vm {
                 Op::Eq => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    // 包装实例（Object(v)/new Number(v) 等）先解包数据槽：
+                    // eq 的 wrapper_data 只识别 Dict 布局，而 set_property
+                    // 会按 Shape 布局写入 [[NumberValue]] 等键——两侧解包
+                    // 后再比较（`Object(1.1) == 1.1` 此前恒 false）
+                    let left = self.unwrap_primitive_slot(left);
+                    let right = self.unwrap_primitive_slot(right);
                     let res = eq(left, right, &self.heap, &self.current_constants);
                     self.stack.push(Value::Boolean(res));
                 }
                 Op::Ne => {
                     let right = self.pop()?;
                     let left = self.pop()?;
+                    let left = self.unwrap_primitive_slot(left);
+                    let right = self.unwrap_primitive_slot(right);
                     let res = !eq(left, right, &self.heap, &self.current_constants);
                     self.stack.push(Value::Boolean(res));
                 }
@@ -4355,6 +4403,28 @@ impl Vm {
                     } else if self.is_native_fn(callee, "JSON.parse") {
                         let out = self.json_parse(args)?;
                         self.stack.push(out);
+                    } else if self.is_native_fn(callee, "JSON.rawJSON") {
+                        // JSON.rawJSON(text)：带 [[IsRawJSON]] 标记的普通对象
+                        // （`rawJSON` 自有属性持源文本；stringify 时原样输出）
+                        let text = args.first().copied().unwrap_or(Value::Undefined);
+                        let s = self.js_string(text)?;
+                        let obj = self.alloc_ordinary();
+                        let raw = self.alloc_string(s);
+                        let _ =
+                            self.set_property(Value::Object(obj), "rawJSON", Value::Object(raw));
+                        let _ = self.set_property(
+                            Value::Object(obj),
+                            "_isRawJSON",
+                            Value::Boolean(true),
+                        );
+                        self.stack.push(Value::Object(obj));
+                    } else if self.is_native_fn(callee, "JSON.isRawJSON") {
+                        // 规范：Type(O) 为 Object 且带 [[IsRawJSON]] 槽 → true
+                        let v = args.first().copied().unwrap_or(Value::Undefined);
+                        let is_raw = v
+                            .as_object()
+                            .is_some_and(|r| self.has_own_slot(r.0 as usize, "_isRawJSON"));
+                        self.stack.push(Value::Boolean(is_raw));
                     } else if self.is_symbol_ctor(callee) {
                         // Symbol([description])：唯一符号原语
                         let sym = self.symbol_create(args)?;

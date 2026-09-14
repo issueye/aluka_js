@@ -433,8 +433,11 @@ pub struct ClassMethodDef {
     pub is_static: bool,
     /// 是否为生成器方法（`*m() {}`）
     pub is_generator: bool,
-    /// 方法类型（0=普通方法, 1=Getter, 2=Setter）
+    /// 方法类型（0=普通方法, 1=Getter, 2=Setter；高位 0x20=计算键）
     pub kind: u32,
+    /// 键是否为计算形态（`['constructor']() {}`）——计算键不构成构造器、
+    /// 也不触发静态 constructor/prototype 早错误
+    pub is_computed: bool,
 }
 
 /// 对象属性键

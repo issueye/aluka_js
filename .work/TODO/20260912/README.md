@@ -2120,3 +2120,61 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok
   0 失败** ✓、t262 1067/1154（0 失败）✓、conformance 差分 ✓、
   express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8（cli+vm）0 失败 ✓。
+
+## 90. M7.2 轮七十六：runner harness 叠加缺陷修复（invalid 87→31）+ 9 类真实引擎缺陷（20260914）
+
+- **重大发现（runner 缺陷）**：1000 个 m72 官方向导语料**全部内嵌了完整
+  test262 harness**（函数式 `assert(mustBeTrue, msg)`、Test262Error、
+  compareArray、verifyProperty、isConstructor 等），而 runner 又叠加了
+  自己那份 `var assert = {...}`（对象版）——赋值覆写用例的函数声明，
+  用例内 `assert(...)` 随即失效。此前 87 例被判 INVALID（"node 侧与用例
+  预期相悖"）正是**同一损坏产物**下 node 与 alukac 双失败所致，这些用例
+  从未被真正验证过。
+  - **修复**：harness 注入改为**按需**（用例体含 `function assert(mustBeTrue`
+    时不再注入）；手写回归语料（154 例，非 m72-）依赖 runner harness，
+    保持注入。
+  - **净效果**：invalid 87 → **31**，通过 1067 → **1123**（失败先由 0 暴露
+    为 37 例真实缺陷，逐一修复后重回 0）。
+- **修复的真实引擎缺陷（9 类，37 例）**：
+  1. **字符串原始值方法调用**（`"abc".toString()` / `s.valueOf()`）：
+     `call_string_method` 白名单缺 toString/valueOf——补入（返回字符串
+     自身，ThisStringValue 语义）；同时 `try_dispatch` 补
+     `HeapObject::String` 分支（按 String.prototype 键分派）；
+  2. **非严格相等的包装对象解包**（15 例）：`eq` 的 `wrapper_data` 只识别
+     Dict 布局，而 `set_property` 按 Shape 布局写入 `[[NumberValue]]` ——
+     在 Eq/Ne 操作码处新增 `unwrap_primitive_slot` 预处理（兼容 Shape/Dict，
+     排 `_timeValue` 避免 `d == 0` 误判）；并补 `[[BooleanData]]` 键
+     （`Boolean.prototype` 等包装原型单例由 prime_wrapper_proto 以该键挂槽）；
+  3. **hasOwnProperty 内建自有面**（12 例）：新增 `builtin_own_slot`——
+     NativeCtor/NativeFn/Closure 的 `prototype`/`length`/`name` 固有面、
+     Array 的数字索引与 `length`、String 的索引与 `length`；
+     并为未登记模块的全局构造器（Number/Boolean 等）补
+     `Object.prototype.{method}` 分派回退（原先 try_dispatch 直接 None，
+     致 `Number.hasOwnProperty(...)` 报错）；
+  4. **原生函数/构造器的 length/name 固有面**（2 例）：`Number.length`
+     此前落到原型链上的 `Function.prototype.length` NativeFn 占位——
+     补内建固有面（构造器 length=1、name 取短名）；
+  5. **Boolean 固有面不可枚举**（2 例）：`for (x in Boolean)` 不产出
+     "prototype"（non_enumerable/non_configurable 注册）；
+  6. **Object.isExtensible/preventExtensions 缺失**（2 例）：补实现
+     （扩展性恒 true；null/undefined → TypeError）并注册到 Object 分派表；
+  7. **JSON.rawJSON/isRawJSON 缺失**（2 例）：实现 `_isRawJSON` 内部槽
+     标记对象 + 谓词；JSON 命名空间对象按 `_isJSON` 标志识别（单例未缓存
+     于 Vm 字段，不能按引用比较）；
+  8. **类计算键方法**（5 例，含 4 例先回归后修复）：
+     `['constructor']()` **不计为构造器**（parser 增 `is_computed` 标记、
+     跨 bytecode 经 kind 高位 0x20 传递）；静态 `['constructor']()` 合法
+     （早错误仅对字面量名生效）；VM 访问器分派需 `m.kind & 0x0F` 屏蔽
+     高位（此前 kind=0x20 落 `_ =>` 未安装方法）；
+  9. **`{ __proto__ }` 简写**（1 例）：简写 `{ __proto__ }` 是**普通数据
+     属性**（绑定当前作用域变量），仅冒号形态 `{ __proto__: v }` 设
+     [[Prototype]]；
+- **验收状态**：m72- 语料 **1000 例：916 通过 / 84 invalid / 0 失败**
+  → 全量 **1154：1123 通过 / 31 invalid / 0 失败**（门禁断言
+  `m72_failures == 0` 保持）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓（同步更新构造器测试的字段初始化）、
+  workspace 92 目标全 ok ✓、t262 1123/1154（0 失败）✓、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- **余量 31 例 invalid**：均为 node 侧与用例预期相悖（Sputnik 老用例含
+  现实引擎皆无的 API、依赖引擎特定行为等），按 runner 的 M1 防假阳性
+  口径不计入通过或失败。

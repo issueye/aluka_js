@@ -172,7 +172,10 @@ fn wrapper_data(heap: &[HeapObject], r: u32) -> Option<&Value> {
         }) => properties
             .iter()
             .find(|(k, _)| {
-                k == "[[NumberValue]]" || k == "[[BooleanValue]]" || k == "[[StringValue]]"
+                matches!(
+                    k.as_str(),
+                    "[[NumberValue]]" | "[[BooleanValue]]" | "[[BooleanData]]" | "[[StringValue]]"
+                )
             })
             .map(|(_, v)| v),
         _ => None,

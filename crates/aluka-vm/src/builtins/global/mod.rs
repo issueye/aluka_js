@@ -130,6 +130,16 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // ---- Boolean ----
     let bool_p = crate::builtins::surface::bool_proto(vm);
     let boolean = vm.alloc_native_ctor("Boolean", Some(bool_p));
+    // 规范描述符：Boolean 的固有面（prototype/length/name）不可枚举
+    //（`for (x in Boolean)` 不产出 "prototype"——S15.6.3.1_A4）
+    let boolean_enum_keys: Vec<String> = ["prototype", "length", "name"]
+        .iter()
+        .map(|m| (*m).to_owned())
+        .collect();
+    vm.non_enumerable
+        .insert(boolean.0 as usize, boolean_enum_keys.clone());
+    vm.non_configurable
+        .insert(boolean.0 as usize, boolean_enum_keys);
     vm.globals
         .insert("Boolean".to_owned(), Value::Object(boolean));
 
@@ -539,6 +549,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "values",
             "entries",
             "fromEntries",
+            "isExtensible",
+            "preventExtensions",
         ] {
             let f = vm.alloc_native_fn(&format!("Object.{method}"));
             let _ = vm.set_property(Value::Object(octor), method, Value::Object(f));

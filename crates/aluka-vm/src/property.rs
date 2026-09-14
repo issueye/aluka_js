@@ -43,6 +43,44 @@ impl Vm {
         self.own_value(idx, key).is_some()
     }
 
+    /// 内建堆变体的自有面判定（`Object.prototype.hasOwnProperty` 用）。
+    ///
+    /// 与普通对象的属性表互补：
+    /// - NativeCtor/NativeFn/Closure：`properties` 表 + 内建固有面
+    ///   （`prototype`/`length`/`name`——`Number.hasOwnProperty("MAX_VALUE")`
+    ///   与 `Number.hasOwnProperty("prototype")` 等）
+    /// - Array：数字索引（< 元素数且非空洞）与 `length`
+    /// - String：数字索引（< UTF-16 长度）与 `length`
+    pub(crate) fn builtin_own_slot(&self, r: aluka_core::ObjectRef, key: &str) -> bool {
+        let idx = r.0 as usize;
+        match self.heap.get(idx) {
+            Some(
+                HeapObject::NativeCtor { properties, .. }
+                | HeapObject::NativeFn { properties, .. }
+                | HeapObject::Closure { properties, .. },
+            ) => properties.contains_key(key) || matches!(key, "prototype" | "length" | "name"),
+            Some(HeapObject::Array {
+                elements,
+                properties,
+                ..
+            }) => {
+                if key == "length" || properties.contains_key(key) {
+                    return true;
+                }
+                key.parse::<usize>()
+                    .is_ok_and(|i| i < elements.len() && !elements[i].is_undefined())
+            }
+            Some(HeapObject::String(s)) => {
+                if key == "length" {
+                    return true;
+                }
+                let units: usize = s.chars().map(|c| if c > '\u{FFFF}' { 2 } else { 1 }).sum();
+                key.parse::<usize>().is_ok_and(|i| i < units)
+            }
+            _ => false,
+        }
+    }
+
     /// Ordinary 对象属性表内忽略 ASCII 大小写扫描，返回实际键名。
     ///
     /// Windows `process.env` 语义专用：Node 22 在 Windows 上对 env 键的
@@ -473,6 +511,27 @@ impl Vm {
         // 闭包函数：`name` / `length` 读模板元数据（Go 前端编译产物携带函数名）。
         // 先判断键再取模板：普通属性（尤其热路径中的 `prototype`/自定义键）
         // 不需要复制函数名 String。
+        // 原生函数/构造器的内建固有面：`length`（形参数）与 `name`。
+        // 规范 Function.length 为形参数（Number/Boolean 构造器为 1），
+        // `name` 为函数名——此前落到原型链上的 `Function.prototype.length`
+        // NativeFn 占位（`Number.length` 读出函数对象；
+        // S15.7.3_A8/S15.6.3_A3 族）
+        if let Some(r) = obj.as_object() {
+            let native = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::NativeCtor { name, .. }) => Some((name.clone(), 1.0)),
+                Some(HeapObject::NativeFn { name, .. }) => Some((name.clone(), 0.0)),
+                _ => None,
+            };
+            if let Some((name, len)) = native {
+                if key == "length" && !self.has_own_slot(r.0 as usize, key) {
+                    return Ok(Value::Number(len));
+                }
+                if key == "name" && !self.has_own_slot(r.0 as usize, key) {
+                    let short = name.rsplit('.').next().unwrap_or(&name).to_owned();
+                    return Ok(Value::Object(self.alloc_string(short)));
+                }
+            }
+        }
         if let Some(r) = obj.as_object() {
             let func_idx = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Closure { func_idx, .. }) => Some(*func_idx),

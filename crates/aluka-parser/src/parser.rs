@@ -1180,6 +1180,10 @@ impl<'src> Parser<'src> {
                     accessor_kind = if prefix == "get" { 1 } else { 2 };
                 }
             }
+            // 计算键（`['constructor']() {}`）不是 `constructor` 方法——
+            // 规范仅**字面量**名 constructor 定义构造器（计算键方法挂原型，
+            // `C.prototype.constructor` 保持回指构造器）
+            let mut is_computed_key = false;
             let m_name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
                 self.advance();
                 id
@@ -1187,6 +1191,7 @@ impl<'src> Parser<'src> {
                 self.advance();
                 kw
             } else if self.check_punct("[") {
+                is_computed_key = true;
                 // 计算键：`get ['a']() {}`——以字面量文本为名（字符串/数字
                 // 字面量键的常见形态；复杂表达式取源码切片）
                 self.advance();
@@ -1236,7 +1241,7 @@ impl<'src> Parser<'src> {
                 other => vec![other],
             };
 
-            if m_name == "constructor" {
+            if m_name == "constructor" && !is_computed_key {
                 constructor = Some(FunctionDef {
                     name: format!("{name}_constructor"),
                     params,
@@ -1253,7 +1258,9 @@ impl<'src> Parser<'src> {
                     body,
                     is_static,
                     is_generator,
-                    kind: accessor_kind,
+                    // 高位 0x20：计算键标记（跨 bytecode 传给 VM 的早错误判定）
+                    kind: accessor_kind | if is_computed_key { 0x20 } else { 0 },
+                    is_computed: is_computed_key,
                 });
             }
         }

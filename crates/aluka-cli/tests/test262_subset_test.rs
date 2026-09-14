@@ -241,13 +241,20 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str, node: Option<&st
     } else {
         ""
     };
-    // harness + 剥离 frontmatter 的用例体
+    // harness 注入**按需**：m72 官方向导语料已内嵌完整 test262 harness
+    // （含函数式 `assert(mustBeTrue, msg)`、Test262Error、compareArray、
+    // verifyProperty、isConstructor 等），再叠加本文件的 `var assert = {...}`
+    // 会以赋值覆写用例的函数声明——用例中的 `assert(...)` 调用随即失效
+    // （此前 87 例被判 INVALID 的成因：node 与 alukac 读到的是同一损坏产物）。
+    // 手写回归语料（非 m72-）依赖本 harness，故仅在其缺失时注入。
+    let body = strip_frontmatter(&src);
     let js = tmp.join(format!("{name}.js"));
-    std::fs::write(
-        &js,
-        format!("{strict_prefix}{HARNESS}\n{}", strip_frontmatter(&src)),
-    )
-    .expect("写临时用例");
+    let header = if body.contains("function assert(mustBeTrue") {
+        strict_prefix.to_owned()
+    } else {
+        format!("{strict_prefix}{HARNESS}\n")
+    };
+    std::fs::write(&js, format!("{header}{body}")).expect("写临时用例");
 
     // node 侧 oracle 校验（M1 防假阳性口径）：正向用例 node 必须 rc=0，
     // 负向用例 node 必须非 0——node 与用例预期相悖时判 INVALID（不计入

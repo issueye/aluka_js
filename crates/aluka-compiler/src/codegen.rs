@@ -1264,9 +1264,12 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                 match (&prop.key, &prop.value) {
                     (PropKey::Literal(k), PropValue::Expr(v)) => {
                         compile_expr(v, unit);
-                        if k == "__proto__" {
-                            // 规范：字面量 `__proto__: v` 设 [[Prototype]]
-                            // 而非建自有属性（值与对象/null 判定在 VM）
+                        // 简写形态 `{ __proto__ }` ≡ `{ __proto__: __proto__ }`
+                        // 是**普通数据属性**（绑定当前作用域变量），仅冒号形态
+                        // `{ __proto__: v }` 才设 [[Prototype]]（规范
+                        // PropertyDefinition : IdentifierReference）
+                        let is_shorthand = matches!(v, Expr::Ident(n) if n == k);
+                        if k == "__proto__" && !is_shorthand {
                             unit.code.push(Instr::new(Op::SetProtoObj, 0));
                         } else {
                             let name_idx = add_constant(unit, Constant::String(k.clone()));

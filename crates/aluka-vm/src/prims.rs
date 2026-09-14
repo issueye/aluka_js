@@ -294,6 +294,10 @@ impl Vm {
             // ES2024 字符串完整性：aluka 字节字符串模型运行时恒为合法 UTF-8
             //（孤立 surrogate 在 lexer 层替换），故 isWellFormed 恒真、
             // toWellFormed 恒原样（对齐 Go 版字节字符串语义）
+            // 字符串原始值方法（`"abc".toString()` / `s.valueOf()`）——
+            // 返回字符串自身（String.prototype.toString/valueOf 规范即
+            // ThisStringValue；此前未列致 CALL_METHOD 报 "is not a function"）
+            "toString" | "valueOf" => ret_str!(text.to_string()),
             "isWellFormed" => Some(Ok(Value::Boolean(true))),
             "toWellFormed" => ret_str!(text.to_string()),
             "trim" => ret_str!(text.trim().to_string()),

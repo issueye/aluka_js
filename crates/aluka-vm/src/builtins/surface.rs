@@ -577,7 +577,13 @@ fn obj_has_own_prop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .map(|v| vm.to_property_key(*v))
         .unwrap_or_default();
     let has = match this.case() {
-        ValueCase::Object(r) => vm.has_own_slot(r.0 as usize, &key),
+        ValueCase::Object(r) => {
+            // 普通容器走属性表；内建堆变体（构造器静态面/数组索引与
+            // length/字符串索引等）走各自的自有面判定——此前仅查属性表，
+            // 致 `Number.hasOwnProperty("MAX_VALUE")`、
+            // `[1,2].hasOwnProperty("0")` 恒 false（S15.7.3/S15.6.3 族）
+            vm.has_own_slot(r.0 as usize, &key) || vm.builtin_own_slot(r, &key)
+        }
         _ => false,
     };
     Ok(Value::Boolean(has))

@@ -90,6 +90,21 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         }
         "freeze" | "seal" => Ok(target),
         "isFrozen" | "isSealed" => Ok(Value::Boolean(false)),
+        // 扩展性：本 VM 未实现 preventExtensions/freeze 的不可扩展态，
+        // 对象恒可扩展（原始值按规范 ToObject 后为 true，null/undefined
+        // 抛 TypeError——JSON.isRawJSON 的规范实现依赖本谓词）
+        "isExtensible" => {
+            if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
+                return Err(vm.type_error("Cannot convert undefined or null to object"));
+            }
+            Ok(Value::Boolean(true))
+        }
+        "preventExtensions" => {
+            if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
+                return Err(vm.type_error("Cannot convert undefined or null to object"));
+            }
+            Ok(target)
+        }
         "values" | "entries" => {
             let mut items = vm.own_properties(target);
             items.sort_by(|a, b| a.0.cmp(&b.0));
