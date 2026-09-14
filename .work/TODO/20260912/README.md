@@ -2380,3 +2380,30 @@ $ cargo test -p aluka-jit --release --test jitbench
   jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
 - **已知未覆盖形态**：成员表达式作解构目标（`[m.k] = [7]`，需模式的
   成员目标支持）——登记为后续项。
+
+## 96. M7.2 轮八十二：JSON.stringify 的 space 缩进与 replacer 白名单（20260914）
+
+- **缺陷**：`json_stringify` 只接受单参数，**忽略 replacer 与 space**——
+  `JSON.stringify(o, null, 1).length` 得 40（规范 67，无缩进）；
+  `JSON.stringify(o, ['a','b'])` 返回完整对象（规范应只保留白名单键）。
+- **实现**：
+  1. 入口拆分为 `json_stringify`（单参便捷形态）与
+     `json_stringify_with_ops(value, replacer, space)`；
+  2. **space**：数字 → `clamp(0,10)` 个空格；字符串 → 截断 10 字符后**原样**
+     作为缩进单元（规范口径）；`json_write` 增 `indent`/`depth` 参数并在
+     数组/对象分支按层级输出换行与缩进（`": "` 分隔符同规范）；
+  3. **replacer 数组**：提取字符串/数字元素为属性白名单（序按数组给定序，
+     过滤后按白名单顺序输出）——`JSON.stringify(o, ['a','b'])` 得
+     `{"a":1,"b":[1,2]}`；
+  4. 两处调用点（成员调用 `JSON.stringify(...)` 与 `is_native_fn` 直调形态）
+     改为透传 replacer/space；
+- **验证**（对齐 Node 22）：`JSON.stringify(o,null,1).length === 67`、
+  对象白名单、两空格嵌套缩进形态全部一致；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- **已知未覆盖**：**函数式 replacer**（`JSON.stringify(v, fn)` 需逐键回调
+  ——登记后续项）；差分电池余下 3 项（字符串 split 上限参数、对象的
+  isFrozen/isExtensible 组合、promise 微任务细粒度交错）与函数式 replacer
+  同批登记。

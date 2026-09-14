@@ -40,6 +40,18 @@ impl Vm {
     /// 顶层 undefined / 函数 / 符号 → 返回 `undefined`（标准语义）；其余
     /// 值序列化为字符串。
     pub(crate) fn json_stringify(&mut self, value: Value) -> Result<Value, VmError> {
+        self.json_stringify_with_ops(value, Value::Undefined, Value::Undefined)
+    }
+
+    /// `JSON.stringify(value, replacer, space)` 完整形态：支持 replacer 为
+    /// 键数组（属性白名单）与 space 缩进（数字 = 空格数上限 10；字符串 =
+    /// 直接作为缩进单元，长度上限 10 字符）。
+    pub(crate) fn json_stringify_with_ops(
+        &mut self,
+        value: Value,
+        replacer: Value,
+        space: Value,
+    ) -> Result<Value, VmError> {
         // 规范 `SerializeJSONProperty`：根值等价于以键 `""` 序列化，故 `toJSON`
         // 先于「不可序列化」判定生效（`JSON.stringify({d:new Date(0)})` 的 ISO 串
         // 形态即由 `Date.prototype.toJSON` 产出）。
@@ -59,8 +71,45 @@ impl Vm {
                 return Ok(Value::Object(s));
             }
         }
+        // space：数字 → 该数量的空格（上限 10）；字符串 → 原样（截断 10 字符）
+        let indent = match space.case() {
+            ValueCase::Number(n) => {
+                let k = n.clamp(0.0, 10.0) as usize;
+                " ".repeat(k)
+            }
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(s)) => {
+                    let t: String = s.chars().take(10).collect();
+                    t
+                }
+                _ => String::new(),
+            },
+            _ => String::new(),
+        };
+        // replacer 为数组 → 属性白名单（字符串/数字元素；序按数组给定序）
+        let allowed: Option<Vec<String>> = match replacer.case() {
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::Array { elements, .. }) => {
+                    let mut ks = Vec::new();
+                    for e in elements {
+                        match e.case() {
+                            ValueCase::Number(n) => ks.push(crate::ops::js_number_to_string(n)),
+                            ValueCase::Object(er) => {
+                                if let Some(HeapObject::String(s)) = self.heap.get(er.0 as usize) {
+                                    ks.push(s.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(ks)
+                }
+                _ => None,
+            },
+            _ => None,
+        };
         let mut out = String::new();
-        self.json_write(&mut out, value, &mut Vec::new())?;
+        self.json_write(&mut out, value, &mut Vec::new(), &indent, 0, &allowed)?;
         Ok(Value::Object(self.alloc_string(out)))
     }
 
@@ -126,11 +175,15 @@ impl Vm {
     ///
     /// 签名为 `&mut self`：`toJSON` 可能是用户函数，调用它需要可变借用。故各分支
     /// **先把堆变体快照为 owned 数据**再递归——不可持有 `self.heap` 借用跨调用。
+    #[allow(clippy::too_many_arguments)]
     fn json_write(
         &mut self,
         out: &mut String,
         value: Value,
         seen: &mut Vec<u32>,
+        indent: &str,
+        depth: usize,
+        allowed: &Option<Vec<String>>,
     ) -> Result<(), VmError> {
         match value.case() {
             ValueCase::Undefined | ValueCase::Null => out.push_str("null"),
@@ -179,9 +232,21 @@ impl Vm {
                     Kind::Arr(len) => {
                         seen.push(r.0);
                         out.push('[');
+                        let nl = if indent.is_empty() {
+                            ""
+                        } else {
+                            "
+"
+                        };
                         for i in 0..len {
                             if i > 0 {
                                 out.push(',');
+                            }
+                            if !nl.is_empty() {
+                                out.push_str(nl);
+                                for _ in 0..=depth {
+                                    out.push_str(indent);
+                                }
                             }
                             // 按下标逐次读取（不持有 elements 借用，见函数文档）
                             let el = match self.heap.get(r.0 as usize) {
@@ -197,7 +262,13 @@ impl Vm {
                             if is_json_ignored_value(self, el) {
                                 out.push_str("null");
                             } else {
-                                self.json_write(out, el, seen)?;
+                                self.json_write(out, el, seen, indent, depth + 1, allowed)?;
+                            }
+                        }
+                        if !nl.is_empty() && len > 0 {
+                            out.push_str(nl);
+                            for _ in 0..depth {
+                                out.push_str(indent);
                             }
                         }
                         out.push(']');
@@ -236,13 +307,44 @@ impl Vm {
                         // 整数键字典序 == 数值序（无前导零的十进制串）
                         idx_items.sort_by(|a, b| a.0.cmp(&b.0));
                         idx_items.extend(str_items);
+                        // replacer 白名单：仅保留列出的键（序按数组给定序）
+                        if let Some(ks) = allowed {
+                            let mut filtered = Vec::new();
+                            for k in ks {
+                                if let Some(slot) = idx_items.iter().find(|(n, _)| n == k) {
+                                    filtered.push(slot.clone());
+                                }
+                            }
+                            idx_items = filtered;
+                        }
+                        let nl = if indent.is_empty() {
+                            ""
+                        } else {
+                            "
+"
+                        };
                         for (i, (k, v)) in idx_items.iter().enumerate() {
                             if i > 0 {
                                 out.push(',');
                             }
+                            if !nl.is_empty() {
+                                out.push_str(nl);
+                                for _ in 0..=depth {
+                                    out.push_str(indent);
+                                }
+                            }
                             out.push_str(&json_quote(k));
                             out.push(':');
-                            self.json_write(out, *v, seen)?;
+                            if !nl.is_empty() {
+                                out.push(' ');
+                            }
+                            self.json_write(out, *v, seen, indent, depth + 1, allowed)?;
+                        }
+                        if !nl.is_empty() && !idx_items.is_empty() {
+                            out.push_str(nl);
+                            for _ in 0..depth {
+                                out.push_str(indent);
+                            }
                         }
                         out.push('}');
                         seen.pop();

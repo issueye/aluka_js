@@ -2417,9 +2417,11 @@ impl Vm {
             let arr = self.alloc_array(syms);
             Ok(Value::Object(arr))
         } else if method_name == "stringify" && self.is_json_object(receiver) {
-            // JSON.stringify(value)（成员调用形态）
+            // JSON.stringify(value[, replacer[, space]])（成员调用形态）
             let v = args.first().copied().unwrap_or(Value::Undefined);
-            let out = self.json_stringify(v)?;
+            let replacer = args.get(1).copied().unwrap_or(Value::Undefined);
+            let space = args.get(2).copied().unwrap_or(Value::Undefined);
+            let out = self.json_stringify_with_ops(v, replacer, space)?;
             Ok(out)
         } else if method_name == "parse" && self.is_json_object(receiver) {
             // JSON.parse(text)（成员调用形态）
@@ -4416,7 +4418,9 @@ impl Vm {
                         self.stack.push(Value::Object(s));
                     } else if self.is_native_fn(callee, "JSON.stringify") {
                         let v = args.first().copied().unwrap_or(Value::Undefined);
-                        let out = self.json_stringify(v)?;
+                        let replacer = args.get(1).copied().unwrap_or(Value::Undefined);
+                        let space = args.get(2).copied().unwrap_or(Value::Undefined);
+                        let out = self.json_stringify_with_ops(v, replacer, space)?;
                         self.stack.push(out);
                     } else if self.is_native_fn(callee, "JSON.parse") {
                         let out = self.json_parse(args)?;
