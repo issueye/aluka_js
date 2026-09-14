@@ -982,6 +982,8 @@ impl Vm {
             .map(|f| std::rc::Rc::new(f.constants.clone()))
             .collect();
         self.module_classes = module.classes.clone();
+        // 模块替换：函数索引语义改变，动态求值缓存同样失效
+        self.eval_module_cache.clear();
         self.jit_reset();
     }
 
@@ -1004,7 +1006,8 @@ impl Vm {
             .map(|f| std::rc::Rc::new(f.constants.clone()))
             .collect();
         self.module_classes = module.classes.clone();
-        // 模块替换：函数索引语义改变，JIT 缓存必须清空
+        // 模块替换：函数索引语义改变，JIT 与动态求值缓存必须清空
+        self.eval_module_cache.clear();
         self.jit_reset();
         // 先执行 Func 0（主函数）
         let res = self.run_func(&self.module_functions[0].clone())?;

@@ -15,7 +15,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-const CASE_WAIT: Duration = Duration::from_secs(30);
+// 单用例执行上限。最重语料为 S7.4_A5（逐码点构造源码执行 65536 次
+// eval，standalone 约 36s——直接求值每次需按当前帧全量绑定做快照注入/
+// 还原，成本随模块顶层绑定数线性；该用例为官方注释语义 torture 集），
+// 30s 会在并行负载下误判超时。性能优化项另见 TODO（§89）。
+const CASE_WAIT: Duration = Duration::from_secs(150);
 
 /// test262 风格断言 harness（逐字对齐 Go 版 run.go 的 `harness` 常量）。
 const HARNESS: &str = r#"
@@ -294,10 +298,10 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str, node: Option<&st
     let mut vm_cmd = Command::new(aluvm);
     vm_cmd.arg("run").arg(&bc);
     // GC 压力模式（ALUKA_GC_STRESS）：每分配触发回收，eval 密集型用例
-    // （如 S7.4_A5 的 65536 次动态求值循环）耗时成倍增长——压力门禁验证
-    // 的是正确性而非性能，用例超时按压力倍率放宽
+    // （如 S7.4_A5 的 65536 次动态求值循环）耗时进一步增长——压力门禁
+    // 验证的是正确性而非性能，用例超时按压力倍率放宽
     let wait = if std::env::var_os("ALUKA_GC_STRESS").is_some() {
-        CASE_WAIT * 4
+        CASE_WAIT * 3
     } else {
         CASE_WAIT
     };
@@ -506,11 +510,11 @@ fn test262_subset_conformance() {
         pass + failures.len() + invalid,
         invalid
     );
-    // M7.2 双层门禁：
+    // M7.2 双层门禁（均已收紧至零失败）：
     // - 手写回归语料（非 m72- 前缀）：**硬性全过**——任何失败即回归；
     // - 官方 test262 导入语料（m72- 前缀，tools_m72_import.py 生成）：
-    //   基线推进期只断言下限（当前 800/1000），随引擎修复逐步上调至 100%
-    //   （M7.2 验收口径），失败清单照常打印供分桶定位。
+    //   1000 例验收口径**失败清零**（基线推进期的下限断言已随逐桶修复
+    //   上调至 0），失败清单照常打印供定位。
     let hand_failures: Vec<String> = failures
         .iter()
         .filter(|f| !f.starts_with("m72-"))

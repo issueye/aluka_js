@@ -243,6 +243,14 @@ pub struct Vm {
     /// 内建不可配置键注册表（delete 返回 false——`delete Number.NaN ===
     /// false`，Sputnik S8.6.1_A3 族）
     pub non_configurable: std::collections::HashMap<usize, Vec<String>>,
+    /// 动态求值（eval/Function）模块缓存：`(源码, 重定向名表) → main 函数
+    /// 索引`。动态模块 append-only 且模板只读，重定向的 upvalue 通道按
+    /// 调用注入 current_upvalues——同源码重复求值可复用已追加的模板，
+    /// 免去逐次 parse+codegen 与函数表/常量池无界累积（S7.4 注释语料
+    /// 65536 次 eval 此前因活跃集增长致 GC 扫描 O(n²)，总耗时 36s）。
+    /// 整体替换 module_functions 的场景（run_module/load_module_for_test/
+    /// require 装载）必须清空本表。
+    pub eval_module_cache: std::collections::HashMap<(String, Vec<String>), usize>,
     /// `process` 全局对象单例（nextTick 拦截）
     pub process_object: Option<ObjectRef>,
     /// `process.env` 对象单例缓存（物化一次；键大小写不敏感语义见 property.rs）
@@ -395,6 +403,7 @@ impl Vm {
             non_writable: std::collections::HashMap::new(),
             non_enumerable: std::collections::HashMap::new(),
             non_configurable: std::collections::HashMap::new(),
+            eval_module_cache: std::collections::HashMap::new(),
             process_object: None,
             env_object: None,
             path_module: None,
