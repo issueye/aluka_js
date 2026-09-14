@@ -1424,7 +1424,16 @@ impl<'src> Parser<'src> {
             }
             let _ = self.expect_punct(")");
             self.skip_type_annotation();
+            // 类方法体的生成器/async 语境：`*g() { yield v; }` 体内 yield
+            // 须被识别（`async *encode()` 同规）——此前未置位致「yield 带
+            // 操作数」在类方法体内解析失败（axios 的 FormDataPart 形态）
+            let outer_gen = self.in_generator;
+            let outer_async = self.in_async;
+            self.in_generator = is_generator;
+            self.in_async = m_is_async;
             let body_stmt = self.parse_stmt();
+            self.in_generator = outer_gen;
+            self.in_async = outer_async;
             let body = match body_stmt {
                 SpannedStmt {
                     stmt: Stmt::Block(stmts),
@@ -2116,7 +2125,13 @@ impl<'src> Parser<'src> {
                             if self.peek_ahead(1).kind == TokenKind::Punct("=>".to_owned()) {
                                 self.advance(); // 消耗 id
                                 self.advance(); // 消耗 =>
+                                // 单参 async 箭头（`async str => await x`）：
+                                // 体须在 async 语境下解析（否则 await 被当
+                                // 标识符 → 语法错误；axios 的 encodeText 形态）
+                                let outer_async = self.in_async;
+                                self.in_async = true;
                                 let body = self.parse_arrow_body();
+                                self.in_async = outer_async;
                                 Expr::Function(FunctionDef {
                                     name: String::new(),
                                     params: vec![id],

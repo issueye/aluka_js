@@ -2700,3 +2700,29 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **过程中修复的 3 处自引入回归**：async 语境 await 绑定名早错误丢失、
   类方法 async 前缀误吞箭头实参、TLA 顶层 await 被门控（均已在门禁后
   发现并修复）。
+
+## 105. M7.2 轮九十一：axios 语法全通过（类方法体语境 + 单参 async 箭头）（20260914）
+
+- **两项修复**（axios.cjs 从**语法失败**推进到**语法全通过**，只剩 1 处
+  codegen 栈平衡缺陷）：
+  1. **类方法体的生成器/async 语境**：`class F { *g() { var v = 2; yield v; } }`
+     体内 `yield` **带操作数**解析失败——方法体解析前未置 `in_generator`/
+     `in_async`（`function*` 形态走 `parse_function_def` 有置位，类方法走
+     `parse_stmt` 直调故遗漏）。axios 的 `class FormDataPart { async *encode()
+     { yield this.headers; ... } }` 即此形态；
+  2. **单参 async 箭头的体语境**：`async str => await str` / `async str =>
+     { return await str; }` 失败（该分支未置 `in_async`）。axios 的
+     `encodeText` 三元分支 `: async str => new Uint8Array(await new
+     Request(str).arrayBuffer())` 即此形态；
+- **定位方法**：按**顶层语句**切分 axios.cjs（316 条）逐条编译，精确定位到
+  3 个失败语句；再逐行二分/最小化复现，避免在 6800 行文件中盲搜。
+- **axios 剩余 1 项（已定位、登记后续）**：`function dispatchXhrRequest`
+  报 `V8: 汇合点 664 栈深不一致: 期望 0, 实为 3`——**字节码校验发现的
+  codegen 栈平衡缺陷**（该函数含「解构声明 + 多个嵌套函数声明 + 内层
+  函数回写外层 let + 多分支 return」的组合）。最小化尚未命中，需专门
+  排查 codegen 在该组合下的栈收口。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**；
+  真实包语法：lodash/chalk/dayjs/axios **全部通过**（axios 余校验缺陷）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok** ✓、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、GC 压力 0 失败 ✓。
