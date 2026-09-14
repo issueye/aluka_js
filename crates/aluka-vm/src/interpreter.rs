@@ -250,6 +250,8 @@ pub struct Vm {
     pub non_extensible: std::collections::HashSet<usize>,
     /// 冻结对象集合（freeze：不可扩展 + 属性不可写不可配置）
     pub frozen_objects: std::collections::HashSet<usize>,
+    /// JSON.stringify 的函数式 replacer（本次序列化期间的调用目标）
+    pub json_replacer_fn: Option<Value>,
     /// 动态求值（eval/Function）模块缓存：`(源码, 重定向名表) → main 函数
     /// 索引`。动态模块 append-only 且模板只读，重定向的 upvalue 通道按
     /// 调用注入 current_upvalues——同源码重复求值可复用已追加的模板，
@@ -412,6 +414,7 @@ impl Vm {
             non_configurable: std::collections::HashMap::new(),
             non_extensible: std::collections::HashSet::new(),
             frozen_objects: std::collections::HashSet::new(),
+            json_replacer_fn: None,
             eval_module_cache: std::collections::HashMap::new(),
             process_object: None,
             env_object: None,
@@ -5250,7 +5253,12 @@ impl Vm {
                     // await 处不让出（微任务顺序整体错位）。
                     // 本 VM 的 async 帧恢复经 `VmError::Awaited` + 微任务队列
                     // （resume 时才注入值），故已兑现与未兑现一律走挂起通道。
-                    self.drain_microtasks()?;
+                    // 注意：**不得**在此主动 drain 微任务队列。规范的微任务
+                    // 检查点只在调用栈清空时（脚本执行结束 / 显式 await 让出
+                    // 返回后由驱动层处理）；在此 drain 会把尚未执行的同步代码
+                    // 之后的微任务提前跑掉
+                    //（`f().then(cb); (async()=>{ await x })(); console.log('e')`
+                    // 实测 then 回调先于 'e' 输出——应为 'e' 在前）
                     let awaited = self.pop()?;
                     // 已拒绝的 promise：以拒绝原因在当前帧抛出（帧内 try/catch
                     // 经正常异常路径接住），不进入挂起通道

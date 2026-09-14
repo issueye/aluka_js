@@ -2435,3 +2435,26 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **差分电池剩余 2 项**（已定位）：JSON.stringify 的**函数式 replacer**
   （需逐键回调）、promise 探针的微任务细粒度交错顺序（`sync-end` 与
   async IIFE await 的相对位置）。
+
+## 98. M7.2 轮八十四：JSON 函数式 replacer + await 微任务时序（差分电池 15/15 全绿）（20260914）
+
+- **两项修复，差分电池一致数 13/15 → 15/15（全部对齐）**：
+  1. **`JSON.stringify` 函数式 replacer**：`(key, value)` 逐键回调，返回值
+     替代原值；返回 `undefined` 时**对象键剔除 / 数组元素置 null**（规范
+     SerializeJSONProperty）。实现：Vm 增 `json_replacer_fn` 字段承载本次
+     序列化的回调目标（避免侵入 `json_write` 签名），在对象分支
+     （`apply_to_json` 之后、可序列化判定之前）与数组分支（下标键）调用；
+     验证：数字翻倍 `{a:2}`、键剔除 `{a:1}`、数组 `[null,2]` 三种形态全对齐；
+  2. **`await` 的微任务检查点位置**（重要语义修复）：Await 原实现先
+     `drain_microtasks()` 再挂起——会把**尚未执行的同步代码之后**的微任务
+     提前跑掉。规范中微任务检查点只在调用栈清空时触发。
+     实测：`f().then(cb); Promise.resolve(2).then(cb2);
+     (async()=>{ await x })(); console.log('sync-end')` 此前输出
+     `then/resolve/sync-end`，规范为 `sync-end/then/resolve`。
+     修复：移除 Await 内的主动 drain（挂起后由驱动层在主脚本结束时统一
+     清空队列）；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+  **差分电池 15/15 完全一致**（起点 2/15——累计修复 18 类引擎缺陷）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。

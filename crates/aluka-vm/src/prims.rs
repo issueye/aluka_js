@@ -87,6 +87,20 @@ impl Vm {
             _ => String::new(),
         };
         // replacer 为数组 → 属性白名单（字符串/数字元素；序按数组给定序）
+        // 函数式 replacer：逐键回调 (key, value)，返回值参与序列化
+        //（`JSON.stringify(v, fn)`——数字翻倍/剔除键等高频形态）。
+        // 经 Vm 字段传入 json_write（避免侵入其签名）
+        self.json_replacer_fn = None;
+        if let ValueCase::Object(rr) = replacer.case()
+            && matches!(
+                self.heap.get(rr.0 as usize),
+                Some(HeapObject::Closure { .. })
+                    | Some(HeapObject::NativeFn { .. })
+                    | Some(HeapObject::NativeCtor { .. })
+            )
+        {
+            self.json_replacer_fn = Some(replacer);
+        }
         let allowed: Option<Vec<String>> = match replacer.case() {
             ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
                 Some(HeapObject::Array { elements, .. }) => {
@@ -258,6 +272,16 @@ impl Vm {
                             // 规范：数组元素的 toJSON 以**下标字符串**为键
                             let ek = i.to_string();
                             let el = self.apply_to_json(el, &ek)?;
+                            let el = if let Some(f) = self.json_replacer_fn {
+                                let kref = self.alloc_string(ek.clone());
+                                self.invoke_callable(
+                                    f,
+                                    Value::Undefined,
+                                    &[Value::Object(kref), el],
+                                )?
+                            } else {
+                                el
+                            };
                             // 数组内的 undefined/函数/符号均序列化为 "null"（标准）
                             if is_json_ignored_value(self, el) {
                                 out.push_str("null");
@@ -295,6 +319,18 @@ impl Vm {
                             // 规范：对象属性的 toJSON 以**属性名**为键，且先于
                             // 「不可序列化则剔除」判定（返回值可能变为可序列化）
                             let v = self.apply_to_json(v, &k)?;
+                            // 函数式 replacer：以 (键, 值) 回调，返回值替代原值；
+                            // 返回 undefined → 该键被剔除（规范 SerializeJSONProperty）
+                            let v = if let Some(f) = self.json_replacer_fn {
+                                let kref = self.alloc_string(k.clone());
+                                self.invoke_callable(
+                                    f,
+                                    Value::Undefined,
+                                    &[Value::Object(kref), v],
+                                )?
+                            } else {
+                                v
+                            };
                             if is_json_ignored_value(self, v) {
                                 continue;
                             }
