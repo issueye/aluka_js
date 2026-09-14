@@ -5089,7 +5089,24 @@ impl Vm {
                 }
                 Op::TypeofGlobal => {
                     let name = constant_string(&constants, instr.operand as usize);
-                    let v = self.resolve_global(&name).unwrap_or(Value::Undefined);
+                    // 全局名解析：先全局变量表；未命中时查 globalThis 对象的
+                    // 自有/原型属性（`Object.defineProperties(this, {y: {get(){}}})`
+                    // 后 `typeof y` 须触发 getter——S11.4.3 族）
+                    let mut v = self.resolve_global(&name);
+                    if v.is_none() {
+                        let gt = self
+                            .globals
+                            .get("globalThis")
+                            .copied()
+                            .unwrap_or(Value::Undefined);
+                        if gt.is_object() {
+                            // 仅当属性真实存在（含访问器）才取值
+                            if self.has_property(gt, &name) {
+                                v = self.get_property(gt, &name).ok();
+                            }
+                        }
+                    }
+                    let v = v.unwrap_or(Value::Undefined);
                     let s = self.typeof_value(v);
                     let r = self.alloc_string(s);
                     self.stack.push(Value::Object(r));

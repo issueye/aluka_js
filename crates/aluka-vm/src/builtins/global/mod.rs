@@ -599,8 +599,33 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "_isGlobalThis",
         Value::Object(marker),
     );
+    // globalThis 的**自有面**即全局变量表（见 own_properties/descriptor 的
+    // globalThis 分支）——此处仅登记规范不可写常量键名，供属性描述符
+    // 返回 writable:false（S15.1.1 族）
+    for (k, v) in [
+        ("Infinity", Value::Number(f64::INFINITY)),
+        ("NaN", Value::Number(f64::NAN)),
+        ("undefined", Value::Undefined),
+    ] {
+        vm.globals.insert(k.to_owned(), v);
+        vm.non_writable
+            .entry(this_obj.0 as usize)
+            .or_default()
+            .push(k.to_owned());
+        vm.non_enumerable
+            .entry(this_obj.0 as usize)
+            .or_default()
+            .push(k.to_owned());
+        vm.non_configurable
+            .entry(this_obj.0 as usize)
+            .or_default()
+            .push(k.to_owned());
+    }
     vm.globals
         .insert("globalThis".to_owned(), Value::Object(this_obj));
+    // Node 兼容别名 `global`（同一对象——`global === globalThis`）
+    vm.globals
+        .insert("global".to_owned(), Value::Object(this_obj));
 
     Ok(vm.alloc_ordinary())
 }

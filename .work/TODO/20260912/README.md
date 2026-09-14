@@ -2208,3 +2208,49 @@ $ cargo test -p aluka-jit --release --test jitbench
   （Infinity/NaN/undefined 描述符、Symbol-dispose-no-key、
   typeof-get-value、async-function-evaluation-body、String/Array 老语义）、
   m1-proxy/m1-typedarray 3 例（自建探针用例）。
+
+## 92. M7.2 轮七十八：globalThis 描述符/别名/typeof 属性查找 + prototype 链回退（20260914）
+
+- **四类引擎修复（规范正确性，差分探针逐项对齐 Node 22）**：
+  1. **globalThis 自有面与属性描述符**：`Object.getOwnPropertyNames(globalThis)`
+     原先只返回 `_isGlobalThis` 内部标记（属性读写经 globals 表，
+     自有面视图缺失）；`Object.getOwnPropertyDescriptor(globalThis,
+     "Infinity"/"NaN"/"undefined")` 返回 undefined。修复：
+     - `own_properties` 对 globalThis 返回 globals 表视图；
+     - `ordinary_property_descriptor` 对 globalThis 按非可写常量给出
+       `{value, writable:false, enumerable:false, configurable:false}`；
+     - `Infinity`/`NaN`/`undefined` 显式写入 globals 表（此前仅
+       resolve_global 硬编码回退，`Object.getOwnPropertyNames` 不可见）；
+     - 登记 non_writable/non_enumerable/non_configurable（S15.1.1 族）；
+  2. **Node 兼容别名 `global`**：`global === globalThis` 恒等（此前
+     `global` 未定义致 ReferenceError）；
+  3. **`typeof <全局属性>` 的 getter 触发**：TypeofGlobal 原先只查 globals
+     表，`Object.defineProperties(this, {y: {get(){count++; return 1}}})`
+     后 `typeof y` 得 "undefined"（未触发 getter、count 不递增）。修复：
+     globals 未命中时查 globalThis 的自有/原型属性（含访问器）——
+     `typeof y === "number"` 且 count===1（S11.4.3 族）；
+  4. **globalThis 未命中继续原型链查找**：原先直接返回 undefined，
+     致 `String(this)` 抛 "Cannot convert object to primitive value"
+     （`globalThis.toString` 应为 Object.prototype.toString）；
+- **Script vs CJS 语义差异（登记为已知模型差异，非缺陷）**：test262 语料
+  以 **script 语义**运行（顶层 `var` 落 globalThis），本项目 `.js` 采用
+  **CJS 模块语义**（顶层 `var` 落模块局部槽，不污染 global）。
+  - 验证实验：runner 的 node oracle 经 `vm.runInThisContext` 的 shim 以
+    script 语义执行后，5 例由 INVALID 转为真实用例（4 例通过，1 例
+    `String-S15.5.1.1_A1_T9` 仍失败——它断言 `String(this)` 调用**顶层
+    var 声明的 toString**，需 script 语义）。
+  - 尝试 `--script-globals`（复用 eval 的 `implicit_globals` 编译模式）
+    支持：该模式下 test262 harness 的 `Function.prototype.call.bind(...)`
+    组合触发 "undefined is not a function"（implicit_globals 与 harness
+    闭包/函数声明交互的既有局限），风险高于收益，**已回退 CLI 改动**
+    （保留上述四项规范修复）。
+  - 结论：shim 一并回退，5 例维持 INVALID（oracle 在 CJS 模型下无法建立
+    预期），符合 runner 的 M1 防假阳性设计意图。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**
+  （m72- 在 1000 例口径下 0 失败，门禁断言 `m72_failures == 0` 保持）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- **余量 24 例 invalid 构成**：cross-realm 14 例（`$262.createRealm` 宿主
+  API 缺失，需多 realm 隔离）、script 语义 5 例（本模型差异）、
+  Sputnik/引擎特定 5 例。

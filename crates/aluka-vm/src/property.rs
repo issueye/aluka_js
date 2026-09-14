@@ -432,10 +432,15 @@ impl Vm {
                 return self.proxy_get(r, key, obj);
             }
         }
-        // globalThis：属性读取直通全局变量表与内建全局
+        // globalThis：属性读取直通全局变量表与内建全局；未命中时**继续**
+        // 常规原型链查找（`globalThis.toString` → Object.prototype 的方法；
+        // 此前直接返回 undefined，致 `String(this)` 抛
+        // "Cannot convert object to primitive value"——S15.5.1.1 族）
         if let Some(r) = obj.as_object() {
             if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
-                return Ok(self.resolve_global(key).unwrap_or(Value::Undefined));
+                if let Some(v) = self.resolve_global(key) {
+                    return Ok(v);
+                }
             }
         }
         // 流实例计算属性（writableLength/writableNeedDrain/destroyed 等；
@@ -1310,6 +1315,14 @@ impl Vm {
     /// 普通对象取属性字典；数组产出索引键与 `length`；Proxy 经 ownKeys +
     /// get trap 派发。其余类型为空集。
     pub(crate) fn own_properties(&mut self, obj: Value) -> Vec<(String, Value)> {
+        // globalThis：自有面即全局变量表（属性读写直通 globals——
+        // 见 get/set_property 的 _isGlobalThis 分支；Object.keys/
+        // getOwnPropertyNames 须反映同一视图）
+        if let Some(r) = obj.as_object() {
+            if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
+                return self.globals.iter().map(|(k, v)| (k.clone(), *v)).collect();
+            }
+        }
         // Proxy 对象：ownKeys trap 列键、get trap 取值（规范 [[OwnPropertyKeys]]）
         if let Some(r) = obj.as_object() {
             if self.proxy_parts(r).is_some() {
@@ -1550,6 +1563,24 @@ impl Vm {
         obj: Value,
         key: &str,
     ) -> Result<Value, VmError> {
+        // globalThis：自有面即全局变量表（描述符须给出规范属性标志）
+        if let Some(r) = obj.as_object() {
+            if self.has_own_slot(r.0 as usize, "_isGlobalThis") {
+                let Some(v) = self.globals.get(key).copied() else {
+                    return Ok(Value::Undefined);
+                };
+                let ro = self
+                    .non_writable
+                    .get(&(r.0 as usize))
+                    .is_some_and(|ks| ks.iter().any(|k| k == key));
+                let desc = self.alloc_ordinary();
+                let _ = self.set_property(Value::Object(desc), "value", v);
+                let _ = self.set_property(Value::Object(desc), "writable", Value::Boolean(!ro));
+                let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(false));
+                let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(!ro));
+                return Ok(Value::Object(desc));
+            }
+        }
         if !self.has_property(obj, key) {
             return Ok(Value::Undefined);
         }
