@@ -1252,9 +1252,17 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             if let Some(override_fn) = override_fn {
                 return vm.invoke_callable(override_fn, Value::Object(r), args);
             }
+            // 规范 Array.prototype.toString === join(",")：元素 null/undefined/
+            // 空洞 → 空串（`delete a[0]` 后 String(a) === ",2"）
             let text = elems(vm, r)
                 .iter()
-                .map(|v| vm.format_value(*v))
+                .map(|v| {
+                    if v.is_undefined() || v.is_null() {
+                        String::new()
+                    } else {
+                        vm.format_value(*v)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(",");
             Ok(Value::Object(vm.alloc_string(text)))

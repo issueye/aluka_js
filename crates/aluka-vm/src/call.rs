@@ -843,6 +843,14 @@ impl Vm {
                 let slot = extras.arguments_slot as usize;
                 if slot < self.locals.len() {
                     let args_arr = self.alloc_array(args.to_vec());
+                    // `arguments` 载体是数组（实现选择），但按规范它是普通
+                    // 类数组对象——`Array.isArray(arguments) === false`。
+                    // 打内部标记供 isArray 排除（其余数组语义不变）
+                    let _ = self.set_property(
+                        Value::Object(args_arr),
+                        "_isArguments",
+                        Value::Boolean(true),
+                    );
                     self.locals[slot] = Value::Object(args_arr);
                 }
             }

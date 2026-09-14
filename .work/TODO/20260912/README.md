@@ -2585,3 +2585,34 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets 全目标）、
   workspace 92 目标全 ok ✓、t262 1130/1154（0 失败）✓、conformance 差分 ✓、
   express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。
+
+## 102. M7.2 轮八十八：数组方法语义修复（7 项）（20260914）
+
+- **方法**：数组边界差分探针（36 项）——从 6 处差异修到 **0 差异**。
+- **修复清单**：
+  1. **`Array.prototype.sort` 完全忽略比较器**（最严重）：一律按字符串序
+     排序——`[10,2,1].sort((a,b)=>a-b)` 错误得 `[1,10,2]`。修复：有比较器时
+     调用 comparefn 按返回值符号交换（稳定插入排序），无比较器时按 **ToString
+     码元序**且 **undefined 排末尾**；
+  2. **`indexOf`/`lastIndexOf` 用 SameValueZero**：`[1,NaN].indexOf(NaN)` 应为
+     **-1**（规范为严格相等，NaN 永不匹配；仅 `includes` 用 SameValueZero）。
+     修复：新增 `values_strict_eq`（复用 `ops::strict_eq`）替换两处；
+  3. **`reduce` 初值语义**：空数组无初值应**抛 TypeError**（此前静默返回
+     undefined）；未传初值时以首元素起始并从 index 1 迭代；**显式 `undefined`
+     是有效初值**（`[1,2].reduce(f, undefined)` 从 index 0 起，结果
+     "undefined|1|2"）。修复后 5 种形态全对齐；
+  4. **`reduceRight` 同源修正**（显式 undefined 初值）+ 空数组抛错；
+  5. **`Array.isArray(arguments)` 应 false**：`arguments` 载体是数组（实现
+     选择）但语义为类数组对象。修复：创建时打 `_isArguments` 标记，
+     `is_array_value` 查数组 properties 表并排除（注意 `own_value` 不覆盖
+     Array 变体，需直查表）；
+  6. **`Array.prototype.join`/`toString` 对 null/undefined**：规范输出**空串**
+     （`delete a[0]` 后 `String(a) === ",2"`；此前 "undefined,2"）。
+     修复 surface.rs 的 join（前轮）与 toString 两处；
+  7. **分隔符缺省/undefined → ","**（前轮已在 join 修正，本轮覆盖 toString
+     路径）。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+  差分电池 **15/15**、数组差分 **0/36**、数值 **0/41**、字符串 **0/36**、
+  BigInt **0/24**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets）、workspace 92 目标
+  全 ok ✓、t262 1130/1154（0 失败）✓、ALUKA_GC_STRESS=8 0 失败 ✓。

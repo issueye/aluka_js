@@ -760,7 +760,19 @@ impl Vm {
                         HeapObject::BigInt(s) => s.clone(),
                         HeapObject::Array { elements, .. } => {
                             let items: Vec<String> =
-                                elements.iter().map(|e| self.format_value(*e)).collect();
+                                // 规范 Array.prototype.toString = join(",")：
+                                // 元素 null/undefined/空洞 → **空串**
+                                //（`delete a[0]` 后 String(a) === ",2"）
+                                elements
+                                    .iter()
+                                    .map(|e| {
+                                        if e.is_undefined() || e.is_null() {
+                                            String::new()
+                                        } else {
+                                            self.format_value(*e)
+                                        }
+                                    })
+                                    .collect();
                             items.join(",")
                         }
                         HeapObject::Symbol { description, .. } => {
@@ -1436,6 +1448,12 @@ impl Vm {
         )
     }
 
+    /// **严格相等**（`===`，含字符串按内容）——数组 indexOf/lastIndexOf 使用：
+    /// 规范要求严格相等语义（**NaN 永不匹配**；includes 才用 SameValueZero）。
+    pub(crate) fn values_strict_eq(&self, a: Value, b: Value) -> bool {
+        crate::ops::strict_eq(a, b, &self.heap, &self.current_constants)
+    }
+
     /// 内容相等（字符串按内容、其余按值/句柄），数组 indexOf 族使用。
     pub(crate) fn values_content_eq(&self, a: Value, b: Value) -> bool {
         if a == b {
@@ -1652,9 +1670,18 @@ impl Vm {
 
     /// 判断值是否为数组对象。
     pub(crate) fn is_array_value(&self, val: Value) -> bool {
-        matches!(val.case(), ValueCase::Object(r)
-                if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Array { .. }))
-        )
+        // `arguments` 载体是数组但语义为类数组对象：`Array.isArray` 须为
+        // false。标记存于数组的 `properties` 表（own_value 不覆盖 Array
+        // 变体，故此处直接查表）
+        if let ValueCase::Object(r) = val.case() {
+            return match self.heap.get(r.0 as usize) {
+                Some(HeapObject::Array { properties, .. }) => {
+                    !properties.contains_key("_isArguments")
+                }
+                _ => false,
+            };
+        }
+        false
     }
 
     /// 判断值是否为堆字符串对象。
@@ -3645,7 +3672,6 @@ impl Vm {
                     }
                     "reduce" => {
                         let cb = args.first().copied().unwrap_or(Value::Undefined);
-                        let mut acc = args.get(1).copied().unwrap_or(Value::Undefined);
                         let elems =
                             if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
                                 elements.clone()
@@ -3653,7 +3679,23 @@ impl Vm {
                                 Vec::new()
                             };
                         let arr_obj = Value::Object(ObjectRef(idx as u32));
-                        for (elem_idx, elem) in elems.iter().enumerate() {
+                        // 规范：无初值（或初值为 undefined）时以**首个元素**为
+                        // 初始累加值并从第二个元素开始；**空数组无初值 → TypeError**
+                        //（此前以 undefined 起累加，空数组静默返回 undefined）
+                        let (mut acc, start) = match args.get(1) {
+                            // 显式初值（**含 undefined**）均为有效初值
+                            //（`[1,2].reduce(f, undefined)` 从 index 0 起累加）
+                            Some(v) => (*v, 0usize),
+                            None => {
+                                let Some(first) = elems.first().copied() else {
+                                    return Err(self.type_error(
+                                        "Reduce of empty array with no initial value",
+                                    ));
+                                };
+                                (first, 1usize)
+                            }
+                        };
+                        for (elem_idx, elem) in elems.iter().enumerate().skip(start) {
                             acc = self.invoke_array_cb(
                                 cb,
                                 Value::Undefined,
@@ -3673,7 +3715,8 @@ impl Vm {
                         let arr_obj = Value::Object(ObjectRef(idx as u32));
                         // 无初始值：累加器取末元素，从倒数第二个起迭代
                         let (mut acc, start) = match args.get(1) {
-                            Some(init) if !init.is_undefined() => (*init, elems.len()),
+                            // 显式初值（含 undefined）均为有效初值
+                            Some(init) => (*init, elems.len()),
                             _ => match elems.last() {
                                 Some(last) => (*last, elems.len() - 1),
                                 None if elems.is_empty() => {
@@ -3758,14 +3801,52 @@ impl Vm {
                         Ok(Value::Object(new_arr))
                     }
                     "sort" => {
-                        // 无比较器排序：元素字符串化后按字典序原地排序（JS 默认语义）
+                        // 规范 Array.prototype.sort：
+                        // - 有比较器：调用 comparefn(a, b)，结果 <0 / 0 / >0 决定序
+                        // - 无比较器：元素字符串化后按**码元序**（默认语义）；
+                        //   undefined 排在末尾，空洞紧随其后
+                        // 此前一律按字符串序排序、**完全忽略比较器**——
+                        // `[10,2,1].sort((a,b)=>a-b)` 错误得 [1,10,2]
                         let mut elems =
                             if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
                                 elements.clone()
                             } else {
                                 Vec::new()
                             };
-                        elems.sort_by_key(|a| self.format_value(*a));
+                        match args.first().copied() {
+                            Some(cmp) if !cmp.is_undefined() => {
+                                // 比较器排序：稳定归并（插入排序保序，规模小可接受）
+                                for i in 1..elems.len() {
+                                    let mut j = i;
+                                    while j > 0 {
+                                        let ord = self.invoke_array_cb(
+                                            cmp,
+                                            Value::Undefined,
+                                            &[elems[j - 1], elems[j]],
+                                        )?;
+                                        let n = crate::ops::to_number(ord);
+                                        if n > 0.0 {
+                                            elems.swap(j - 1, j);
+                                            j -= 1;
+                                        } else {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {
+                                // 默认序：undefined 末尾；其余按 ToString 码元序
+                                let is_undef = |v: &Value| matches!(v.case(), ValueCase::Undefined);
+                                elems.sort_by(|a, b| match (is_undef(a), is_undef(b)) {
+                                    (true, true) => std::cmp::Ordering::Equal,
+                                    (true, false) => std::cmp::Ordering::Greater,
+                                    (false, true) => std::cmp::Ordering::Less,
+                                    (false, false) => {
+                                        self.format_value(*a).cmp(&self.format_value(*b))
+                                    }
+                                });
+                            }
+                        }
                         if let Some(HeapObject::Array { elements, .. }) = self.heap.get_mut(idx) {
                             *elements = elems;
                         }
@@ -3838,7 +3919,7 @@ impl Vm {
                         let from = from.max(0.0) as usize;
                         let pos = elems[from..]
                             .iter()
-                            .position(|e| self.values_content_eq(*e, needle))
+                            .position(|e| self.values_strict_eq(*e, needle))
                             .map(|p| p + from)
                             .map(|p| p as f64)
                             .unwrap_or(-1.0);
@@ -3849,7 +3930,7 @@ impl Vm {
                         let needle = args.first().copied().unwrap_or(Value::Undefined);
                         let pos = elems
                             .iter()
-                            .rposition(|e| self.values_content_eq(*e, needle))
+                            .rposition(|e| self.values_strict_eq(*e, needle))
                             .map(|p| p as f64)
                             .unwrap_or(-1.0);
                         Ok(Value::Number(pos))
