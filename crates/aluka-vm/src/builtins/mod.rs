@@ -534,6 +534,15 @@ pub fn try_dispatch(
             } else if vm
                 .builtin_registry
                 .dispatch
+                .contains_key(&format!("Object.{method}"))
+            {
+                // Object 自有的静态方法（`Object.hasOwn` / `Object.keys` 等）
+                // 优先于原型回退——否则 `Object.hasOwn(o,k)` 会被误派到
+                // `Object.prototype.hasOwnProperty`（同前缀），返回错误结果
+                format!("Object.{method}")
+            } else if vm
+                .builtin_registry
+                .dispatch
                 .contains_key(&format!("Object.prototype.{method}"))
             {
                 format!("Object.prototype.{method}")

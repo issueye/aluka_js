@@ -552,6 +552,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "fromEntries",
             "isExtensible",
             "preventExtensions",
+            // ES2022 `Object.hasOwn(o, k)`：`hasOwnProperty` 的安全等价形态
+            "hasOwn",
         ] {
             let f = vm.alloc_native_fn(&format!("Object.{method}"));
             let _ = vm.set_property(Value::Object(octor), method, Value::Object(f));

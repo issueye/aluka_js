@@ -546,6 +546,24 @@ impl Vm {
         }
         // Promise / Map 构造器与 process 全局（微任务与异步基建）
         vm.promise_ctor = Some(vm.alloc_native_ctor("Promise", obj_proto));
+        // Promise 静态方法面：分派经 CALL_METHOD 的 proxy_ctor 分支实现，
+        // 但**属性**此前从未挂载——`typeof Promise.allSettled` 为 undefined
+        //（真实代码常先判存在再调用）。此处挂占位 NativeFn 令 `typeof` 正确，
+        // 调用仍走既有分派链。
+        if let Some(pc) = vm.promise_ctor {
+            for m in [
+                "all",
+                "allSettled",
+                "any",
+                "race",
+                "reject",
+                "resolve",
+                "withResolvers",
+            ] {
+                let f = vm.alloc_native_fn(&format!("Promise.{m}"));
+                let _ = vm.set_property(Value::Object(pc), m, Value::Object(f));
+            }
+        }
         vm.map_ctor = Some(vm.alloc_native_ctor("Map", obj_proto));
         vm.set_ctor = Some(vm.alloc_native_ctor("Set", obj_proto));
         // Proxy 构造器单例（静态面挂接在 register_all 之后，避免注册表被整体替换）

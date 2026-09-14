@@ -103,6 +103,20 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             }
             Ok(target)
         }
+        "hasOwn" => {
+            let key = args
+                .get(1)
+                .map(|v| vm.to_property_key(*v))
+                .unwrap_or_default();
+            let has = match target.case() {
+                ValueCase::Object(r) => {
+                    vm.has_own_slot(r.0 as usize, &key) || vm.builtin_own_slot(r, &key)
+                }
+                // 原始值：按规范 ToObject 后判定（字符串有索引与 length）
+                _ => false,
+            };
+            Ok(Value::Boolean(has))
+        }
         "isFrozen" => {
             if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
                 return Err(vm.type_error("Cannot convert undefined or null to object"));

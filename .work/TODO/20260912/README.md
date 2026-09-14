@@ -2458,3 +2458,48 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
   t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
   jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。
+
+## 99. M7.2 轮八十五：剩余 invalid 性质普查 + Object.hasOwn / Promise 静态属性面（20260914）
+
+- **背景**：回答「剩余 24 例 invalid 是否由运行时问题造成」——**逐例实测**
+  （每例分别跑 aluka 与 node 并记录双方失败原因）得出三分结论：
+  1. **oracle 侧缺陷（10 例，非运行时问题）**：`$262.createRealm` 宿主 API
+     缺失（9 例 cross-realm + 1 例 Boolean-proto-from-ctor-realm）——
+     node 与 aluka **双方**都报 `ReferenceError: $262 is not defined`，
+     属 test262 宿主环境未提供，与引擎实现无关；
+  2. **我方运行时已通过、node 侧失败（5 例）**：`Infinity`/`NaN`/`undefined`
+     描述符 3 例、`Symbol.dispose/asyncDispose-no-key` 2 例、
+     `typeof-get-value`、`async-function-evaluation-body`——aluka 输出为空
+     （通过），node 因 CJS 顶层 `this` 语义或未捕获拒绝而退出非零，
+     runner 判定「node 侧与用例预期相悖」→ INVALID（M1 防假阳性口径）；
+  3. **真实运行时缺口（9 例）**：strict 模式写拒绝 2 例（`Symbol-auto-
+     boxing-strict`/`undefined-15.1.1.3-2`——需运行时 strict 标记，
+     已探针确认 `"use strict"` 下原始值属性写入与冻结对象写入应抛
+     TypeError）、`String-S15.5.1.1_A1_T9`（Script 语义顶层 var）、
+     3 例自建探针（`m1-proxy-007` 依赖 runner harness 注入、
+     `m1-typedarray-007/015` 用了非标准 `Int32Array.isTypedArray` 与
+     `new BigInt64Array([9])` 数字元素——后者规范应抛 TypeError 而我方静默）。
+- **本次顺带修复两项真实缺口**（来自能力缺口扫描）：
+  1. **`Object.hasOwn` 缺失 + 分派前缀混淆**：新增实现（复用
+     `has_own_slot || builtin_own_slot`，与 `hasOwnProperty` 同源）；并修复
+     `try_dispatch` 的构造器回退优先级——`Object.hasOwn(o,k)` 此前被误派到
+     `Object.prototype.hasOwnProperty`（同前缀）返回错误结果，现将
+     `Object.{method}` 置于原型回退之前（顺带修正 `getOwnPropertyNames`
+     对数组的 `length` 输出）；
+  2. **Promise 静态方法属性面缺失**：`all`/`allSettled`/`any`/`race`/
+     `resolve`/`reject`/`withResolvers` 的分派早已实现（CALL_METHOD 分支），
+     但**属性从未挂载**——`typeof Promise.allSettled` 为 undefined
+     （真实代码常先判存在再调用）。挂占位 NativeFn 后
+     `Promise.allSettled([1,Promise.reject(2)])` 实体行为与 Node 22 一致。
+- **能力缺口扫描结果**（新增探针 `.work/chk/gap.js`，20 项对照）：
+  **我方存在缺口的项**：类私有字段 `#x`（含 `#x in obj`）、类静态块、
+  `ArrayBuffer.isView`、`FinalizationRegistry`、`Intl`、
+  `Error.cause`、`BigInt64Array` 数字元素应抛 TypeError、
+  RegExp `d` 标志的 `hasIndices`；
+  **已具备**：WeakRef、structuredClone、queueMicrotask、asyncDispose、
+  toSorted、at、Promise 组合器（行为）、process 全局。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+  差分电池 **15/15**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。
