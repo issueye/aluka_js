@@ -59,7 +59,14 @@ fn parse_negative(code: &str) -> Option<Negative> {
     let body = &code[start + 5..];
     let end = body.find("---*/")?;
     let body = &body[..end];
-    if !body.contains("negative") {
+    // 结构化匹配 `negative:` 块声明（行级，允许前导空白）——不可用
+    // `contains("negative")` 子串匹配：描述文本中的普通词
+    // （"The sum of two negative zeros is -0"）会被误判为负例声明，
+    // 令正向用例按负例口径校验（node 通过 → 判相悖 → 假 INVALID）
+    let has_neg = body
+        .lines()
+        .any(|l| l.trim_start().starts_with("negative:"));
+    if !has_neg {
         return None;
     }
     let phase = find_kw(body, "phase").unwrap_or_else(|| "runtime".to_owned());

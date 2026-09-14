@@ -2178,3 +2178,33 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **余量 31 例 invalid**：均为 node 侧与用例预期相悖（Sputnik 老用例含
   现实引擎皆无的 API、依赖引擎特定行为等），按 runner 的 M1 防假阳性
   口径不计入通过或失败。
+
+## 91. M7.2 轮七十七：negative 子串误判修复（invalid 31→24）+ 稀疏数组 length 语义（20260914）
+
+- **runner 缺陷（负例识别误判）**：`parse_negative` 用
+  `body.contains("negative")` 子串匹配 frontmatter——描述文本中的普通词
+  （如 S11.6.1_A4_T5 的 "The sum of two **negative** zeros is -0"）被误判
+  为负例声明，令**正向**用例按负例口径校验（node 通过 → 判「相悖」→
+  假 INVALID，实为可用例）。
+  - **修复**：结构化行级匹配 `negative:` 块声明（允许前导空白）。
+  - **净效果**：invalid 31 → **24**（+7 例转正，其中 6 例直接通过、
+    1 例暴露真实缺陷见下）。
+- **真实引擎缺陷（稀疏数组 length 推进）**：`x[2147483648] = 1` 后
+  `x.length` 应推进到 2147483649（超大下标落自有属性表时 length 未联动）。
+  - **修复**：超大下标写入时按规范推进 `length`（取 max），**边界严格
+    小于 2³²−1**——`i === 4294967295` 不是有效数组索引（规范上界排除），
+    不推进 length（`x[4294967295]=1` 后 `x.length === 0`）；密集写清除
+    length 覆盖值以保持规格化一致。
+  - 首版未加 2³²−1 边界致 3 例回归（Array-15.4.5.1-5-2 /
+    S15.4.5.1_A2.1_T1 / S15.4.5.2_A1_T2），补边界后归零。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**
+  （m72- 语料在 1000 例口径下 0 失败，门禁断言保持）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- **余量 24 例 invalid**（均为 node 侧与用例预期相悖，runner M1 口径不计）：
+  cross-realm 族 14 例（Symbol 各知名符号跨 realm、Boolean-proto-from-
+  ctor-realm，需 `$262.createRealm`）、Sputnik/引擎特定 8 例
+  （Infinity/NaN/undefined 描述符、Symbol-dispose-no-key、
+  typeof-get-value、async-function-evaluation-body、String/Array 老语义）、
+  m1-proxy/m1-typedarray 3 例（自建探针用例）。

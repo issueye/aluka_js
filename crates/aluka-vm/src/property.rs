@@ -1204,8 +1204,32 @@ impl Vm {
                                     elements.resize(i + 1, Value::Undefined);
                                 }
                                 elements[i] = val;
+                                // 规格化：密集写清除超大 length 覆盖值
+                                properties.remove("length");
                             } else {
+                                // 超大下标（≥ 密集上限）：值落自有属性表，
+                                // `length` 按规范推进到 i+1（稀疏数组的
+                                // 长度语义——`x[2147483648]=1` 后
+                                // `x.length === 2147483649`）
                                 properties.insert(key.to_owned(), val);
+                                // 规范数组索引上界为 2^32-1（**不含**）：
+                                // i === 4294967295 是普通字符串属性名，
+                                // 不推进 length（`x[4294967295]=1` 后
+                                // `x.length === 0`）
+                                if i < 4294967295 {
+                                    let new_len = (i + 1) as f64;
+                                    let cur = properties
+                                        .get("length")
+                                        .and_then(|v| match v.case() {
+                                            ValueCase::Number(n) => Some(n),
+                                            _ => None,
+                                        })
+                                        .unwrap_or(elements.len() as f64);
+                                    if new_len > cur {
+                                        properties
+                                            .insert("length".to_owned(), Value::Number(new_len));
+                                    }
+                                }
                             }
                         } else {
                             // 非索引键含超大 length（≥4e6 上限守卫走普通
