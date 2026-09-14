@@ -688,10 +688,23 @@ impl Vm {
                 "BYTES_PER_ELEMENT",
                 Value::Number(kind.elem_size() as f64),
             );
+            // 静态方法**属性面**：分派（typed_array_statics）已实现，但属性
+            // 此前未挂载——`typeof Int32Array.from` 为 undefined（真实代码
+            // 常先判存在再调用）。注意 `isTypedArray` **不在**规范集合中
+            //（Node 22 实测为 undefined），仅内部分派保留，不对外挂属性。
+            for m in ["from", "of"] {
+                let f = vm.alloc_native_fn(&format!("{}.{m}", kind.ctor_name()));
+                let _ = vm.set_property(Value::Object(ctor), m, Value::Object(f));
+            }
             vm.globals
                 .insert(kind.ctor_name().to_owned(), Value::Object(ctor));
         }
         let ab_ctor = vm.alloc_native_ctor("ArrayBuffer", obj_proto);
+        // `ArrayBuffer.isView(v)` 属性面（分派已实现）
+        {
+            let f = vm.alloc_native_fn("ArrayBuffer.isView");
+            let _ = vm.set_property(Value::Object(ab_ctor), "isView", Value::Object(f));
+        }
         vm.globals
             .insert("ArrayBuffer".to_owned(), Value::Object(ab_ctor));
         let sab_ctor = vm.alloc_native_ctor("SharedArrayBuffer", obj_proto);
@@ -1272,6 +1285,68 @@ impl Vm {
     ///
     /// 与 `wrapper_primitive` 同源，但排除 `_timeValue`（Date 的 == 语义
     /// 经 ToPrimitive 而非数据槽直解，避免 `d == 0` 误判）。
+    /// BigInt ↔ String/Boolean 松散相等的归一化：把 BigInt 一侧转换为 Number，
+    /// 交由 `eq` 的 Number 分支比较（`1n == "1"`、`1n == true` 为 true）。
+    ///
+    /// 非 BigInt 组合原样返回；字符串无法解析为整数时由 `eq` 的字符串/
+    /// 数值比较给出 false（与规范一致）。
+    fn normalize_bigint_eq(&self, left: Value, right: Value) -> (Value, Value) {
+        let is_big = |v: Value| self.is_bigint_value(v);
+        let to_num = |v: Value| -> Value {
+            match v.case() {
+                ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::BigInt(t)) => t
+                        .trim()
+                        .parse::<f64>()
+                        .map(Value::Number)
+                        .unwrap_or(Value::Undefined),
+                    _ => v,
+                },
+                _ => v,
+            }
+        };
+        // Boolean 一侧先 ToNumber（规范：BigInt 与 Boolean 比较时布尔转数值）
+        let coerce = |v: Value| -> Value {
+            match v.case() {
+                ValueCase::Boolean(b) => Value::Number(if b { 1.0 } else { 0.0 }),
+                _ => v,
+            }
+        };
+        let is_str = |v: Value| -> bool {
+            v.as_object()
+                .is_some_and(|r| matches!(self.heap.get(r.0 as usize), Some(HeapObject::String(_))))
+        };
+        let numeric_like = |v: Value| -> bool {
+            matches!(v.case(), ValueCase::Boolean(_) | ValueCase::Number(_)) || is_str(v)
+        };
+        // 字符串一侧须符合 **StringToBigInt** 文法（仅十进制整数字面量；
+        // "1.0"/"0x10" 等解析失败 → 返回 NaN 使比较为 false）
+        let str_to_num = |v: Value| -> Value {
+            if !is_str(v) {
+                return v;
+            }
+            let Some(r) = v.as_object() else { return v };
+            let Some(HeapObject::String(s)) = self.heap.get(r.0 as usize) else {
+                return v;
+            };
+            let t = s.trim();
+            let body = t.strip_prefix(['+', '-']).unwrap_or(t);
+            if body.is_empty() || !body.chars().all(|c| c.is_ascii_digit()) {
+                return Value::Number(f64::NAN);
+            }
+            t.parse::<f64>()
+                .map(Value::Number)
+                .unwrap_or(Value::Number(f64::NAN))
+        };
+        if is_big(left) && numeric_like(right) {
+            return (to_num(left), str_to_num(coerce(right)));
+        }
+        if is_big(right) && numeric_like(left) {
+            return (str_to_num(coerce(left)), to_num(right));
+        }
+        (left, right)
+    }
+
     pub(crate) fn unwrap_primitive_slot(&self, val: Value) -> Value {
         let Some(r) = val.as_object() else {
             return val;
@@ -2155,7 +2230,14 @@ impl Vm {
                     | "random"
             )
         {
-            // Math.*：原生方法（receiver 是 Math 单例）
+            // Math.*：原生方法（receiver 是 Math 单例）。
+            // 规范：Math 方法的参数经 ToNumber，**BigInt 抛 TypeError**
+            //（`Math.max(1n)` → TypeError；math_method 是纯函数无错误通道，
+            // 故在此前置校验）
+            if let Some(b) = args.iter().find(|v| self.is_bigint_value(**v)) {
+                let _ = b;
+                return Err(self.type_error("Cannot convert a BigInt value to a number"));
+            }
             let math_val = math_method(method_name, args);
             Ok(math_val)
         } else if matches!(method_name, "exec" | "test") && self.is_regexp_obj(receiver) {
@@ -2257,6 +2339,46 @@ impl Vm {
                 }
                 _ => Ok(Value::Undefined),
             }
+        } else if matches!(method_name, "asIntN" | "asUintN")
+            && self
+                .ctor_cache
+                .get("BigInt")
+                .is_some_and(|c| receiver == Value::Object(*c))
+        {
+            // `BigInt.asIntN(bits, bigint)` / `asUintN`：按位宽取模回绕
+            //（规范 ToBigInt 语义；此前仅挂属性无分派 → "is not a function"）
+            let bits = args
+                .first()
+                .map(|v| crate::ops::to_number(*v))
+                .unwrap_or(0.0);
+            if bits.is_nan() || bits < 0.0 {
+                return Err(self.typed_error("RangeError", "Invalid value"));
+            }
+            let bits = bits as u64;
+            let v = args.get(1).copied().unwrap_or(Value::Undefined);
+            let text = match v.case() {
+                ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                    Some(HeapObject::BigInt(t)) => t.clone(),
+                    _ => {
+                        return Err(self.type_error("Cannot convert value to a BigInt"));
+                    }
+                },
+                _ => return Err(self.type_error("Cannot convert value to a BigInt")),
+            };
+            let n: i128 = text.trim().parse::<i128>().unwrap_or(0);
+            if bits == 0 {
+                return Ok(Value::Object(self.alloc_bigint("0".to_owned())));
+            }
+            let out: String = if method_name == "asIntN" {
+                let m: i128 = 1i128 << (bits.min(127) as u32);
+                let r = ((n % m) + m) % m;
+                let signed = if r >= m / 2 { r - m } else { r };
+                signed.to_string()
+            } else {
+                let m: u128 = 1u128 << (bits.min(127) as u32);
+                ((((n as u128) % m) + m) % m).to_string()
+            };
+            Ok(Value::Object(self.alloc_bigint(out)))
         } else if method_name == "isRawJSON" && self.is_json_object(receiver) {
             // JSON.isRawJSON(O)：Type(O) 为 Object 且带 [[IsRawJSON]] 槽
             let v = args.first().copied().unwrap_or(Value::Undefined);
@@ -4235,6 +4357,10 @@ impl Vm {
                     // 后再比较（`Object(1.1) == 1.1` 此前恒 false）
                     let left = self.unwrap_primitive_slot(left);
                     let right = self.unwrap_primitive_slot(right);
+                    // BigInt 与 String/Boolean 的松散相等：BigInt 一侧转数值后
+                    // 走 Number 分支（`1n == "1"` / `1n == true` 均为 true——
+                    // 规范 IsLooselyEqual 先 StringToBigInt / ToNumber）
+                    let (left, right) = self.normalize_bigint_eq(left, right);
                     let res = eq(left, right, &self.heap, &self.current_constants);
                     self.stack.push(Value::Boolean(res));
                 }

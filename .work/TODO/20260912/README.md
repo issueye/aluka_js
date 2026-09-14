@@ -2503,3 +2503,46 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
   t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
   jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。
+
+## 100. M7.2 轮八十六：BigInt 全族语义修复（8 项）+ 类型化数组静态面（20260914）
+
+- **方法**：新增 BigInt 专项差分探针（24 项覆盖算术/比较/转换/装箱/错误
+  路径），逐项与 Node 22 对拍——一次暴露 8 处真实缺陷，修复后**差分 0 差异**。
+- **修复清单**：
+  1. **`String(BigInt)` 抛 TypeError**（**回归修复**，影响所有 BigInt 字符串化）：
+     轮七十八改 `js_string_strict` 时未识别 BigInt 堆对象（Object case 但
+     语义为原始值），落入 toString/valueOf 查找路径因 BigInt 无这些方法而抛
+     "Cannot convert object to primitive value"——`String(1n)` 直接失败。
+     修复：BigInt 分支直接返回十进制文本；
+  2. **BigInt 真值性**：`to_boolean` 对 BigInt 一律 true → `Boolean(0n)` 应为
+     false（修复：文本去符号后非 "0" 为真）；
+  3. **BigInt ↔ Number/String/Boolean 松散相等**：`1n == 1` / `1n == "1"` /
+     `1n == true` 此前全 false。修复：Eq/Ne 操作码处新增
+     `normalize_bigint_eq`（BigInt 侧转数值 + Boolean 侧 ToNumber + 字符串侧
+     按 **StringToBigInt 文法**严格解析——`"1.0"` 解析失败故为 false）；
+  4. **`BigInt.asIntN`/`asUintN`**：仅挂属性无分派（调用报 not a function）。
+     修复：实现位宽回绕（`asIntN(8,255n) === -1n`、`asUintN(8,-1n) === 255n`、
+     `asIntN(0,_) === 0n`）；
+  5. **`Object(1n).valueOf()`** 返回包装对象而非 1n（`Object.prototype.valueOf`
+     未解包数据槽）。修复：经 `wrapper_primitive` 解包（同时修正
+     `Object("s").valueOf()` 等全部包装形态）；
+  6. **`JSON.stringify(1n)` 静默返回 null**：规范应抛 TypeError
+     （BigInt 无 JSON 表示）。修复：json_stringify 前置 BigInt 检查；
+  7. **一元 `+1n` 与算术静默转数值**：`numeric_operand` 应抛 TypeError
+     （ToNumber(BigInt) 非法）。修复；同时保留 `Number(1n) === 1` 的
+     **显式转换**特例（规范 Number() 允许）；
+  8. **`Math.max(1n)` 返回 -Infinity**：Math 方法参数应 ToNumber 并抛。
+     修复：Math 分派点前置 BigInt 校验（`math_method` 为纯函数无错误通道）；
+- **类型化数组静态面**：`Int32Array.from`/`of`、`ArrayBuffer.isView` 的
+  **分派早已实现但属性未挂载**（`typeof` 为 undefined）。补齐属性面；
+  注意 `isTypedArray` **不在规范集合中**（Node 22 实测 undefined），
+  故仅保留内部分派不对外挂属性；
+- **`BigInt64Array` 元素转换**：`new BigInt64Array([9])` 应抛 TypeError
+  （规范 ToBigInt 不接受 Number），此前回退 `to_number` 静默接受。
+  修复：按 ToBigInt 分派（BigInt 直用 / String 解析 / Boolean 转 0-1 /
+  其余抛错）；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+  差分电池 **15/15**、BigInt 专项差分 **0 差异**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。

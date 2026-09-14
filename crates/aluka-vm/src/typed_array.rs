@@ -201,6 +201,18 @@ pub(crate) enum Element {
     Big(i64),
 }
 
+/// BigInt 元素文本 → 收窄整数（BigUint64 按无符号回绕）。
+fn parse_bigint_elem(kind: crate::typed_array::TypedKind, text: &str) -> i64 {
+    match kind {
+        crate::typed_array::TypedKind::BigUint64 => text
+            .parse::<u128>()
+            .map(|v| (v as u64) as i64)
+            .or_else(|_| text.parse::<i64>())
+            .unwrap_or(0),
+        _ => text.parse::<i64>().unwrap_or(0),
+    }
+}
+
 impl Vm {
     /// 元素原始值 → JS 值（BigUint64 按无符号位型渲染）。
     pub(crate) fn decode_element(
@@ -358,27 +370,34 @@ impl Vm {
             kind,
             crate::typed_array::TypedKind::BigInt64 | crate::typed_array::TypedKind::BigUint64
         ) {
-            // BigInt 族：接受 BigInt 与整数值；BigUint64 按无符号回绕
+            // BigInt 族按规范走 **ToBigInt**：仅 BigInt / 字符串 / 布尔 /
+            // 对象（经 ToPrimitive）可转换，**Number 抛 TypeError**
+            //（`new BigInt64Array([9])` → TypeError: Cannot convert 9 to a
+            // BigInt；此前回退 to_number 静默接受数字，掩盖类型错误）
             if let Some(r) = val.as_object() {
                 if let Some(HeapObject::BigInt(text)) = self.heap.get(r.0 as usize) {
-                    let parsed = match kind {
-                        crate::typed_array::TypedKind::BigUint64 => text
-                            .parse::<u128>()
-                            .map(|v| (v as u64) as i64)
-                            .or_else(|_| text.parse::<i64>())
-                            .unwrap_or(0),
-                        _ => text.parse::<i64>().unwrap_or(0),
-                    };
-                    return Ok(Element::Big(parsed));
+                    return Ok(Element::Big(parse_bigint_elem(kind, text)));
                 }
             }
-            let n = crate::ops::to_number(val);
-            let i = if n.is_nan() || n.is_infinite() {
-                0i64
-            } else {
-                n.trunc() as i64
-            };
-            return Ok(Element::Big(i));
+            if let ValueCase::Boolean(b) = val.case() {
+                return Ok(Element::Big(if b { 1 } else { 0 }));
+            }
+            // 堆字符串：按 BigInt 字面量解析（空串 → 0）
+            if let Some(rr) = val.as_object()
+                && let Some(HeapObject::String(text)) = self.heap.get(rr.0 as usize)
+            {
+                let t = text.trim().to_owned();
+                if t.is_empty() {
+                    return Ok(Element::Big(0));
+                }
+                let body = t.strip_prefix(['+', '-']).unwrap_or(&t);
+                if !body.is_empty() && body.chars().all(|c| c.is_ascii_digit()) {
+                    return Ok(Element::Big(t.parse::<i64>().unwrap_or(0)));
+                }
+                return Err(self.typed_error("SyntaxError", "Cannot convert string to a BigInt"));
+            }
+            // Number / null / undefined / Symbol：规范 ToBigInt 抛 TypeError
+            return Err(self.type_error("Cannot convert a value to a BigInt"));
         }
         Ok(Element::I(crate::ops::to_number(val)))
     }

@@ -651,8 +651,15 @@ fn obj_to_string_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `Object.prototype.valueOf.call(v)`：原样返回。
-fn obj_value_of(_vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
-    Ok(super::current_receiver())
+fn obj_value_of(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let this = super::current_receiver();
+    // 包装实例（Object(prim)/new Number 等）的解包：返回内部数据槽值
+    //（`Object(1n).valueOf() === 1n`、`Object("s").valueOf() === "s"`——
+    // 规范 [[BigIntData]]/[[NumberData]] 等内部槽经 valueOf 暴露）
+    if let Some(w) = vm.wrapper_primitive(this) {
+        return Ok(w);
+    }
+    Ok(this)
 }
 
 /// `Object.prototype.propertyIsEnumerable.call(obj, key)`。

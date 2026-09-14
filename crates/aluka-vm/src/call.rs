@@ -203,6 +203,10 @@ impl Vm {
             if ctor_name.as_deref() == Some("Number") {
                 let v = match args.first() {
                     None => 0.0,
+                    // 规范 Number(value)：ToNumeric 中 **BigInt 走 ToNumber
+                    // 特例**（`Number(1n) === 1`）——与一元 `+1n` 抛 TypeError
+                    // 不同，本次为显式转换故允许
+                    Some(v) if self.is_bigint_value(*v) => self.to_number_value(*v),
                     Some(v) => self.numeric_operand(*v)?,
                 };
                 return Ok(Value::Number(v));

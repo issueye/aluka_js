@@ -56,6 +56,11 @@ impl Vm {
         // 先于「不可序列化」判定生效（`JSON.stringify({d:new Date(0)})` 的 ISO 串
         // 形态即由 `Date.prototype.toJSON` 产出）。
         let value = self.apply_to_json(value, "")?;
+        // BigInt 无 JSON 表示：规范 SerializeJSONProperty 直接 TypeError
+        //（`JSON.stringify(1n)` 应抛；此前落 Kind::Other 静默输出 null）
+        if self.is_bigint_value(value) {
+            return Err(self.type_error("Do not know how to serialize a BigInt"));
+        }
         // 顶层不可序列化值（含 toJSON 返回的 undefined）：undefined / 函数 / 符号
         if matches!(value, Value::Undefined) || is_json_ignored_value(self, value) {
             return Ok(Value::Undefined);

@@ -141,6 +141,9 @@ pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
         ValueCase::Number(n) => n != 0.0 && !n.is_nan(),
         ValueCase::Object(r) => match heap.get(r.0 as usize) {
             Some(HeapObject::String(s)) => !s.is_empty(),
+            // BigInt 是原始值语义：**0n 为假**，其余为真
+            //（`Boolean(0n) === false`；此前落 `_ => true` 致 0n 恒真）
+            Some(HeapObject::BigInt(text)) => text.trim_start_matches(['-', '+']) != "0",
             _ => true,
         },
     }
@@ -220,6 +223,16 @@ pub fn eq(
         (ValueCase::Null, ValueCase::Undefined) | (ValueCase::Undefined, ValueCase::Null) => true,
         (ValueCase::Number(n), ValueCase::Object(r))
         | (ValueCase::Object(r), ValueCase::Number(n)) => {
+            // BigInt ↔ Number：按**数学值**比较（`1n == 1` 为 true；
+            // 非整数、NaN、±Infinity 一律 false——规范 IsLooselyEqual
+            // 的 BigInt/Number 分支）
+            if let Some(HeapObject::BigInt(text)) = heap.get(r.0 as usize) {
+                let t = text.trim();
+                if n.is_nan() || n.is_infinite() || n.fract() != 0.0 {
+                    return false;
+                }
+                return t == crate::ops::js_number_to_string(n);
+            }
             // 包装实例（[[NumberValue]]/[[BooleanValue]] 数据槽）：解包比较
             if let Some(w) = wrapper_data(heap, r.0) {
                 return match w.case() {
@@ -602,6 +615,11 @@ impl Vm {
         if self.is_symbol(p) {
             return Err(self.type_error("Cannot convert a Symbol value to a number"));
         }
+        // ToNumber(BigInt) → TypeError（`+1n` / `Math.max(1n)` 均抛；
+        // 此前经 to_number_value 静默转数值）
+        if self.is_bigint_value(p) {
+            return Err(self.type_error("Cannot convert a BigInt value to a number"));
+        }
         Ok(self.to_number_value(p))
     }
 
@@ -783,6 +801,12 @@ impl Vm {
             .is_some_and(|r| matches!(self.heap.get(r.index()), Some(HeapObject::String(_))));
         if !matches!(v.case(), ValueCase::Object(_)) || is_heap_str {
             return self.js_string(v);
+        }
+        // BigInt：堆对象但语义是**原始值**——ToString 即其十进制文本
+        //（`String(1n)` === "1"；此前落入 toString/valueOf 查找路径因 BigInt
+        // 无这些方法而抛 "Cannot convert object to primitive value"）
+        if self.is_bigint_value(v) {
+            return Ok(self.format_value(v));
         }
         if self.is_symbol(v) {
             // 严格 ToString：符号参数直接 TypeError（`Symbol.for(Symbol())`
