@@ -373,6 +373,10 @@ pub enum Stmt {
         constructor: Option<FunctionDef>,
         /// 类方法列表
         methods: Vec<ClassMethodDef>,
+        /// 类字段（`field = init` / `static s = init`；`is_static` 标记
+        /// 静态字段——装配期注入构造器：实例字段 `this.name = init`，
+        /// 静态字段挂构造器自身）
+        fields: Vec<(String, bool, Option<Expr>)>,
     },
     /// ESM 模块导入语句：`import ... from 'mod';`
     Import(ImportDecl),
@@ -441,6 +445,11 @@ pub struct ClassMethodDef {
     pub is_static: bool,
     /// 是否为生成器方法（`*m() {}`）
     pub is_generator: bool,
+    /// 是否为 rest 参数方法（`m(...args) {}`）
+    pub is_var_args: bool,
+    /// 是否为 async 方法（`async m() {}`；与 is_generator 同真即
+    /// async 生成器方法 `async *m() {}`）
+    pub is_async: bool,
     /// 方法类型（0=普通方法, 1=Getter, 2=Setter；高位 0x20=计算键）
     pub kind: u32,
     /// 键是否为计算形态（`['constructor']() {}`）——计算键不构成构造器、

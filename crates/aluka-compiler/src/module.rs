@@ -491,6 +491,7 @@ impl ModuleCompiler {
                     super_class,
                     constructor,
                     methods,
+                    fields,
                 } => {
                     let class_id = self.classes.len();
                     if let Some(super_expr) = super_class {
@@ -531,6 +532,7 @@ impl ModuleCompiler {
                         super_class.is_some(),
                         constructor,
                         methods,
+                        fields,
                         Some(&parent_info),
                         class_id,
                     );
@@ -546,6 +548,31 @@ impl ModuleCompiler {
                         s
                     };
                     top_unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    // 静态字段初始化（装配期语义：`static s = init` 在类求值
+                    // 时立即执行）——类对象此时已在 slot，发射
+                    // `A.s = init` 的逐字段赋值
+                    if std::env::var("ALUKA_SF_DBG").is_ok() {
+                        eprintln!(
+                            "[sf-dbg] name={name} fields={:?}",
+                            fields
+                                .iter()
+                                .map(|(n, s, _)| (n.clone(), *s))
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                    for (fname, is_static, init) in fields.iter() {
+                        if !is_static {
+                            continue;
+                        }
+                        top_unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                        compile_expr(&init.clone().unwrap_or(Expr::Undefined), &mut top_unit);
+                        let p_idx = crate::codegen::add_constant(
+                            &mut top_unit,
+                            Constant::String(fname.clone()),
+                        );
+                        top_unit.code.push(Instr::new(Op::SetProp, p_idx));
+                        top_unit.code.push(Instr::new(Op::Pop, 0));
+                    }
                 }
                 Stmt::Import(_) => {
                     // 静态导入在单模块执行中无需生成运行时操作指令
@@ -1203,6 +1230,7 @@ impl ModuleCompiler {
                     super_class,
                     constructor,
                     methods,
+                    fields,
                 } => {
                     let class_id = self.classes.len();
                     if let Some(super_expr) = super_class {
@@ -1236,6 +1264,7 @@ impl ModuleCompiler {
                         super_class.is_some(),
                         constructor,
                         methods,
+                        fields,
                         Some(&parent_info),
                         class_id,
                     );
@@ -1249,6 +1278,20 @@ impl ModuleCompiler {
                         s
                     };
                     unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    // 静态字段初始化（装配期语义；见上一处同源注释）
+                    for (fname, is_static, init) in fields.iter() {
+                        if !is_static {
+                            continue;
+                        }
+                        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                        compile_expr(&init.clone().unwrap_or(Expr::Undefined), &mut unit);
+                        let p_idx = crate::codegen::add_constant(
+                            &mut unit,
+                            Constant::String(fname.clone()),
+                        );
+                        unit.code.push(Instr::new(Op::SetProp, p_idx));
+                        unit.code.push(Instr::new(Op::Pop, 0));
+                    }
                 }
                 _ => {
                     compile_stmt(stmt, &mut unit, is_last);
@@ -1328,17 +1371,70 @@ impl ModuleCompiler {
     }
 
     /// 编译类定义，返回类在 classes 中的索引
+    #[allow(clippy::too_many_arguments)]
     pub fn compile_class(
         &mut self,
         name: &str,
         has_super: bool,
         constructor: &Option<FunctionDef>,
         methods: &[ClassMethodDef],
+        fields: &[(String, bool, Option<Expr>)],
         parent_scope: Option<&ParentScopeInfo>,
         class_id: usize,
     ) -> usize {
+        // 实例字段初始化语句（`this.f = init`；无 initializer → undefined）：
+        // 注入构造器体**首部**（super() 之后）。静态字段由类装配期处理。
+        let field_init_stmts: Vec<SpannedStmt> = fields
+            .iter()
+            .filter(|(_, is_static, _)| !is_static)
+            .map(|(fname, _, init)| {
+                SpannedStmt::new(
+                    Stmt::Expr(Expr::MemberAssign {
+                        obj: Box::new(Expr::This),
+                        prop: fname.clone(),
+                        value: Box::new(init.clone().unwrap_or(Expr::Undefined)),
+                    }),
+                    0,
+                )
+            })
+            .collect();
+        let with_fields = |mut def: FunctionDef| -> FunctionDef {
+            if std::env::var("ALUKA_CF_DBG").is_ok() {
+                eprintln!(
+                    "[cf-dbg] name={name} fields={} inits={}",
+                    fields.len(),
+                    field_init_stmts.len()
+                );
+            }
+            if field_init_stmts.is_empty() {
+                return def;
+            }
+            // 有 super() 时字段初始化须在其**之后**（否则 this 未建立）
+            let insert_at = def
+                .body
+                .iter()
+                .position(|s| {
+                    matches!(
+                        &s.stmt,
+                        Stmt::Expr(Expr::Call { callee, .. })
+                            if matches!(callee.as_ref(), Expr::Super)
+                    )
+                })
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let mut out = def.body.clone();
+            for (k, st) in field_init_stmts.iter().enumerate() {
+                out.insert(insert_at + k, st.clone());
+            }
+            def.body = out;
+            def
+        };
         let ctor_idx = if let Some(ctor_def) = constructor {
-            self.compile_method_function(ctor_def, parent_scope, Some(class_id)) as u32
+            self.compile_method_function(
+                &with_fields(ctor_def.clone()),
+                parent_scope,
+                Some(class_id),
+            ) as u32
         } else if has_super {
             let def = FunctionDef {
                 name: format!("{name}_constructor"),
@@ -1355,21 +1451,23 @@ impl ModuleCompiler {
                 is_generator: false,
                 is_arrow: false,
             };
-            self.compile_method_function(&def, parent_scope, Some(class_id)) as u32
+            self.compile_method_function(&with_fields(def), parent_scope, Some(class_id)) as u32
         } else {
             let def =
                 FunctionDef::new(format!("{name}_constructor"), Vec::new(), false, Vec::new());
-            self.compile_method_function(&def, parent_scope, Some(class_id)) as u32
+            self.compile_method_function(&with_fields(def), parent_scope, Some(class_id)) as u32
         };
 
         let mut class_methods = Vec::with_capacity(methods.len());
         for m in methods {
-            let fn_def = FunctionDef::new(
+            let mut fn_def = FunctionDef::new(
                 format!("{name}_{}", m.name),
                 m.params.clone(),
-                false,
+                m.is_var_args,
                 m.body.clone(),
             );
+            fn_def.is_async = m.is_async;
+            fn_def.is_generator = m.is_generator;
             let func_index =
                 self.compile_method_function(&fn_def, parent_scope, Some(class_id)) as u32;
             class_methods.push(ClassMethod {

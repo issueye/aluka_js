@@ -161,6 +161,45 @@ impl<'src> Parser<'src> {
         matches!(&self.peek().kind, TokenKind::Keyword(s) if s == kw)
     }
 
+    /// 上下文关键字作**标识符**：`async`/`await`/`yield`/`from`/`as`/
+    /// `static`/`get`/`set`/`of` 在规范中均为普通标识符（仅在特定产生式
+    /// 位置才具关键字语义）。真实包大量使用（axios 的 `async` 变量、
+    /// asynckit 的 `async` 形参/属性简写）。
+    fn context_ident(&self) -> Option<String> {
+        match &self.peek().kind {
+            TokenKind::Keyword(k) => {
+                // `await` 在 **async 语境** 是保留字（不得作绑定名：
+                // `async function f(){ var await = 1 }` → SyntaxError，
+                // S7.6.1 负例族）；非 async 语境才是普通标识符
+                if k == "await" && self.in_async {
+                    return None;
+                }
+                if matches!(
+                    k.as_str(),
+                    "async" | "await" | "yield" | "from" | "as" | "static" | "get" | "set" | "of"
+                ) {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// 消耗一个「标识符或上下文关键字」并返回其名。
+    fn advance_ident_like(&mut self) -> Option<String> {
+        if let TokenKind::Ident(id) = self.peek().kind.clone() {
+            self.advance();
+            return Some(id);
+        }
+        if let Some(k) = self.context_ident() {
+            self.advance();
+            return Some(k);
+        }
+        None
+    }
+
     fn match_keyword(&mut self, kw: &str) -> bool {
         if self.check_keyword(kw) {
             self.advance();
@@ -302,6 +341,12 @@ impl<'src> Parser<'src> {
     }
 
     /// 解析完整 Program
+    /// ESM 顶层隐式 async 语境（顶层 await / TLA 合法）。
+    pub fn set_esm_top_level_async(&mut self) {
+        self.in_async = true;
+    }
+
+    /// 解析完整 Program（脚本/模块的顶层语句列表）。
     pub fn parse_program(&mut self) -> Program {
         // 程序级 strict 指令：首个 token 为 "use strict" 字面量时全程序
         // 按 strict 语义解析（onlyStrict 变体 / 顶层指令）
@@ -601,7 +646,8 @@ impl<'src> Parser<'src> {
             let expr = if terminated {
                 None
             } else {
-                Some(self.parse_expr())
+                // 逗号序列合法（`return r && (n.x = r), n;` —— 压缩代码常见）
+                Some(self.parse_expr_sequence())
             };
             self.eat_semi();
             return Self::at(line, Stmt::Return(expr));
@@ -935,10 +981,12 @@ impl<'src> Parser<'src> {
         // （mime-types 等真实包存在 `var from = ...`）；`yield` 在非生成器
         // 语境同为普通标识符（`var yield = 'y'` + 计算访问器键
         // `get [yield]()` 语料形态）
-        let name = match self.advance().kind {
-            TokenKind::Ident(id) => id,
-            TokenKind::Keyword(kw) if kw == "from" || kw == "yield" => kw,
-            other => {
+        // 经 advance_ident_like（含上下文关键字；`await` 在 async 语境被
+        // context_ident 拒绝，故 `async function f(){ var await; }` 报错）
+        let name = match self.advance_ident_like() {
+            Some(n) => n,
+            None => {
+                let other = self.peek().kind.clone();
                 let message = format!("var/let/const 声明缺少变量名，实为 {other:?}");
                 self.record_error(message);
                 "anonymous".to_owned()
@@ -953,10 +1001,12 @@ impl<'src> Parser<'src> {
         // 多声明符：`var i = 0, len = expr;`（for-init 常见形态）
         let mut extra: Vec<(String, Option<Expr>)> = Vec::new();
         while self.match_punct(",") {
-            let extra_name = match self.advance().kind {
-                TokenKind::Ident(id) => id,
-                TokenKind::Keyword(kw) if kw == "from" => kw,
-                other => {
+            // 多声明符的名字同样接受上下文关键字（`var a = x, async = y`
+            // —— asynckit/terminator.js 的既有写法）
+            let extra_name = match self.advance_ident_like() {
+                Some(n) => n,
+                None => {
+                    let other = self.peek().kind.clone();
                     let message = format!("var/let/const 声明缺少变量名，实为 {other:?}");
                     self.record_error(message);
                     "anonymous".to_owned()
@@ -981,8 +1031,10 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_function_def(&mut self, is_async: bool, is_generator: bool) -> FunctionDef {
-        let name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
-            self.advance();
+        // 函数名可为标识符或上下文关键字（`function async(cb) {}` ——
+        // asynckit/axios 等真实包的既有写法；async 在非函数表达式前缀位置
+        // 是普通标识符）
+        let name = if let Some(id) = self.advance_ident_like() {
             // async 函数绑定名不得为 arguments/eval（规范早错误；
             // `async function arguments() {}` → SyntaxError）
             if is_async && matches!(id.as_str(), "arguments" | "eval") {
@@ -1019,13 +1071,25 @@ impl<'src> Parser<'src> {
                 let param_name = format!("__param_{}__", params.len());
                 params.push(param_name.clone());
                 let dline = self.cur_line();
-                prologue_stmts.push(Self::at(
-                    dline,
-                    Stmt::DestructureDecl {
-                        pattern,
-                        init: Expr::Ident(param_name),
-                    },
-                ));
+                // 解构形参的**默认值**（`function f({a} = {}) {}`——axios 等
+                // 真实包大量使用）：`= expr` 时 init 取条件表达式
+                //（param === undefined ? expr : param）
+                let init = if self.match_punct("=") {
+                    saw_default = true;
+                    let def = self.parse_expr();
+                    Expr::Conditional {
+                        cond: Box::new(Expr::Binary {
+                            op: "===".to_owned(),
+                            left: Box::new(Expr::Ident(param_name.clone())),
+                            right: Box::new(Expr::Undefined),
+                        }),
+                        then_expr: Box::new(def),
+                        else_expr: Box::new(Expr::Ident(param_name.clone())),
+                    }
+                } else {
+                    Expr::Ident(param_name)
+                };
+                prologue_stmts.push(Self::at(dline, Stmt::DestructureDecl { pattern, init }));
                 self.skip_type_annotation();
             } else if matches!(self.peek().kind, TokenKind::Keyword(ref k) if k == "await")
                 && is_async
@@ -1194,7 +1258,10 @@ impl<'src> Parser<'src> {
             "AnonymousClass".to_owned()
         };
         let super_class = if self.match_keyword("extends") {
-            Some(self.parse_expr_primary())
+            // 父类表达式可含成员访问（`class D extends ns.Base {}` ——
+            // axios/agent-base 等真实包的既有写法）；`parse_expr_primary`
+            // 只解析主表达式，故改用 unary 层级（含 Member/Call 后缀链）
+            Some(self.parse_unary())
         } else {
             None
         };
@@ -1206,7 +1273,55 @@ impl<'src> Parser<'src> {
         let outer_super = self.super_disallowed;
         self.super_disallowed = false;
 
+        let mut class_fields: Vec<(String, bool, Option<Expr>)> = Vec::new();
         while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
+            // 类字段（`field = 1;` / `static s = 2;` / `field;`）：以
+            // `__class_field_<name>` 子语句收集，装配期注入构造器
+            // （实例字段 `this.name = init` / 静态字段挂构造器）
+            {
+                let save = self.pos;
+                let is_static_field = matches!(&self.peek().kind, TokenKind::Ident(s) if s == "static")
+                    && !self.peek_ahead(1).is_punct("(")
+                    && !self.peek_ahead(1).is_punct("=")
+                    && !self.peek_ahead(1).is_punct(";")
+                    && {
+                        self.advance();
+                        true
+                    };
+                let mut fname = String::new();
+                if self.check_punct("#") {
+                    self.advance();
+                    if let TokenKind::Ident(id) = self.peek().kind.clone() {
+                        self.advance();
+                        fname = format!("#{id}");
+                    }
+                } else if let Some(n) = self.advance_ident_like() {
+                    fname = n;
+                } else if let TokenKind::String(s) = self.peek().kind.clone() {
+                    self.advance();
+                    fname = s;
+                } else if let TokenKind::Number(n) = self.peek().kind.clone() {
+                    self.advance();
+                    fname = format!("{n}");
+                }
+                if !fname.is_empty()
+                    && !self.check_punct("(")
+                    && (self.check_punct("=") || self.check_punct(";"))
+                {
+                    let init = if self.match_punct("=") {
+                        Some(self.parse_expr())
+                    } else {
+                        None
+                    };
+                    self.eat_semi();
+                    class_fields.push((fname, is_static_field, init));
+                    if !self.check_punct("}") {
+                        continue;
+                    }
+                    break;
+                }
+                self.pos = save;
+            }
             // `static` 非保留字（词法为 Ident）：仅在后随键名/访问器/计算键
             // 时作修饰符——`static() {}` 是名为 static 的普通方法
             let is_static = matches!(&self.peek().kind, TokenKind::Ident(s) if s == "static")
@@ -1215,6 +1330,22 @@ impl<'src> Parser<'src> {
                     self.advance();
                     true
                 };
+            // async 方法前缀：`async m() {}` / `async *m() {}`（axios 的
+            // AxiosHeaders 等类大量使用；async 仅在**后随方法名/`*`** 时
+            // 作修饰符——`async() {}` 是名为 async 的普通方法）
+            let mut m_is_async = false;
+            if self.check_keyword("async")
+                && !self.peek_ahead(1).is_punct("(")
+                && !self.peek_ahead(1).is_punct("=")
+                && !self.peek_ahead(1).is_punct(";")
+                && !self.peek_ahead(1).is_punct("}")
+                && !self.peek_ahead(1).is_punct(":")
+                && !self.peek_ahead(1).is_punct(",")
+                && !self.peek_ahead(1).is_punct("=>")
+            {
+                self.advance();
+                m_is_async = true;
+            }
             // 生成器前缀：`*m() {}` / `*['constructor']()`（`*` 后须跟随键名
             // 或计算键；不识别会令类体 while 无进展挂死——generator 静态族）
             let is_generator = self.check_punct("*") && !self.peek_ahead(1).is_punct("(") && {
@@ -1239,28 +1370,30 @@ impl<'src> Parser<'src> {
             } else if let TokenKind::Keyword(kw) = self.peek().kind.clone() {
                 self.advance();
                 kw
+            } else if self.check_punct("#") {
+                // 私有成员（`#p = 3` / `#m() {}`）：以 `#名` 作为成员名
+                // （VM 侧按普通属性存储——私有性的强校验未实现，登记为近似）
+                self.advance();
+                if let TokenKind::Ident(id) = self.peek().kind.clone() {
+                    self.advance();
+                    format!("#{id}")
+                } else {
+                    String::new()
+                }
             } else if self.check_punct("[") {
                 is_computed_key = true;
-                // 计算键：`get ['a']() {}`——以字面量文本为名（字符串/数字
-                // 字面量键的常见形态；复杂表达式取源码切片）
+                // 计算键：`get ['a']() {}` / `[Symbol.iterator]() {}`——
+                // **解析完整表达式**后取其静态名（成员表达式 `a.b` 取文本
+                // 尾名；字面量取字面值）。此前只取首个 token，致
+                // `[Symbol.iterator]` 落为 "Symbol"
                 self.advance();
-                let key_txt = match self.peek().kind.clone() {
-                    TokenKind::String(s) => {
-                        self.advance();
-                        s
-                    }
-                    TokenKind::Ident(s) => {
-                        self.advance();
-                        s
-                    }
-                    TokenKind::Number(n) => {
-                        self.advance();
-                        format!("{n}")
-                    }
-                    _ => {
-                        let _ = self.parse_expr();
-                        String::new()
-                    }
+                let key_expr = self.parse_expr();
+                let key_txt = match &key_expr {
+                    Expr::String(s) => s.clone(),
+                    Expr::Number(n) => format!("{n}"),
+                    Expr::Ident(id) => id.clone(),
+                    Expr::Member { prop, .. } => prop.clone(),
+                    other => format!("{other:?}"),
                 };
                 let _ = self.expect_punct("]");
                 key_txt
@@ -1270,10 +1403,20 @@ impl<'src> Parser<'src> {
 
             let _ = self.expect_punct("(");
             let mut params = Vec::new();
+            let mut is_var_args = false;
             while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
-                if let TokenKind::Ident(p) = self.advance().kind {
+                // rest 参数（`concat(...targets) {}`——axios 的 AxiosHeaders
+                // 等类方法大量使用）
+                if self.match_punct("...") {
+                    is_var_args = true;
+                }
+                if let Some(p) = self.advance_ident_like() {
                     params.push(p);
                     self.skip_type_annotation();
+                    // 默认值：允许出现（值由运行期处理；此处仅消费语法）
+                    if self.match_punct("=") {
+                        let _ = self.parse_expr();
+                    }
                 }
                 if !self.match_punct(",") {
                     break;
@@ -1294,7 +1437,7 @@ impl<'src> Parser<'src> {
                 constructor = Some(FunctionDef {
                     name: format!("{name}_constructor"),
                     params,
-                    is_var_args: false,
+                    is_var_args,
                     body,
                     is_async: false,
                     is_generator: false,
@@ -1307,6 +1450,8 @@ impl<'src> Parser<'src> {
                     body,
                     is_static,
                     is_generator,
+                    is_var_args,
+                    is_async: m_is_async,
                     // 高位 0x20：计算键标记（跨 bytecode 传给 VM 的早错误判定）
                     kind: accessor_kind | if is_computed_key { 0x20 } else { 0 },
                     is_computed: is_computed_key,
@@ -1321,6 +1466,7 @@ impl<'src> Parser<'src> {
             super_class,
             constructor,
             methods,
+            fields: class_fields,
         }
     }
 
@@ -1665,7 +1811,11 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_unary(&mut self) -> Expr {
-        if self.match_keyword("await") {
+        // `await` 仅在 async 语境是 AwaitExpression 运算符；**非 async 语境
+        // 是普通标识符**（`var await = 5; console.log(await)`——此前无条件
+        // 消耗 token 致语法错误）
+        if self.in_async && self.check_keyword("await") {
+            self.advance();
             // async 函数体内 await 为保留字（AwaitExpression 需要操作数）：
             // `void await;`/`await;` 等缺操作数形态 → SyntaxError（非 async
             // 上下文中 await 是普通标识符，不受影响）
@@ -1751,9 +1901,25 @@ impl<'src> Parser<'src> {
                 };
                 continue;
             }
-            // 普通成员访问: obj.prop（prop 可为标识符或关键字，如 `m.default`）
+            // 普通成员访问: obj.prop（prop 可为标识符或关键字，如 `m.default`；
+            // 亦可为私有名 `this.#p`——以 `#名` 作属性名）
             if self.match_punct(".") {
-                if let TokenKind::Ident(prop) | TokenKind::Keyword(prop) = self.advance().kind {
+                let prop = if self.check_punct("#") {
+                    self.advance();
+                    match self.peek().kind.clone() {
+                        TokenKind::Ident(id) => {
+                            self.advance();
+                            format!("#{id}")
+                        }
+                        _ => String::new(),
+                    }
+                } else {
+                    match self.advance().kind {
+                        TokenKind::Ident(p) | TokenKind::Keyword(p) => p,
+                        _ => String::new(),
+                    }
+                };
+                if !prop.is_empty() {
                     // 查看后续是否为方法调用
                     if self.match_punct("(") {
                         let args = self.parse_args();
@@ -2234,7 +2400,17 @@ impl<'src> Parser<'src> {
                         }
                         let _ = self.expect_punct(")");
                         self.skip_type_annotation();
+                        // 方法体的生成器/async 语境：`{ *gen() { yield 1 } }`
+                        // 体内 yield 须被识别（此前未置 in_generator 致
+                        // `yield 2` 解析失败——axios 的 ReadableStream
+                        // 源对象大量使用 async/生成器方法）
+                        let outer_gen = self.in_generator;
+                        let outer_async = self.in_async;
+                        self.in_generator = m_is_generator;
+                        self.in_async = m_is_async;
                         let body_stmt = self.parse_stmt();
+                        self.in_generator = outer_gen;
+                        self.in_async = outer_async;
                         let body = match body_stmt {
                             SpannedStmt {
                                 stmt: Stmt::Block(stmts),
@@ -2452,8 +2628,17 @@ impl<'src> Parser<'src> {
                             && self.tokens[j].kind == TokenKind::Punct(":".to_owned())
                         {
                             j += 1;
+                            // 类型注解扫描：遇结构性终止符立即停（`?`/`:`/
+                            // `,`/`)`/`]`/`}`/`;`/`=`）——否则三元表达式
+                            // `t ? (1) : async s => ...` 的 `:` 会让扫描
+                            // 一路吃到 else 分支的 `=>`，把 then 分支的
+                            // 括号误判成箭头形参表
                             while j < self.tokens.len()
-                                && !matches!(&self.tokens[j].kind, TokenKind::Punct(p) if p == "=>" || p == ";")
+                                && !matches!(
+                                    &self.tokens[j].kind,
+                                    TokenKind::Punct(p)
+                                        if matches!(p.as_str(), "=>" | ";" | "?" | ":" | "," | ")" | "]" | "}" | "=")
+                                )
                             {
                                 j += 1;
                             }
@@ -2503,13 +2688,23 @@ impl<'src> Parser<'src> {
                 let param_name = format!("__param_{}__", params.len());
                 params.push(param_name.clone());
                 let dline = self.cur_line();
-                prologue_stmts.push(Self::at(
-                    dline,
-                    Stmt::DestructureDecl {
-                        pattern,
-                        init: Expr::Ident(param_name),
-                    },
-                ));
+                // 解构形参默认值（`({allOwnKeys} = {}) => {}`——axios 的
+                // extend 工具函数即此形态）
+                let init = if self.match_punct("=") {
+                    let def = self.parse_expr();
+                    Expr::Conditional {
+                        cond: Box::new(Expr::Binary {
+                            op: "===".to_owned(),
+                            left: Box::new(Expr::Ident(param_name.clone())),
+                            right: Box::new(Expr::Undefined),
+                        }),
+                        then_expr: Box::new(def),
+                        else_expr: Box::new(Expr::Ident(param_name.clone())),
+                    }
+                } else {
+                    Expr::Ident(param_name)
+                };
+                prologue_stmts.push(Self::at(dline, Stmt::DestructureDecl { pattern, init }));
                 self.skip_type_annotation();
             } else if let TokenKind::Ident(p_name) = self.advance().kind {
                 params.push(p_name.clone());
@@ -2543,7 +2738,12 @@ impl<'src> Parser<'src> {
         let _ = self.expect_punct(")");
         self.skip_type_annotation();
         let _ = self.expect_punct("=>");
+        // 箭头函数体语境：`async () => { await x }` 体内 await 须被识别
+        //（此前未置 in_async，await 被当标识符 → 语法错误）
+        let outer_async = self.in_async;
+        self.in_async = is_async;
         let mut body = self.parse_arrow_body();
+        self.in_async = outer_async;
         // 参数 prologue（解构绑定 / 默认值）注入函数体首部。
         //
         // `parse_arrow_body` 对块体**已展平**为语句向量（不保留 Stmt::Block

@@ -382,6 +382,12 @@ impl LanguageRegistry {
         }
         check_unsupported_ts(src, path)?;
         let mut parser = Parser::new(src);
+        // ESM 模块顶层是**隐式 async 语境**（顶层 await / TLA 合法）——
+        // 置位 in_async 使顶层 `await expr` 被识别为 AwaitExpression 而非
+        // 标识符（node22 conformance 的 TLA 用例族）
+        if module_kind == ModuleKind::Esm {
+            parser.set_esm_top_level_async();
+        }
         let program = parser.parse_program();
         let errors = parser.take_errors();
         if !errors.is_empty() {

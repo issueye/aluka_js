@@ -2657,3 +2657,46 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets）、workspace 92 目标
   全 ok ✓、t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
   jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。
+
+## 104. M7.2 轮九十：现代 JS 语法能力补齐 10 项（真实 npm 包可加载）（20260914）
+
+- **背景**：回答「当前能否正常使用运行时」时**实测真实 npm 包**（lodash /
+  chalk / dayjs / axios），发现 **7 个包语法解析失败**——现代 JS 基础语法
+  缺失，严重阻塞真实代码运行。修复后失败 **7 → 1**。
+- **修复清单（言语/解析层）**：
+  1. **`async`/`await` 作标识符**：二者是上下文关键字（`var async = fn`、
+     `module.exports = async`、`function async(cb) {}`、`var a = x, async = y`）。
+     新增 `context_ident`/`advance_ident_like` 统一处理；`parse_unary` 的
+     await 运算符加 `in_async` 门控；**保留** async 语境下 `await` 不得作
+     绑定名的规范早错误（S7.6.1 负例族，回归后修复）；
+  2. **顶层 await（TLA）**：ESM 模块顶层是隐式 async 语境——
+     `set_esm_top_level_async` 由 `parse_module` 置位；
+  3. **箭头函数体的 async 语境**：`async () => { await x }` 体内 await
+     未识别（prologue 前未置 in_async）；
+  4. **类字段**（`field = 1` / `static s = 2` / `#p = 3` / `field;`）：
+     AST 增 `Stmt::Class.fields`；解析层收集（静态判定须在方法前缀消耗
+     `static` **之前**）；编译层实例字段注入构造器体（**super() 之后**）、
+     静态字段在类求值期赋值；
+  5. **私有成员**（`this.#p` 访问 / `#m() {}` 方法）：成员访问与类成员名
+     支持 `#` 前缀（VM 按普通属性存储，强私有校验未实现——登记为近似）；
+  6. **类方法 rest 参数**（`concat(...targets) {}`）：`ClassMethodDef` 增
+     `is_var_args` 并贯通编译；
+  7. **类/对象方法 async 与生成器修饰符**：`ClassMethodDef` 增 `is_async`；
+     对象字面量方法体解析前设置 in_generator/in_async（`{ async *gen(){ yield 1 } }`）；
+  8. **`extends` 点分表达式**（`class D extends ns.Base {}`）：改用
+     `parse_unary`（含成员链）；
+  9. **计算键取完整表达式**（`[Symbol.iterator]() {}`）：原只取首个 token
+     致落为 `"Symbol"`；
+  10. **`return` 逗号序列**（`return a && (b = 1), b;`）+ **`is_arrow_function`
+      类型注解扫描边界**（三元 `t ? (1) : async s => ...` 的 `:` 会让扫描
+      吃到 else 分支的 `=>` 误判）；
+  11. **解构形参默认值**（`function f({allOwnKeys = false} = {}) {}` 与箭头
+      同形态）——axios 的核心工具函数形态；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**；
+  真实包 **7 失败 → 1**（余 axios.cjs，已定位后续项）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets）、workspace
+  **92 目标全 ok** ✓、t262 1130/1154（0 失败）✓、conformance 差分 ✓
+  （TLA 用例恢复）、express e2e ✓、jitbench 3/3 ✓、GC 压力 0 失败 ✓；
+- **过程中修复的 3 处自引入回归**：async 语境 await 绑定名早错误丢失、
+  类方法 async 前缀误吞箭头实参、TLA 顶层 await 被门控（均已在门禁后
+  发现并修复）。
