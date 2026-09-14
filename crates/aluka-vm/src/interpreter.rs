@@ -2504,6 +2504,14 @@ impl Vm {
                         ks.extend(getters.keys().filter(|k| !non_enum.contains(*k)).cloned());
                         ks
                     }
+                    // 字符串原始值：自有可枚举面为数字索引（length 不可枚举）
+                    Some(HeapObject::String(text)) => {
+                        let units = text
+                            .chars()
+                            .map(|c| if c > '\u{FFFF}' { 2 } else { 1 })
+                            .sum::<usize>();
+                        (0..units).map(|i| i.to_string()).collect()
+                    }
                     _ => Vec::new(),
                 },
                 _ => Vec::new(),

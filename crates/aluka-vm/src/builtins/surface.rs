@@ -592,6 +592,18 @@ fn obj_has_own_prop(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 /// `Object.prototype.toString.call(v)`：`[object Tag]`。
 fn obj_to_string_tag(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
+    // 规范 Object.prototype.toString 第 4 步：先取 `@@toStringTag`
+    if this.is_object()
+        && let Some(sym) = Vm::well_known_cached("toStringTag")
+    {
+        let key = crate::symbol::mangled_key(sym);
+        if let Ok(v) = vm.get_property(this, &key)
+            && !v.is_undefined()
+        {
+            let text = vm.format_value(v);
+            return Ok(Value::Object(vm.alloc_string(format!("[object {text}]"))));
+        }
+    }
     let tag = match this.case() {
         ValueCase::Undefined => "Undefined",
         ValueCase::Null => "Null",

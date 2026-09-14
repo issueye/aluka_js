@@ -2616,3 +2616,44 @@ $ cargo test -p aluka-jit --release --test jitbench
   BigInt **0/24**；
 - **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets）、workspace 92 目标
   全 ok ✓、t262 1130/1154（0 失败）✓、ALUKA_GC_STRESS=8 0 失败 ✓。
+
+## 103. M7.2 轮八十九：对象/函数元数据修复 8 项（20260914）
+
+- **方法**：对象与函数边界差分探针（43 项）——从 16 处差异修到 **0 差异**。
+- **修复清单**：
+  1. **`Object.is` 对堆字符串按句柄比较**：`Object.is("a","a")` 应为 true
+     （规范 SameValue 对字符串按**内容**）。修复：对象对对象分支先做
+     `string_values_eq`；
+  2. **`Object.keys`/`getOwnPropertyNames`/`values`/`entries` 对字符串原始值
+     返回空集**：字符串的自有面是数字索引（+ 不可枚举的 `length`）——
+     `Object.keys("ab")` === `["0","1"]`。修复：`own_properties` 增 String
+     分支 + `keys` 分支（call_method_dispatch 路径）同步；`keys` 过滤
+     length（`getOwnPropertyNames` 保留）；
+  3. **`entries`/`values` 键序**：规范为**数组索引键数值升序前置、其余保持
+     插入序**（此前统一字典序）——`{b:1,1:'a',a:2}` 应为 `1/b/a`；
+  4. **`entries`/`values` 未跳过符号键**：符号键不属于字符串键枚举。修复：
+     `is_symbol_key` 过滤；
+  5. **`Object.prototype.toString` 忽略 `@@toStringTag`**：`o[Symbol.
+     toStringTag]="X"` 后应得 `"[object X]"`（规范第 4 步优先于内建标签）；
+  6. **`Object.assign` 拷贝 getter 函数而非取值**：规范 CopyDataProperties
+     值经 **Get** 取。修复（同时保留符号键拷贝）；
+  7. **`Object.defineProperty` 的 writable/configurable 缺省未生效**：
+     `{value:1}` 的 writable/configurable 应缺省 false——写入被拒、
+     描述符读取反映实际值。修复：`ordinary_define_property` 读标志并在
+     值写入**之后**登记 `non_writable`/`non_configurable`（顺序不可颠倒，
+     否则 defineProperty 自身失效）；`ordinary_property_descriptor`
+     数据分支按登记表报告；
+  8. **箭头函数有 `prototype`**：规范仅 `[[Construct]]` 函数有
+     （`(()=>{}).hasOwnProperty("prototype") === false`）。修复：`is_arrow`
+     经 FuncTemplate 传到 VM，`alloc_closure_with_upvalues` 对箭头函数跳过
+     `prototype` 建立。
+- **排查记录**：`Object.create` 第二参数（属性描述符表）的实现在真实包
+  （Express）下触发 `TypeError: Cannot read properties of undefined
+  (reading 'stack')`——该场景依赖 `defineProperty` 全路径的既有行为，
+  本次**主动回退该项**（其余 8 项已隔离验证不影响 Express，e2e 转绿）。
+  理想实现需重构描述符路径，登记为后续项。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**；差分电池
+  **15/15**、对象/函数差分 **0/43**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets）、workspace 92 目标
+  全 ok ✓、t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。

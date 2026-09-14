@@ -43,9 +43,18 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             vm.ordinary_property_descriptor(target, &key)
         }
         "getOwnPropertyNames" | "keys" => {
+            let is_keys = method == "keys";
+            let is_str = target.as_object().is_some_and(|r| {
+                matches!(
+                    vm.heap.get(r.0 as usize),
+                    Some(crate::heap::HeapObject::String(_))
+                )
+            });
             let items: Vec<Value> = vm
                 .own_properties(target)
                 .into_iter()
+                // `keys` 只列可枚举自有键：字符串包装的 length 不可枚举
+                .filter(|(k, _)| !(is_keys && is_str && k == "length"))
                 .map(|(k, _)| Value::Object(vm.alloc_string(k)))
                 .collect();
             Ok(Value::Object(vm.alloc_array(items)))
@@ -66,7 +75,9 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
         "assign" => {
             let out = target;
             for src in args.get(1..).unwrap_or(&[]) {
-                for (k, v) in vm.own_properties(*src) {
+                // 规范 CopyDataProperties：值经 **Get** 取（访问器 getter 在此调用）
+                for (k, _) in vm.own_properties(*src) {
+                    let v = vm.get_property(*src, &k)?;
                     vm.set_property(out, &k, v)?;
                 }
             }
@@ -83,6 +94,10 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                     } else {
                         x == y && (x.to_bits() == y.to_bits() || !(x == 0.0 && y == 0.0))
                     }
+                }
+                // 堆字符串按**内容**比较（Value 相等是句柄比较）
+                (ValueCase::Object(_), ValueCase::Object(_)) => {
+                    crate::ops::string_values_eq(&a, &b, &vm.heap) || a == b
                 }
                 _ => a == b || (matches!(a, Value::Undefined) && matches!(b, Value::Undefined)),
             };
@@ -157,8 +172,28 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             Ok(target)
         }
         "values" | "entries" => {
-            let mut items = vm.own_properties(target);
-            items.sort_by(|a, b| a.0.cmp(&b.0));
+            let is_string_target = target.as_object().is_some_and(|r| {
+                matches!(
+                    vm.heap.get(r.0 as usize),
+                    Some(crate::heap::HeapObject::String(_))
+                )
+            });
+            let mut items: Vec<(String, Value)> = vm
+                .own_properties(target)
+                .into_iter()
+                .filter(|(k, _)| {
+                    (!is_string_target || k != "length") && !crate::symbol::is_symbol_key(k)
+                })
+                .collect();
+            // 规范键序：数组索引键数值升序前置，其余保持插入序
+            let is_index = |k: &str| {
+                !k.is_empty() && k.chars().all(|c| c.is_ascii_digit()) && k.parse::<u32>().is_ok()
+            };
+            let (mut idx_items, str_items): (Vec<_>, Vec<_>) =
+                items.into_iter().partition(|(k, _)| is_index(k));
+            idx_items.sort_by_key(|(k, _)| k.parse::<u32>().unwrap_or(u32::MAX));
+            idx_items.extend(str_items);
+            items = idx_items;
             let out = match method.as_str() {
                 "values" => items.into_iter().map(|(_, v)| v).collect(),
                 _ => items

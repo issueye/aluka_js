@@ -1353,6 +1353,28 @@ impl Vm {
                 return self.globals.iter().map(|(k, v)| (k.clone(), *v)).collect();
             }
         }
+        // 字符串原始值：自有面为**数字索引**（每码元一项）与 `length`
+        //（`Object.keys("ab")` === ["0","1"]；此前返回空集）
+        if let Some(r) = obj.as_object() {
+            if let Some(HeapObject::String(s)) = self.heap.get(r.0 as usize) {
+                let text = s.clone();
+                let mut out: Vec<(String, Value)> = Vec::new();
+                let mut idx = 0usize;
+                for c in text.chars() {
+                    let w = if c > '\u{FFFF}' { 2 } else { 1 };
+                    out.push((
+                        idx.to_string(),
+                        Value::Object(self.alloc_string(c.to_string())),
+                    ));
+                    if w == 2 {
+                        out.push(((idx + 1).to_string(), Value::Undefined));
+                    }
+                    idx += w;
+                }
+                out.push(("length".to_owned(), Value::Number(idx as f64)));
+                return out;
+            }
+        }
         // Proxy 对象：ownKeys trap 列键、get trap 取值（规范 [[OwnPropertyKeys]]）
         if let Some(r) = obj.as_object() {
             if self.proxy_parts(r).is_some() {
@@ -1697,9 +1719,27 @@ impl Vm {
         let value = self.get_property(obj, key)?;
         let desc = self.alloc_ordinary();
         let _ = self.set_property(Value::Object(desc), "value", value);
-        let _ = self.set_property(Value::Object(desc), "writable", Value::Boolean(true));
+        // 标志位反映 defineProperty 登记（缺省 true 会让 `{value:1}` 的
+        // writable 恒 true，与规范缺省 false 不符）
+        let (w, c) = match obj.as_object() {
+            Some(r) => {
+                let idx = r.0 as usize;
+                (
+                    !self
+                        .non_writable
+                        .get(&idx)
+                        .is_some_and(|ks| ks.iter().any(|k| k == key)),
+                    !self
+                        .non_configurable
+                        .get(&idx)
+                        .is_some_and(|ks| ks.iter().any(|k| k == key)),
+                )
+            }
+            None => (true, true),
+        };
+        let _ = self.set_property(Value::Object(desc), "writable", Value::Boolean(w));
         let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(true));
-        let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
+        let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(c));
         Ok(Value::Object(desc))
     }
 
@@ -1724,6 +1764,15 @@ impl Vm {
                 non_enum.insert(key.to_owned());
             }
         };
+        // writable/configurable 缺省 false（规范 DefinePropertyOrThrow）：
+        // 写路径/删除路径据此拒绝；描述符读取亦反映（见
+        // ordinary_property_descriptor）
+        let writable = get_v(self, "writable")
+            .map(|v| self.truthy(v))
+            .unwrap_or(false);
+        let configurable = get_v(self, "configurable")
+            .map(|v| self.truthy(v))
+            .unwrap_or(false);
         let has_get = self.has_property(desc, "get") && {
             let g = get_v(self, "get")?;
             !matches!(g, Value::Undefined)
@@ -1804,7 +1853,23 @@ impl Vm {
                 }
             }
         }
-        self.set_property(obj, key, value)
+        // 先写入值，**再**登记（顺序不可颠倒：登记会让 set_property 拒绝写入）
+        self.set_property(obj, key, value)?;
+        if let Some(r) = obj.as_object() {
+            if !writable {
+                let e = self.non_writable.entry(r.0 as usize).or_default();
+                if !e.iter().any(|k| k == key) {
+                    e.push(key.to_owned());
+                }
+            }
+            if !configurable {
+                let e = self.non_configurable.entry(r.0 as usize).or_default();
+                if !e.iter().any(|k| k == key) {
+                    e.push(key.to_owned());
+                }
+            }
+        }
+        Ok(())
     }
 
     /// 内建构造器名 ↔ 实例堆变体判定（`instanceof` 兜底）。
