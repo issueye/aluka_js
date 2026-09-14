@@ -293,7 +293,15 @@ fn run_case(case: &Path, tmp: &Path, alukac: &str, aluvm: &str, node: Option<&st
     }
     let mut vm_cmd = Command::new(aluvm);
     vm_cmd.arg("run").arg(&bc);
-    let (vm_code, vm_out, timed_out) = run_with_timeout(&mut vm_cmd, CASE_WAIT);
+    // GC 压力模式（ALUKA_GC_STRESS）：每分配触发回收，eval 密集型用例
+    // （如 S7.4_A5 的 65536 次动态求值循环）耗时成倍增长——压力门禁验证
+    // 的是正确性而非性能，用例超时按压力倍率放宽
+    let wait = if std::env::var_os("ALUKA_GC_STRESS").is_some() {
+        CASE_WAIT * 4
+    } else {
+        CASE_WAIT
+    };
+    let (vm_code, vm_out, timed_out) = run_with_timeout(&mut vm_cmd, wait);
     if timed_out {
         return CaseResult {
             name,
@@ -515,11 +523,11 @@ fn test262_subset_conformance() {
         hand_failures.join("\n")
     );
     let m72_failures = failures.len() - hand_failures.len();
-    // 随分桶修复逐级上调：轮五十九后真实基线 1025 通过/42 失败（1024→1025），
-    // 下限取可承受的 963（1033 通过/34 失败 → 上限 966，留 3 余量）——类体生成器前缀闭环。
-    const M72_FLOOR: usize = 991;
+    // 失败清零：m72- 官方导入语料 1067 通过 / 0 失败（87 invalid 为 node 侧
+    // 预期相悖的无效用例，不计入口径）——门禁按 1000 例验收口径收紧为
+    // **零失败断言**（新增回退用例必须先修后合）
     assert!(
-        m72_failures <= 1000 - M72_FLOOR,
-        "test262 官方导入语料通过数低于基线下限 {M72_FLOOR}/1000（当前失败 {m72_failures}）"
+        m72_failures == 0,
+        "test262 官方导入语料出现回退失败 {m72_failures} 例（验收口径 0 失败）"
     );
 }

@@ -658,9 +658,24 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
             }
         }
-        Stmt::Break => {
+        Stmt::Break { label } => {
             let jmp = emit_jump(unit, Op::Jmp);
-            if let Some(scope) = unit.loop_stack.last_mut() {
+            // 目标层：无标签 → 栈顶；带标签 → 从顶向下首个同名循环
+            //（break 直接跳出该层循环，中间层的 break_jumps 不经过）
+            let target_rel = match &label {
+                Some(l) => unit
+                    .loop_stack
+                    .iter()
+                    .rev()
+                    .position(|s| s.label.as_ref() == Some(l)),
+                None => Some(0),
+            };
+            if let Some(rel) = target_rel {
+                let top = unit.loop_stack.len() - 1;
+                if let Some(scope) = unit.loop_stack.get_mut(top - rel) {
+                    scope.break_jumps.push(jmp);
+                }
+            } else if let Some(scope) = unit.loop_stack.last_mut() {
                 scope.break_jumps.push(jmp);
             }
         }
@@ -1389,8 +1404,20 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             let is_super = matches!(obj.as_ref(), Expr::Super);
             if is_super {
                 // `super.s = v`：SetSuperProp（栈：[home_proto][this][value]）
-                // 运行时沿原型链查 setter 以 this 调用，无 setter 则 this 定义
-                if let Some(&uv_idx) = unit.upvalue_map.get(HOME_OBJECT_SYM) {
+                // home 解析与 super 读/调用路径同源：类方法经
+                // __home_proto_{cid}__（symbol_map 优先，upvalue 次之），
+                // 对象字面量方法经 HOME_OBJECT_SYM——此前类方法缺该分支，
+                // home 恒 undefined → GetProto 为 null → 赋值静默丢失
+                if let Some(cid) = unit.class_id {
+                    let proto_name = format!("__home_proto_{cid}__");
+                    if let Some(&slot) = unit.symbol_map.get(&proto_name) {
+                        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                    } else if let Some(&uv_idx) = unit.upvalue_map.get(&proto_name) {
+                        unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                    } else {
+                        unit.code.push(Instr::new(Op::PushUndefined, 0));
+                    }
+                } else if let Some(&uv_idx) = unit.upvalue_map.get(HOME_OBJECT_SYM) {
                     unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
                 } else if let Some(&slot) = unit.symbol_map.get(HOME_OBJECT_SYM) {
                     unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
@@ -1723,7 +1750,7 @@ fn stmt_has_closure_capturing(s: &SpannedStmt, target_name: &str) -> bool {
         }
         Stmt::Return(Some(expr)) => expr_has_closure_capturing(expr, target_name),
         Stmt::Throw(expr) => expr_has_closure_capturing(expr, target_name),
-        Stmt::Return(None) | Stmt::Break | Stmt::Continue { .. } => false,
+        Stmt::Return(None) | Stmt::Break { .. } | Stmt::Continue { .. } => false,
         Stmt::Labeled { body, .. } => stmt_has_closure_capturing(body, target_name),
         Stmt::For {
             init,

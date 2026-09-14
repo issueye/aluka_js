@@ -1,7 +1,7 @@
-//! 黄金语料库（Golden Bytecode Corpus）106 条全指令覆盖率与解码集成测试。
+//! 黄金语料库（Golden Bytecode Corpus）109 条 ISA 活跃指令覆盖率与解码集成测试。
 //!
 //! 该测试读取由 Go 编译器收割的真实 .bc 缓存模块，
-//! 校验其格式合规性，并断言整个语料库对 106 条 ISA 字节码指令的 100% 全覆盖。
+//! 校验其格式合规性，并断言整个语料库对全部活跃 ISA 字节码指令的 100% 覆盖。
 
 use aluka_bytecode::{Instr, Op};
 use std::collections::HashSet;
@@ -167,7 +167,7 @@ fn test_golden_corpus_reaches_106_opcode_coverage() {
     }
 
     println!(
-        "Golden 语料测试统计: 扫描了 {} 个模块，共 {} 条指令，覆盖了 {}/106 种独立操作码",
+        "Golden 语料测试统计: 扫描了 {} 个模块，共 {} 条指令，覆盖了 {}/109 种独立操作码",
         module_count,
         total_instructions,
         covered_opcodes.len()
@@ -179,18 +179,35 @@ fn test_golden_corpus_reaches_106_opcode_coverage() {
         module_count
     );
 
-    for op in 0..=105u8 {
-        assert!(
-            covered_opcodes.contains(&op),
-            "操作码 {} ({:?}) 必须在 golden 语料中被至少覆盖一次！",
-            op,
-            Op::from_opcode(op)
-        );
-    }
+    // 遗留操作码：早期编译器产物格式（当前编译器不再发射；VM 保留执行
+    // 旧持久化产物）。语料以当前编译器重新生成后不再覆盖这 4 项。
+    const LEGACY_NOT_EMITTED: &[u8] = &[
+        61,  // SetPropTop
+        64,  // SetElemTop
+        80,  // TryExitJmp
+        100, // GetPropLocal
+    ];
+    // ISA 全集：109 条（0..=108，含 M7.2 新增 SET_PROTO_OBJ/REQUIRE_-
+    // OBJECT_COERCIBLE/SET_SUPER_PROP）
+    let isa: Vec<u8> = (0..=108u8).collect();
+    let missing: Vec<u8> = isa
+        .iter()
+        .copied()
+        .filter(|op| !covered_opcodes.contains(op) && !LEGACY_NOT_EMITTED.contains(op))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "缺失操作码: {:?}",
+        missing
+            .iter()
+            .map(|&op| format!("{} ({:?})", op, Op::from_opcode(op)))
+            .collect::<Vec<_>>()
+    );
 
+    // 覆盖目标 = ISA 全集（109）− 遗留不发射集
     assert_eq!(
         covered_opcodes.len(),
-        106,
-        "语料库必须达到 106/106 全指令覆盖！"
+        isa.len() - LEGACY_NOT_EMITTED.len(),
+        "语料库必须达到全活跃指令覆盖（ISA 全集 − 遗留集）！"
     );
 }

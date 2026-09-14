@@ -186,6 +186,16 @@ impl Vm {
         let gen_try_stack = std::mem::take(&mut self.try_stack);
         caller.restore(self);
 
+        // 上值 cell → 宿主槽回写（与 invoke_function 返回路径对称）：
+        // 生成器体内经 STORE_UPVALUE 写入的绑定（`var v; function* g(){ v = 1; }`
+        // ——v 经 upvalue 捕获）须对调用者可见；此前缺回写致调用者读到
+        // 声明时的旧值（undefined）
+        for (slot, uv) in &self.open_upvalues {
+            if let Some(loc) = self.locals.get_mut(*slot) {
+                *loc = *uv.0.borrow();
+            }
+        }
+
         let state = self.generators.get_mut(&key).expect("key 已确认存在");
         match outcome {
             Ok(ret) => {

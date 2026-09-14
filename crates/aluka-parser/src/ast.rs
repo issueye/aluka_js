@@ -315,8 +315,11 @@ pub enum Stmt {
         /// 循环体
         body: Box<SpannedStmt>,
     },
-    /// Break 语句
-    Break,
+    /// Break 语句（带可选标签——`break label;` 跳出同名标记循环）
+    Break {
+        /// 跳出的目标循环标签（`break label;`；裸 break 为 None）
+        label: Option<String>,
+    },
     /// Continue 语句
     /// continue 语句（label 为 `continue label;` 的目标标签）
     Continue {

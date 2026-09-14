@@ -608,6 +608,12 @@ impl Vm {
                     proto,
                 } => {
                     if key == "length" {
+                        // 超大 length（≥4e6 密集上限守卫）走普通属性路径存于
+                        // properties：读取优先采用覆盖值（S15.4.5.2_A3_T3——
+                        // `x.length = 4294967295` 后 `x.length` 须为原值）
+                        if let Some(v) = properties.get("length") {
+                            return Ok(*v);
+                        }
                         return Ok(Value::Number(elements.len() as f64));
                     }
                     if let Ok(i) = key.parse::<usize>() {
@@ -966,10 +972,15 @@ impl Vm {
                     // 4e6 上限与 new Array(len) 同口径（超限按普通属性
                     // 写入处理，避免 34GB 分配直接 abort）
                     if newlen <= 4_000_000 {
-                        if let Some(HeapObject::Array { elements, .. }) =
-                            self.heap.get_mut(r.0 as usize)
+                        if let Some(HeapObject::Array {
+                            elements,
+                            properties,
+                            ..
+                        }) = self.heap.get_mut(r.0 as usize)
                         {
                             elements.resize(newlen, Value::Undefined);
+                            // 规格化：正常回写清除超大 length 覆盖值
+                            properties.remove("length");
                         }
                         return Ok(());
                     }
@@ -1137,7 +1148,9 @@ impl Vm {
                             } else {
                                 properties.insert(key.to_owned(), val);
                             }
-                        } else if key != "length" {
+                        } else {
+                            // 非索引键含超大 length（≥4e6 上限守卫走普通
+                            // 属性路径的覆盖值——读取端优先采用）
                             properties.insert(key.to_owned(), val);
                         }
                     }

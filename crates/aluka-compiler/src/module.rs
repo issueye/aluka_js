@@ -241,7 +241,7 @@ pub(crate) fn collect_ident_uses(s: &SpannedStmt, uses: &mut Vec<String>) {
             collect_ident_uses_in_expr(right, uses);
             collect_ident_uses(body, uses);
         }
-        Stmt::Break | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Return(Some(expr)) => collect_ident_uses_in_expr(expr, uses),
         Stmt::Try {
             body,

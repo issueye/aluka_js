@@ -738,7 +738,18 @@ impl Vm {
         }
         let tmpl = self.module_functions[func_idx].clone();
         if tmpl.is_generator {
-            return Ok(self.make_generator(&tmpl, func_idx, this_val, args, upvalues));
+            let gen_val = self.make_generator(&tmpl, func_idx, this_val, args, upvalues);
+            // async 生成器：参数默认值在**调用时**同步求值（规范
+            // EvaluateAsyncGeneratorBody 的参数初始化先于生成器对象返回；
+            // `f(_ = thrower())` 的抛错在 f() 调用点同步传播）——创建后
+            // 立即驱动一次，执行停在解析器注入的边界 yield 标记（函数体
+            // 尚未开始），默认值抛错沿本次驱动同步上抛
+            if tmpl.is_async
+                && let Some(gen_ref) = gen_val.as_object()
+            {
+                self.drive_generator(gen_ref, None)?;
+            }
+            return Ok(gen_val);
         }
         // Tier 1 热点：达阈值且资格符合 → 直接执行机器码（无 OSR，函数入口切换）
         if self.jit_enabled {

@@ -6,3 +6,8 @@ const obj = {
 };
 obj[sym] = 5;
 console.log(obj[sym]);
+
+const base = { greet() { return "hi"; } };
+const derived = { __proto__: base, extra: 1 };
+console.log(derived.greet());
+console.log(derived.extra);

@@ -91,7 +91,7 @@ pub fn optimize_stmt(s: &mut SpannedStmt) {
             optimize_expr(right);
             optimize_stmt(body);
         }
-        Stmt::Break | Stmt::Continue { .. } => {}
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
         Stmt::Return(Some(expr)) => {
             optimize_expr(expr);
         }

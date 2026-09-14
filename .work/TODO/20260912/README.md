@@ -2033,3 +2033,52 @@ $ cargo test -p aluka-jit --release --test jitbench
   （默认参数为函数体 prologue，生成器惰性执行）、生成器内 yield 计算
   键 ×1（accessor-yield-expr）、asi torture 超时 ×1（S7.9_A2）、
   Array length 2³²−1 ×1（4e6 上限为已登记差异）。
+
+## 88. M7.2 轮七十四：生成器上值回写 / eval 作用域 cell 重定向 / async-gen 边界 yield / break 标签 / super 赋值 home——m72 语料失败清零（20260914）
+
+- **五桶修复（t262 1061 → 1067/1154，失败 6 → 0——m72- 官方导入语料
+  1000 例验收口径达成）**：
+  1. **生成器上值 cell→宿主槽回写**（隐式全局写入通道分裂根因）：
+     编译通道一致（内层函数与生成器同为 STORE_UPVALUE 捕获 main 槽
+     cell），差异在运行时——invoke_function/run_func 返回路径有
+     「恢复 open_upvalues 后 cell→locals 回写」循环，drive_generator 的
+     caller.restore 缺该循环 → 生成器体内赋值留在 cell、调用者读局部槽
+     恒旧值。补对称回写后生成器对顶层绑定的写入对调用者可见；
+  2. **eval 作用域 cell 重定向**（object-11.1.5-0-1/0-2，direct eval
+     转义闭包绑定共享）：call_eval 为局部面快照名建共享 cell（登记进
+     调用者帧 open_upvalues），append_module 重写模块内命中名的
+     LOAD/STORE_GLOBAL → LOAD/STORE_UPVALUE（每函数模板追加转发捕获，
+     嵌套闭包经 MakeClosure 继承链自动可达），eval main 以 cells 为
+     current_upvalues 执行——转义 getter/setter 的后续写入经 cell 对
+     调用者可见（run_func 返回回写 + STORE_LOCAL 槽→cell 双向同步）；
+     写回循环对重定向名跳过（cell 接管）；
+  3. **async 生成器默认参数同步求值**（async-generator-dflt-params-
+     abrupt）：解析器在参数 prologue 之后、函数体之前注入边界
+     `yield;` 标记；invoke_function 对 is_async 生成器创建后立即驱动
+     一次——默认值求值/抛错在调用点同步传播，函数体不启动（首个
+     next() 从体起点恢复）；
+  4. **break 标签**（asi-S7.9_A2）：AST `Break { label }` + 解析
+     （同行 Ident 才是标签，与 continue 同规）+ codegen 目标层解析
+     （从栈顶向下按名匹配 loop_stack，Jmp 入该层 break_jumps）——
+     `break label1;` 此前不支持致整个用例解析失败；
+  5. **Array 超大 length 覆盖值**（Array-S15.4.5.2_A3_T3）：
+     `x.length = 4294967295` 走普通属性路径后写入被 `key != "length"`
+     排除、读取恒 elements.len()——放开非索引写入并令 Array length
+     读取优先采用 properties 覆盖值（小 length 回写规格化时清除覆盖），
+     2³²−1 语义达成且无密集分配；
+- **配套**：golden 语料以当前编译器全量再生（旧产物含已不再发射的
+  遗留 opcode：SetPropTop/SetElemTop/TryExitJmp/GetPropLocal——覆盖
+  测试改为「109 条 ISA − 遗留集」口径并文档化）；golden 源码补
+  `__proto__:` 字面量 / 非展开计算成员调用 / super 属性赋值形态
+  （后者暴露并修复类方法 super 赋值 home 解析缺 __home_proto_{cid}__
+  分支——赋值此前静默丢失）；t262 runner 用例超时在 ALUKA_GC_STRESS
+  下放宽 4 倍（压力门禁验证正确性而非性能）；
+- **门禁口径升级**：M72_FLOOR 991 → **1000**，断言收紧为
+  `m72_failures == 0`（新增回退用例必须先修后合）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
+  t262 1067/1154（0 失败，87 invalid）✓、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8（cli+vm）0 失败 ✓；
+- 探针对齐：生成器写全局/闭包共享 cell、eval getter/setter 对读写、
+  async-gen 创建时默认值求值与抛错、super.flag 实例自有属性、
+  break label 跳出、2³²−1 length 读写与 2³² RangeError——全部与
+  Node 22 逐项一致。

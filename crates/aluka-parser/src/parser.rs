@@ -544,8 +544,20 @@ impl<'src> Parser<'src> {
         }
 
         if self.match_keyword("break") {
+            // 可选标签：`break label;`（与 continue 同规——同行 Ident 才是
+            // 标签；break 为受限产生式，换行后的 Ident 是下一语句）
+            let label = if let TokenKind::Ident(id) = self.peek().kind.clone() {
+                if !self.nl_before_current() {
+                    self.advance();
+                    Some(id)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             self.eat_semi();
-            return Self::at(line, Stmt::Break);
+            return Self::at(line, Stmt::Break { label });
         }
 
         if self.match_keyword("continue") {
@@ -1067,7 +1079,27 @@ impl<'src> Parser<'src> {
                 }
             }
         }
-        if !prologue_stmts.is_empty() {
+        // async 生成器边界标记：参数默认值求值完成后、函数体开始前注入
+        // `yield;`——创建时的一次驱动停在标记处（体未开始、默认值抛错
+        // 已同步传播）；首个 next() 从体起点恢复
+        if is_generator && is_async {
+            let marker_line = self.cur_line();
+            let marker = Self::at(
+                marker_line,
+                Stmt::Expr(Expr::Yield {
+                    value: None,
+                    delegate: false,
+                }),
+            );
+            if !prologue_stmts.is_empty() {
+                // 标记插在参数 prologue **之后**（默认值求值仍属调用时语义）
+                prologue_stmts.push(marker);
+                prologue_stmts.append(&mut body);
+                body = prologue_stmts;
+            } else {
+                body.insert(0, marker);
+            }
+        } else if !prologue_stmts.is_empty() {
             prologue_stmts.append(&mut body);
             body = prologue_stmts;
         }

@@ -16,7 +16,7 @@
 //! 间接求值与 `new Function` 强制在全局作用域执行，不注入局部。
 
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Upvalue, Value};
 use aluka_bytecode::BytecodeModule;
 
 /// 动态编译器 Hook：源码 → 字节码模块。
@@ -110,16 +110,55 @@ impl Vm {
     /// 追加动态模块进全局函数/类表（重写索引基址），返回其 main 函数索引。
     ///
     /// 与 `require` 的嵌套加载同型：append-only 保证已加载模块的索引不变。
+    ///
+    /// `scope_names` 非空时（直接求值）：把模块内所有 `LOAD_GLOBAL/
+    /// STORE_GLOBAL` 中命中快照名的指令**改写为 LOAD_UPVALUE/STORE_UPVALUE**
+    /// 并给每个函数模板追加转发捕获（is_local:false, index:i）——名字解析
+    /// 从全局表改道调用者帧的共享 cell，转义闭包（eval 返回后才执行的
+    /// getter/setter）对绑定的写入经 cell 对调用者可见（object-11.1.5
+    /// 访问器对族）。
     fn append_module(&mut self, module: &BytecodeModule) -> usize {
+        self.append_module_inner(module, &[])
+    }
+
+    fn append_module_inner(&mut self, module: &BytecodeModule, scope_names: &[String]) -> usize {
         let fn_base = self.module_functions.len() as u32;
         let class_base = self.module_classes.len() as u32;
         let mut funcs: Vec<aluka_bytecode::FuncTemplate> = module.functions.to_vec();
+        let redirect = !scope_names.is_empty();
         for f in funcs.iter_mut() {
+            let base = f.upvalues.len();
             for instr in f.code.iter_mut() {
                 match instr.op {
                     aluka_bytecode::Op::MakeClosure => instr.operand += fn_base,
                     aluka_bytecode::Op::MakeClass => instr.operand += class_base,
+                    aluka_bytecode::Op::LoadGlobal | aluka_bytecode::Op::StoreGlobal
+                        if redirect =>
+                    {
+                        let name = match f.constants.get(instr.operand as usize) {
+                            Some(aluka_bytecode::Constant::String(s)) => s.clone(),
+                            _ => continue,
+                        };
+                        let Some(i) = scope_names.iter().position(|n| n == &name) else {
+                            continue;
+                        };
+                        let uv_idx = base + i;
+                        instr.op = if instr.op == aluka_bytecode::Op::LoadGlobal {
+                            aluka_bytecode::Op::LoadUpvalue
+                        } else {
+                            aluka_bytecode::Op::StoreUpvalue
+                        };
+                        instr.operand = uv_idx as u32;
+                    }
                     _ => {}
+                }
+            }
+            if redirect {
+                for i in 0..scope_names.len() {
+                    f.upvalues.push(aluka_bytecode::UpvalueCapture {
+                        is_local: false,
+                        index: i as u32,
+                    });
                 }
             }
         }
@@ -244,8 +283,24 @@ impl Vm {
         for (_, name, _, local) in &scope {
             self.globals.insert(name.clone(), *local);
         }
+        // 局部面快照名 → 共享 cell 重定向（object-11.1.5 访问器对族）：
+        // eval 返回后仍存活的转义闭包（getter/setter）对这些名字的写入
+        // 经 cell 对调用者可见；cell 同时登记进调用者帧 open_upvalues，
+        // 由 run_func 返回路径的 cell→槽回写与 STORE_LOCAL 的槽→cell
+        // 同步维持双向一致
+        let scope_names: Vec<String> = scope.iter().map(|(_, n, _, _)| n.clone()).collect();
+        let mut scope_cells: Vec<crate::value::Upvalue> = Vec::new();
+        for (slot, _, _, local) in &scope {
+            let cell = self
+                .open_upvalues
+                .entry(*slot)
+                .or_insert_with(|| Upvalue(std::rc::Rc::new(std::cell::RefCell::new(*local))))
+                .clone();
+            scope_cells.push(cell);
+        }
         let module = self.compile_dynamic(&src)?;
-        let main_idx = self.append_module(&module);
+        let main_idx = self.append_module_inner(&module, &scope_names);
+        let saved_eval_upvalues = std::mem::replace(&mut self.current_upvalues, scope_cells);
         if std::env::var("ALUKA_EVAL_DEBUG").is_ok() {
             let ops: Vec<_> = self.module_functions[main_idx]
                 .code
@@ -255,9 +310,20 @@ impl Vm {
             eprintln!("[eval-dbg] src={src:?} ops={ops:?}");
         }
         let run_res = self.run_func(&self.module_functions[main_idx].clone());
+        self.current_upvalues = saved_eval_upvalues;
         // 写回 + 恢复（无论求值成败都必须执行，避免全局表被快照污染）
+        // 注意：走 cell 重定向的名字（scope_names）不在此写回——cell 与
+        // 调用者槽由 run_func 返回路径与 STORE_LOCAL 双向同步接管
+        let redirected: std::collections::HashSet<String> = scope_names.iter().cloned().collect();
         let writeback = |vm: &mut Vm| {
             for (slot, name, old_global, _) in &scope {
+                if redirected.contains(name) {
+                    // cell 重定向名：恢复全局表的注入前状态，槽值由 cell 同步
+                    if let Some(v) = old_global {
+                        vm.globals.insert(name.clone(), *v);
+                    }
+                    continue;
+                }
                 // 求值期间的赋值已落全局表：终值写回调用帧局部槽
                 if let Some(updated) = vm.globals.get(name).copied() {
                     if *slot < vm.locals.len() {
