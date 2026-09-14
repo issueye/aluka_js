@@ -70,6 +70,14 @@ impl Vm {
             }
         }
         let ctor_ref = self.alloc_closure_with_upvalues(ctor_func_idx, captured);
+        // 类名泄漏修复：构造器函数模板以合成名 `{Class}_constructor` 编译，
+        // 直接在 closure 上挂 `name` 自有属性 = 类名（规范 ClassDefinition-
+        // Evaluation 的第 6 步 SetFunctionName(F, className)；
+        // `class A {}` 的 `A.name === 'A'`）
+        if !class_tpl.name.is_empty() {
+            let nm = self.alloc_string(class_tpl.name.clone());
+            let _ = self.define_proto_method(Value::Object(ctor_ref), "name", Value::Object(nm));
+        }
         self.set_property(
             Value::Object(ctor_ref),
             "prototype",
@@ -81,19 +89,17 @@ impl Vm {
             Value::Object(ctor_ref),
         )?;
 
-        // 静态继承：ctor 的 proto 指向 super_ctor
-        if let Some(s_val) = super_ctor {
-            let actual_super_ctor = match self.get_property(s_val, "constructor").map(|v| v.case())
+        // 静态继承：ctor 的 [[Prototype]] = 父类构造器本身
+        //（`Object.getPrototypeOf(B) === A`，规范 ClassDefinitionEvaluation
+        // 第 5 步 MakeConstructor 后的 SetPrototypeOf(F, superclass)）。
+        // 此前经 `super_ctor.constructor` 间接取值——闭包的 constructor 沿
+        // 原型链解析到 **Function**（原型对象的 constructor 属性在
+        // alloc_closure_with_upvalues 中挂到 prototype 对象上，非函数自身），
+        // 致静态继承实测落到 Function，链式静态方法继承整体失效。
+        if let Some(s_ref) = super_ctor.and_then(|v| v.as_object()) {
+            if let Some(HeapObject::Closure { proto, .. }) = self.heap.get_mut(ctor_ref.0 as usize)
             {
-                Ok(ValueCase::Object(c)) => Some(c),
-                _ => s_val.as_object(),
-            };
-            if let Some(s_ref) = actual_super_ctor {
-                if let Some(HeapObject::Closure { proto, .. }) =
-                    self.heap.get_mut(ctor_ref.0 as usize)
-                {
-                    *proto = Some(s_ref);
-                }
+                *proto = Some(s_ref);
             }
         }
 

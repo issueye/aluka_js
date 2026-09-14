@@ -42,7 +42,7 @@ pub enum StackEffect {
     Variable,
 }
 
-/// 109 条完整 ISA 字节码操作码。
+/// 110 条完整 ISA 字节码操作码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum Op {
@@ -268,6 +268,10 @@ pub enum Op {
     /// 查 setter 以 this 调用，无 setter 时在 this 上定义数据属性
     /// (操作数: OperandConstIdx)
     SetSuperProp = 108,
+    /// `super.key` 读取：以当前 this 为 receiver 沿 [[HomeObject]].__proto__
+    /// 解析（访问器 getter 的 `this` 须为实例而非原型——规范
+    /// SuperProperty : super . IdentifierName 的 GetValue 用 actualThis）
+    GetSuperProp = 109,
 }
 
 impl Op {
@@ -390,6 +394,7 @@ impl Op {
             106 => Some(Op::SetProtoObj),
             107 => Some(Op::RequireObjectCoercible),
             108 => Some(Op::SetSuperProp),
+            109 => Some(Op::GetSuperProp),
             _ => None,
         }
     }
@@ -507,6 +512,7 @@ impl Op {
             Op::SetProtoObj => "SET_PROTO_OBJ",
             Op::RequireObjectCoercible => "REQUIRE_OBJECT_COERCIBLE",
             Op::SetSuperProp => "SET_SUPER_PROP",
+            Op::GetSuperProp => "GET_SUPER_PROP",
         }
     }
 
@@ -623,6 +629,7 @@ impl Op {
             Op::SetProtoObj => OperandKind::None,
             Op::RequireObjectCoercible => OperandKind::None,
             Op::SetSuperProp => OperandKind::ConstIdx,
+            Op::GetSuperProp => OperandKind::ConstIdx,
         }
     }
 
@@ -751,6 +758,8 @@ impl Op {
             Op::RequireObjectCoercible => 0,
             // 弹 value/this 两值（setter 调用无返回值）
             Op::SetSuperProp => -1,
+            // 弹 proto/this 两值，压回属性值 → 净 -1
+            Op::GetSuperProp => -1,
         }
     }
 
@@ -866,6 +875,7 @@ impl Op {
             Op::End => StackEffect::Fixed(0),
             // 弹 proto/obj 两值，压回 obj → 净 -1
             Op::SetProtoObj => StackEffect::Fixed(-1),
+            Op::GetSuperProp => StackEffect::Fixed(-1),
             Op::RequireObjectCoercible => StackEffect::Fixed(0),
             Op::SetSuperProp => StackEffect::Fixed(-1),
         }
@@ -985,6 +995,7 @@ impl Op {
             Op::EnumKeys => 1,
             Op::End => 0,
             Op::SetSuperProp => 0,
+            Op::GetSuperProp => 0,
         }
     }
 
@@ -1102,6 +1113,7 @@ impl Op {
             Op::RequireObjectCoercible => 0,
             // 弹 this 与 value 两值
             Op::SetSuperProp => 2,
+            Op::GetSuperProp => 2,
         }
     }
 
@@ -1218,6 +1230,7 @@ impl Op {
             Op::SetProtoObj => false,
             Op::RequireObjectCoercible => false,
             Op::SetSuperProp => false,
+            Op::GetSuperProp => false,
         }
     }
 
@@ -1334,6 +1347,7 @@ impl Op {
             Op::SetProtoObj => false,
             Op::RequireObjectCoercible => false,
             Op::SetSuperProp => false,
+            Op::GetSuperProp => false,
         }
     }
 
@@ -1450,6 +1464,7 @@ impl Op {
             Op::SetProtoObj => false,
             Op::RequireObjectCoercible => false,
             Op::SetSuperProp => false,
+            Op::GetSuperProp => false,
         }
     }
 }
@@ -1476,12 +1491,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opcodes_roundtrip_all_109_variants() {
-        for b in 0..=108u8 {
+    fn opcodes_roundtrip_all_110_variants() {
+        for b in 0..=109u8 {
             let op = Op::from_opcode(b).expect("必须成功解码有效操作码");
             assert_eq!(op.opcode(), b);
         }
-        assert_eq!(Op::from_opcode(109), None);
+        assert_eq!(Op::from_opcode(110), None);
         assert_eq!(Op::from_opcode(255), None);
     }
 

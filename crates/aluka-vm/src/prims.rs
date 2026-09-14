@@ -588,6 +588,42 @@ impl Vm {
                 };
                 Some(Ok(Value::Object(self.alloc_array(parts))))
             }
+            // `String.prototype.matchAll(re)`:返回全部匹配（含捕获组/index/input）
+            // 的迭代器。规范要求正则带 g 标志（否则 TypeError）。
+            "matchAll" => {
+                let Some(re) = args.first().copied() else {
+                    return Some(Err(
+                        self.type_error("String.prototype.matchAll requires a regexp")
+                    ));
+                };
+                let flags = match re.case() {
+                    ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                        Some(HeapObject::RegExp { flags, .. }) => flags.clone(),
+                        _ => String::new(),
+                    },
+                    _ => String::new(),
+                };
+                if !flags.contains('g') {
+                    return Some(Err(self.type_error(
+                        "String.prototype.matchAll called with a non-global RegExp argument",
+                    )));
+                }
+                let mut items = Vec::new();
+                let mut guard = 0usize;
+                loop {
+                    guard += 1;
+                    if guard > 1_000_000 {
+                        break;
+                    }
+                    match self.regexp_exec(re, text) {
+                        Ok(Some(m)) => items.push(m),
+                        Ok(None) => break,
+                        Err(e) => return Some(Err(e)),
+                    }
+                }
+                let arr = self.alloc_array(items);
+                Some(Ok(self.alloc_array_iterator_kind(arr, "values")))
+            }
             "match" | "search" => {
                 // RegExp 实参：match（g 收集全部全匹配/首个结果）与 search（下标）
                 if let Some(re) = args.first().copied() {

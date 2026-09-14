@@ -1172,12 +1172,18 @@ impl Vm {
         let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(false));
         let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(true));
         self.ordinary_define_property(obj, key, Value::Object(desc))?;
-        // 登记不可枚举键（for-in 过滤依据）
-        if let ValueCase::Object(r) = obj.case()
-            && let Some(crate::heap::HeapObject::Ordinary { non_enum, .. }) =
-                self.heap.get_mut(r.0 as usize)
-        {
-            non_enum.insert(key.to_owned());
+        // 登记不可枚举键（for-in / Object.keys 过滤依据——普通对象与
+        // 函数对象各有 non_enum 表）
+        if let ValueCase::Object(r) = obj.case() {
+            match self.heap.get_mut(r.0 as usize) {
+                Some(crate::heap::HeapObject::Ordinary { non_enum, .. }) => {
+                    non_enum.insert(key.to_owned());
+                }
+                Some(crate::heap::HeapObject::Closure { non_enum, .. }) => {
+                    non_enum.insert(key.to_owned());
+                }
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -4857,6 +4863,18 @@ impl Vm {
                         }
                     }
                     self.stack.push(Value::Boolean(deleted));
+                }
+                Op::GetSuperProp => {
+                    // `super.key`：沿 [[HomeObject]].__proto__ 解析，但访问器
+                    // getter 以**当前 this** 为 receiver 调用（规范
+                    // SuperProperty GetValue 传 actualThis）——此前 super
+                    // 读取直接对原型 GetProp，`get doubled(){return this.x*2}`
+                    // 中的 this 为原型而非实例（NaN）。
+                    let key = constant_string(&constants, instr.operand as usize);
+                    let this_val = self.pop()?;
+                    let home_proto = self.pop()?;
+                    let v = self.get_super_property(home_proto, this_val, &key)?;
+                    self.stack.push(v);
                 }
                 Op::SetSuperProp => {
                     // `super.key = value`：沿 [[HomeObject]].__proto__ 查

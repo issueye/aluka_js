@@ -2309,3 +2309,43 @@ $ cargo test -p aluka-jit --release --test jitbench
 - 差分电池一致数：2/15 → **8/15**（余下差异已定位：解构赋值
   `[p,q]=[q,p]` 未实现、`matchAll` 仅占位、私有静态字段 `#p` 解析、
   promise 探针的微任务细粒度顺序等，登记为后续项）。
+
+## 94. M7.2 轮八十：差分续修——matchAll / 类静态继承 / 构造器名 / super getter（含 ISA 第 110 条操作码）（20260914）
+
+- **四项引擎修复**（差分电池一致数 9/15 → **10/15**）：
+  1. **`String.prototype.matchAll`**：此前仅占位（`typeof` 为 function 但调用
+     报 "not a function"）。实现：非全局正则 → TypeError（规范），否则循环
+     exec 收集全部匹配（含捕获组/index/input）并包为数组迭代器；
+  2. **类静态继承整体失效**（`class B extends A` 的 `Object.getPrototypeOf(B)
+     === A` 为 false、静态方法 `B.make()` 不可继承）：类装配期经
+     `super_ctor.constructor` 间接取父类构造器——而闭包的 `constructor`
+     沿原型链解析到 **Function**（原型对象的 constructor 属性挂在 prototype
+     对象上而非函数自身），致 `ctor.__proto__` 被设为 Function。修复：直接
+     用 `super_ctor` 本身（规范 SetPrototypeOf(F, superclass)）；
+  3. **类构造器 `name` 泄漏合成名**：`class A {}` 的 `A.name` 原为
+     `"A_constructor"`（编译器生成的模板名）。修复：类装配期为闭包挂
+     不可枚举 `name` 自有属性 = 类名（规范 SetFunctionName），并补齐
+     `own_value` 的 Closure 分支（此前只认 Ordinary，致自有属性不可见）
+     与 `define_proto_method` 的 Closure non_enum 登记；
+  4. **`super.key` 的 this 绑定**（新增 ISA 操作码 **GET_SUPER_PROP = 109**）：
+     super 属性读取原先直接对原型 GetProp，访问器 getter 的 `this` 为
+     **原型**而非实例（`get doubled(){return this.x*2}` → NaN）。修复：
+     - ISA：`GetSuperProp` 全九表登记（from_opcode/name/operand_kind/
+       stack_effect/detailed/pops/pushes/is_pure_push/is_jump ×3）；
+     - VM：新增 `get_super_property(proto, this_val, key)` 沿原型链解析、
+       命中 getter 以 this_val 调用；
+     - codegen：super 成员读取发 `[home_proto][this]` + GetSuperProp；
+     - ISA 全集 109 → **110 条**（文档与 `opcodes_roundtrip_all_110_variants`
+       同步）；
+  5. **函数对象默认原型**：`Object.getPrototypeOf(function f(){})` 返回 None
+     而非 Function.prototype——`get_prototype` 对 Closure 的 `proto: None`
+     补回退 `fn_proto`（类静态继承显式设置者优先）。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**；差分电池
+  **10/15 完全一致**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
+  t262 1130/1154（0 失败）✓、ISA 覆盖测试（110 条活跃指令）✓、
+  conformance 差分 ✓、express e2e ✓、jitbench 3/3 ✓、
+  ALUKA_GC_STRESS=8 0 失败 ✓；
+- **剩余差分项（已定位，登记后续）**：解构赋值 `[p,q]=[q,p]`（需
+  AST+解析+编译三层新增）、类私有字段 `#x`（需词法新 token）、promise
+  探针的微任务细粒度顺序（`sync-end` 与 async IIFE await 的交错点）。

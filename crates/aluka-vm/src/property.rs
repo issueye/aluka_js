@@ -19,6 +19,11 @@ impl Vm {
     /// 快速模式：隐藏类命中 → O(1) 槽位直读；字典模式：HashMap 查值。
     /// 删除集先于存储判定（删除不改 shape）。
     pub(crate) fn own_value(&self, idx: usize, key: &str) -> Option<Value> {
+        // 函数对象（Closure）：自有属性存于 properties 表（类构造器的
+        // `name`、静态字段、`Object.defineProperty` 挂载面）
+        if let Some(HeapObject::Closure { properties, .. }) = self.heap.get(idx) {
+            return properties.get(key).copied();
+        }
         let HeapObject::Ordinary { props, deleted, .. } = self.heap.get(idx)? else {
             return None;
         };
@@ -550,7 +555,12 @@ impl Vm {
                     return Ok(Value::Number(num_params as f64));
                 }
             } else if key == "name" {
-                if let Some(name) = func_idx
+                // 自有 `name` 优先（类构造器由类装配期 SetFunctionName 显式挂
+                // 类名——模板名是合成形态 `A_constructor`，不得泄漏）；无自有时
+                // 回退模板名（普通函数声明的 `f.name === 'f'`）
+                if self.has_own_slot(r.0 as usize, "name") {
+                    // 落常规属性读取（下方通用路径）
+                } else if let Some(name) = func_idx
                     .and_then(|idx| self.module_functions.get(idx))
                     .map(|t| t.name.clone())
                 {
@@ -1383,6 +1393,54 @@ impl Vm {
         Vec::new()
     }
 
+    /// `super.key` 属性读取：沿 `proto` 链解析，命中访问器 getter 时以
+    /// `this_val` 为 receiver 调用（数据属性直接返回值）。
+    pub(crate) fn get_super_property(
+        &mut self,
+        proto: Value,
+        this_val: Value,
+        key: &str,
+    ) -> Result<Value, VmError> {
+        let mut cur = proto;
+        for _ in 0..64 {
+            let ValueCase::Object(r) = cur.case() else {
+                return Ok(Value::Undefined);
+            };
+            match self.heap.get(r.0 as usize) {
+                Some(HeapObject::Ordinary {
+                    getters, proto: p, ..
+                }) => {
+                    if let Some(g) = getters.get(key).copied() {
+                        return self.invoke_accessor(g, this_val, &[]);
+                    }
+                    if let Some(v) = self.own_value(r.0 as usize, key) {
+                        return Ok(v);
+                    }
+                    cur = match p {
+                        Some(x) => Value::Object(*x),
+                        None => return Ok(Value::Undefined),
+                    };
+                }
+                Some(HeapObject::Closure {
+                    getters, proto: p, ..
+                }) => {
+                    if let Some(g) = getters.get(key).copied() {
+                        return self.invoke_accessor(g, this_val, &[]);
+                    }
+                    if let Some(v) = self.own_value(r.0 as usize, key) {
+                        return Ok(v);
+                    }
+                    cur = match p {
+                        Some(x) => Value::Object(*x),
+                        None => return Ok(Value::Undefined),
+                    };
+                }
+                _ => return Ok(self.get_property(cur, key).unwrap_or(Value::Undefined)),
+            }
+        }
+        Ok(Value::Undefined)
+    }
+
     /// `for-in` 键枚举（对齐 Go 版 `EnumerateForInKeys`）。
     ///
     /// 沿原型链（≤128 层）收集自有键并去重（先到先得，自有键优先）；
@@ -1475,7 +1533,11 @@ impl Vm {
             if let Some(obj) = self.heap.get(idx) {
                 match obj {
                     HeapObject::Ordinary { proto, .. } => *proto,
-                    HeapObject::Closure { proto, .. } => *proto,
+                    // 函数对象：显式 proto（类静态继承 `class B extends A`
+                    // 设为 A）优先，未设置时回退 Function.prototype
+                    //（`Object.getPrototypeOf(function f(){}) ===
+                    // Function.prototype`）
+                    HeapObject::Closure { proto, .. } => proto.or(self.fn_proto),
                     HeapObject::Array { proto, .. } => *proto,
                     // 原生构造器自身的 [[Prototype]] 恒为 Function.prototype
                     //（Function 自身亦然；此前返回 None 致

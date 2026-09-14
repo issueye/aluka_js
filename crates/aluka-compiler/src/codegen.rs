@@ -1373,6 +1373,31 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
         }
         Expr::Member { obj, prop } => {
             if matches!(obj.as_ref(), Expr::Super) {
+                // `super.x`：发 GetSuperProp（栈：[home_proto][this] → 值），
+                // 访问器 getter 以当前 this 为 receiver（见 Op::GetSuperProp）
+                let p_idx = add_constant(unit, Constant::String(prop.clone()));
+                if let Some(cid) = unit.class_id {
+                    let proto_name = format!("__home_proto_{cid}__");
+                    if let Some(&slot) = unit.symbol_map.get(&proto_name) {
+                        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                    } else if let Some(&uv_idx) = unit.upvalue_map.get(&proto_name) {
+                        unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                    } else {
+                        unit.code.push(Instr::new(Op::PushUndefined, 0));
+                    }
+                } else if unit.upvalue_map.contains_key(HOME_OBJECT_SYM) {
+                    let uv_idx = unit.upvalue_map[HOME_OBJECT_SYM];
+                    unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+                } else if let Some(&slot) = unit.symbol_map.get(HOME_OBJECT_SYM) {
+                    unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+                } else {
+                    unit.code.push(Instr::new(Op::PushUndefined, 0));
+                }
+                unit.code.push(Instr::new(Op::LoadLocal, 0));
+                unit.code.push(Instr::new(Op::GetSuperProp, p_idx));
+                return;
+            }
+            if matches!(obj.as_ref(), Expr::Super) {
                 if let Some(cid) = unit.class_id {
                     let proto_name = format!("__home_proto_{cid}__");
                     if let Some(&slot) = unit.symbol_map.get(&proto_name) {

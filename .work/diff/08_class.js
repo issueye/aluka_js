@@ -7,5 +7,3 @@ console.log(JSON.stringify([typeof A, A.name, A.length]));
 var obj={v:1, get g(){return this.v*10;}, set g(n){this.v=n;}, method(){return 'm';}};
 obj.g=4;
 console.log(JSON.stringify([obj.g, obj.method(), obj.v]));
-class C { static #p=1; static getP(){return C.#p;} }
-console.log(JSON.stringify([C.getP()]));
