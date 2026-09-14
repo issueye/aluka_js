@@ -747,6 +747,44 @@ impl<'src> Parser<'src> {
         Self::at(line, Stmt::Expr(expr))
     }
 
+    /// 试探解构赋值目标：`[`/`{` 起，先向前扫描找配对闭合符并确认其后紧跟
+    /// `=`；命中则以 `parse_var_pattern` 解析模式并返回（游标停在 `=` 前）。
+    fn try_parse_destructure_assign_target(&mut self) -> Option<VarPattern> {
+        let save = self.pos;
+        let open = if self.check_punct("[") { "[" } else { "{" };
+        let close = if open == "[" { "]" } else { "}" };
+        let mut depth = 0i32;
+        let mut i = self.pos;
+        let mut found = None;
+        while i < self.tokens.len() {
+            if let TokenKind::Punct(p) = &self.tokens[i].kind {
+                if p == open {
+                    depth += 1;
+                } else if p == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        found = Some(i);
+                        break;
+                    }
+                }
+            }
+            i += 1;
+        }
+        let end = found?;
+        // 闭合符之后须紧跟 `=`（排除 `==`/`=>`）
+        let next = self.tokens.get(end + 1)?;
+        if !next.is_punct("=") {
+            return None;
+        }
+        let pat = self.parse_var_pattern();
+        if self.match_punct("=") {
+            Some(pat)
+        } else {
+            self.pos = save;
+            None
+        }
+    }
+
     fn parse_var_pattern(&mut self) -> VarPattern {
         if self.match_punct("[") {
             let mut elements = Vec::new();
@@ -1310,6 +1348,20 @@ impl<'src> Parser<'src> {
                 None
             };
             return Expr::Yield { value, delegate };
+        }
+
+        // 解构赋值（`[a,b] = v` / `({x} = v)`）：`[`/`{` 开头时先向前扫描
+        // 匹配到对应的 `]`/`}` 之后是否跟 `=`——是则按模式解析（目标写回既有
+        // 绑定），否则回退常规字面量解析。语句首的 `{` 已被 parse_stmt 的块
+        // 分支消化，此处只可能是表达式位置的模式。
+        if (self.check_punct("[") || self.check_punct("{"))
+            && let Some(pat) = self.try_parse_destructure_assign_target()
+        {
+            let val = self.parse_assignment();
+            return Expr::DestructureAssign {
+                pattern: pat,
+                init: Box::new(val),
+            };
         }
 
         let expr = self.parse_conditional();

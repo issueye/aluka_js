@@ -29,6 +29,82 @@ pub fn compile(program: &Program) -> CompiledUnit {
     unit
 }
 
+/// 解构**赋值**的绑定：逐项读取右侧值后写回既有绑定（与
+/// `compile_bind_pattern` 的差异是目标解析——未知名落全局而非新建局部）。
+fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut CompiledUnit) {
+    match pattern {
+        VarPattern::Ident(name) => {
+            if !name.is_empty() {
+                unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
+                push_store_by_name(name, unit);
+            }
+        }
+        VarPattern::Array(elements) => {
+            for (i, elem) in elements.iter().enumerate() {
+                if elem.is_hole || elem.name.is_empty() {
+                    continue;
+                }
+                if elem.is_rest {
+                    unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
+                    unit.code.push(Instr::new(Op::PushInt, i as u32));
+                    let slice_idx = add_constant(unit, Constant::String("slice".to_owned()));
+                    let operand = (1u32 << 16) | (slice_idx & 0xFFFF);
+                    unit.code.push(Instr::new(Op::CallMethod, operand));
+                    push_store_by_name(&elem.name, unit);
+                } else {
+                    unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
+                    unit.code.push(Instr::new(Op::PushInt, i as u32));
+                    unit.code.push(Instr::new(Op::GetElem, 0));
+                    if let Some(ref def_expr) = elem.default_value {
+                        let jmp_idx = emit_jump(unit, Op::JmpNullishKeep);
+                        compile_expr(def_expr, unit);
+                        let end_idx = unit.code.len();
+                        backpatch_jump(unit, jmp_idx, end_idx);
+                    }
+                    push_store_by_name(&elem.name, unit);
+                }
+            }
+        }
+        VarPattern::Object(props) => {
+            for prop in props {
+                unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
+                let name_idx = add_constant(unit, Constant::String(prop.key.clone()));
+                unit.code.push(Instr::new(Op::GetProp, name_idx));
+                if let Some(ref def_expr) = prop.default_value {
+                    let jmp_idx = emit_jump(unit, Op::JmpNullishKeep);
+                    compile_expr(def_expr, unit);
+                    let end_idx = unit.code.len();
+                    backpatch_jump(unit, jmp_idx, end_idx);
+                }
+                match &prop.value {
+                    VarPattern::Ident(n) => push_store_by_name(n, unit),
+                    nested => {
+                        let slot = unit.locals;
+                        unit.locals += 1;
+                        unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                        compile_bind_pattern_assign(nested, slot, unit);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 按名写回：局部槽 → 上值 → 全局（与 `Expr::Assign` 的三级解析一致）。
+fn push_store_by_name(name: &str, unit: &mut CompiledUnit) {
+    if let Some(&slot) = unit.symbol_map.get(name) {
+        unit.code.push(Instr::new(Op::Dup, 0));
+        unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+    } else if let Some(&uv) = unit.upvalue_map.get(name) {
+        unit.code.push(Instr::new(Op::Dup, 0));
+        unit.code.push(Instr::new(Op::StoreUpvalue, uv as u32));
+    } else {
+        let idx = add_constant(unit, Constant::String(name.to_owned()));
+        unit.code.push(Instr::new(Op::Dup, 0));
+        unit.code.push(Instr::new(Op::StoreGlobal, idx));
+    }
+}
+
 fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut CompiledUnit) {
     match pattern {
         VarPattern::Ident(name) => {
@@ -999,6 +1075,20 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
         }
         Expr::Undefined => {
             unit.code.push(Instr::new(Op::PushUndefined, 0));
+        }
+        Expr::DestructureAssign { pattern, init } => {
+            // `[a, b] = arr` / `({x} = obj)`：模式写入**既有绑定/属性**。
+            // 实现：物化右侧 → 复用 compile_bind_pattern 生成逐项读取，
+            // 但每项经 compile_assign_target 写回（局部槽/上值/全局/成员）。
+            compile_expr(init, unit);
+            let tmp_slot = unit.locals;
+            unit.locals += 1;
+            unit.code.push(Instr::new(Op::StoreLocal, tmp_slot as u32));
+            unit.code.push(Instr::new(Op::LoadLocal, tmp_slot as u32));
+            unit.code.push(Instr::new(Op::RequireObjectCoercible, 0));
+            unit.code.push(Instr::new(Op::Pop, 0));
+            compile_bind_pattern_assign(pattern, tmp_slot, unit);
+            unit.code.push(Instr::new(Op::LoadLocal, tmp_slot as u32));
         }
         Expr::Seq(exprs) => {
             // 逗号序列：逐项求值、非末项弹栈，完成值为最后一项

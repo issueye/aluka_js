@@ -16,6 +16,14 @@ pub enum Expr {
     Null,
     /// 未定义字面量
     Undefined,
+    /// 解构赋值（`[a, b] = arr` / `({x} = obj)`）：目标为模式而非新建绑定
+    /// ——与 DestructureDecl 的区别在于写入既有绑定/属性而非声明新变量
+    DestructureAssign {
+        /// 解构模式（目标）
+        pattern: VarPattern,
+        /// 右侧表达式（Box 断开递归——模式内可含默认值表达式）
+        init: Box<Expr>,
+    },
     /// 逗号序列表达式：`(a, b, c)` 逐项求值，完成值为最后一项
     ///（括号分组内 `(0, eval)` 间接调用惯用法依赖此形态）
     Seq(Vec<Expr>),

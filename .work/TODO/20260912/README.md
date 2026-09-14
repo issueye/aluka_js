@@ -2349,3 +2349,34 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **剩余差分项（已定位，登记后续）**：解构赋值 `[p,q]=[q,p]`（需
   AST+解析+编译三层新增）、类私有字段 `#x`（需词法新 token）、promise
   探针的微任务细粒度顺序（`sync-end` 与 async IIFE await 的交错点）。
+
+## 95. M7.2 轮八十一：解构赋值（[a,b]=[b,a] / ({x}=o) / rest / 默认值）（20260914）
+
+- **缺陷**：`[p,q] = [q,p]`、`({x} = o)` 等**解构赋值**语句完全未实现——
+  parser 把语句首 `[` 当作数组字面量解析，随后遇 `=` 报
+  "预期标点 ']'" SyntaxError（差分电池 07_destructuring 的核心差异项，
+  亦为真实代码高频形态：交换、批量赋值、对象属性提取）。
+- **实现（AST + 解析 + 编译三层）**：
+  1. **AST**：新增 `Expr::DestructureAssign { pattern: VarPattern,
+     init: Box<Expr> }`（复用既有 `VarPattern`，与 `DestructureDecl`
+     的区别是**写入既有绑定/属性**而非声明新变量）；
+  2. **解析**：`parse_assignment` 前置试探 `try_parse_destructure_assign_target`
+     —— `[`/`{` 开头时向前扫描配对闭合符并确认其后紧跟 `=`（排除 `==`
+     /`=>`），命中则按 `parse_var_pattern` 建模式并消耗 `=`；未命中回退
+     常规字面量解析（游标复原）；
+  3. **编译**：`compile_bind_pattern_assign`（逐项读取右侧后经
+     `push_store_by_name` 写回：局部槽 → 上值 → 全局三级解析，与
+     `Expr::Assign` 完全同源）+ 对象模式支持嵌套模式（物化到临时槽后递归）；
+     洞与 rest 的源索引语义与声明路径一致（复用轮七十九的 `is_hole`）；
+- **验证**（差分探针逐项对齐 Node 22）：
+  - `[a,b]=[b,a]` → 交换正确；
+  - `({x} = {x:9})` → 对象解构赋值；
+  - `[p,q,...rest] = [1,2,3,4]` → rest 收集；
+  - `[u=5,v=6] = [undefined,10]` → 默认值；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+  差分电池一致数 **10/15 → 11/15**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- **已知未覆盖形态**：成员表达式作解构目标（`[m.k] = [7]`，需模式的
+  成员目标支持）——登记为后续项。
