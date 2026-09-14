@@ -1,0 +1,10 @@
+var u=new Uint8Array([1,2,3,255]);
+console.log(JSON.stringify([u.length, u.byteLength, u[0], u[3], u.BYTES_PER_ELEMENT]));
+console.log(JSON.stringify([[...u], u.slice(1), Array.from(u)]));
+var f32=new Float32Array([1.5,2.5]);
+console.log(JSON.stringify([[...f32], f32.byteLength, f32.BYTES_PER_ELEMENT]));
+var buf=new ArrayBuffer(8); var dv=new DataView(buf);
+dv.setInt32(0, 1000);
+console.log(JSON.stringify([dv.getInt32(0), buf.byteLength]));
+console.log(JSON.stringify([new Uint8Array([3,1,2]).sort(), u.subarray(1,3).length]));
+console.log(JSON.stringify([u.map(x=>x*2).join(','), u.filter(x=>x>2).length]));

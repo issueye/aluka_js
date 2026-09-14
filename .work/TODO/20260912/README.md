@@ -2254,3 +2254,58 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **余量 24 例 invalid 构成**：cross-realm 14 例（`$262.createRealm` 宿主
   API 缺失，需多 realm 隔离）、script 语义 5 例（本模型差异）、
   Sputnik/引擎特定 5 例。
+
+## 93. M7.2 轮七十九：差分测试驱动的 10 类引擎缺陷（含 await 恒让出、箭头解构参数、super() 内建父类）（20260914）
+
+- **方法**：建立**差分探针电池**（`.work/diff/`，15 组覆盖数组/字符串/对象/
+  数字/JSON/正则/解构/类/错误/迭代器/Promise/Proxy/类型化数组/符号/模板），
+  逐组比对 aluka 与 Node 22 输出——一次暴露 13 组差异、定位 10 类真实缺陷。
+- **修复（按影响面排序）**：
+  1. **`await` 恒让出**（影响所有 async 代码）：Await 原先对**已兑现**
+     promise 走同步快路径直接压栈，await 退化为同步取值——
+     `(async()=>{console.log('A'); console.log('B', await 1)})(); console.log('C')`
+     输出 A/B/C（规范 A/C/B）。修复：一律经 `VmError::Awaited` 挂起通道；
+     原始值目标先包 `Promise.resolve(v)`；**已兑现目标立即排队恢复**
+     （invoke_function 挂起路径与 resume_async_frame 再挂起路径**双处对称**
+     补齐——否则链式 `await f(); await g();` 第二次挂起后永不续跑，
+     fs-promises e2e 即因此失败）；
+  2. **箭头函数解构/默认参数**：`parse_arrow_body` 对块体**已展平**为语句
+     向量、表达式体为 `vec![Return(expr)]`，而 prologue 注入按
+     `body.last_mut()` 匹配 `Stmt::Block` 的写法两者都不命中——解构绑定
+     与默认值**从未注入**（`([u,v])=>u+v` / `({a})=>a` 全部 ReferenceError）。
+     修复：直接前插语句向量首部；
+  3. **内建构造器的 `super(...)`**：`do_construct_this` 对 NativeCtor 直接
+     返回未初始化的 this → `class E extends Error { constructor(m){super(m)} }`
+     的 message/name 完全丢失。修复：委托 `do_construct` 取父类初始化结果，
+     合并子类原型与 this 既有自有属性后返回；
+  4. **`ArrayPatternElem` 缺洞表示**：parser 对 `[a,,b]` 的 `,` 静默
+     `continue`（不产生元素），致 `[a,,b]=[1,2,undefined,4,5]` 的 b 取到
+     索引 2 而非 3、rest 起始偏移同样错位。修复：新增 `is_hole` 字段，
+     洞占源索引、codegen 跳过绑定但偏移正确；
+  5. **类型化数组方法面未接线**：`typed_array_method`（slice/subarray/map/
+     filter/set/copyWithin/keys/values/entries/... 均已实现）**从未接入
+     CALL_METHOD 分派链**，全部返回 undefined。修复：接入（并在 JSON 序列化
+     补 TypedArray → 普通对象分支，`JSON.stringify(new Uint8Array([1,2]))`
+     === `'{"0":1,"1":2}'`）；
+  6. **`Math.<m>` 经间接调用**：Math 方法未注册分派表（走 CALL_METHOD 硬
+     编码），`Reflect.apply(Math.max, null, [1,2])` / `Math.max.call(...)`
+     报 "is not a function"。修复：invoke_callable 按名前缀单源求值；
+  7. **`parseInt` 前缀语义**：`parseInt("0x1f")` 与 `parseInt("0x1f", 16)`
+     均错误（"0" 后遇 'x' 即停 → 0）。修复：radix 0/NaN 与 radix 16 两种
+     情形都剥离 `0x`/`0X` 前缀；
+  8. **`String.raw`**：未实现（模板标签高频）。修复：新增静态方法（按 raw
+     数组逐段拼接并在替换位插入实参）；
+  9. **`String.prototype.localeCompare`**：未实现。修复：按码元序返回
+     -1/0/1（ASCII 区间与 Node ICU 一致）；
+  10. **类型化数组实例 `BYTES_PER_ELEMENT`**：仅构造器静态面有。修复：
+      实例合成属性补齐；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（较修复前
+  通过数不变——这批缺陷不在 m72 语料覆盖内，但**影响真实代码正确性**，
+  由差分电池独立发现）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**
+  （含曾因 await 半修复而失败的 fs-promises e2e 2 例，链式续跑修复后转绿）、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- 差分电池一致数：2/15 → **8/15**（余下差异已定位：解构赋值
+  `[p,q]=[q,p]` 未实现、`matchAll` 仅占位、私有静态字段 `#p` 解析、
+  promise 探针的微任务细粒度顺序等，登记为后续项）。

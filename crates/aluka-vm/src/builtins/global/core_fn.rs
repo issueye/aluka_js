@@ -66,11 +66,21 @@ pub(crate) fn global_parse_int(vm: &mut Vm, args: &[Value]) -> Result<Value, VmE
         .unwrap_or_default();
     let radix = args.get(1).map(|v| to_number(*v)).unwrap_or(0.0);
     let t = text.trim_start();
+    // 规范 parseInt(string, radix)：
+    // - radix 为 0/未给/NaN → 按前缀判定（`0x`/`0X` → 16，否则 10）；
+    // - radix 为 16 → 前缀**同样**允许并被剥离（`parseInt("0x1f",16)===31`）；
+    // - 其余 radix → 不剥离前缀。
+    // 此前仅在 radix==0 分支剥离前缀且未回写 radix，致 `parseInt("0x1f")`
+    // 与显式 16 两种调用都错误（"0" 后遇 'x' 即停 → 0）
     let (t, radix) = if radix == 0.0 || radix.is_nan() {
-        if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-            (hex, 16.0)
-        } else {
-            (t, 10.0)
+        match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            Some(hex) => (hex, 16.0),
+            None => (t, 10.0),
+        }
+    } else if radix == 16.0 {
+        match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            Some(hex) => (hex, 16.0),
+            None => (t, 16.0),
         }
     } else {
         (t, radix)

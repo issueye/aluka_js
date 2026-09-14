@@ -46,6 +46,12 @@ thread_local! {
 /// 知名符号名单（Node 22 全集）。
 pub(crate) const WELL_KNOWN_NAMES: &[&str] = &[
     "asyncIterator",
+    // 显式资源管理（Explicit Resource Management）：
+    // `Symbol.dispose` / `Symbol.asyncDispose`（Node 22 已内建；
+    // 二者经 Symbol.for 注册为 "nodejs.dispose"/"nodejs.asyncDispose"，
+    // 故 keyFor 返回该 key）
+    "dispose",
+    "asyncDispose",
     "hasInstance",
     "isConcatSpreadable",
     "iterator",

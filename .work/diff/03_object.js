@@ -1,0 +1,11 @@
+var o={a:1,b:2};
+console.log(JSON.stringify([Object.keys(o), Object.values(o), Object.entries(o)]));
+console.log(JSON.stringify([Object.assign({},o,{c:3}), {...o, d:4}]));
+console.log(JSON.stringify([Object.fromEntries([['x',1]]), Object.getOwnPropertyNames(o)]));
+console.log(JSON.stringify([Object.is(1,1), Object.is(NaN,NaN), Object.is(0,-0)]));
+var proto={p:1}; var child=Object.create(proto); child.c=2;
+console.log(JSON.stringify([Object.keys(child), 'p' in child, child.p, child.hasOwnProperty('p')]));
+var fro=Object.freeze({z:1});
+console.log(JSON.stringify([Object.isFrozen(fro), Object.isExtensible(fro), Object.getOwnPropertyDescriptor(o,'a').writable]));
+var d=Object.getOwnPropertyDescriptor({get g(){return 7;}},'g');
+console.log(JSON.stringify([typeof d.get, d.set===undefined, d.enumerable]));

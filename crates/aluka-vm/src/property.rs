@@ -838,6 +838,11 @@ impl Vm {
                     "byteLength" => Some(Value::Number((length * kind.elem_size()) as f64)),
                     "byteOffset" => Some(Value::Number(byte_offset as f64)),
                     "buffer" => Some(Value::Object(buffer)),
+                    // 规范：类型化数组**实例**亦暴露 BYTES_PER_ELEMENT
+                    //（经 TypedArray 原型链，值为元素字节宽——此前仅构造器
+                    // 静态面有，`new Uint8Array([1]).BYTES_PER_ELEMENT`
+                    // 返回 undefined）
+                    "BYTES_PER_ELEMENT" => Some(Value::Number(kind.elem_size() as f64)),
                     _ => None,
                 };
                 if let Some(v) = synthesized {

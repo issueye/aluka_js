@@ -603,7 +603,7 @@ impl Vm {
     }
 
     /// TypedArray 原型方法实现（`ta` 为接收者句柄）。
-    fn typed_array_method(
+    pub(crate) fn typed_array_method(
         &mut self,
         ta: ObjectRef,
         method: &str,

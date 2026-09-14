@@ -751,9 +751,17 @@ impl<'src> Parser<'src> {
         if self.match_punct("[") {
             let mut elements = Vec::new();
             while !self.check_punct("]") && self.peek().kind != TokenKind::Eof {
-                // 空元素位（`[a,, b]`）：跳过后继续（无绑定）
+                // 空元素位（`[a,, b]`）：**产生洞元素**并占一个源索引。
+                // 此前直接 continue 不记录，致 `[a,,b]=[1,2,undefined,4,5]`
+                // 的 b 取到索引 2（应为 3）；洞与 rest 的起始偏移同样错位。
                 if self.check_punct(",") {
                     self.advance();
+                    elements.push(ArrayPatternElem {
+                        name: String::new(),
+                        is_rest: false,
+                        default_value: None,
+                        is_hole: true,
+                    });
                     continue;
                 }
                 if self.match_punct("...") {
@@ -785,6 +793,7 @@ impl<'src> Parser<'src> {
                         name,
                         is_rest: true,
                         default_value,
+                        is_hole: false,
                     });
                     break;
                 } else if self.check_punct("[") || self.check_punct("{") {
@@ -809,6 +818,7 @@ impl<'src> Parser<'src> {
                         name: nested_name,
                         is_rest: false,
                         default_value,
+                        is_hole: false,
                     });
                 } else if let TokenKind::Ident(id) = self.advance().kind {
                     let default_value = if self.match_punct("=") {
@@ -820,6 +830,7 @@ impl<'src> Parser<'src> {
                         name: id,
                         is_rest: false,
                         default_value,
+                        is_hole: false,
                     });
                 }
                 if !self.match_punct(",") {
@@ -2481,17 +2492,18 @@ impl<'src> Parser<'src> {
         self.skip_type_annotation();
         let _ = self.expect_punct("=>");
         let mut body = self.parse_arrow_body();
-        // prologue 注入到块体首部（表达式体的默认参罕见，未覆盖）
+        // 参数 prologue（解构绑定 / 默认值）注入函数体首部。
+        //
+        // `parse_arrow_body` 对块体**已展平**为语句向量（不保留 Stmt::Block
+        // 包装）、表达式体为 `vec![Stmt::Return(expr)]`——此前按
+        // `body.last_mut()` 匹配 `Stmt::Block` 的写法两者都不命中，
+        // prologue 从未注入，致箭头函数解构参数/默认参数全部失效
+        //（`([u,v])=>u+v` → ReferenceError: u is not defined）。
+        // 直接前插到向量首部即对两种体型均正确。
         if !prologue_stmts.is_empty() {
-            if let Some(SpannedStmt {
-                stmt: Stmt::Block(stmts),
-                ..
-            }) = body.last_mut()
-            {
-                let mut all = prologue_stmts;
-                all.append(stmts);
-                *stmts = all;
-            }
+            let mut all = prologue_stmts;
+            all.append(&mut body);
+            body = all;
         }
         Expr::Function(FunctionDef {
             name: String::new(),

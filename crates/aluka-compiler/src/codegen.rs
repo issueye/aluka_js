@@ -46,7 +46,12 @@ fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut Compil
             }
         }
         VarPattern::Array(elements) => {
+            // 源索引 = 元素位置（洞亦占位）——rest 的起始偏移必须用源索引，
+            // 否则 `[a,,b,...r]` 的 r 从错误下标切片
             for (i, elem) in elements.iter().enumerate() {
+                if elem.is_hole {
+                    continue;
+                }
                 if elem.name.is_empty() {
                     continue;
                 }

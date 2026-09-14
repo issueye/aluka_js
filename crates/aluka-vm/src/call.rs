@@ -307,6 +307,16 @@ impl Vm {
             }
             let handler = match self.heap.get(r.0 as usize) {
                 Some(HeapObject::NativeFn { name, .. }) => {
+                    // `Math.<m>`：Math 方法未注册到分派表（走 CALL_METHOD
+                    // 硬编码单源求值），故经 invoke_callable 的间接调用
+                    //（`Reflect.apply(Math.max, null, [1,2])` /
+                    // `Math.max.call(...)`）此前报 "is not a function"。
+                    // 此处按前缀名直接求值，与 CALL_METHOD 同源。
+                    if let Some(m) = name.strip_prefix("Math.") {
+                        crate::builtins::set_current_receiver(this_val);
+                        crate::builtins::set_pending_callee(callee);
+                        return Ok(crate::interpreter::math_method(m, args));
+                    }
                     crate::builtins::set_pending_native_name(name);
                     self.builtin_registry.lookup(name)
                 }
@@ -667,6 +677,38 @@ impl Vm {
         if let Some(fi) = f_idx {
             return self.invoke_function(fi, this_val, args, uvs);
         }
+        // 内建构造器的 `super(...)`（`class E extends Error { constructor(m)
+        // { super(m); } }`）：NativeCtor 无可执行字节码，此前直接返回未初始化
+        // 的 this → 父类构造语义（message/name）完全丢失。
+        // 复用 `new Error(m)` 的构造路径取得父类初始化结果，再把**子类原型**
+        // 与 this 的既有自有属性（在 super() 之前由派生构造器写入的）合并到
+        // 返回实例上——规范 [[Construct]] 返回父类实例、派生构造器继续以
+        // 该实例为 this（子类原型由 NewTarget 决定，实例化时已注入）。
+        if let Some(r) = callee.as_object() {
+            if matches!(
+                self.heap.get(r.0 as usize),
+                Some(HeapObject::NativeCtor { .. })
+            ) {
+                let built = self.do_construct(callee, args)?;
+                if let Some(br) = built.as_object() {
+                    // 保留派生构造器已建立的 this 原型（子类原型），并把
+                    // 父类构造写入的自有属性（message 等）复制过去
+                    if let Some(tr) = this_val.as_object() {
+                        let proto = match self.heap.get(tr.0 as usize) {
+                            Some(HeapObject::Ordinary { proto, .. }) => *proto,
+                            _ => None,
+                        };
+                        self.set_prototype_of(built, proto);
+                        let entries = self.own_entries(br.0 as usize);
+                        for (k, v) in entries {
+                            let _ = self.set_property(Value::Object(tr), &k, v);
+                        }
+                        return Ok(Value::Object(tr));
+                    }
+                }
+                return Ok(built);
+            }
+        }
         Ok(this_val)
     }
 
@@ -836,17 +878,36 @@ impl Vm {
                 self.locals = saved_frame.locals;
                 self.current_upvalues = saved_frame.upvalues;
                 self.open_upvalues = saved_frame.open_upvalues.into_iter().collect();
+                // 上值 cell → 宿主槽回写（与正常返回路径对称）：async 函数
+                // **挂起前**已执行的语句对外层绑定的写入（`async function f()
+                // { v = true; await p; }` 中的 v 经 STORE_UPVALUE）须对调用者
+                // 立即可见——async 体在首个 await 前是**同步执行**的
+                for (slot, uv) in &self.open_upvalues {
+                    if let Some(loc) = self.locals.get_mut(*slot) {
+                        *loc = *uv.0.borrow();
+                    }
+                }
                 self.try_stack = saved_frame.try_stack;
                 let p_obj = self.alloc_pending_promise();
-                self.promise_resumes.insert(
-                    awaited_promise.index() as u32,
-                    crate::builtins::PendingResume {
-                        frame,
-                        func_idx,
-                        promise: p_obj,
-                        awaited: *awaited_promise,
-                    },
+                // 目标已兑现（await 一个 settled promise）：不会再收到 fulfill
+                // 事件，须**立即**排队恢复任务（否则帧永不续跑）
+                let already_settled = matches!(
+                    self.heap.get(awaited_promise.index()),
+                    Some(HeapObject::Promise { pending: false, .. })
                 );
+                let resume = crate::builtins::PendingResume {
+                    frame,
+                    func_idx,
+                    promise: p_obj,
+                    awaited: *awaited_promise,
+                };
+                if already_settled {
+                    self.microtask_queue
+                        .push_back(crate::builtins::Job::ResumeFrame(resume));
+                } else {
+                    self.promise_resumes
+                        .insert(awaited_promise.index() as u32, resume);
+                }
                 return Ok(Value::Object(p_obj));
             }
         }

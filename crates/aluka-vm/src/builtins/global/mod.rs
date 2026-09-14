@@ -151,6 +151,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "fromCharCode",
             string_fns::string_from_char_code as BuiltinHandler,
         ),
+        ("raw", string_fns::string_raw as BuiltinHandler),
         (
             "fromCodePoint",
             string_fns::string_from_code_point as BuiltinHandler,

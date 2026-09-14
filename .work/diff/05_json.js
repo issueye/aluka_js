@@ -1,0 +1,10 @@
+var o={a:1,b:[1,2],c:{d:null},e:"x"};
+console.log(JSON.stringify(o));
+console.log(JSON.stringify(o,null,1).length);
+console.log(JSON.stringify([undefined,function(){},Symbol()]));
+console.log(JSON.stringify({u:undefined,f:function(){}}));
+console.log(JSON.stringify(o,['a','b']));
+console.log(JSON.stringify({a:1},function(k,v){return typeof v==='number'?v*2:v;}));
+console.log(JSON.stringify(JSON.parse('{"a":[1,{"b":2}]}')));
+console.log(JSON.stringify([JSON.parse('1e3'), JSON.parse('"x"'), JSON.parse('null')]));
+console.log(JSON.stringify([JSON.stringify("\\u00e9"), JSON.stringify(1.5), JSON.stringify(true)]));

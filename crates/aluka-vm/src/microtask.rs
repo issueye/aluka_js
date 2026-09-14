@@ -131,22 +131,32 @@ impl Vm {
             }
             Err(VmError::Awaited(promise)) => {
                 // 再次挂起：登记新恢复帧（完成时兑现本 async 的 promise）
-                self.promise_resumes.insert(
-                    promise.index() as u32,
-                    crate::builtins::PendingResume {
-                        frame: crate::generator::SuspendedFrame {
-                            pc: self.yield_pc,
-                            locals: gen_locals,
-                            stack: gen_stack,
-                            upvalues: gen_upvalues,
-                            open_upvalues: gen_open_upvalues,
-                            try_stack: gen_try_stack,
-                        },
-                        func_idx: frame.func_idx,
-                        promise: frame.promise,
-                        awaited: promise,
+                let resume = crate::builtins::PendingResume {
+                    frame: crate::generator::SuspendedFrame {
+                        pc: self.yield_pc,
+                        locals: gen_locals,
+                        stack: gen_stack,
+                        upvalues: gen_upvalues,
+                        open_upvalues: gen_open_upvalues,
+                        try_stack: gen_try_stack,
                     },
+                    func_idx: frame.func_idx,
+                    promise: frame.promise,
+                    awaited: promise,
+                };
+                // 与 invoke_function 挂起路径对称：目标已兑现时不会再有
+                // fulfill 事件，须立即排队恢复（否则链式 await ——
+                // `await f(); await g();` ——第二次挂起后永不续跑）
+                let already_settled = matches!(
+                    self.heap.get(promise.index()),
+                    Some(HeapObject::Promise { pending: false, .. })
                 );
+                if already_settled {
+                    self.microtask_queue
+                        .push_back(crate::builtins::Job::ResumeFrame(resume));
+                } else {
+                    self.promise_resumes.insert(promise.index() as u32, resume);
+                }
             }
             Err(VmError::Thrown(exc)) => {
                 // async 函数体内未捕获异常：其 promise 以该异常拒绝（JS 语义，

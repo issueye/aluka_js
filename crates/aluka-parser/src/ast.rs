@@ -480,6 +480,8 @@ pub struct ArrayPatternElem {
     pub is_rest: bool,
     /// 缺省默认值表达式（可选）
     pub default_value: Option<Expr>,
+    /// 是否为跳过位（数组 elision：`[a,,b]` 中间的空位不消费源元素）
+    pub is_hole: bool,
 }
 
 /// 对象解构属性项

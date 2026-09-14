@@ -2237,6 +2237,18 @@ impl Vm {
             let _ = self.set_property(Value::Object(obj), "rawJSON", Value::Object(raw));
             let _ = self.set_property(Value::Object(obj), "_isRawJSON", Value::Boolean(true));
             Ok(Value::Object(obj))
+        } else if let Some(ta_ref) = receiver
+            .as_object()
+            .filter(|r| self.is_typed_array(Value::Object(*r)))
+        {
+            // 类型化数组方法面（slice/subarray/map/filter/set/copyWithin/
+            // keys/values/entries/join/indexOf/... —— typed_array_method
+            // 已实现但此前**从未接线**于此分派链，致 `u.slice(1)` 等全部
+            // 返回 undefined）
+            match self.typed_array_method(ta_ref, method_name, args) {
+                Ok(v) => Ok(v),
+                Err(e) => Err(e),
+            }
         } else if self.is_string_value(receiver) {
             // 字符串原型方法：trim/indexOf/slice 等在链上直接求值
             let text = match &receiver.case() {
@@ -5199,38 +5211,47 @@ impl Vm {
                     return Err(VmError::Yielded(produced));
                 }
                 Op::Await => {
-                    // await 是让出点：Node 语义下先把已排队的微任务跑完
+                    // 规范 Await：**恒**让出到微任务队列（即使目标 promise
+                    // 已兑现）——`(async()=>{ console.log('A');
+                    // console.log('B', await 1); })(); console.log('C')`
+                    // 的输出顺序为 A/C/B。此前对已兑现 promise 走同步快路径
+                    // 直接压栈，await 退化为同步取値，致 async 函数在首个
+                    // await 处不让出（微任务顺序整体错位）。
+                    // 本 VM 的 async 帧恢复经 `VmError::Awaited` + 微任务队列
+                    // （resume 时才注入值），故已兑现与未兑现一律走挂起通道。
                     self.drain_microtasks()?;
                     let awaited = self.pop()?;
-                    let resolved = match awaited.case() {
-                        ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
-                            Some(HeapObject::Promise {
-                                pending: false,
-                                value,
-                                is_rejected,
-                                ..
-                            }) => {
-                                if *is_rejected {
-                                    // await 已拒绝的 promise：以拒绝原因在当前帧抛出
-                                    // （帧内 try/catch 经正常异常路径接住）
-                                    return Err(VmError::Thrown(*value));
-                                }
-                                Some(*value)
-                            }
-                            Some(HeapObject::Promise { pending: true, .. }) => {
-                                // 真异步挂起：记录恢复点并以 Awaited 信号上抛，
-                                // 由 async 驱动层捕获后挂起整帧（M2 事件循环模型）
-                                self.yield_pc = pc + 1;
-                                return Err(VmError::Awaited(r));
-                            }
-                            _ => Some(awaited),
-                        },
-                        _ => Some(awaited),
-                    };
-                    match resolved {
-                        Some(v) => self.stack.push(v),
-                        None => return Err(VmError::UnimplementedOpcode(instr.op)),
+                    // 已拒绝的 promise：以拒绝原因在当前帧抛出（帧内 try/catch
+                    // 经正常异常路径接住），不进入挂起通道
+                    if let Some(r) = awaited.as_object()
+                        && let Some(HeapObject::Promise {
+                            pending: false,
+                            value,
+                            is_rejected: true,
+                            ..
+                        }) = self.heap.get(r.0 as usize)
+                    {
+                        return Err(VmError::Thrown(*value));
                     }
+                    // 其余目标一律挂起（已兑现 promise 与原始值按规范亦让出）：
+                    // 原始值先包 Promise.resolve(v)，恢复时注入原値
+                    let target = match awaited.as_object() {
+                        Some(r)
+                            if matches!(
+                                self.heap.get(r.0 as usize),
+                                Some(HeapObject::Promise { .. })
+                            ) =>
+                        {
+                            r
+                        }
+                        _ => {
+                            let p = self.alloc_pending_promise();
+                            self.fulfill_promise(p, awaited)?;
+                            p
+                        }
+                    };
+                    self.yield_pc = pc + 1;
+                    return Err(VmError::Awaited(target));
                 }
                 Op::GetIterator | Op::GetAsyncIterator => {
                     let val = self.pop()?;
@@ -5342,7 +5363,7 @@ fn constant_string(constants: &std::rc::Rc<Vec<Constant>>, idx: usize) -> Cow<'_
 }
 
 /// `Math.<method>(...)` 求值（单参数表 + 多参数 max/min/hypot/pow）。
-fn math_method(method: &str, args: &[Value]) -> Value {
+pub(crate) fn math_method(method: &str, args: &[Value]) -> Value {
     let nums: Vec<f64> = args.iter().map(|v| to_number(*v)).collect();
     let value = match method {
         "abs" => nums.first().map(|n| n.abs()).unwrap_or(f64::NAN),

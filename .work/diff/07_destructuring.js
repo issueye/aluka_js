@@ -1,0 +1,13 @@
+var [a,,b=5,...rest]=[1,2,undefined,4,5];
+console.log(JSON.stringify([a,b,rest]));
+var {x,y=9,z:{w}={w:3}}={x:1,z:{}};
+console.log(JSON.stringify([x,y,w]));
+var [p,q]=[1,2]; [p,q]=[q,p];
+console.log(JSON.stringify([p,q]));
+console.log(JSON.stringify([...[1,2],...new Set([3,4])]));
+var f=({a,b})=>a+b;
+console.log(JSON.stringify([f({a:1,b:2}), [[1,2],[3,4]].map(([u,v])=>u+v)]));
+var {m=1,n:{o=2}={}}={};
+console.log(JSON.stringify([m,o]));
+var nums=[1,2,3];
+console.log(JSON.stringify([Math.max(...nums), {...{a:1},...{b:2}}]));

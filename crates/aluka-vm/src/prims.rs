@@ -160,6 +160,18 @@ impl Vm {
                     Some(HeapObject::Ordinary { .. } | HeapObject::Map { .. }) => {
                         Kind::Obj(self.own_entries(r.0 as usize))
                     }
+                    // 类型化数组：按**普通对象**序列化（索引键 → 元素值；
+                    // `JSON.stringify(new Uint8Array([1,2]))` === '{"0":1,"1":2}'）
+                    // ——此前落 Kind::Other → 输出 null
+                    Some(HeapObject::TypedArray { .. }) => {
+                        let vals = self.ta_to_values(r)?;
+                        Kind::Obj(
+                            vals.into_iter()
+                                .enumerate()
+                                .map(|(i, v)| (i.to_string(), v))
+                                .collect(),
+                        )
+                    }
                     _ => Kind::Other,
                 };
                 match kind {
@@ -298,6 +310,18 @@ impl Vm {
             // 返回字符串自身（String.prototype.toString/valueOf 规范即
             // ThisStringValue；此前未列致 CALL_METHOD 报 "is not a function"）
             "toString" | "valueOf" => ret_str!(text.to_string()),
+            // `String.prototype.localeCompare(that)`：本地化比较。本实现
+            // 按码元序近似（Node 默认 ICU 排序在 ASCII 区间与码元序一致）；
+            // 返回 -1/0/1（实现定义的负/零/正值，用例普遍按符号断言）
+            "localeCompare" => {
+                let that = arg_str(self, args, 0);
+                let ord = text.cmp(&that);
+                Some(Ok(Number(match ord {
+                    std::cmp::Ordering::Less => -1.0,
+                    std::cmp::Ordering::Equal => 0.0,
+                    std::cmp::Ordering::Greater => 1.0,
+                })))
+            }
             "isWellFormed" => Some(Ok(Value::Boolean(true))),
             "toWellFormed" => ret_str!(text.to_string()),
             "trim" => ret_str!(text.trim().to_string()),

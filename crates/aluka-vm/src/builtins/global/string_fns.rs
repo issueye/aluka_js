@@ -2,6 +2,37 @@
 
 use crate::interpreter::{Vm, VmError};
 use crate::value::Value;
+use crate::value::ValueCase;
+
+/// `String.raw(template, ...substitutions)`：按模板对象的 **raw** 字面量
+/// 拼接（`raw` 属性与 cooked 同长；替换位按序插入并在末尾补足剩余段）。
+pub(crate) fn string_raw(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(tmpl) = args.first().copied() else {
+        return Err(vm.type_error("String.raw requires a template object"));
+    };
+    let Some(tr) = tmpl.as_object() else {
+        return Err(vm.type_error("String.raw requires a template object"));
+    };
+    let raw = vm.get_property(Value::Object(tr), "raw")?;
+    let Some(rr) = raw.as_object() else {
+        return Err(vm.type_error("String.raw template object has no raw array"));
+    };
+    let len = match vm.get_property(Value::Object(rr), "length")?.case() {
+        ValueCase::Number(n) => n.max(0.0) as usize,
+        _ => 0,
+    };
+    let mut out = String::new();
+    for i in 0..len {
+        let seg = vm.get_property(Value::Object(rr), &i.to_string())?;
+        out.push_str(&vm.format_value(seg));
+        if i + 1 < len
+            && let Some(sub) = args.get(i + 1)
+        {
+            out.push_str(&vm.format_value(*sub));
+        }
+    }
+    Ok(Value::Object(vm.alloc_string(out)))
+}
 
 pub(crate) fn string_from_char_code(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let mut s = String::with_capacity(args.len());
