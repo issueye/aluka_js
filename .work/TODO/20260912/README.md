@@ -2407,3 +2407,31 @@ $ cargo test -p aluka-jit --release --test jitbench
   ——登记后续项）；差分电池余下 3 项（字符串 split 上限参数、对象的
   isFrozen/isExtensible 组合、promise 微任务细粒度交错）与函数式 replacer
   同批登记。
+
+## 97. M7.2 轮八十三：Object.freeze/seal 扩展性语义 + String.split 上限参数（20260914）
+
+- **两项差分缺陷修复**（差分电池一致数 11/15 → **13/15**）：
+  1. **`Object.freeze`/`seal`/`isFrozen`/`isSealed`/`isExtensible`/
+     `preventExtensions` 的扩展性语义缺失**：此前 `freeze`/`seal` 直接返回
+     目标（无状态登记）、`isFrozen` 恒 false、`isExtensible` 恒 true。
+     实现：Vm 增 `non_extensible`/`frozen_objects` 注册表（HashSet<usize>，
+     与 `non_writable` 同模型）——
+     - `freeze` 登记两级（不可扩展 + 冻结）；
+     - `seal`/`preventExtensions` 登记不可扩展；
+     - `isFrozen`/`isSealed`/`isExtensible` 按注册表判定（null/undefined
+       抛 TypeError，规范口径）；
+     - `set_property` 对冻结对象**一律忽略写入**、对不可扩展对象的
+       **新增键**忽略（既有键仍可写 = seal 语义）；
+     - 验证：`Object.freeze(o); o.a=2; o.b=3` → `o.a===1`、`o.b===undefined`、
+       `isFrozen(o)===true`、`isExtensible(o)===false`；seal 形态
+       `s.x=9` 生效而 `s.y` 不新增——与 Node 22 逐项一致；
+  2. **`String.prototype.split(sep, limit)` 忽略 limit**：字符串分隔符
+     分支未处理第二实参（`"a-b-c".split("-",2)` 返回 3 项，规范 2 项）。
+     修复：`ToUint32` 语义截断结果集（正则分支原本已支持）；
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace **92 目标全 ok ✓**、
+  t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
+  jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓；
+- **差分电池剩余 2 项**（已定位）：JSON.stringify 的**函数式 replacer**
+  （需逐键回调）、promise 探针的微任务细粒度交错顺序（`sync-end` 与
+  async IIFE await 的相对位置）。

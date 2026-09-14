@@ -243,6 +243,13 @@ pub struct Vm {
     /// 内建不可配置键注册表（delete 返回 false——`delete Number.NaN ===
     /// false`，Sputnik S8.6.1_A3 族）
     pub non_configurable: std::collections::HashMap<usize, Vec<String>>,
+    /// 不可扩展对象集合（`Object.freeze`/`preventExtensions`/`seal` 登记）：
+    /// `Object.isExtensible` false、`isFrozen`/`isSealed` 按冻结级别判定；
+    /// 新增属性写入静默忽略（sloppy）/抛 TypeError（strict，待运行时
+    /// strict 标记接入）
+    pub non_extensible: std::collections::HashSet<usize>,
+    /// 冻结对象集合（freeze：不可扩展 + 属性不可写不可配置）
+    pub frozen_objects: std::collections::HashSet<usize>,
     /// 动态求值（eval/Function）模块缓存：`(源码, 重定向名表) → main 函数
     /// 索引`。动态模块 append-only 且模板只读，重定向的 upvalue 通道按
     /// 调用注入 current_upvalues——同源码重复求值可复用已追加的模板，
@@ -403,6 +410,8 @@ impl Vm {
             non_writable: std::collections::HashMap::new(),
             non_enumerable: std::collections::HashMap::new(),
             non_configurable: std::collections::HashMap::new(),
+            non_extensible: std::collections::HashSet::new(),
+            frozen_objects: std::collections::HashSet::new(),
             eval_module_cache: std::collections::HashMap::new(),
             process_object: None,
             env_object: None,

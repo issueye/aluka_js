@@ -672,7 +672,13 @@ impl Vm {
                     }
                 }
                 let sep = arg_str(self, args, 0);
-                let parts: Vec<Value> = if sep.is_empty() {
+                // limit（规范：ToUint32，截断结果集上限）——字符串分隔符分支
+                // 此前忽略该参数（`"a-b-c".split("-", 2)` 返回 3 项）
+                let limit = args.get(1).and_then(|v| match v.case() {
+                    ValueCase::Number(n) if n >= 0.0 => Some(n as usize),
+                    _ => None,
+                });
+                let mut parts: Vec<Value> = if sep.is_empty() {
                     chars
                         .iter()
                         .map(|c| {
@@ -688,6 +694,9 @@ impl Vm {
                         })
                         .collect()
                 };
+                if let Some(n) = limit {
+                    parts.truncate(n);
+                }
                 Some(Ok(Value::Object(self.alloc_array(parts))))
             }
             // `String.prototype.matchAll(re)`:返回全部匹配（含捕获组/index/input）

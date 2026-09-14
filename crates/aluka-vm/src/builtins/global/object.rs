@@ -88,20 +88,57 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
             };
             Ok(Value::Boolean(same))
         }
-        "freeze" | "seal" => Ok(target),
-        "isFrozen" | "isSealed" => Ok(Value::Boolean(false)),
-        // 扩展性：本 VM 未实现 preventExtensions/freeze 的不可扩展态，
-        // 对象恒可扩展（原始值按规范 ToObject 后为 true，null/undefined
-        // 抛 TypeError——JSON.isRawJSON 的规范实现依赖本谓词）
+        "freeze" => {
+            // 冻结：登记不可扩展 + 冻结态（属性写入/删除/重定义一律拒绝）
+            if let Some(r) = target.as_object() {
+                vm.non_extensible.insert(r.0 as usize);
+                vm.frozen_objects.insert(r.0 as usize);
+            }
+            Ok(target)
+        }
+        "seal" => {
+            // 密封：不可扩展，但属性仍可写
+            if let Some(r) = target.as_object() {
+                vm.non_extensible.insert(r.0 as usize);
+            }
+            Ok(target)
+        }
+        "isFrozen" => {
+            if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
+                return Err(vm.type_error("Cannot convert undefined or null to object"));
+            }
+            let frozen = target
+                .as_object()
+                .is_some_and(|r| vm.frozen_objects.contains(&(r.0 as usize)));
+            Ok(Value::Boolean(frozen))
+        }
+        "isSealed" => {
+            if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
+                return Err(vm.type_error("Cannot convert undefined or null to object"));
+            }
+            // 密封 = 不可扩展且全部属性不可配置；本实现以 freeze 登记为
+            // 不可配置（seal 单独登记时按不可扩展近似）
+            let sealed = target
+                .as_object()
+                .is_some_and(|r| vm.non_extensible.contains(&(r.0 as usize)));
+            Ok(Value::Boolean(sealed))
+        }
+        // 扩展性：null/undefined 抛 TypeError；原始值按规范 ToObject 后为 true
         "isExtensible" => {
             if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
                 return Err(vm.type_error("Cannot convert undefined or null to object"));
             }
-            Ok(Value::Boolean(true))
+            let ext = !target
+                .as_object()
+                .is_some_and(|r| vm.non_extensible.contains(&(r.0 as usize)));
+            Ok(Value::Boolean(ext))
         }
         "preventExtensions" => {
             if matches!(target.case(), ValueCase::Undefined | ValueCase::Null) {
                 return Err(vm.type_error("Cannot convert undefined or null to object"));
+            }
+            if let Some(r) = target.as_object() {
+                vm.non_extensible.insert(r.0 as usize);
             }
             Ok(target)
         }

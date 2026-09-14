@@ -1028,6 +1028,21 @@ impl Vm {
                 return Ok(());
             }
         }
+        // 冻结对象：属性写入静默忽略（sloppy；strict 抛 TypeError 待运行时
+        // strict 标记接入）；已存在的键值亦不可改（freeze 语义）
+        if let Some(r) = obj.as_object() {
+            if self.frozen_objects.contains(&(r.0 as usize)) {
+                return Ok(());
+            }
+        }
+        // 不可扩展对象：**新增**键写入静默忽略（既有键仍可写——seal 语义）
+        if let Some(r) = obj.as_object() {
+            if self.non_extensible.contains(&(r.0 as usize))
+                && !self.has_own_slot(r.0 as usize, key)
+            {
+                return Ok(());
+            }
+        }
         // 内建单例不可写键（Math.E/PI、Number.NaN 等）：sloppy 写入静默忽略
         if let Some(r) = obj.as_object() {
             if let Some(keys) = self.non_writable.get(&(r.0 as usize)) {
