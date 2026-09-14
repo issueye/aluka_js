@@ -28,6 +28,120 @@ fn is_json_ignored_value(vm: &Vm, v: Value) -> bool {
     }
 }
 
+/// 位置参数的整数解析（`undefined`/缺失 → None；NaN → 0）。
+fn arg_index(args: &[Value], i: usize) -> Option<i64> {
+    match args.get(i).map(|v| v.case()) {
+        None | Some(ValueCase::Undefined) => None,
+        Some(ValueCase::Number(n)) => {
+            if n.is_nan() {
+                Some(0)
+            } else {
+                Some(n.trunc() as i64)
+            }
+        }
+        _ => Some(0),
+    }
+}
+
+/// 按 UTF-16 码元索引截取后缀。
+fn utf16_slice_from(text: &str, from: Option<i64>) -> String {
+    let Some(f) = from else {
+        return text.to_owned();
+    };
+    let f = f.max(0) as usize;
+    let mut acc = 0usize;
+    for (byte_idx, c) in text.char_indices() {
+        if acc >= f {
+            return text[byte_idx..].to_owned();
+        }
+        acc += if c > '\u{FFFF}' { 2 } else { 1 };
+    }
+    String::new()
+}
+
+/// 按 UTF-16 码元索引截取前缀（至 `end` 码元处）。
+fn utf16_slice_to(text: &str, end: usize) -> String {
+    let mut acc = 0usize;
+    for (byte_idx, c) in text.char_indices() {
+        let w = if c > '\u{FFFF}' { 2 } else { 1 };
+        if acc + w > end {
+            return text[..byte_idx].to_owned();
+        }
+        acc += w;
+    }
+    text.to_owned()
+}
+
+/// Unicode 规范化（覆盖常见拉丁组合字符族；未列表字符原样保留）。
+fn unicode_normalize(text: &str, form: &str) -> String {
+    #[rustfmt::skip]
+    const COMPOSE: &[(char, char, char)] = &[
+        ('a', '\u{0301}', 'á'),
+        ('a', '\u{0300}', 'à'),
+        ('a', '\u{0302}', 'â'),
+        ('a', '\u{0303}', 'ã'),
+        ('a', '\u{0308}', 'ä'),
+        ('a', '\u{030A}', 'å'),
+        ('e', '\u{0301}', 'é'),
+        ('e', '\u{0300}', 'è'),
+        ('e', '\u{0302}', 'ê'),
+        ('e', '\u{0308}', 'ë'),
+        ('i', '\u{0301}', 'í'),
+        ('i', '\u{0300}', 'ì'),
+        ('i', '\u{0302}', 'î'),
+        ('i', '\u{0308}', 'ï'),
+        ('o', '\u{0301}', 'ó'),
+        ('o', '\u{0300}', 'ò'),
+        ('o', '\u{0302}', 'ô'),
+        ('o', '\u{0303}', 'õ'),
+        ('o', '\u{0308}', 'ö'),
+        ('u', '\u{0301}', 'ú'),
+        ('u', '\u{0300}', 'ù'),
+        ('u', '\u{0302}', 'û'),
+        ('u', '\u{0308}', 'ü'),
+        ('n', '\u{0303}', 'ñ'),
+        ('c', '\u{0327}', 'ç'),
+        ('y', '\u{0301}', 'ý'),
+    ];
+    let decompose = |c: char| -> Option<(char, char)> {
+        COMPOSE
+            .iter()
+            .find(|(_, _, comp)| *comp == c)
+            .map(|(b, m, _)| (*b, *m))
+    };
+    match form {
+        "NFC" | "NFKC" => {
+            let mut out = String::new();
+            let mut it = text.chars().peekable();
+            while let Some(c) = it.next() {
+                if let Some(&next) = it.peek()
+                    && let Some((_, _, comp)) =
+                        COMPOSE.iter().find(|(b, m, _)| *b == c && *m == next)
+                {
+                    out.push(*comp);
+                    it.next();
+                    continue;
+                }
+                out.push(c);
+            }
+            out
+        }
+        _ => {
+            let mut out = String::new();
+            for c in text.chars() {
+                match decompose(c) {
+                    Some((b, m)) => {
+                        out.push(b);
+                        out.push(m);
+                    }
+                    None => out.push(c),
+                }
+            }
+            out
+        }
+    }
+}
+
 impl Vm {
     /// 判断值是否为 JSON 全局对象（`_isJSON` 标记）。
     pub(crate) fn is_json_object(&self, val: Value) -> bool {
@@ -445,7 +559,9 @@ impl Vm {
         }
         let chars: Vec<char> = text.chars().collect();
         match method {
-            "length" => Some(Ok(Number(chars.len() as f64))),
+            // 规范 String.length = **UTF-16 码元**数（非码点数）——
+            // 非 BMP 字符占 2（`'😀'.length === 2`；此前按码点计得 1）
+            "length" => Some(Ok(Number(crate::ops::utf16_len(text) as f64))),
             // ES2024 字符串完整性：aluka 字节字符串模型运行时恒为合法 UTF-8
             //（孤立 surrogate 在 lexer 层替换），故 isWellFormed 恒真、
             // toWellFormed 恒原样（对齐 Go 版字节字符串语义）
@@ -525,6 +641,24 @@ impl Vm {
                 };
                 Some(Ok(out))
             }
+            // `String.prototype.normalize([form])`：Unicode 规范化。
+            // 参数非法（非 NFC/NFD/NFKC/NFKD）→ RangeError；缺省 NFC。
+            "normalize" => {
+                let form = match args.first().map(|v| v.case()) {
+                    None | Some(ValueCase::Undefined) => "NFC".to_owned(),
+                    Some(_) => arg_str(self, args, 0),
+                };
+                match form.as_str() {
+                    "NFC" | "NFD" | "NFKC" | "NFKD" => {}
+                    other => {
+                        return Some(Err(self.typed_error(
+                            "RangeError",
+                            &format!("The normalization form should be one of NFC, NFD, NFKC, NFKD; got {other}"),
+                        )));
+                    }
+                }
+                ret_str!(unicode_normalize(text, &form));
+            }
             "padStart" | "padEnd" => {
                 // `padStart(targetLength[, padString])`：不足则用 padString **循环
                 // 截断**补齐（默认空格）；已足够或 padString 为空 → 原串返回。
@@ -583,17 +717,25 @@ impl Vm {
                     None => -1.0,
                 })))
             }
+            // 位置参数（规范：按 UTF-16 索引截取子串后判定）——此前一律忽略
             "includes" => {
                 let needle = arg_str(self, args, 0);
-                Some(Ok(Value::Boolean(text.contains(&needle))))
+                let from = utf16_slice_from(text, arg_index(args, 1));
+                Some(Ok(Value::Boolean(from.contains(&needle))))
             }
             "startsWith" => {
                 let needle = arg_str(self, args, 0);
-                Some(Ok(Value::Boolean(text.starts_with(&needle))))
+                let from = utf16_slice_from(text, arg_index(args, 1));
+                Some(Ok(Value::Boolean(from.starts_with(&needle))))
             }
             "endsWith" => {
                 let needle = arg_str(self, args, 0);
-                Some(Ok(Value::Boolean(text.ends_with(&needle))))
+                let end = match arg_index(args, 1) {
+                    Some(n) => (n.max(0) as usize).min(crate::ops::utf16_len(text)),
+                    None => crate::ops::utf16_len(text),
+                };
+                let up_to = utf16_slice_to(text, end);
+                Some(Ok(Value::Boolean(up_to.ends_with(&needle))))
             }
             "slice" => {
                 let len = chars.len() as f64;

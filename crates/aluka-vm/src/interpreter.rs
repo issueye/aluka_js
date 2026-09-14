@@ -3696,14 +3696,25 @@ impl Vm {
                         Ok(acc)
                     }
                     "join" => {
-                        let sep = if let Some(sep_val) = args.first() {
-                            self.to_property_key(*sep_val)
-                        } else {
-                            ",".to_owned()
+                        // 分隔符缺省/undefined → ","
+                        let sep = match args.first().map(|v| v.case()) {
+                            None | Some(ValueCase::Undefined) => ",".to_owned(),
+                            Some(_) => self.to_property_key(*args.first().expect("已确认存在")),
                         };
+                        // 规范：元素 null/undefined → **空串**
+                        //（`[1,null,undefined].join("-") === "1--"`）
                         let parts: Vec<String> =
                             if let Some(HeapObject::Array { elements, .. }) = self.heap.get(idx) {
-                                elements.iter().map(|e| self.format_value(*e)).collect()
+                                elements
+                                    .iter()
+                                    .map(|e| {
+                                        if e.is_undefined() || e.is_null() {
+                                            String::new()
+                                        } else {
+                                            self.format_value(*e)
+                                        }
+                                    })
+                                    .collect()
                             } else {
                                 Vec::new()
                             };
@@ -4293,56 +4304,54 @@ impl Vm {
                     let top = self.pop()?;
                     // 位运算走**字符串感知**的 ToNumber（`~"5"` → -6）：
                     // 此前用自由函数 `to_number`（字符串一律 NaN → 0）
-                    let n = self.numeric_operand(top)? as i32;
+                    let n = crate::ops::to_int32(self.numeric_operand(top)?);
                     self.stack.push(Value::Number(f64::from(!n)));
                 }
                 Op::BitAnd => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = self.numeric_operand(left)? as i32;
-                    let b = self.numeric_operand(right)? as i32;
+                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                    let b = crate::ops::to_int32(self.numeric_operand(right)?);
                     let res = a & b;
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::BitOr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = self.numeric_operand(left)? as i32;
-                    let b = self.numeric_operand(right)? as i32;
+                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                    let b = crate::ops::to_int32(self.numeric_operand(right)?);
                     let res = a | b;
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::BitXor => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = self.numeric_operand(left)? as i32;
-                    let b = self.numeric_operand(right)? as i32;
+                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                    let b = crate::ops::to_int32(self.numeric_operand(right)?);
                     let res = a ^ b;
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::Shl => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = self.numeric_operand(left)? as i32;
-                    let shift = (self.numeric_operand(right)? as i32) & 0x1f;
+                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                    let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
                     let res = a.wrapping_shl(shift as u32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::Shr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = self.numeric_operand(left)? as i32;
-                    let shift = (self.numeric_operand(right)? as i32) & 0x1f;
+                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                    let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
                     let res = a.wrapping_shr(shift as u32);
                     self.stack.push(Value::Number(f64::from(res)));
                 }
                 Op::UShr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let shift = (self.numeric_operand(right)? as i32) & 0x1f;
-                    // 负数先按 i32 位型再解释为 u32（直接 `as u32` 会被
-                    // Rust 的饱和转换把负数压成 0——`-16 >>> 28` 实测暴露）
-                    let left = (self.numeric_operand(left)? as i32) as u32;
+                    let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
+                    let left = crate::ops::to_uint32(self.numeric_operand(left)?);
                     let res = (left.wrapping_shr(shift as u32)) as f64;
                     self.stack.push(Value::Number(res));
                 }

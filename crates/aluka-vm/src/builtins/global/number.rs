@@ -33,7 +33,12 @@ pub(crate) fn number_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                 matches!(v.case(), ValueCase::Number(_)) && n.is_finite(),
             ))
         }
-        "isNaN" => Ok(Value::Boolean(to_num(vm, v).is_nan())),
+        // 规范 Number.isNaN：**不做类型转换**——非 Number 类型恒 false
+        //（`Number.isNaN("x") === false`，与全局 isNaN("x") === true 不同；
+        // 此前经 to_num 转换致 'x' 误判为 NaN）
+        "isNaN" => Ok(Value::Boolean(
+            matches!(v.case(), ValueCase::Number(_)) && to_num(vm, v).is_nan(),
+        )),
         "parseInt" => super::core_fn::global_parse_int(vm, args),
         "parseFloat" => super::core_fn::global_parse_float(vm, args),
         _ => Ok(Value::Undefined),

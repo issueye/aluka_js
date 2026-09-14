@@ -571,7 +571,7 @@ impl Vm {
         // 字符串接收者：`length` 与数字下标访问（原型方法由 CALL_METHOD 链求值）
         if let Some(r) = obj.as_object() {
             let str_len = match self.heap.get(r.0 as usize) {
-                Some(HeapObject::String(text)) => Some(text.chars().count()),
+                Some(HeapObject::String(text)) => Some(crate::ops::utf16_len(text)),
                 _ => None,
             };
             if let Some(len) = str_len {

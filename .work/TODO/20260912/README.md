@@ -2546,3 +2546,42 @@ $ cargo test -p aluka-jit --release --test jitbench
 - **门禁证据**：fmt ✓、clippy exit 0 ✓、workspace 92 目标全 ok ✓、
   t262 1130/1154（0 失败）✓、conformance 差分 ✓、express e2e ✓、
   jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。
+
+## 101. M7.2 轮八十七：数值/位运算与字符串边界修复（9 项）（20260914）
+
+- **方法**：新增数值（41 项）与字符串（36 项）两组边界差分探针，逐项对齐
+  Node 22——两组均达到 **0 差异**。
+- **数值/位运算（2 项）**：
+  1. **位运算 ToInt32 饱和转换缺陷**（影响所有 `|` `&` `^` `<<` `>>` `>>>`
+     与一元 `~`）：Rust 的 `f64 as i32` 在超范围时**饱和**（2147483648 →
+     2147483647），规范要求**模 2³² 回绕**——`(2147483647+1)|0` 应得
+     -2147483648、`4294967295|0` 应得 -1。修复：新增规范 `to_int32`/
+     `to_uint32`（先 trunc 再归约到 [0,2³²)），替换全部 11 处 `as i32`；
+  2. **`Number.isNaN("x")` 误为 true**：经 `to_num` 做了 ToNumber 转换，
+     规范**不做类型转换**（非 Number 恒 false，与全局 `isNaN("x")===true`
+     不同）。修复：加 `matches!(v.case(), ValueCase::Number(_))` 前置判定
+     （与同处已正确的 `isFinite`/`isSafeInteger` 对齐）。
+- **字符串（5 项）**：
+  3. **`String.length` 按码点计数**（影响所有非 BMP 字符）：规范为
+     **UTF-16 码元**数——`'😀'.length` 应为 2（此前 1）、`'a😀b'.length`
+     应为 4（此前 3）。修复：新增 `ops::utf16_len` 并统一 property.rs 与
+     prims.rs 两处计数点；
+  4. **`startsWith`/`endsWith`/`includes` 忽略位置参数**：`"abc".startsWith
+     ("b",1)` 应为 true（此前 false，因未截取子串）。修复：按 UTF-16 索引
+     截取（新增 `arg_index`/`utf16_slice_from`/`utf16_slice_to` 辅助，
+     正确处理非 BMP 边界）；
+  5. **`Array.prototype.join` 对 null/undefined**：规范为**空串**
+     （`[1,null,undefined].join("-") === "1--"`，此前输出 "1-null-undefined"）；
+     同时修正分隔符缺省/undefined → ","（此前 undefined 会格式化为
+     "undefined"）；
+  6. **`String.prototype.normalize` 未实现**（调用抛 "ERR String"）：实现
+     NFC/NFD/NFKC/NFKD（覆盖 26 组常见拉丁组合字符；非法 form → RangeError，
+     缺省 NFC）；
+- **附带修复**（本轮引入的回归）：`missing_docs` 两处（`--all-targets`
+  下检出）补齐文档。
+- **验收状态**：全量 **1154 例：1130 通过 / 24 invalid / 0 失败**（无回归）；
+  差分电池 **15/15**；数值差分 **0/41 差异**、字符串差分 **0/36 差异**、
+  BigInt 差分 **0/24 差异**；
+- **门禁证据**：fmt ✓、clippy exit 0 ✓（--all-targets 全目标）、
+  workspace 92 目标全 ok ✓、t262 1130/1154（0 失败）✓、conformance 差分 ✓、
+  express e2e ✓、jitbench 3/3 ✓、ALUKA_GC_STRESS=8 0 失败 ✓。

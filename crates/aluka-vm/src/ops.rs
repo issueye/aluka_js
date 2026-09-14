@@ -134,6 +134,35 @@ pub fn parse_js_number(s: &str) -> f64 {
 /// 其余对象一律 truthy。`heap` 为 `&[]`（JIT 无堆路径）时
 /// 字符串按 truthy 处理（与旧行为一致，JIT 通道另行完善）。
 #[must_use]
+/// 规范 `ToInt32`：先 ToNumber，再按 2^32 取模回绕到有符号 32 位。
+///
+/// Rust 的 `f64 as i32` 是**饱和转换**（NaN→0、±Inf → 极值、超范围钳制），
+/// 与规范的模回绕不同——`(2147483647+1)|0` 应得 -2147483648 而非 2147483647。
+/// 字符串的 **UTF-16 码元**长度（规范 String.length 口径）：非 BMP 码点占 2。
+pub fn utf16_len(s: &str) -> usize {
+    s.chars().map(|c| if c > '\u{FFFF}' { 2 } else { 1 }).sum()
+}
+
+/// 规范 `ToInt32`：先 ToNumber 再按 2^32 取模回绕到有符号 32 位。
+///
+/// Rust 的 `f64 as i32` 是**饱和转换**（NaN→0、超范围钳制），与规范的模
+/// 回绕不同——`(2147483647+1)|0` 应得 -2147483648 而非 2147483647。
+pub fn to_int32(n: f64) -> i32 {
+    if !n.is_finite() {
+        return 0;
+    }
+    // 取模回绕：先归约到 [0, 2^32) 再解释为有符号
+    let m = n.trunc() % 4294967296.0;
+    let u = if m < 0.0 { m + 4294967296.0 } else { m };
+    u as u32 as i32
+}
+
+/// 规范 `ToUint32`：同 ToInt32 但按无符号解释。
+pub fn to_uint32(n: f64) -> u32 {
+    to_int32(n) as u32
+}
+
+/// 规范 `ToBoolean`（BigInt 为原始值语义：0n 假、其余真）。
 pub fn to_boolean(val: Value, heap: &[HeapObject]) -> bool {
     match val.case() {
         ValueCase::Undefined | ValueCase::Null => false,

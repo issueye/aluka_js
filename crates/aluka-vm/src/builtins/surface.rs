@@ -1210,13 +1210,23 @@ fn array_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> 
             Ok(Value::Object(vm.alloc_array(out)))
         }
         "join" => {
-            let sep = args
-                .first()
-                .map(|v| vm.format_value(*v))
-                .unwrap_or_default();
+            // 分隔符缺省/undefined → ","
+            let sep = match args.first().map(|v| v.case()) {
+                None | Some(ValueCase::Undefined) => ",".to_owned(),
+                Some(_) => vm.format_value(*args.first().expect("已确认存在")),
+            };
+            // 规范 Array.prototype.join：元素 null/undefined → **空串**
+            //（`[1,null,undefined].join("-") === "1--"`；此前经 format_value
+            // 输出 "1-null-undefined"）
             let text = elems(vm, r)
                 .iter()
-                .map(|v| vm.format_value(*v))
+                .map(|v| {
+                    if v.is_undefined() || v.is_null() {
+                        String::new()
+                    } else {
+                        vm.format_value(*v)
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(&sep);
             Ok(Value::Object(vm.alloc_string(text)))
