@@ -342,9 +342,20 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
             ),
         ] {
             let sub_obj = vm.alloc_ordinary();
-            for (m, _) in methods {
-                let f = vm.alloc_native_fn(&format!("path.{sub}.{m}"));
+            // 子对象方法的分派键必须与方法值（NativeFn 名）**严格同形**：
+            // 引擎有两条按 NativeFn 名查表的分派链——`CALL_METHOD` 的普通
+            // 对象回退（`interpreter.rs` 的 `lookup(name)`）与
+            // `invoke_callable`（`call.rs` 的 `lookup(name)`）。此前只登记了
+            // 平台模块的键 `path.<m>`，子对象方法名 `path.posix.<m>` 无人
+            // 登记，致 `path.posix.join(...)` 与「提取方法值后调用」两种形态
+            // 均抛「[function Function] is not a function」（Node 正常返回）。
+            // 不能复用 `path/posix` 的键：那是独立子模块 `require("path/posix")`
+            // 的命名空间，与 `path.posix` 子对象不是同一标识。
+            let sub_ns = format!("path.{sub}");
+            for (m, handler) in methods {
+                let f = vm.alloc_native_fn(&format!("{sub_ns}.{m}"));
                 let _ = vm.set_property(Value::Object(sub_obj), m, Value::Object(f));
+                register_handler(&mut registry, &sub_ns, m, *handler);
             }
             let sep_v = Value::Object(vm.alloc_string(sep.to_owned()));
             let delim_v = Value::Object(vm.alloc_string(delim.to_owned()));

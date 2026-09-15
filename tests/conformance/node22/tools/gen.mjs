@@ -247,6 +247,43 @@ const pathCases = [
 ];
 for (const expr of pathCases) builtinCases.push(['builtin-path', expr]);
 
+// path 子对象面（posix / win32）：M7.2 轮九十三——子对象方法值此前只挂
+// NativeFn 未登记分派键，直调与「提取方法值后调用」两种形态均抛
+// 「[function Function] is not a function」（Node 正常返回）。三面
+// （方法调用 / 常量 / 方法值提取）全部纳入，防止该类缺陷再次漏检。
+const pathSubCases = [
+  'require("path").posix.join("a/b", "../c")',
+  'require("path").posix.join("/a", "b", "..")',
+  'require("path").posix.normalize("a//b/c/../d")',
+  'require("path").posix.relative("/a/b", "/a/c")',
+  'require("path").posix.basename("/a/b/c.txt")',
+  'require("path").posix.basename("/a/b/c.txt", ".txt")',
+  'require("path").posix.dirname("/a/b/c")',
+  'require("path").posix.extname("file.tar.gz")',
+  'require("path").posix.resolve("/x") === require("path").posix.resolve("/x")',
+  'require("path").posix.isAbsolute("/x/y")',
+  'require("path").posix.sep',
+  'require("path").posix.delimiter',
+  '(() => { const f = require("path").posix.join; return f("a/b", "../c") })()',
+  '(() => { const f = require("path").posix.basename; return f("/a/b/c.txt", ".txt") })()',
+  'require("path").win32.join("a/b", "../c")',
+  'require("path").win32.join("C:\\\\a", "b")',
+  'require("path").win32.normalize("C:\\\\a\\\\..\\\\b")',
+  'require("path").win32.relative("C:\\\\a\\\\b", "C:\\\\a\\\\c")',
+  'require("path").win32.basename("C:\\\\a\\\\b.txt")',
+  'require("path").win32.basename("C:\\\\a\\\\b.txt", ".txt")',
+  'require("path").win32.dirname("C:\\\\a\\\\b\\\\c")',
+  'require("path").win32.extname("file.tar.gz")',
+  'require("path").win32.resolve("C:\\\\x") === require("path").win32.resolve("C:\\\\x")',
+  'require("path").win32.isAbsolute("C:\\\\x")',
+  'require("path").win32.isAbsolute("C:x")',
+  'require("path").win32.sep',
+  'require("path").win32.delimiter',
+  '(() => { const f = require("path").win32.join; return f("a", "b") })()',
+  '(() => { const f = require("path").win32.isAbsolute; return f("C:\\\\x") })()',
+];
+for (const expr of pathSubCases) builtinCases.push(['path-sub', expr]);
+
 // util / assert
 const utilCases = [
   'require("util").format("%s-%d", "a", 1)',
