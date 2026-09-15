@@ -18,12 +18,21 @@ use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 /// 构建入口：编译 require 闭包到镜像 .bc 树。
+///
+/// **镜像 root 的选取**（决定 `../x` 这类跨目录 require 能否在运行期解析）：
+/// - 优先取**项目根**——从入口文件目录逐级向上找到最近的 `package.json`
+///   （npm 语义的项目边界）；
+/// - 找不到 package.json 时退回入口文件所在目录。
+///
+/// 之所以不用「入口目录」：入口位于子目录（`bin/`、`scripts/`、`tools/`）时，
+/// 其 `../src/*` 依赖会落到 root 之外，被 [`rel_from`] 退化成扁平的
+/// `_ext/<文件名>`，而运行期没有 `_ext` 映射 ⇒ `require('../src/x')` 在
+/// 运行期必然 `Cannot find module`（实测：`aluka run tools/probe.js`）。
+/// 以项目根为 root 时镜像保持**相对结构**（`aluka_build/bin/x.bc` 与
+/// `aluka_build/src/*.bc`），相对 require 逐一对应命中。
 pub fn run_build(input: &Path, output: Option<&Path>, optimize: bool) -> ExitCode {
     let input_abs = absolutize(input);
-    let root = input_abs
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let root = resolve_build_root(&input_abs);
     let outdir = output
         .map(Path::to_path_buf)
         .unwrap_or_else(|| root.join("aluka_build"));
@@ -112,6 +121,43 @@ pub fn run_build(input: &Path, output: Option<&Path>, optimize: bool) -> ExitCod
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// 解析构建镜像 root：优先最近的 `package.json` 所在目录（项目根），
+/// 否则退回入口文件所在目录（无 package.json 的散脚本场景）。
+#[must_use]
+pub fn resolve_build_root(input_abs: &Path) -> PathBuf {
+    let start = input_abs
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut dir: Option<PathBuf> = Some(start);
+    while let Some(d) = dir {
+        if d.join("package.json").is_file() {
+            return d;
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    input_abs
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// 入口源文件在镜像中的 `.bc` 路径（与 [`run_build`] 同一套 root/相对化规则）。
+///
+/// 入口位于子目录时，镜像路径保留相对结构（`bin/x.js` → `<outdir>/bin/x.bc`）；
+/// 调用方据此定位入口字节码，不必自行拼接。
+#[must_use]
+pub fn entry_bc_path(input: &Path, output: Option<&Path>) -> PathBuf {
+    let input_abs = absolutize(input);
+    let root = resolve_build_root(&input_abs);
+    let outdir = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join("aluka_build"));
+    outdir
+        .join(rel_from(&input_abs, &root))
+        .with_extension("bc")
 }
 
 /// 编译单个源文件到镜像 .bc 路径。

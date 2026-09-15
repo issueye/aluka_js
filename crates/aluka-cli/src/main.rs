@@ -230,6 +230,8 @@ fn run_command(script: &Path, args: &[String], optimize: bool) -> ExitCode {
     }
     // 依赖判定：项目根（最近 package.json 所在目录）存在 node_modules
     // → 全树镜像构建后执行。项目根以外不外溢（祖先链止于 package.json）。
+    // 构建镜像 root 由 aluka-compiler 统一解析（项目根优先），入口在子目录时
+    // 镜像保留相对结构（`bin/x.js` → `aluka_build/bin/x.bc`）。
     let project_root =
         find_project_root(&script.parent().map(Path::to_path_buf).unwrap_or_default());
     let needs_build = project_root
@@ -238,18 +240,11 @@ fn run_command(script: &Path, args: &[String], optimize: bool) -> ExitCode {
     if needs_build {
         let root = project_root.expect("needs_build 已保证");
         let outdir = root.join("aluka_build");
-        // build 产物：入口源文件扩展名替换为 .bc（`server.js` → `server.bc`）
-        let entry_bc = outdir.join(format!(
-            "{}.bc",
-            script
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        ));
         let build = aluka_compiler::build::run_build(script, Some(&outdir), optimize);
         if build != ExitCode::SUCCESS {
             return build;
         }
+        let entry_bc = aluka_compiler::build::entry_bc_path(script, Some(&outdir));
         return aluka_runtime::execute_bc(&entry_bc, args);
     }
     run_script(script, args, optimize)
@@ -382,7 +377,15 @@ fn test_command(targets: &[PathBuf], reporter: ReporterKind, optimize: bool) -> 
     for file in &files {
         let mut runtime = Runtime::new();
         runtime.enable_test_runner(reporter);
-        match runtime.execute_file(file, &[], optimize) {
+        // 与 `aluka run` 同款装配：项目内有 node_modules 时先构建依赖闭包镜像，
+        // 再执行入口字节码（`test/`、`tests/` 下的用例常 `require('../src/x')`，
+        // 直接 execute_file 会因跨目录依赖缺失而失败）。
+        let exec_result = match build_if_needed(file, optimize) {
+            Ok(Some(entry_bc)) => runtime.execute_bc_file(&entry_bc, &[], optimize),
+            Ok(None) => runtime.execute_file(file, &[], optimize),
+            Err(code) => return code,
+        };
+        match exec_result {
             Ok(_) => {
                 for line in runtime.stdout_records() {
                     println!("{line}");
@@ -419,6 +422,30 @@ fn test_command(targets: &[PathBuf], reporter: ReporterKind, optimize: bool) -> 
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// 需要时先构建依赖闭包镜像，返回入口 `.bc`（无需构建时返回 `None`）。
+///
+/// 与 `run_command` 同一判定：项目根存在 `node_modules` 才构建。
+fn build_if_needed(script: &Path, optimize: bool) -> Result<Option<PathBuf>, ExitCode> {
+    let project_root =
+        find_project_root(&script.parent().map(Path::to_path_buf).unwrap_or_default());
+    let needs_build = project_root
+        .as_ref()
+        .is_some_and(|root| root.join("node_modules").is_dir());
+    if !needs_build {
+        return Ok(None);
+    }
+    let root = project_root.expect("needs_build 已保证");
+    let outdir = root.join("aluka_build");
+    let build = aluka_compiler::build::run_build(script, Some(&outdir), optimize);
+    if build != ExitCode::SUCCESS {
+        return Err(build);
+    }
+    Ok(Some(aluka_compiler::build::entry_bc_path(
+        script,
+        Some(&outdir),
+    )))
 }
 
 /// 收集用例文件：显式文件直接采纳；目录按 Node 约定递归发现；无目标时从 cwd 发现。

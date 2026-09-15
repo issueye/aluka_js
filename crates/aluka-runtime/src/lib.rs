@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use aluka_builtins::Registry;
+use aluka_bytecode::BytecodeModule;
 use aluka_compiler::{compile, compile_source_unit, optimize_ast};
 use aluka_core::Heap;
 use aluka_module::Resolver;
@@ -234,6 +235,66 @@ impl Runtime {
             Ok(res) => Ok(res),
             // `process.exit(code)` 是**正常终止**（对齐 `bc_entry` 的 `VmError::Exit`
             // 口径与 Node 语义：立即终止、退出码交给宿主），不是未捕获异常。
+            Err(VmError::Exit(code)) => {
+                self.exit_code = Some(code);
+                Ok(Value::Undefined)
+            }
+            Err(e) => Err(RuntimeError::Vm(e)),
+        }
+    }
+
+    /// 直接从**字节码文件**执行（`aluka test` 的构建后入口；与 `execute_file` 的
+    /// 收尾语义一致：测试运行器自动跑用例、LCOV 生成、未捕获异常格式化、退出码映射）。
+    ///
+    /// 与 `bc_entry::execute_bc` 的差异：本方法保留全部执行记录（stdout/汇总/
+    /// 覆盖率）供宿主判定，后者只面向命令行直执行。
+    pub fn execute_bc_file(
+        &mut self,
+        path: &Path,
+        args: &[String],
+        optimize: bool,
+    ) -> Result<Value, RuntimeError> {
+        let _ = optimize;
+        let data = std::fs::read(path)
+            .map_err(|e| RuntimeError::Io(format!("{}: {e}", path.display())))?;
+        let (module, payload_range) = BytecodeModule::load_any_container(&data)
+            .map_err(|e| RuntimeError::Verify(e.to_string()))?;
+        module
+            .verify()
+            .map_err(|e| RuntimeError::Verify(e.to_string()))?;
+
+        let mut vm = Vm::new(0);
+        install_eval_provider(&mut vm);
+        install_worker_entry(&mut vm);
+        inject_process_argv(&mut vm, path, args);
+        vm.setup_cjs(path);
+        let lcov_module = if self.coverage_compile {
+            vm.set_jit_enabled(false);
+            vm.coverage = Some(aluka_vm::coverage::Coverage::from_module(&module));
+            Some(module.clone())
+        } else {
+            None
+        };
+        vm.load_module(&data[payload_range], &module)
+            .map_err(|e| RuntimeError::Verify(e.to_string()))?;
+
+        let run_res = vm.run_module(&module);
+        self.test_summary = if run_res.is_ok() {
+            auto_test_run(&mut vm, self.test_reporter)
+        } else {
+            None
+        };
+        self.stdout_records = vm.stdout_records.clone();
+        if let (Some(cov), Some(module)) = (vm.coverage.take(), lcov_module) {
+            self.lcov_report = Some(cov.generate_lcov(&module, "", Some(&path.to_string_lossy())));
+        }
+        if let Err(VmError::Thrown(exc)) = &run_res {
+            self.uncaught_formatted = Some(format_uncaught_with_vm(&mut vm, *exc, path));
+        } else {
+            self.uncaught_formatted = None;
+        }
+        match run_res {
+            Ok(res) => Ok(res),
             Err(VmError::Exit(code)) => {
                 self.exit_code = Some(code);
                 Ok(Value::Undefined)

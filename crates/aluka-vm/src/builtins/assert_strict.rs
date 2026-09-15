@@ -18,22 +18,58 @@ pub const MODULE: ModuleDef = ModuleDef {
 };
 
 /// 构建 `assert/strict` 模块单例并向注册表登记方法分派。
+///
+/// `assert/strict` 是「全部严格」变体：`equal` == `strictEqual`、
+/// `deepEqual` == `deepStrictEqual`（Node 语义），两者共用同一处理器。
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
-    for method in ["ok", "equal", "strictEqual", "notStrictEqual", "throws"] {
+    for method in [
+        "ok",
+        "equal",
+        "notEqual",
+        "strictEqual",
+        "notStrictEqual",
+        "deepEqual",
+        "notDeepEqual",
+        "deepStrictEqual",
+        "notDeepStrictEqual",
+        "throws",
+        "fail",
+    ] {
         let fn_ref = vm.alloc_native_fn(&format!("assert/strict.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
     }
     register_handler(registry, "assert/strict", "ok", ok);
     register_handler(registry, "assert/strict", "equal", strict_equal);
     register_handler(registry, "assert/strict", "strictEqual", strict_equal);
+    register_handler(registry, "assert/strict", "notEqual", not_strict_equal);
     register_handler(
         registry,
         "assert/strict",
         "notStrictEqual",
         not_strict_equal,
     );
+    register_handler(registry, "assert/strict", "deepEqual", deep_strict_equal_fn);
+    register_handler(
+        registry,
+        "assert/strict",
+        "deepStrictEqual",
+        deep_strict_equal_fn,
+    );
+    register_handler(
+        registry,
+        "assert/strict",
+        "notDeepEqual",
+        not_deep_strict_equal,
+    );
+    register_handler(
+        registry,
+        "assert/strict",
+        "notDeepStrictEqual",
+        not_deep_strict_equal,
+    );
     register_handler(registry, "assert/strict", "throws", throws);
+    register_handler(registry, "assert/strict", "fail", fail);
     Ok(obj)
 }
 
@@ -98,6 +134,55 @@ fn not_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Undefined)
 }
 
+/// `assert.deepStrictEqual(actual, expected, [message])`：递归严格结构比较
+/// （`assert/strict` 下 `deepEqual` 亦映射至此）。
+fn deep_strict_equal_fn(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let actual = args.first().copied().unwrap_or(Value::Undefined);
+    let expected = args.get(1).copied().unwrap_or(Value::Undefined);
+    if crate::builtins::test::asserts::deep_strict_equal(vm, actual, expected) {
+        return Ok(Value::Undefined);
+    }
+    let msg = if let Some(m) = args.get(2) {
+        format!("assert.deepStrictEqual: {}", vm.format_value(*m))
+    } else {
+        format!(
+            "assert.deepStrictEqual: expected {} but got {}",
+            vm.format_value(expected),
+            vm.format_value(actual)
+        )
+    };
+    Err(thrown(vm, &msg))
+}
+
+/// `assert.notDeepStrictEqual(actual, expected, [message])`：递归严格不等
+/// （`assert/strict` 下 `notDeepEqual` 亦映射至此）。
+fn not_deep_strict_equal(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let actual = args.first().copied().unwrap_or(Value::Undefined);
+    let expected = args.get(1).copied().unwrap_or(Value::Undefined);
+    if !crate::builtins::test::asserts::deep_strict_equal(vm, actual, expected) {
+        return Ok(Value::Undefined);
+    }
+    let msg = if let Some(m) = args.get(2) {
+        format!("assert.notDeepStrictEqual: {}", vm.format_value(*m))
+    } else {
+        "assert.notDeepStrictEqual: values should not be deeply strictly equal".to_string()
+    };
+    Err(thrown(vm, &msg))
+}
+
+/// `assert.fail([message])`：无条件失败。
+fn fail(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let msg = args
+        .first()
+        .filter(|v| **v != Value::Undefined)
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_else(|| "Failed".to_owned());
+    Err(thrown(vm, &msg))
+}
+
 /// `assert.throws(fn, [error, message])`：断言函数执行抛出异常。
 fn throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
@@ -138,6 +223,9 @@ mod tests {
         let _: crate::builtins::BuiltinHandler = ok;
         let _: crate::builtins::BuiltinHandler = strict_equal;
         let _: crate::builtins::BuiltinHandler = not_strict_equal;
+        let _: crate::builtins::BuiltinHandler = deep_strict_equal_fn;
+        let _: crate::builtins::BuiltinHandler = not_deep_strict_equal;
         let _: crate::builtins::BuiltinHandler = throws;
+        let _: crate::builtins::BuiltinHandler = fail;
     }
 }
