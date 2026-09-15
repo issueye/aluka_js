@@ -1,0 +1,19 @@
+{
+  "name": "taskboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aluka 运行时真实项目实测：任务看板（存储 + 服务 + HTTP API + CLI + node:test）",
+  "main": "src/service.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/cli.js stats",
+    "e2e": "node e2e.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "ms": "^2.1.3"
+  }
+}

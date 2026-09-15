@@ -1,7 +1,7 @@
 //! 模块级多函数与类模板汇编器。
 
 use crate::codegen::{compile_expr, compile_stmt};
-use crate::scope::{CompiledUnit, ParentScopeInfo};
+use crate::scope::{CompiledUnit, ParentScopeInfo, THIS_SYM};
 use aluka_bytecode::{
     BytecodeModule, ClassMethod, ClassTemplate, Constant, FuncHeaderExtras, FuncTemplate, Instr,
     Op, UpvalueCapture,
@@ -1026,6 +1026,32 @@ impl ModuleCompiler {
             line_coverage: self.line_coverage,
             ..Default::default()
         };
+        // 非箭头函数：`this` 即 locals[0]，把槽 0 以 THIS_SYM 名义登记，
+        // 父作用域快照即可让嵌套箭头按上值链捕获词法 `this`。
+        // 箭头函数**不**登记（否则它自己的 `this` 会被解析成本帧槽 0，
+        // 正是本次修复前类方法内箭头 `this === undefined` 的根因），
+        // 改由下方从父作用域预捕获。
+        if !def.is_arrow {
+            unit.symbol_map.insert(THIS_SYM.to_owned(), 0);
+        } else if let Some(parent_info) = parent_scope {
+            // 箭头：词法 `this` 经上值链捕获——父级优先看自己的局部槽 0，
+            // 其次看它已经捕获到的 THIS_SYM 上值（箭头套箭头）。
+            if let Some(&slot) = parent_info.locals.get(THIS_SYM) {
+                let uv_idx = unit.upvalues.len();
+                unit.upvalues.push(UpvalueCapture {
+                    is_local: true,
+                    index: slot as u32,
+                });
+                unit.upvalue_map.insert(THIS_SYM.to_owned(), uv_idx);
+            } else if let Some(&idx) = parent_info.upvalues.get(THIS_SYM) {
+                let uv_idx = unit.upvalues.len();
+                unit.upvalues.push(UpvalueCapture {
+                    is_local: false,
+                    index: idx as u32,
+                });
+                unit.upvalue_map.insert(THIS_SYM.to_owned(), uv_idx);
+            }
+        }
         for param in &def.params {
             let s = unit.locals;
             unit.locals += 1;

@@ -1,5 +1,5 @@
 use crate::module::collect_ident_uses;
-use crate::scope::{CompiledUnit, HOME_OBJECT_SYM, LoopScope, ParentScopeInfo};
+use crate::scope::{CompiledUnit, HOME_OBJECT_SYM, LoopScope, ParentScopeInfo, THIS_SYM};
 use aluka_bytecode::{Constant, Instr, Op, TryEntry};
 use aluka_parser::ast::{
     Expr, Program, PropKey, PropValue, SpannedStmt, Stmt, VarKind, VarPattern,
@@ -7,6 +7,23 @@ use aluka_parser::ast::{
 
 /// `PushInt` 立即值能表示的上界（24 位操作数）。超过它的数值走常量池。
 const MAX_IMMEDIATE: f64 = ((1u32 << 24) - 1) as f64;
+
+/// 发射「当前词法 `this`」。
+///
+/// 三态解析（与 `HOME_OBJECT_SYM` 同构）：
+/// - 本帧 `symbol_map` 有 `THIS_SYM`（非箭头函数）→ `LoadLocal` 槽 0；
+/// - 本帧 `upvalue_map` 有 `THIS_SYM`（箭头函数，已从父作用域捕获）→
+///   `LoadUpvalue`；
+/// - 都没有（无父作用域信息的顶层片段）→ 退化为 `LoadLocal 0`（旧行为）。
+fn emit_this(unit: &mut CompiledUnit) {
+    if let Some(&slot) = unit.symbol_map.get(THIS_SYM) {
+        unit.code.push(Instr::new(Op::LoadLocal, slot as u32));
+    } else if let Some(&uv_idx) = unit.upvalue_map.get(THIS_SYM) {
+        unit.code.push(Instr::new(Op::LoadUpvalue, uv_idx as u32));
+    } else {
+        unit.code.push(Instr::new(Op::LoadLocal, 0));
+    }
+}
 
 /// 把语法树编译成字节码产物单元。
 #[must_use]
@@ -1105,7 +1122,7 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             }
         }
         Expr::This => {
-            unit.code.push(Instr::new(Op::LoadLocal, 0));
+            emit_this(unit);
         }
         Expr::String(s) => {
             let idx = add_constant(unit, Constant::String(s.clone()));
@@ -1486,7 +1503,7 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                 } else {
                     unit.code.push(Instr::new(Op::PushUndefined, 0));
                 }
-                unit.code.push(Instr::new(Op::LoadLocal, 0));
+                emit_this(unit);
                 unit.code.push(Instr::new(Op::GetSuperProp, p_idx));
                 return;
             }
@@ -1551,8 +1568,8 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
                     unit.code.push(Instr::new(Op::PushUndefined, 0));
                 }
                 unit.code.push(Instr::new(Op::GetProto, 0));
-                // this：当前函数的 locals[0]
-                unit.code.push(Instr::new(Op::LoadLocal, 0));
+                // this：当前函数的词法 this（箭头函数经上值链捕获）
+                emit_this(unit);
                 compile_expr(value, unit);
                 let p_idx = add_constant(unit, Constant::String(prop.clone()));
                 unit.code.push(Instr::new(Op::SetSuperProp, p_idx));

@@ -125,6 +125,15 @@ pub struct ParentScopeInfo {
 /// `__aluka_` 前缀避免与用户标识符冲突）。
 pub const HOME_OBJECT_SYM: &str = "__aluka_home_object__";
 
+/// 词法 `this` 捕获槽名。
+///
+/// `this` 在**非箭头函数**里就是 `locals[0]`（槽 0 保留），因此这类函数把
+/// `THIS_SYM -> 0` 登记进 `symbol_map`：既让自身 `this` 表达式解析到槽 0，
+/// 也把槽 0 暴露给父作用域快照，使**嵌套箭头函数**能按普通上值捕获链拿到
+/// 词法 `this`（箭头不绑定自己的 `this`，`LoadLocal 0` 取到的是它自己帧的
+/// 槽 0——真实项目实测中类方法内箭头访问 `this` 全部为 undefined 的根因）。
+pub const THIS_SYM: &str = "__aluka_this__";
+
 impl ParentScopeInfo {
     /// 创建新的父级作用域快照
     #[must_use]

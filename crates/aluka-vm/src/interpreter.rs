@@ -2473,10 +2473,8 @@ impl Vm {
                         let s = self.alloc_string(content);
                         Ok(Value::Object(s))
                     }
-                    Err(e) => {
-                        let msg = self.alloc_string(format!("fs.readFileSync: {e}"));
-                        Err(VmError::Thrown(Value::Object(msg)))
-                    }
+                    // Node 风格 SystemError（code/errno/syscall/path + libuv 文案）
+                    Err(e) => Err(crate::builtins::fs::fs_error(self, &e, "open", &path, None)),
                 },
                 _ => {
                     let data = args
@@ -2485,10 +2483,7 @@ impl Vm {
                         .unwrap_or_default();
                     match std::fs::write(&path, data) {
                         Ok(()) => Ok(Value::Undefined),
-                        Err(e) => {
-                            let msg = self.alloc_string(format!("fs.writeFileSync: {e}"));
-                            Err(VmError::Thrown(Value::Object(msg)))
-                        }
+                        Err(e) => Err(crate::builtins::fs::fs_error(self, &e, "open", &path, None)),
                     }
                 }
             }

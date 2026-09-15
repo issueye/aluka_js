@@ -1,0 +1,6 @@
+node_modules/
+aluka_build/
+.data-e2e/
+.data-test/
+.probe-data/
+*.bc

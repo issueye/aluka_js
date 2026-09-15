@@ -18,7 +18,12 @@ fn work_dir(name: &str) -> PathBuf {
 }
 
 /// `fs` 同步族：readdirSync（排序数组）/ statSync（isFile/isDirectory/size/
-/// mtimeMs）/ mkdirSync / rmSync（{recursive}），文件树操作脚本风格。
+/// mtimeMs）/ mkdirSync / rmSync（{recursive, force}），文件树操作脚本风格。
+///
+/// 预清理用 `{ recursive: true, force: true }`：Node 语义下 `rmSync` 缺省
+/// `force: false`，对**不存在**路径（含 recursive）抛 ENOENT——此处正是
+/// 「先清理再创建」的惯用写法（已与 node v22 逐字节对拍确认；Aluka 由 M7.2
+/// 轮九十四对齐 Node 后，旧 Go 口径的「NotFound 一律吞掉」已移除）。
 #[test]
 fn fs_sync_family_e2e_matches_go() {
     let work = work_dir("fs");
@@ -26,7 +31,7 @@ fn fs_sync_family_e2e_matches_go() {
         work.join("probe.js"),
         concat!(
             "const fs = require(\"fs\");\n",
-            "fs.rmSync(\"d1\", { recursive: true });\n",
+            "fs.rmSync(\"d1\", { recursive: true, force: true });\n",
             "fs.mkdirSync(\"d1\");\n",
             "fs.writeFileSync(\"d1/a.txt\", \"hello\");\n",
             "fs.writeFileSync(\"d1/b.txt\", \"world\");\n",
