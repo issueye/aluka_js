@@ -24,6 +24,15 @@ impl Vm {
         if let Some(HeapObject::Closure { properties, .. }) = self.heap.get(idx) {
             return properties.get(key).copied();
         }
+        // 原生函数 / 原生构造器：同上（`Error.stackTraceLimit`、
+        // `Error.captureStackTrace`、`Array.from`、`Promise.withResolvers`
+        // 等静态面）。此前只覆盖 Closure，致 `Error.stackTraceLimit`
+        // 读不到（`error_stack_trace_limit` 恒回退默认 10）。
+        if let Some(HeapObject::NativeCtor { properties, .. })
+        | Some(HeapObject::NativeFn { properties, .. }) = self.heap.get(idx)
+        {
+            return properties.get(key).copied();
+        }
         let HeapObject::Ordinary { props, deleted, .. } = self.heap.get(idx)? else {
             return None;
         };
@@ -230,8 +239,20 @@ impl Vm {
         let ValueCase::Object(r) = obj.case() else {
             return;
         };
-        if let Some(HeapObject::Ordinary { non_enum, .. }) = self.heap.get_mut(r.0 as usize) {
-            non_enum.insert(key.to_owned());
+        match self.heap.get_mut(r.0 as usize) {
+            Some(HeapObject::Ordinary { non_enum, .. }) => {
+                non_enum.insert(key.to_owned());
+            }
+            // NativeCtor / NativeFn / Closure 的属性存在各自的 `properties`
+            // 表里，其枚举面由 `own_properties_impl` 的对应分支过滤——
+            // 那两处需要知道「哪些键不可枚举」，故同样登记（此前仅处理
+            // Ordinary，致 `Error.captureStackTrace` 的不可枚举标记失效）。
+            Some(HeapObject::NativeCtor { non_enum, .. })
+            | Some(HeapObject::NativeFn { non_enum, .. })
+            | Some(HeapObject::Closure { non_enum, .. }) => {
+                non_enum.insert(key.to_owned());
+            }
+            _ => {}
         }
     }
 
@@ -1471,6 +1492,44 @@ impl Vm {
                         out.push(("length".to_owned(), Value::Number(elements.len() as f64)));
                         return out;
                     }
+                    // 原生构造器 / 原生函数：自有面 = `properties` 表，按各自
+                    // `non_enum` 过滤（`Object.keys(Error)` 只列 `stackTraceLimit`；
+                    // `getOwnPropertyNames(Error)` 含 `prototype`/`captureStackTrace`）。
+                    // **键序对齐 Node**：`length`、`name`、`prototype` 在**最前**
+                    //（前两者由 `get_property` 合成、不入 `properties`，故此处按序前置）。
+                    HeapObject::NativeCtor {
+                        properties,
+                        non_enum,
+                        ..
+                    }
+                    | HeapObject::NativeFn {
+                        properties,
+                        non_enum,
+                        ..
+                    } => {
+                        let mut out: Vec<(String, Value)> = Vec::new();
+                        if include_non_enum {
+                            out.push(("length".to_owned(), Value::Undefined));
+                            out.push(("name".to_owned(), Value::Undefined));
+                        }
+                        // `prototype` 紧随其后（Node 键序），再其余按**字典序**输出
+                        //（`properties` 是 HashMap，迭代序不稳定；排序保证确定性，
+                        // 且与 Node 在 Error 面的实际顺序一致）
+                        if properties.contains_key("prototype") && keep(non_enum, "prototype") {
+                            out.push(("prototype".to_owned(), properties["prototype"]));
+                        }
+                        let mut rest: Vec<&String> = properties
+                            .keys()
+                            .filter(|k| k.as_str() != "length" && k.as_str() != "name")
+                            .filter(|k| k.as_str() != "prototype")
+                            .filter(|k| keep(non_enum, k))
+                            .collect();
+                        rest.sort();
+                        for k in rest {
+                            out.push((k.clone(), properties[k]));
+                        }
+                        return out;
+                    }
                     _ => {}
                 }
             }
@@ -1582,12 +1641,26 @@ impl Vm {
                 HeapObject::Closure { properties, .. } => {
                     (properties.keys().cloned().collect::<Vec<_>>(), None)
                 }
-                HeapObject::NativeCtor { properties, .. } => {
-                    (properties.keys().cloned().collect::<Vec<_>>(), None)
+                HeapObject::NativeCtor {
+                    properties,
+                    non_enum,
+                    ..
                 }
-                HeapObject::NativeFn { properties, .. } => {
-                    (properties.keys().cloned().collect::<Vec<_>>(), None)
-                }
+                | HeapObject::NativeFn {
+                    properties,
+                    non_enum,
+                    ..
+                } => (
+                    // for-in 只列**可枚举**自有键（Node：`for (k in Error)`
+                    // 仅 `stackTraceLimit`；`prototype`/`captureStackTrace` 等
+                    // 不可枚举键不出现）
+                    properties
+                        .keys()
+                        .filter(|k| !non_enum.contains(*k))
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    None,
+                ),
                 HeapObject::String(s) => {
                     // 索引键按 UTF-16 code unit 计（星面字符占 2 个）
                     let units: usize = s.chars().map(|c| if c > '\u{FFFF}' { 2 } else { 1 }).sum();
@@ -1721,7 +1794,9 @@ impl Vm {
         };
         match self.heap.get(r.0 as usize) {
             Some(HeapObject::Ordinary { non_enum, .. })
-            | Some(HeapObject::Closure { non_enum, .. }) => non_enum.contains(key),
+            | Some(HeapObject::Closure { non_enum, .. })
+            | Some(HeapObject::NativeCtor { non_enum, .. })
+            | Some(HeapObject::NativeFn { non_enum, .. }) => non_enum.contains(key),
             _ => false,
         }
     }

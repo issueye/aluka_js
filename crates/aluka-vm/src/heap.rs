@@ -1,7 +1,7 @@
 //! 虚拟机堆内托管对象与分配器实现。
 
 use crate::interpreter::Vm;
-use crate::value::{Upvalue, Value};
+use crate::value::{Upvalue, Value, ValueCase};
 use aluka_core::{ObjectRef, ShapeId};
 use std::collections::{HashMap, HashSet};
 
@@ -113,6 +113,10 @@ pub enum HeapObject {
         name: String,
         /// 构造器自有属性（如 `prototype`）
         properties: HashMap<String, Value>,
+        /// 不可枚举属性键集合（规范：`prototype` 不可枚举、
+        /// `Error.captureStackTrace` 不可枚举而 `stackTraceLimit` 可枚举——
+        /// `Object.keys(Error)` 只列后者）
+        non_enum: HashSet<String>,
     },
     /// 生成器对象（执行状态存于 `Vm.generators` 注册表，此变体仅作身份标记）
     Generator,
@@ -220,6 +224,9 @@ pub enum HeapObject {
         name: String,
         /// 自有属性表（如 `node:test` spy 的 `.mock` 观测面；空 = 无属性）
         properties: HashMap<String, Value>,
+        /// 不可枚举属性键集合（`Object.keys` 过滤；`defineProperty`
+        /// 未声明 enumerable 的静态面等）
+        non_enum: HashSet<String>,
     },
     /// 可读流实例（缓冲队列 + 结束标记 + 等待中的 next promise）
     Readable {
@@ -377,14 +384,20 @@ impl Vm {
     }
 
     /// 在堆上分配原生构造器对象（自动挂 `prototype` 属性），返回句柄。
+    ///
+    /// `prototype` 为**不可枚举**自有属性（规范：`Object.keys(Error)` 不含它，
+    /// `getOwnPropertyNames(Error)` 含）。
     pub fn alloc_native_ctor(&mut self, name: &str, prototype: Option<ObjectRef>) -> ObjectRef {
         let mut properties = HashMap::new();
+        let mut non_enum = HashSet::new();
         if let Some(p) = prototype {
             properties.insert("prototype".to_owned(), Value::Object(p));
+            non_enum.insert("prototype".to_owned());
         }
         self.push_object(HeapObject::NativeCtor {
             name: name.to_owned(),
             properties,
+            non_enum,
         })
     }
 
@@ -393,6 +406,7 @@ impl Vm {
         self.push_object(HeapObject::NativeFn {
             name: name.to_owned(),
             properties: HashMap::new(),
+            non_enum: HashSet::new(),
         })
     }
 
@@ -614,6 +628,24 @@ impl Vm {
 
     /// 生成错误 `stack` 文本（首行 `Name: message`，其后为调用帧）。
     fn build_error_stack(&mut self, message: &str, has_message: bool) -> String {
+        self.build_error_stack_with(message, has_message, None)
+    }
+
+    /// `stack` 生成（可指定 **constructorOpt**）。
+    ///
+    /// `constructor_opt` 非空时（`Error.captureStackTrace(target, ctor)`）：
+    /// 从最内层向外扫描，**丢弃该构造器帧及其内侧帧**（Node 语义：
+    /// 「all frames above constructorOpt, including constructorOpt, will be omitted」），
+    /// 只保留其调用者。
+    ///
+    /// 帧数按 `Error.stackTraceLimit`（用户可写，默认 10）截断——`0` 表示
+    /// 只保留首行，与 Node 实测一致。
+    pub(crate) fn build_error_stack_with(
+        &mut self,
+        message: &str,
+        has_message: bool,
+        constructor_opt: Option<ObjectRef>,
+    ) -> String {
         // 名字取**当前有效名**（沿原型链读 `name`）：子类构造在 alloc 之后
         // 才改原型，故这里通常得到 "Error"，随后由 `refresh_error_stack_name`
         // 按最终 name 同步首行（`TypeError: msg`）。
@@ -627,26 +659,62 @@ impl Vm {
         } else {
             name
         };
-        let frames = crate::call::call_chain_snapshot();
         let file = if self.entry_file.is_empty() {
             "<anonymous>".to_owned()
         } else {
             self.entry_file.clone()
         };
+        // 调用链顺序为 [最外层 … 最内层]，V8 打印顺序相反（最内层在前）。
+        let frames = crate::call::call_chain_snapshot();
+        let skip_idx = constructor_opt.and_then(|c| {
+            let target = match self.heap.get(c.index()) {
+                Some(HeapObject::Closure { func_idx, .. }) => *func_idx,
+                _ => return None,
+            };
+            frames.iter().rposition(|(f, _)| *f == target)
+        });
+        let limit = self.error_stack_trace_limit();
         let mut out = head;
-        if frames.is_empty() {
-            out.push_str(&format!("\n    at <module> ({file})"));
-        } else {
-            // 由内向外：V8 首帧是**出错点所在函数**
-            for (_, name) in frames.iter().rev() {
-                if name.is_empty() {
-                    out.push_str(&format!("\n    at <anonymous> ({file}:0:1)"));
-                } else {
-                    out.push_str(&format!("\n    at {name} ({file}:0:1)"));
-                }
+        let mut emitted = 0usize;
+        for (i, (_, fname)) in frames.iter().enumerate().rev() {
+            // constructorOpt：丢弃该帧及其**内侧**帧（索引更大者）
+            if skip_idx.is_some_and(|s| i >= s) {
+                continue;
+            }
+            if emitted >= limit {
+                break;
+            }
+            if fname.is_empty() {
+                out.push_str(&format!("\n    at <anonymous> ({file}:0:1)"));
+            } else {
+                out.push_str(&format!("\n    at {fname} ({file}:0:1)"));
+            }
+            emitted += 1;
+        }
+        if emitted == 0 && frames.is_empty() {
+            // 无任何解释帧：模块顶层退化为单帧（保持既有形态）
+            if limit > 0 {
+                out.push_str(&format!("\n    at <module> ({file})"));
             }
         }
         out
+    }
+
+    /// `Error.stackTraceLimit` 的当前有效值（用户可写；非数值/未设置回退 10）。
+    ///
+    /// Node 语义：控制 `stack` 的**帧数上限**（`0` → 只留首行）。
+    fn error_stack_trace_limit(&mut self) -> usize {
+        const DEFAULT_LIMIT: usize = 10;
+        let Some(ctor) = self.error_ctor else {
+            return DEFAULT_LIMIT;
+        };
+        match self.own_value(ctor.index(), "stackTraceLimit") {
+            Some(v) => match v.case() {
+                ValueCase::Number(n) if n.is_finite() && n >= 0.0 => n as usize,
+                _ => DEFAULT_LIMIT,
+            },
+            None => DEFAULT_LIMIT,
+        }
     }
 
     /// 刷新错误实例的属性面（**构造收尾统一入口**）：
@@ -663,6 +731,10 @@ impl Vm {
 
     /// 依据实例当前**有效** `name`（沿原型链，实例通常无自有 name）同步
     /// `stack` 首行（子类构造 / `attach_error_proto` 后调用）。
+    ///
+    /// 只重写首行、保留既有帧；`stack` 缺失/非字符串时按当前 name+message
+    /// **重新生成**（不能写回 `"undefined"`——那会让 `String(err.stack)` 得到
+    /// 字面量 `"undefined"`，实测缺陷）。
     pub(crate) fn refresh_error_stack_name(&mut self, err: ObjectRef) {
         let name = self
             .get_property(Value::Object(err), "name")
@@ -674,25 +746,131 @@ impl Vm {
             .get_property(Value::Object(err), "message")
             .ok()
             .map(|v| self.format_value(v))
+            .filter(|s| s != "undefined")
             .unwrap_or_default();
         let head = if message.is_empty() {
             name
         } else {
             format!("{name}: {message}")
         };
-        // 仅替换首行，保留既有帧
-        let old = self
-            .get_property(Value::Object(err), "stack")
-            .ok()
-            .map(|v| self.format_value(v))
-            .unwrap_or_default();
-        let frames = old.split_once('\n').map(|(_, rest)| rest.to_owned());
+        // 既有 stack 的帧部分（第二行起），仅当是非空字符串时沿用
+        let frames = self
+            .own_value(err.index(), "stack")
+            .and_then(|v| v.as_object())
+            .and_then(|r| match self.heap.get(r.index()) {
+                Some(HeapObject::String(s)) => Some(s.clone()),
+                _ => None,
+            })
+            .and_then(|s| s.split_once('\n').map(|(_, rest)| rest.to_owned()));
         let new_stack = match frames {
-            Some(rest) => format!("{head}\n{rest}"),
-            None => head,
+            Some(rest) if !rest.is_empty() => format!("{head}\n{rest}"),
+            _ => head,
         };
         let v = self.alloc_string(new_stack);
         let _ = self.set_property(Value::Object(err), "stack", Value::Object(v));
+    }
+
+    /// 重新生成实例的 `stack`（`Error.captureStackTrace` 用）：
+    /// `target.stack` 覆盖为按 `Name: message` + 当前调用链生成的**字符串**
+    /// （Node 形态；不再写「调用点数组」）。
+    pub(crate) fn fill_error_stack(
+        &mut self,
+        target: ObjectRef,
+        constructor_opt: Option<ObjectRef>,
+    ) {
+        // message：优先自有槽，其次沿原型链（空串视为无 message）
+        let message = self
+            .own_value(target.index(), "message")
+            .or_else(|| {
+                self.get_property(Value::Object(target), "message")
+                    .ok()
+                    .filter(|v| !v.is_undefined())
+            })
+            .map(|v| self.format_value(v))
+            .filter(|s| !s.is_empty() && s != "undefined")
+            .unwrap_or_default();
+        let has_message = !message.is_empty();
+        // Node 语义：Error.prepareStackTrace 为函数时 stack = 其返回值
+        if let Some(prepared) = self.prepare_error_stack(Value::Object(target), constructor_opt) {
+            let _ = self.set_property(Value::Object(target), "stack", prepared);
+            self.refresh_error_enumerability(target);
+            return;
+        }
+        let text = self.build_error_stack_with(&message, has_message, constructor_opt);
+        let v = self.alloc_string(text);
+        let _ = self.set_property(Value::Object(target), "stack", Value::Object(v));
+        self.refresh_error_enumerability(target);
+    }
+
+    /// 构造 callsite 对象数组（`Error.prepareStackTrace` 的第二个实参）。
+    ///
+    /// 每个元素提供真实包（`depd` / Express 依赖链）所需的方法面：`getFileName`
+    /// /`getLineNumber`/`getColumnNumber`/`getFunctionName`/`getTypeName`/`getThis`
+    /// /`getEvalOrigin`/`isEval`/`isNative`/`isConstructor`/`isToplevel`/`toString`。
+    /// 本运行时无源映射与列号：行号 0、列号 1，文件名取入口文件。
+    pub(crate) fn build_callsite_array(
+        &mut self,
+        constructor_opt: Option<ObjectRef>,
+    ) -> Vec<Value> {
+        let file = if self.entry_file.is_empty() {
+            "<anonymous>".to_owned()
+        } else {
+            self.entry_file.clone()
+        };
+        let frames = crate::call::call_chain_snapshot();
+        let skip_idx = constructor_opt.and_then(|c| {
+            let target = match self.heap.get(c.index()) {
+                Some(HeapObject::Closure { func_idx, .. }) => *func_idx,
+                _ => return None,
+            };
+            frames.iter().rposition(|(f, _)| *f == target)
+        });
+        let limit = self.error_stack_trace_limit();
+        let mut out: Vec<Value> = Vec::new();
+        for (i, (_, fname)) in frames.iter().enumerate().rev() {
+            if skip_idx.is_some_and(|s| i >= s) {
+                continue;
+            }
+            if out.len() >= limit {
+                break;
+            }
+            let site = self.alloc_ordinary();
+            let ns = self.alloc_string("callsite".to_owned());
+            let _ = self.set_property(Value::Object(site), "_builtinNs", Value::Object(ns));
+            let file_v = Value::Object(self.alloc_string(file.clone()));
+            let _ = self.set_property(Value::Object(site), "_file", file_v);
+            let name_v = Value::Object(self.alloc_string(fname.to_string()));
+            let _ = self.set_property(Value::Object(site), "_funcName", name_v);
+            out.push(Value::Object(site));
+        }
+        out
+    }
+
+    /// 调用 `Error.prepareStackTrace(err, callSites)` 并返回其结果
+    /// （钩子缺失或不可调用时返回 `None`，调用方回退字符串 stack）。
+    ///
+    /// 真实包用法（`depd/index.js::getStack`）：
+    /// ```js
+    /// Error.prepareStackTrace = prepareObjectStackTrace;
+    /// Error.captureStackTrace(obj);
+    /// var stack = obj.stack.slice(1);   // 期望数组
+    /// ```
+    fn prepare_error_stack(
+        &mut self,
+        err: Value,
+        constructor_opt: Option<ObjectRef>,
+    ) -> Option<Value> {
+        let ctor = self.error_ctor?;
+        let hook = self.own_value(ctor.index(), "prepareStackTrace")?;
+        if hook.is_undefined() {
+            return None;
+        }
+        let (fi, uvs) = self.resolve_callable(hook);
+        let fi = fi?;
+        let sites = self.build_callsite_array(constructor_opt);
+        let arr = Value::Object(self.alloc_array(sites));
+        self.invoke_function(fi, Value::Undefined, &[err, arr], uvs)
+            .ok()
     }
 }
 

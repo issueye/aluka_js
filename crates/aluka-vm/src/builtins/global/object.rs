@@ -55,13 +55,21 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                     Some(crate::heap::HeapObject::String(_))
                 )
             });
-            let items: Vec<Value> = vm
-                .own_property_names(target)
-                .into_iter()
-                // `keys` 只列可枚举自有键：字符串包装的 length 不可枚举
-                .filter(|(k, _)| !(is_keys && is_str && k == "length"))
-                .map(|(k, _)| Value::Object(vm.alloc_string(k)))
-                .collect();
+            // `keys` 只要**可枚举**自有键 → `own_properties`；
+            // `getOwnPropertyNames` 含不可枚举自有键 → `own_property_names`
+            let items: Vec<Value> = if is_keys {
+                vm.own_properties(target)
+                    .into_iter()
+                    // 字符串包装的 length 不可枚举
+                    .filter(|(k, _)| !(is_str && k == "length"))
+                    .map(|(k, _)| Value::Object(vm.alloc_string(k)))
+                    .collect()
+            } else {
+                vm.own_property_names(target)
+                    .into_iter()
+                    .map(|(k, _)| Value::Object(vm.alloc_string(k)))
+                    .collect()
+            };
             Ok(Value::Object(vm.alloc_array(items)))
         }
         "setPrototypeOf" => {

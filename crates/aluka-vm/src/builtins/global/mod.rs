@@ -611,6 +611,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "captureStackTrace",
             Value::Object(cap),
         );
+        // Node 实测：`Error.captureStackTrace` **不可枚举**（`stackTraceLimit` 可枚举）
+        vm.mark_non_enumerable(Value::Object(ector), "captureStackTrace");
         register_handler(
             registry,
             "Error",
@@ -618,6 +620,11 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             error::error_capture_stack_trace,
         );
         let _ = vm.set_property(Value::Object(ector), "stackTraceLimit", Value::Number(10.0));
+        // `Error.prepareStackTrace`（Node 有该自有属性，值**默认 undefined**、
+        // 不可枚举；用户可赋函数以自定义 stack 渲染——本实现不调用它，
+        // 仅保证属性存在与描述符形态）
+        let _ = vm.set_property(Value::Object(ector), "prepareStackTrace", Value::Undefined);
+        vm.mark_non_enumerable(Value::Object(ector), "prepareStackTrace");
     }
 
     // ---- callsite 对象方法 ----

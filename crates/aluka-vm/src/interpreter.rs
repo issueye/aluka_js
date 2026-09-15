@@ -2029,6 +2029,32 @@ impl Vm {
             let res = crate::builtins::surface::fn_proto_bind(self, args)?;
             return Ok(res);
         }
+        // 函数 receiver 上的 `Object.prototype` 方法（`fn.propertyIsEnumerable(k)`、
+        // `fn.isPrototypeOf(o)`、`fn.valueOf()`、`fn.toLocaleString()`、
+        // `fn.hasOwnProperty(k)`…）：`Function.prototype` 继承自 Object.prototype，
+        // 但本引擎的函数方法面是 CALL_METHOD 硬编码链，不会回落到原型链 ⇒
+        // 这些方法此前一律「is not a function」（实测：
+        // `(function(){}).propertyIsEnumerable('prototype')`）。
+        // 注：`hasOwnProperty` 已在下方专门分支处理，此处不重复。
+        if receiver_is_fn {
+            let handler: Option<crate::builtins::BuiltinHandler> = match method_name {
+                "propertyIsEnumerable" => Some(crate::builtins::surface::obj_prop_is_enum),
+                "isPrototypeOf" => Some(crate::builtins::surface::obj_is_proto_of),
+                _ => None,
+            };
+            if let Some(handler) = handler {
+                crate::builtins::set_current_receiver(receiver);
+                crate::builtins::set_pending_native_name(&format!(
+                    "Object.prototype.{method_name}"
+                ));
+                return handler(self, args);
+            }
+            // `valueOf`/`toLocaleString`：函数自身即返回（规范
+            // Function.prototype 继承 Object.prototype 的默认行为）
+            if matches!(method_name, "valueOf" | "toLocaleString") {
+                return Ok(receiver);
+            }
+        }
         if matches!(method_name, "call" | "apply") {
             let method_val = self.get_property(receiver, method_name)?;
             let is_reflect_like = match &method_val.case() {
@@ -2378,6 +2404,23 @@ impl Vm {
                         ks.extend(getters.keys().filter(|k| !non_enum.contains(*k)).cloned());
                         ks
                     }
+                    // 原生函数 / 原生构造器：`Object.keys(Error)` 只含可枚举自有键
+                    //（`Error` 上为 `stackTraceLimit`；`prototype`/`captureStackTrace`/
+                    // `prepareStackTrace` 不可枚举）
+                    Some(HeapObject::NativeCtor {
+                        properties,
+                        non_enum,
+                        ..
+                    })
+                    | Some(HeapObject::NativeFn {
+                        properties,
+                        non_enum,
+                        ..
+                    }) => properties
+                        .keys()
+                        .filter(|k| !non_enum.contains(*k))
+                        .cloned()
+                        .collect(),
                     // 字符串原始值：自有可枚举面为数字索引（length 不可枚举）
                     Some(HeapObject::String(text)) => {
                         let units = text
@@ -2436,6 +2479,27 @@ impl Vm {
                     }) => {
                         let mut ks: Vec<String> = properties.keys().cloned().collect();
                         ks.extend(getters.keys().cloned());
+                        ks
+                    }
+                    // 原生构造器 / 原生函数：`Object.getOwnPropertyNames(Error)`
+                    // 为 ["length","name","prototype","captureStackTrace",
+                    // "prepareStackTrace","stackTraceLimit"]（含不可枚举项）
+                    Some(HeapObject::NativeCtor { properties, .. })
+                    | Some(HeapObject::NativeFn { properties, .. }) => {
+                        let mut ks: Vec<String> = Vec::with_capacity(properties.len() + 2);
+                        ks.push("length".to_owned());
+                        ks.push("name".to_owned());
+                        if properties.contains_key("prototype") {
+                            ks.push("prototype".to_owned());
+                        }
+                        // 其余按**字典序**（`properties` 为 HashMap，迭代序不稳定）
+                        let mut rest: Vec<&String> = properties
+                            .keys()
+                            .filter(|k| k.as_str() != "length" && k.as_str() != "name")
+                            .filter(|k| k.as_str() != "prototype")
+                            .collect();
+                        rest.sort();
+                        ks.extend(rest.into_iter().cloned());
                         ks
                     }
                     _ => Vec::new(),

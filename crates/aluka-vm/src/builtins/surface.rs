@@ -258,9 +258,28 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         "name",
         "length",
         "constructor",
+        // `Function.prototype` 继承 `Object.prototype` 的方法（规范：
+        // `Function.prototype` 的 [[Prototype]] 就是 `Object.prototype`）。
+        // 本引擎函数方法面为 CALL_METHOD 硬编码链 + fn_proto 属性表，
+        // 不自动沿原型链查找 ⇒ 这些键须显式挂上（否则
+        // `typeof (function(){}).valueOf === "undefined"`）。
+        "valueOf",
+        "toLocaleString",
+        "propertyIsEnumerable",
+        "isPrototypeOf",
+        "hasOwnProperty",
     ] {
         let f = vm.alloc_native_fn(&format!("Function.prototype.{m}"));
         let _ = vm.define_proto_method(Value::Object(fn_p), m, Value::Object(f));
+    }
+    // 上述继承方法转发到 Object.prototype 的实现（同名 handler）
+    for (m, handler) in [
+        ("valueOf", obj_value_of as crate::builtins::BuiltinHandler),
+        ("propertyIsEnumerable", obj_prop_is_enum),
+        ("isPrototypeOf", obj_is_proto_of),
+        ("hasOwnProperty", obj_has_own_prop),
+    ] {
+        register_handler(registry, "Function.prototype", m, handler);
     }
     register_handler(
         registry,
@@ -464,7 +483,13 @@ macro_rules! proto_getter {
             if let Some(p) = vm.$field {
                 return p;
             }
-            let p = vm.alloc_ordinary_with_proto(None);
+            // 内建原型对象的 [[Prototype]] 应为 **Object.prototype**
+            // （规范：`Function.prototype` / `Array.prototype` 等都继承
+            //  `Object.prototype` 的方法面）。此前传 `None` ⇒
+            //  `(function(){}).propertyIsEnumerable(...)` 等一概
+            //  「is not a function」（实测：Function.prototype 缺
+            //  propertyIsEnumerable/isPrototypeOf/valueOf）。
+            let p = vm.alloc_ordinary_with_proto(vm.object_prototype);
             vm.$field = Some(p);
             p
         }
@@ -675,7 +700,7 @@ fn obj_value_of(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `Object.prototype.propertyIsEnumerable.call(obj, key)`。
-fn obj_prop_is_enum(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn obj_prop_is_enum(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
     let key = args
         .first()
@@ -683,12 +708,11 @@ fn obj_prop_is_enum(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .unwrap_or_default();
     let en = match this.case() {
         ValueCase::Object(r) => {
-            // 自有属性且不在不可枚举集合
-            vm.has_own_slot(r.0 as usize, &key)
-                && !matches!(
-                    vm.heap.get(r.0 as usize),
-                    Some(HeapObject::Ordinary { non_enum, .. }) if non_enum.contains(&key)
-                )
+            // 自有可能不可枚举：统一走 key_is_non_enumerable（覆盖
+            // Ordinary/Closure/**NativeCtor/NativeFn**——内建构造器的
+            // prototype 与 Error.captureStackTrace 均不可枚举，
+            // Boolean.propertyIsEnumerable('prototype') 须为 false）
+            vm.has_own_slot(r.0 as usize, &key) && !vm.key_is_non_enumerable(this, &key)
         }
         _ => false,
     };
@@ -696,7 +720,7 @@ fn obj_prop_is_enum(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// `Object.prototype.isPrototypeOf.call(proto, probe)`：沿 probe 原型链查找。
-fn obj_is_proto_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+pub(crate) fn obj_is_proto_of(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let this = super::current_receiver();
     let probe = args.first().copied().unwrap_or(Value::Undefined);
     let ValueCase::Object(target) = probe.case() else {

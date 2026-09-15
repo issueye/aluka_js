@@ -748,10 +748,19 @@ impl Vm {
                             _ => None,
                         };
                         self.set_prototype_of(built, proto);
-                        let entries = self.own_entries(br.0 as usize);
+                        // 复制父类构造写入的自有属性（message/stack 等）：
+                        // 必须用**含不可枚举键**的 `own_entries_all`——
+                        // `Error` 面上 message/stack 均为不可枚举（Node 语义），
+                        // 用 `own_entries` 会全部过滤掉，致
+                        // `class E extends Error { constructor(m) { super(m); } }`
+                        // 的实例 message 丢失（实测：`new E('x').message === ""`）。
+                        let entries = self.own_entries_all(br.0 as usize);
                         for (k, v) in entries {
                             let _ = self.set_property(Value::Object(tr), &k, v);
                         }
+                        // 复制后需重算 stack 首行（子类名 + message）
+                        self.refresh_error_stack_name(tr);
+                        self.refresh_error_enumerability(tr);
                         return Ok(Value::Object(tr));
                     }
                 }

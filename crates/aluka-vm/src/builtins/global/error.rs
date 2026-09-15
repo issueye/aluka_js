@@ -5,8 +5,6 @@ use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
 use crate::value::{Value, ValueCase};
 
-const CALLSITE_FRAMES: usize = 12;
-
 /// `Error.prototype.toString()`：按规范 S20.5.3.4 组合 `name` 与 `message`。
 ///
 /// - `name` 缺省 → `"Error"`；`message` 缺省 / 空串 → 只输出 name；
@@ -37,24 +35,32 @@ pub(crate) fn error_proto_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Valu
     Ok(Value::Object(vm.alloc_string(text)))
 }
 
+/// `Error.captureStackTrace(targetObject[, constructorOpt])`：把 `targetObject.stack`
+/// 重写为按当前调用链生成的**字符串**（Node 形态）。
+///
+/// 语义（Node 实测锁定）：
+/// - 返回 `undefined`；
+/// - `stack` **保持字符串**（此前写「调用点数组」，与 `stack` 的字符串形态
+///   冲突，且 `String(err.stack)` 会得到 `[object Object]` 形态）；
+/// - 第二参数 `constructorOpt`：**省略该构造器帧及其内侧帧**（规范
+///   「all frames above constructorOpt, including constructorOpt, will be omitted」）——
+///   子类里 `Error.captureStackTrace(this, MyErr)` 的 stack 不应出现 `MyErr`；
+/// - 帧数受 `Error.stackTraceLimit` 限制（同普通 `stack` 生成）。
 pub(crate) fn error_capture_stack_trace(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let Some(target) = args.first().copied() else {
+    let Some(target) = args.first().copied().and_then(|v| v.as_object()) else {
         return Ok(Value::Undefined);
     };
-    let mut frames = Vec::with_capacity(CALLSITE_FRAMES);
-    for _ in 0..CALLSITE_FRAMES {
-        let site = vm.alloc_ordinary();
-        let ns = vm.alloc_string("callsite".to_owned());
-        let _ = vm.set_property(Value::Object(site), "_builtinNs", Value::Object(ns));
-        let file = vm.alloc_string(vm.entry_file.clone());
-        let _ = vm.set_property(Value::Object(site), "_file", Value::Object(file));
-        frames.push(Value::Object(site));
-    }
-    let stack_arr = Value::Object(vm.alloc_array(frames));
-    vm.set_property(target, "stack", stack_arr)?;
+    let constructor_opt = args.get(1).copied().and_then(|v| v.as_object());
+    vm.fill_error_stack(target, constructor_opt);
     Ok(Value::Undefined)
 }
 
+/// callsite 对象的方法面（`Error.prepareStackTrace` 的实参元素）。
+///
+/// 真实包（`depd/index.js::callSiteLocation`）会调用
+/// `getFileName`/`getLineNumber`/`getColumnNumber`/`isEval`/`getEvalOrigin`/
+/// `getFunctionName`，并读 `getThis`/`getTypeName` 生成消息。
+/// 本运行时无源映射：行号 0、列号 1、`isEval`/`isNative`/`isConstructor` 均 false。
 pub(crate) fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let receiver = current_receiver();
     let method = match receiver.case() {
@@ -66,21 +72,37 @@ pub(crate) fn callsite_method(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmE
         },
         _ => String::new(),
     };
-    let file = match receiver.case() {
+    let field = |vm: &mut Vm, key: &str| match receiver.case() {
         ValueCase::Object(r) => vm
-            .own_value(r.0 as usize, "_file")
+            .own_value(r.0 as usize, key)
             .map(|v| vm.format_value(v))
             .unwrap_or_default(),
         _ => String::new(),
     };
+    let file = field(vm, "_file");
+    let func_name = field(vm, "_funcName");
     match method.as_str() {
         "getFileName" => Ok(Value::Object(vm.alloc_string(file))),
-        "getLineNumber" | "getColumnNumber" => Ok(Value::Number(0.0)),
+        "getLineNumber" => Ok(Value::Number(0.0)),
+        "getColumnNumber" => Ok(Value::Number(1.0)),
+        "getFunctionName" => {
+            if func_name.is_empty() {
+                Ok(Value::Undefined)
+            } else {
+                Ok(Value::Object(vm.alloc_string(func_name)))
+            }
+        }
+        // `getTypeName`：无接收者信息 → undefined（`depd` 对其做真值判断）
+        "getTypeName" | "getEvalOrigin" => Ok(Value::Undefined),
+        // `getThis`：未跟踪接收者 → undefined（`depd` 会 `context && …` 短路）
+        "getThis" => Ok(Value::Undefined),
         "isNative" | "isEval" | "isConstructor" => Ok(Value::Boolean(false)),
-        "getFunctionName" | "getTypeName" => Ok(Value::Undefined),
-        "toString" => Ok(Value::Object(
-            vm.alloc_string(format!("at <anonymous> ({file})")),
-        )),
+        "isToplevel" => Ok(Value::Boolean(true)),
+        "toString" => Ok(Value::Object(vm.alloc_string(if func_name.is_empty() {
+            format!("at <anonymous> ({file})")
+        } else {
+            format!("at {func_name} ({file})")
+        }))),
         _ => Ok(Value::Undefined),
     }
 }
