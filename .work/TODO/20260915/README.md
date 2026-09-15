@@ -278,6 +278,24 @@ error 计数 = 0                                  → CLEAN
 $ cargo test --workspace --all-features
 TOTAL passed=652 failed=0
 ```
+**复核（09:36，拉取 `origin/master` 后重跑）**：`git fetch --prune` 后快进 `3611d6f → df07ac2`，与远端一致（`git rev-list --left-right --count HEAD...origin/master` = `0 0`），三连门禁在最新提交上重跑，结论与上述记录一致：
+
+```text
+$ cargo fmt --all --check
+（无输出）                                      → FMT CLEAN（exit 0）
+
+$ cargo clippy --all-targets --all-features -- -D warnings
+Finished `dev` profile ... in 24.74s            → exit 0，warning 计数 = 0
+
+$ cargo test --workspace --all-features
+92 组 `test result:` 行 / 171 个测试二进制（含 doc-tests）
+TOTAL passed=652 failed=0 ignored=1
+  └ ignored 为 Doc-tests aluka_vm 的 1 例（非失败）
+conformance_node22_test  → ok  1 passed  (68.71s)
+test262_subset_test      → ok  1 passed  (75.52s)
+golden_execution_oracle_test → ok 33 passed
+jitdiff                  → ok  1 passed  (31.34s)
+```
 
 ### 待办 9 · 真实生态与既有验收回归
 
@@ -331,6 +349,9 @@ $ aluka build axios.cjs
 | 4 | **`tests/conformance/express/run.sh` 陈旧** | 探测失效 | 脚本探测 `http://127.0.0.1:3000/echo/ready` 并期望 JSON 响应，但 `app.js` 用 `listen(0)` 且路由返回纯文本（`/echo/:word` 无 `ready` 特例、亦无 `/load`、`/json` 返回体不同）；该脚本自仓库初始提交（`7d140da`）以来未更新。Express 的**权威验收**是 `app.js` 输出对拍 `app.oracle.txt`（已逐行一致） |
 | 5 | **`stream.Stream` 未导出** | 已暴露 | `require('stream').Stream` 为 `undefined`（Node 为函数）。下游 `util.inherits(X, Stream)` 即抛「Cannot read properties of undefined」——`delayed-stream` / `combined-stream` / `form-data` 链全在此断（axios 运行期阻塞项之一） |
 | 6 | **codegen 栈下溢（`StackUnderflow`）** | 已暴露 | 加载 `form-data` 链时报 `func=52/30/1/-1 pc=11 err=StackUnderflow`（`pc=11`，疑似同一构造）。**已确认为既有缺陷、与本轮改动无关**（见下「回归判定」）。另 `math-intrinsics` / `dunder-proto` 加载返回 `undefined` |
+| 7 | **模板字面量中 `CRLF`/`CR` 未归一化为 `LF`** | 语义偏离 | 源码为 CRLF 时，模板 cooked 值与 `String.raw` 的 raw 值保留 `\r\n`；Node 归一化为 `\n`（ECMA-262 `TV`/`TRV`：`<CR>` 与 `<CR><LF>` → `<LF>`）。**Windows 检出即触发**（本仓库 `.work/diff/*.js` 为 CRLF）。复现：`15_template` 差分不一致（`"multi\r\nline"` vs `"multi\nline"`），差分电池 14/15（见 §5.2） |
+| 8 | **字符串字面量行继续 `反斜杠 + LF` 保留换行** | 语义偏离 | `"a\<LF>b"` 应得 `"ab"`（`LineContinuation` → 空串），实际得 `"a\nb"`；lone CR 下得 `"a\rb"`。LF 源即已偏离，**与平台无关**（见 §5.2） |
+| 9 | **CRLF 源码中 `反斜杠 + CRLF` 行继续导致编译失败** | 编译失败 | `"a\<CRLF>b"` 报 `SyntaxError: 字符串字面量包含行终结符`，Node 正常得 `"ab"`。lexer 未把 `\` + CRLF 识别为 `LineContinuation`，疑与第 8 项同源；Windows 平台必修（见 §5.2） |
 
 ### 5.1 回归判定（axios 运行期的两项阻塞是否由本轮引入）
 
@@ -369,6 +390,55 @@ $ aluka run fd.js
 - 运行期剩余阻塞（`stream.Stream` 缺失等）属**新暴露的既有缺口**，与
   「6 项登记缺陷」是不同范畴，已登记为后续项，不在本轮范围内。
 
+### 5.2 复核补测：行尾（EOL）处理缺陷（新增，见 §5 表 7~9）
+
+以 `df07ac2` 工作区重跑 `.work/diff` 差分电池（`bash` 不在 PATH，用 PowerShell 等价复刻：
+`alukac` → `aluvm` 输出 vs `node` 输出），唯一不一致项 `15_template` 定位为**模板字面量
+CRLF 未归一化**；据此自建探针扩大排查，确认同源缺陷共 3 项。
+
+```text
+$ # 差分电池（15 例）
+---- 差分结果: 一致 14 / 不一致 1 ----
+=== 15_template : DIFF ===
+  ALUKA: "multi\r\nline"
+  NODE : "multi\nline"
+```
+
+```text
+$ # 探针 1：模板字面量（LF 源 vs CRLF 源），node v22.3.0
+tpl_lf.js     ALUKA: cooked="x\ny"   raw="p\nq"    |  NODE: cooked="x\ny"   raw="p\nq"    → MATCH
+tpl_crlf.js   ALUKA: cooked="x\r\ny" raw="p\r\nq"  |  NODE: cooked="x\ny"   raw="p\nq"    → DIFF（表 7）
+
+$ # 探针 2：同一源码三种行尾（含字符串行继续 eol_lf.js）
+eol_lf.js     ALUKA: cont="a\nb" tpl="m\nn"   |  NODE: cont="ab" tpl="m\nn"    → DIFF（表 8）
+eol_crlf.js   ALUKA: 编译失败 → SyntaxError: 字符串字面量包含行终结符
+              NODE : cont="ab" / tpl="m\nn" / comment-ok / done                → FAIL（表 9）
+eol_cr.js     ALUKA: cont="a\rb" tpl="m\rn"   |  NODE: cont="ab" tpl="m\nn"    → DIFF（表 7+8）
+```
+
+```js
+// eol_lf.js（探针源码，LF 行尾；反斜杠后为真实换行）
+var s = "a\
+b";
+console.log("cont=" + JSON.stringify(s));
+console.log("tpl=" + JSON.stringify(`m
+n`));
+```
+
+```text
+$ # 行尾对照（同一批 15 个探针，仅改行尾；alukac → aluvm 输出 vs node 输出）
+工作区源码（CRLF，core.autocrlf=true）: 一致 14 / 不一致 1（15_template）
+同一批转换为 LF 后重跑                : 一致 15 / 不一致 0
+```
+
+→ 既有记录「差分 15/15」是在 **LF 行尾**下取得的，两处记录并不矛盾；表 7/9 **仅在
+CRLF 源码下触发**（本仓库 Windows 检出即 CRLF），而表 8 与行尾无关、任何平台均偏离。
+
+**判定**：三项均偏离 ECMA-262（`LineContinuation` → 空串；`TV`/`TRV` 中 `<CR>` 与
+`<CR><LF>` → `<LF>`），且**在 Windows 检出下必然触发**——本仓库 `core.autocrlf=true`，
+`.work/diff/*.js` 与 `tools_m72_import.py` 导入的 test262 用例多为 CRLF。表 9 直接表现为
+**编译失败**，属平台必修项。本轮仅完成测试与登记，未改动实现。
+
 ---
 
 ## 6. 结论
@@ -380,7 +450,7 @@ $ aluka run fd.js
 
 门禁与既有验收**全绿无回归**：fmt ✓ / clippy 0 errors ✓ /
 `cargo test --workspace` 652 passed 0 failed ✓ / t262 1130 ✓ /
-conformance 877 ✓ / 差分 15/15 ✓ / Express oracle 逐行一致 ✓ /
+conformance 877 ✓ / 差分 15/15 ✓（⚠ 复核更正：拉取 `df07ac2` 后重跑为 **14/15**，唯一不一致由 §5.2 表 7 缺陷导致）/ Express oracle 逐行一致 ✓ /
 **axios 编译从「失败 1」推进到「失败 0」** ✓。
 
 **范围说明**：`axios.cjs` 由「编译失败」推进到「编译通过」后，运行期暴露出
