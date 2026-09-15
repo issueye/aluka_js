@@ -15,7 +15,24 @@ use aluka_parser::source_unit::{LanguageRegistry, ModuleKind};
 use aluka_vm::{Value, Vm};
 
 /// 执行字节码模块：加载、校验、运行、按退出码映射收尾。
+///
+/// `argv[0]` 取 `input`（字节码路径）——`aluvm run app.bc` / `aluka run app.bc`
+/// 直执行场景下这正是用户所指的目标。源码经 `aluka run` 构建后执行的场景请用
+/// [`execute_bc_with_script`] 传入源脚本路径（否则 `argv[0]` 会暴露内部构建产物）。
 pub fn execute_bc(input: &Path, cli_args: &[String]) -> ExitCode {
+    execute_bc_with_script(input, None, cli_args)
+}
+
+/// 执行字节码模块，并**显式指定 `process.argv[0]`**（源脚本路径）。
+///
+/// `aluka run <源码>` 时字节码是内部构建产物（`aluka_build/<相对路径>.bc`），
+/// 对脚本可见的 `argv[0]` 应是用户实际运行的源脚本，而非 `.bc` 产物。
+/// `script` 为 `None` 时退回 `input`。
+pub fn execute_bc_with_script(
+    input: &Path,
+    script: Option<&Path>,
+    cli_args: &[String],
+) -> ExitCode {
     let data = match std::fs::read(input) {
         Ok(data) => data,
         Err(err) => {
@@ -40,7 +57,8 @@ pub fn execute_bc(input: &Path, cli_args: &[String]) -> ExitCode {
     install_eval_provider(&mut vm);
     // M5.1：真实 worker 线程钩子（装配层独占编译能力）
     install_worker_entry(&mut vm);
-    inject_process_argv(&mut vm, input, cli_args);
+    // `argv[0]`：源码构建场景取源脚本，直执行场景取字节码路径
+    inject_process_argv(&mut vm, script.unwrap_or(input), cli_args);
     vm.setup_cjs(input); // CJS 模块上下文（require/exports/循环依赖）
     // 函数扩展标量头（arguments 槽位等）
     if let Err(err) = vm.load_module(&data[payload_range], &module) {

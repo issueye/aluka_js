@@ -245,7 +245,8 @@ fn run_command(script: &Path, args: &[String], optimize: bool) -> ExitCode {
             return build;
         }
         let entry_bc = aluka_compiler::build::entry_bc_path(script, Some(&outdir));
-        return aluka_runtime::execute_bc(&entry_bc, args);
+        // `argv[0]` = 用户运行的源脚本（源码构建场景不暴露内部 .bc 产物）
+        return aluka_runtime::bc_entry::execute_bc_with_script(&entry_bc, Some(script), args);
     }
     run_script(script, args, optimize)
 }
@@ -381,7 +382,10 @@ fn test_command(targets: &[PathBuf], reporter: ReporterKind, optimize: bool) -> 
         // 再执行入口字节码（`test/`、`tests/` 下的用例常 `require('../src/x')`，
         // 直接 execute_file 会因跨目录依赖缺失而失败）。
         let exec_result = match build_if_needed(file, optimize) {
-            Ok(Some(entry_bc)) => runtime.execute_bc_file(&entry_bc, &[], optimize),
+            Ok(Some(entry_bc)) => {
+                // `argv[0]` = 用例源文件（同 `aluka run` 的构建路径语义）
+                runtime.execute_bc_file_with_script(&entry_bc, Some(file), &[], optimize)
+            }
             Ok(None) => runtime.execute_file(file, &[], optimize),
             Err(code) => return code,
         };

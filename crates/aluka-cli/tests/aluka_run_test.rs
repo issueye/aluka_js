@@ -144,6 +144,67 @@ fn test_aluka_run_argv_forwarding() {
     assert_eq!(stdout, "argv[1]: foo\nargv[2]: bar");
 }
 
+/// `argv[0]` 语义：`aluka run <源码>` 时对脚本可见的是**用户运行的源脚本**，
+/// 而非内部构建产物（`aluka_build/<相对路径>.bc`）。
+///
+/// 覆盖两条路径：① 有 `node_modules`（构建镜像后执行）；② 无（直编译执行）。
+#[test]
+fn test_aluka_run_argv0_is_user_script() {
+    let aluka_bin = env!("CARGO_BIN_EXE_aluka");
+    let temp_dir = std::env::temp_dir().join("aluka_run_test_argv0");
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::create_dir_all(&temp_dir).expect("创建临时目录失败");
+    // ② 无 node_modules：直执行路径
+    let direct = temp_dir.join("direct.js");
+    fs::write(
+        &direct,
+        "console.log('argv0-basename:' + require('node:path').basename(process.argv[0]));\n",
+    )
+    .expect("写入 direct.js 失败");
+    let out = Command::new(aluka_bin)
+        .arg("run")
+        .arg("direct.js")
+        .current_dir(&temp_dir)
+        .output()
+        .expect("执行失败");
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    assert_eq!(
+        stdout.trim(),
+        "argv0-basename:direct.js",
+        "直执行路径 argv[0] 应为用户运行的源脚本"
+    );
+
+    // ① 有 node_modules：构建镜像路径（`argv[0]` 不得暴露 .bc 产物）
+    let build_dir = temp_dir.join("proj");
+    fs::create_dir_all(build_dir.join("node_modules")).expect("创建 node_modules 失败");
+    fs::write(
+        build_dir.join("package.json"),
+        "{\"name\":\"argv0\",\"version\":\"1.0.0\"}",
+    )
+    .expect("写入 package.json 失败");
+    fs::write(
+        build_dir.join("app.js"),
+        "const a = process.argv[0];\nconsole.log('endsBc:' + a.endsWith('.bc'));\nconsole.log('base:' + require('node:path').basename(a));\nconsole.log('args:' + JSON.stringify(process.argv.slice(1)));\n",
+    )
+    .expect("写入 app.js 失败");
+    let out = Command::new(aluka_bin)
+        .arg("run")
+        .arg("app.js")
+        .arg("p1")
+        .arg("p2")
+        .current_dir(&build_dir)
+        .output()
+        .expect("执行失败");
+    assert!(out.status.success(), "{:?}", out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+    assert_eq!(
+        stdout.trim(),
+        "endsBc:false\nbase:app.js\nargs:[\"p1\",\"p2\"]",
+        "构建路径 argv[0] 应为源脚本且参数完整透传"
+    );
+}
+
 #[test]
 fn test_aluka_run_uncaught_exception_exit_code() {
     let aluka_bin = env!("CARGO_BIN_EXE_aluka");

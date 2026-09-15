@@ -20,7 +20,7 @@ use aluka_webapi::Capability;
 pub mod bc_entry;
 /// 测试报告器形态与汇总计数（`aluka test` 子命令与嵌入方共用）。
 pub use aluka_vm::builtins::test_reporters::{ReportCounts, ReportStatus, ReporterKind};
-pub use bc_entry::execute_bc;
+pub use bc_entry::{execute_bc, execute_bc_with_script};
 
 /// 运行时装配、编译或执行失败的原因。
 #[derive(Debug, Clone, PartialEq)]
@@ -254,6 +254,17 @@ impl Runtime {
         args: &[String],
         optimize: bool,
     ) -> Result<Value, RuntimeError> {
+        self.execute_bc_file_with_script(path, None, args, optimize)
+    }
+
+    /// [`Runtime::execute_bc_file`] 的显式 `argv[0]` 变体（见其文档）。
+    pub fn execute_bc_file_with_script(
+        &mut self,
+        path: &Path,
+        script: Option<&Path>,
+        args: &[String],
+        optimize: bool,
+    ) -> Result<Value, RuntimeError> {
         let _ = optimize;
         let data = std::fs::read(path)
             .map_err(|e| RuntimeError::Io(format!("{}: {e}", path.display())))?;
@@ -266,7 +277,7 @@ impl Runtime {
         let mut vm = Vm::new(0);
         install_eval_provider(&mut vm);
         install_worker_entry(&mut vm);
-        inject_process_argv(&mut vm, path, args);
+        inject_process_argv(&mut vm, script.unwrap_or(path), args);
         vm.setup_cjs(path);
         let lcov_module = if self.coverage_compile {
             vm.set_jit_enabled(false);
