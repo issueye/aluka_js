@@ -125,7 +125,10 @@ pub fn extract_bytes(vm: &Vm, val: Value) -> Option<Vec<u8>> {
 
 /// 在 VM 堆上创建新的 Buffer 实例。
 pub fn create_buffer_instance(vm: &mut Vm, data: Vec<u8>) -> ObjectRef {
-    let obj = vm.alloc_ordinary();
+    // 隐式原型指向 `Buffer.prototype`（存在时）——`buf instanceof Buffer`
+    // 与「SafeBuffer 原型链经 Object.create(Buffer.prototype) 继承实例方法」
+    // 都依赖该链；实例仍保留自身的方法属性面（既有行为不变）。
+    let obj = vm.alloc_ordinary_with_proto(vm.buffer_proto);
     store_buffer(obj.0, data.clone());
 
     let len = data.len();
@@ -225,6 +228,19 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "Buffer", "isEncoding", is_encoding);
     register_handler(registry, "Buffer", "concat", concat);
     register_handler(registry, "Buffer", "compare", compare);
+
+    // `Buffer.prototype`：实例方法面（toString/slice/toJSON/equals）的挂载点。
+    // 实例默认隐式原型指向它；真实包按 `Object.create(Buffer.prototype)`
+    // 派生 SafeBuffer 原型（safe-buffer 第 24 行）——该键缺失会让 express
+    // 依赖链整体加载失败（Object.create(undefined) → TypeError）。
+    let proto = vm.alloc_ordinary();
+    set_module_prop(vm, proto, "constructor", Value::Object(buf_class))?;
+    for method in ["toString", "slice", "toJSON", "equals"] {
+        let f = vm.alloc_native_fn(&format!("buffer:instance.{method}"));
+        set_module_prop(vm, proto, method, Value::Object(f))?;
+    }
+    vm.set_native_fn_property(buf_class, "prototype", Value::Object(proto));
+    vm.buffer_proto = Some(proto);
 
     Ok(obj)
 }
@@ -358,6 +374,75 @@ fn buffer_from(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             Ok(Value::Object(inst))
         }
     }
+}
+
+/// `Buffer(arg[, encodingOrOffset[, length]])`——**可调用亦可构造**的
+/// 传统 Buffer 形态（Node 的 `Buffer` 是函数而非 class，safe-buffer 的
+/// `SafeBuffer(arg, enc, len) { return Buffer(arg, enc, len) }` 直接裸调用
+/// 且不加 `new`）。
+///
+/// 分派规则对齐 Node：
+/// - 无参 / 数字 → 该长度的零填充缓冲（`Buffer(4)`）
+/// - 字符串 → 按 encoding 解码（缺省 utf8）
+/// - 数组 / 类型化数组 / 既有 Buffer / ArrayBuffer → 复制其字节
+/// - 其余对象 → 经 `ToPrimitive` 后按字符串或数字处理
+pub fn buffer_construct(vm: &mut Vm, args: &[Value], ctor: Value) -> Result<Value, VmError> {
+    let inst = match args.first().copied() {
+        None => create_buffer_instance(vm, Vec::new()),
+        Some(v) => match v.case() {
+            // 数字长度：零填充（Node 的 `Buffer(n)` 语义）
+            ValueCase::Number(_) => {
+                let size = match v.case() {
+                    ValueCase::Number(n) => (n as i64).max(0) as usize,
+                    _ => 0,
+                };
+                create_buffer_instance(vm, vec![0u8; size])
+            }
+            // 字符串（含堆字符串）：按 encoding 解码
+            ValueCase::Object(r)
+                if matches!(vm.heap.get(r.0 as usize), Some(HeapObject::String(_))) =>
+            {
+                let s = vm.format_value(v);
+                let enc = args
+                    .get(1)
+                    .map(|e| vm.format_value(*e).to_lowercase())
+                    .unwrap_or_else(|| "utf8".to_owned());
+                create_buffer_instance(vm, decode_string_to_bytes(&s, &enc))
+            }
+            ValueCase::Object(r) => {
+                if let Some(bytes) = extract_bytes(vm, Value::Object(r)) {
+                    create_buffer_instance(vm, bytes)
+                } else {
+                    // 可迭代/类数组对象：按数组元素取字节
+                    let elems = vm.to_array_values(Value::Object(r));
+                    if elems.is_empty() {
+                        create_buffer_instance(vm, Vec::new())
+                    } else {
+                        let bytes: Vec<u8> = elems
+                            .iter()
+                            .map(|e| match e.case() {
+                                ValueCase::Number(n) => (n as i64 & 0xFF) as u8,
+                                _ => {
+                                    let s = vm.format_value(*e);
+                                    s.as_bytes().first().copied().unwrap_or(0)
+                                }
+                            })
+                            .collect();
+                        create_buffer_instance(vm, bytes)
+                    }
+                }
+            }
+            // 原始值兜底：布尔/undefined 等经 ToString 解码
+            _ => {
+                let s = vm.format_value(v);
+                create_buffer_instance(vm, decode_string_to_bytes(&s, "utf8"))
+            }
+        },
+    };
+    // 构造器原型已由 create_buffer_instance 挂到 Buffer.prototype，
+    // 这里只补 `constructor` 回指（`buf.constructor === Buffer`）
+    let _ = vm.set_property(Value::Object(inst), "constructor", ctor);
+    Ok(Value::Object(inst))
 }
 
 /// `Buffer.alloc(size, [fill])`

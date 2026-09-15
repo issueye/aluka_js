@@ -342,8 +342,9 @@ impl Vm {
             out.push(*uv.0.borrow());
         }
         // 微任务队列：nextTick 回调 + Promise 回调 + 挂起帧恢复
-        for cb in &self.nexttick_queue {
+        for (cb, args) in &self.nexttick_queue {
             out.push(*cb);
+            out.0.extend(args.iter().copied());
         }
         for job in &self.microtask_queue {
             match job {
@@ -375,8 +376,9 @@ impl Vm {
             }
         }
         // 宏任务（定时器回调）
-        for (_, _, _, cb, _) in &self.macro_tasks {
+        for (_, _, _, cb, args, _) in &self.macro_tasks {
             out.push(*cb);
+            out.0.extend(args.iter().copied());
         }
         // try 栈：挂起异常与挂起 return
         for h in &self.try_stack {

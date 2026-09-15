@@ -296,6 +296,13 @@ impl Vm {
             if matches!(ctor_name.as_deref(), Some("Object") | Some("Array")) {
                 return self.do_construct(callee, args);
             }
+            // `Buffer(arg[, enc[, len]])` 无 new 直调（Node 的 Buffer 是普通
+            // 函数，safe-buffer 的 SafeBuffer 就靠裸调用转发；此前报
+            // [function Function] is not a function，致 express 的
+            // `Buffer.from` 回退路径瘫痪）
+            if ctor_name.as_deref() == Some("Buffer") {
+                return crate::builtins::buffer::buffer_construct(self, args, callee);
+            }
             // `revoke()`：捕获的撤销闭包面（自有属性 `_revokes` 存 proxy 句柄；
             // 处理器签名无法拿到自身 fn 对象，故在此特判）
             if let Some(HeapObject::NativeFn { name, .. }) = self.heap.get(r.0 as usize) {
@@ -526,7 +533,7 @@ impl Vm {
                         self.register_set_instance(set_ref);
                         return Ok(Value::Object(set_ref));
                     }
-                    "URL" => return Ok(self.url_constructor(args)),
+                    "URL" => return crate::builtins::global::url_obj::url_ctor(self, args),
                     "Proxy" => return self.construct_proxy(args),
                     "Function" => return self.construct_function(args),
                     // 包装对象（`new Boolean(v)` / `new Number(v)`）：Ordinary
@@ -621,6 +628,15 @@ impl Vm {
                         return Ok(Value::Object(inst));
                     }
                     "Date" => return self.construct_date(args),
+                    // `new Buffer(arg[, enc[, len]])`：与裸调用同一实现
+                    //（Node 两种形态等价）
+                    "Buffer" => {
+                        return crate::builtins::buffer::buffer_construct(
+                            self,
+                            args,
+                            Value::Object(r),
+                        );
+                    }
                     "ArrayBuffer" => return self.construct_array_buffer(args, false),
                     "SharedArrayBuffer" => return self.construct_array_buffer(args, true),
                     "DataView" => return self.construct_data_view(args),

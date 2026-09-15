@@ -30,6 +30,7 @@ pub mod number;
 pub mod object;
 pub mod string_fns;
 pub mod uri;
+pub mod url_obj;
 pub mod web;
 
 use crate::builtins::{BuiltinHandler, BuiltinRegistry, ModuleDef, register_handler};
@@ -398,7 +399,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         .dispatch
         .insert("URLSearchParams".to_owned(), web::url_search_params_ctor);
     for method in [
-        "append", "get", "getAll", "has", "set", "delete", "toString",
+        "append", "get", "getAll", "has", "set", "delete", "toString", "size", "keys", "values",
+        "entries", "forEach", "sort",
     ] {
         register_handler(
             registry,
@@ -407,6 +409,32 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             web::url_search_params_method,
         );
     }
+
+    // ---- WHATWG URL（M4.1 补齐）：访问器面 + 与 searchParams 双向联动 ----
+    // 构造器句柄写进 globals（`new URL(...)` 经 call.rs 的 NativeCtor 分支
+    // 派发到 url_obj::url_ctor）。
+    let url_ctor = vm.alloc_native_ctor("URL", None);
+    vm.globals.insert("URL".to_owned(), Value::Object(url_ctor));
+    registry
+        .dispatch
+        .insert("URL".to_owned(), url_obj::url_ctor);
+    register_handler(registry, "URL", "toString", url_obj::url_to_string);
+    register_handler(registry, "URL", "toJSON", url_obj::url_to_string);
+    // 实例访问器：get/set 各一条（键从被调函数对象的 `_urlKey` 取）
+    register_handler(
+        registry,
+        "URL:instance",
+        "accessor.get",
+        url_obj::url_accessor_get,
+    );
+    register_handler(
+        registry,
+        "URL:instance",
+        "accessor.set",
+        url_obj::url_accessor_set,
+    );
+    register_handler(registry, "URL:instance", "toString", url_obj::url_to_string);
+    register_handler(registry, "URL:instance", "toJSON", url_obj::url_to_string);
 
     let te_ctor = vm.alloc_native_ctor("TextEncoder", None);
     vm.globals

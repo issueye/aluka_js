@@ -175,8 +175,8 @@ impl Vm {
     /// （执行中可能追加新回调）。
     pub(crate) fn drain_microtasks(&mut self) -> Result<(), VmError> {
         // 1. nextTick 优先（整段清空）
-        while let Some(cb) = self.nexttick_queue.pop_front() {
-            self.invoke_callable(cb, Value::Undefined, &[])?;
+        while let Some((cb, cb_args)) = self.nexttick_queue.pop_front() {
+            self.invoke_callable(cb, Value::Undefined, &cb_args)?;
         }
         // 2. Promise 回调循环（新增回调在本轮继续执行；回调携带兑现值；
         //    Resume 帧恢复后继续 async 函数）
@@ -278,28 +278,30 @@ impl Vm {
     /// 顶层事件循环据此决定是否继续交替排空。
     pub(crate) fn drain_macro_tasks(&mut self) -> Result<bool, VmError> {
         // 收集全部任务，反复取「到期最早」的执行（用例规模小，线性扫描足够）
-        let mut tasks: Vec<(u64, u64, u64, Value, bool)> = self.macro_tasks.drain(..).collect();
+        let mut tasks: Vec<(u64, u64, u64, Value, Vec<Value>, bool)> =
+            self.macro_tasks.drain(..).collect();
         let mut now = 0u64;
         let mut ran_timer = false;
         loop {
             let mut best: Option<(usize, u64)> = None;
-            for (i, (_, due, _, _, _)) in tasks.iter().enumerate() {
+            for (i, (_, due, _, _, _, _)) in tasks.iter().enumerate() {
                 if best.is_none_or(|(_, bd)| *due < bd) {
                     best = Some((i, *due));
                 }
             }
             let Some((idx, due)) = best else { break };
-            let (id, _, delay_ms, cb, repeating) = tasks.remove(idx);
+            let (id, _, delay_ms, cb, cb_args, repeating) = tasks.remove(idx);
             if due > now {
                 self.wait_until_due(due, &mut now)?;
             }
             if self.active_timers.contains(&id) {
                 continue;
             }
-            self.invoke_callable(cb, Value::Undefined, &[])?;
+            // 回调实参回放（`setImmediate(fn, a, b)` 等 Node 语义）
+            self.invoke_callable(cb, Value::Undefined, &cb_args)?;
             ran_timer = true;
             if repeating && !self.active_timers.contains(&id) {
-                tasks.push((id, due + delay_ms, delay_ms, cb, true));
+                tasks.push((id, due + delay_ms, delay_ms, cb, cb_args, true));
             }
         }
         // 内置库事件源泵：宏任务排空后轮询 I/O 事件源，有进展则告知调用方

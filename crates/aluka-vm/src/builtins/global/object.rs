@@ -24,14 +24,19 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                     return Ok(Value::Boolean(vm.proxy_define_property(r, &key, desc)?));
                 }
             }
+            // 描述子形状校验（非对象 → TypeError；get/set 非可调用 → TypeError）
+            vm.validate_property_descriptor(desc)?;
             vm.ordinary_define_property(target, &key, desc)?;
             Ok(target)
         }
         "defineProperties" => {
+            // 与 Object.create 第二参数共用同一实现（自有+可枚举键面、
+            // 描述子校验、逐项 OrdinaryDefineOwnProperty）
             if let Some(props) = args.get(1).copied() {
-                for (k, desc) in vm.own_properties(props) {
-                    vm.ordinary_define_property(target, &k, desc)?;
+                if !matches!(props.case(), ValueCase::Object(_)) {
+                    return Err(vm.type_error("Cannot convert undefined or null to object"));
                 }
+                vm.define_properties_from(target, props)?;
             }
             Ok(target)
         }

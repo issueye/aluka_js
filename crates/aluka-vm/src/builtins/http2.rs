@@ -240,10 +240,14 @@ fn http2_connect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 fn schedule_emit_task(vm: &mut Vm, name: &str) {
     vm.timer_counter += 1;
     let id = vm.timer_counter;
-    let last_due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
+    let last_due = vm
+        .macro_tasks
+        .back()
+        .map(|(_, d, _, _, _, _)| *d)
+        .unwrap_or(0);
     let marker = vm.alloc_native_fn(name);
     vm.macro_tasks
-        .push_back((id, last_due, 0, Value::Object(marker), false));
+        .push_back((id, last_due, 0, Value::Object(marker), Vec::new(), false));
 }
 
 /// 标记任务：发射全部待发 `'connect'` 事件（参数 `(sess, undefined)`）。

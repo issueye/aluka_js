@@ -31,12 +31,17 @@ pub fn compile(program: &Program) -> CompiledUnit {
 
 /// 解构**赋值**的绑定：逐项读取右侧值后写回既有绑定（与
 /// `compile_bind_pattern` 的差异是目标解析——未知名落全局而非新建局部）。
+///
+/// 每项写回**消耗**栈上的值：解构赋值表达式的完成值由
+/// `Expr::DestructureAssign` 末尾的 `LoadLocal tmp_slot` 单独提供，
+/// 逐项结果必须弹栈——否则每个元素残留一个槽位（`[a] = x` 净 +1、
+/// `[a,b] = x` 净 +2），下游汇合点即报栈深不一致。
 fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut CompiledUnit) {
     match pattern {
         VarPattern::Ident(name) => {
             if !name.is_empty() {
                 unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
-                push_store_by_name(name, unit);
+                store_by_name(name, unit);
             }
         }
         VarPattern::Array(elements) => {
@@ -50,7 +55,7 @@ fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut
                     let slice_idx = add_constant(unit, Constant::String("slice".to_owned()));
                     let operand = (1u32 << 16) | (slice_idx & 0xFFFF);
                     unit.code.push(Instr::new(Op::CallMethod, operand));
-                    push_store_by_name(&elem.name, unit);
+                    store_by_name(&elem.name, unit);
                 } else {
                     unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
                     unit.code.push(Instr::new(Op::PushInt, i as u32));
@@ -61,7 +66,7 @@ fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut
                         let end_idx = unit.code.len();
                         backpatch_jump(unit, jmp_idx, end_idx);
                     }
-                    push_store_by_name(&elem.name, unit);
+                    store_by_name(&elem.name, unit);
                 }
             }
         }
@@ -77,7 +82,7 @@ fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut
                     backpatch_jump(unit, jmp_idx, end_idx);
                 }
                 match &prop.value {
-                    VarPattern::Ident(n) => push_store_by_name(n, unit),
+                    VarPattern::Ident(n) => store_by_name(n, unit),
                     nested => {
                         let slot = unit.locals;
                         unit.locals += 1;
@@ -90,17 +95,15 @@ fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut
     }
 }
 
-/// 按名写回：局部槽 → 上值 → 全局（与 `Expr::Assign` 的三级解析一致）。
-fn push_store_by_name(name: &str, unit: &mut CompiledUnit) {
+/// 按名写回并**消耗**栈顶值：局部槽 → 上值 → 全局（与 `Expr::Assign`
+/// 的三级解析一致）。
+fn store_by_name(name: &str, unit: &mut CompiledUnit) {
     if let Some(&slot) = unit.symbol_map.get(name) {
-        unit.code.push(Instr::new(Op::Dup, 0));
         unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
     } else if let Some(&uv) = unit.upvalue_map.get(name) {
-        unit.code.push(Instr::new(Op::Dup, 0));
         unit.code.push(Instr::new(Op::StoreUpvalue, uv as u32));
     } else {
         let idx = add_constant(unit, Constant::String(name.to_owned()));
-        unit.code.push(Instr::new(Op::Dup, 0));
         unit.code.push(Instr::new(Op::StoreGlobal, idx));
     }
 }

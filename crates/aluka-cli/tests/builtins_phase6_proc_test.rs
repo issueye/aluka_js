@@ -187,9 +187,9 @@ fn exec_execfile_chained_callbacks_match_go() {
             "cp.exec('cmd /c echo exec-out', (err, stdout, stderr) => {\n",
             "  console.log('exec:', err === null, stdout === 'exec-out\\r\\n', stderr === '');\n",
             "  cp.exec('cmd /c exit 5', (err2, so2, se2) => {\n",
-            "    console.log('execfail:', err2 === 'exit status 5', so2 === '', se2 === '');\n",
+            "    console.log('execfail:', err2 instanceof Error && err2.code === 5, so2 === '', se2 === '');\n",
             "    cp.execFile('definitely-missing-xyz', [], (err3) => {\n",
-            "      console.log('missing:', err3 === 'exec: \"definitely-missing-xyz\": executable file not found in %PATH%');\n",
+            "      console.log('missing:', err3 instanceof Error && err3.code === 'ENOENT');\n",
             "      cp.execFile('cmd', ['/c', 'echo', 'eff-out'], (err4, stdout4) => {\n",
             "        console.log('eff:', err4 === null, stdout4 === 'eff-out\\r\\n');\n",
             "        console.log('chain done');\n",
@@ -202,7 +202,11 @@ fn exec_execfile_chained_callbacks_match_go() {
     .unwrap();
     let out = common::assert_e2e_matches_go(&work, "probe.js");
     assert!(out.contains("chain done"), "{out}");
-    assert!(out.contains("execfail: true"), "{out}");
+    assert!(out.contains("missing: true"), "{out}");
+    assert!(
+        out.contains("execfail: true true true"),
+        "非零退出应为 Error 实例且 `code === 5`：{out}"
+    );
 }
 
 /// kill()：终止运行中的子进程并触发 'exit'/'close'（Windows 被杀 cmd 退出码 1）。

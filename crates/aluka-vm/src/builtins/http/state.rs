@@ -365,9 +365,13 @@ pub(crate) fn emit(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> R
 pub(crate) fn schedule_task(vm: &mut Vm, cb: Value, delay: u64) {
     vm.timer_counter += 1;
     let id = vm.timer_counter;
-    let last_due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
+    let last_due = vm
+        .macro_tasks
+        .back()
+        .map(|(_, d, _, _, _, _)| *d)
+        .unwrap_or(0);
     vm.macro_tasks
-        .push_back((id, last_due + delay, delay, cb, false));
+        .push_back((id, last_due + delay, delay, cb, Vec::new(), false));
 }
 
 /// 响应绑定快照（`finalize_response` 的读视图；锁外构造响应字节用）。

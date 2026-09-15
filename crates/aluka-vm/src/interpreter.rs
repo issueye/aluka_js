@@ -172,11 +172,20 @@ pub struct Vm {
     /// ——主循环每指令一次 Option 判定，关闭态近零成本）
     pub coverage: Option<crate::coverage::Coverage>,
     /// nextTick 优先微任务队列（回调函数）
-    pub(crate) nexttick_queue: std::collections::VecDeque<Value>,
+    /// nextTick 队列（回调 + 其实参）。实参必须回放：`defer = setImmediate`
+    /// 不可用时的 finalhandler 回退路径走 `process.nextTick(fn.bind.apply(
+    /// fn, arguments))`，而用户代码也普遍依赖 `process.nextTick(cb, a, b)`。
+    pub(crate) nexttick_queue: std::collections::VecDeque<(Value, Vec<Value>)>,
     /// Promise 微任务队列（Job：回调或帧恢复）
     pub(crate) microtask_queue: std::collections::VecDeque<crate::builtins::Job>,
-    /// 宏任务队列（句柄 id + 到期累计毫秒 + 延迟 + 回调 + 是否周期）
-    pub(crate) macro_tasks: std::collections::VecDeque<(u64, u64, u64, Value, bool)>,
+    /// 宏任务队列（句柄 id + 到期累计毫秒 + 延迟 + 回调 + 回调实参 + 是否周期）。
+    ///
+    /// **回调实参**是 Node 语义的一部分：`setTimeout(fn, 0, a, b)` /
+    /// `setImmediate(fn, a, b)` / `process.nextTick(fn, a, b)` 都必须把
+    /// 首个之后的实参转交回调（`finalhandler` 的 `defer(onerror, err, req,
+    /// res)` 正依赖 `setImmediate` 的三参回放——丢掉即让 express 的
+    /// `logerror(err)` 收到 undefined，读取 `err.stack` 崩溃）。
+    pub(crate) macro_tasks: std::collections::VecDeque<(u64, u64, u64, Value, Vec<Value>, bool)>,
     /// 真实 worker 线程 spawn 钩子（装配层注入；None 时 `new Worker` 走
     /// 同进程伪 worker 路径，见 `worker_threads` 模块文档）
     pub worker_entry: Option<std::sync::Arc<crate::worker::WorkerEntryFn>>,
@@ -230,6 +239,11 @@ pub struct Vm {
     pub symbol_proto: Option<ObjectRef>,
     /// `Date.prototype` 原型面单例（实例方法面挂载点；实例 `[[Prototype]]` 指向它）
     pub date_proto: Option<ObjectRef>,
+    /// `Buffer.prototype` 原型面单例。真实包以
+    /// `Object.create(Buffer.prototype)` 派生 Buffer 子类原型
+    /// （safe-buffer `SafeBuffer.prototype = Object.create(Buffer.prototype)`，
+    /// express 依赖链上必到），构造器上缺该属性会让 express 整体加载失败。
+    pub(crate) buffer_proto: Option<ObjectRef>,
     /// 原型面构造器单例缓存（String/Boolean/Number/Set/Map/... 名 → NativeCtor）
     pub ctor_cache: std::collections::HashMap<String, ObjectRef>,
     /// 内建单例不可写键登记（对象堆下标 → 键集）：`Math.E/PI`、
@@ -408,6 +422,7 @@ impl Vm {
             container_proto: None,
             symbol_proto: None,
             date_proto: None,
+            buffer_proto: None,
             ctor_cache: std::collections::HashMap::new(),
             non_writable: std::collections::HashMap::new(),
             non_enumerable: std::collections::HashMap::new(),
@@ -602,41 +617,32 @@ impl Vm {
             let _ = vm.set_property(Value::Object(process_obj), "channel", Value::Object(ch));
         }
         vm.process_object = Some(process_obj);
-        // path 内置模块（方法经 CALL_METHOD 拦截求值）
+        // path 内置模块：方法值由 `register_all` 按平台转挂 posix/win32 实现
+        // （见 `builtins::mod::register_all`），此处只建对象面；`normalize`
+        // 必须在此登记自有键——CALL_METHOD 的路径拦截只覆盖调用，属性读取
+        // （`typeof path.normalize`）走普通属性链。
         let path_mod = vm.alloc_ordinary();
-        let join_fn = vm.alloc_native_fn("path.join");
-        let basename_fn = vm.alloc_native_fn("path.basename");
-        let dirname_fn = vm.alloc_native_fn("path.dirname");
-        let extname_fn = vm.alloc_native_fn("path.extname");
-        let resolve_fn = vm.alloc_native_fn("path.resolve");
-        let relative_fn = vm.alloc_native_fn("path.relative");
-        let _ = vm.set_property(Value::Object(path_mod), "join", Value::Object(join_fn));
-        let _ = vm.set_property(
-            Value::Object(path_mod),
+        for name in [
+            "join",
+            "normalize",
             "basename",
-            Value::Object(basename_fn),
-        );
-        let _ = vm.set_property(
-            Value::Object(path_mod),
             "dirname",
-            Value::Object(dirname_fn),
-        );
-        let _ = vm.set_property(
-            Value::Object(path_mod),
             "extname",
-            Value::Object(extname_fn),
-        );
-        let _ = vm.set_property(
-            Value::Object(path_mod),
             "resolve",
-            Value::Object(resolve_fn),
-        );
+            "relative",
+        ] {
+            let f = vm.alloc_native_fn(&format!("path.{name}"));
+            let _ = vm.set_property(Value::Object(path_mod), name, Value::Object(f));
+        }
+        vm.path_module = Some(path_mod);
+        let f = vm.alloc_native_fn("path.isAbsolute");
+        let _ = vm.set_property(Value::Object(path_mod), "isAbsolute", Value::Object(f));
+        let f = vm.alloc_native_fn("path.toNamespacedPath");
         let _ = vm.set_property(
             Value::Object(path_mod),
-            "relative",
-            Value::Object(relative_fn),
+            "toNamespacedPath",
+            Value::Object(f),
         );
-        vm.path_module = Some(path_mod);
         // stream 内置模块
         let stream_mod = vm.alloc_ordinary();
         vm.stream_module = Some(stream_mod);
@@ -1120,10 +1126,12 @@ impl Vm {
                 .os_module
                 .map(Value::Object)
                 .unwrap_or(Value::Undefined),
-            "URL" => {
+            // URL 构造器由 builtins 装配期写入 globals（含原型面）；
+            // 回退分支只在装配前（如内置模块 build 早期）被走到
+            "URL" => self.globals.get("URL").copied().unwrap_or_else(|| {
                 let c = self.alloc_native_ctor("URL", None);
                 Value::Object(c)
-            }
+            }),
             "setTimeout" => {
                 let f = self.alloc_native_fn("setTimeout");
                 Value::Object(f)
@@ -1495,170 +1503,6 @@ impl Vm {
         cb_args: &[Value],
     ) -> Result<Value, VmError> {
         self.invoke_callable(cb, this_arg, cb_args)
-    }
-
-    /// `node:path` 轻量方法实现（平台分隔符语义；符号参数规范化处理）。
-    pub(crate) fn path_method(&self, method: &str, args: &[Value]) -> String {
-        use std::path::{Path, PathBuf};
-        let parts: Vec<String> = args.iter().map(|v| self.format_value(*v)).collect();
-        match method {
-            "join" => {
-                let parts: Vec<String> = parts
-                    .into_iter()
-                    .filter(|p| !p.is_empty() && *p != "undefined" && *p != "null")
-                    .collect();
-                let mut buf = PathBuf::new();
-                for p in &parts {
-                    buf.push(p);
-                }
-                self.win_leading_slash(&buf.to_string_lossy())
-            }
-            "basename" => {
-                let p = Path::new(&parts[0]);
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                match args.get(1).map(|v| v.case()) {
-                    None | Some(ValueCase::Undefined) => name,
-                    // 第二参为扩展名（字符串对象）：剥离（如 ".txt"）
-                    Some(ValueCase::Object(_)) => name
-                        .strip_suffix(&self.format_value(*args.get(1).expect("已确认存在")))
-                        .unwrap_or(&name)
-                        .to_string(),
-                    _ => name,
-                }
-            }
-            "dirname" => Path::new(&parts[0])
-                .parent()
-                .map(|p| self.win_leading_slash(&p.to_string_lossy()))
-                .unwrap_or_default(),
-            "extname" => Path::new(&parts[0])
-                .extension()
-                .map(|e| format!(".{}", e.to_string_lossy()))
-                .unwrap_or_default(),
-            // relative(from, to)：Node 语义——clean 后按段找公共前缀，
-            // from 剩余段上溯 `..`，再接 to 剩余段
-            "relative" => {
-                let norm = |v: &str| -> Vec<String> {
-                    v.replace('\\', "/")
-                        .split('/')
-                        .filter(|s| !s.is_empty() && *s != ".")
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                };
-                let from = parts.first().map(String::as_str).unwrap_or("");
-                let to = parts.get(1).map(String::as_str).unwrap_or("");
-                let fs = norm(from);
-                let ts = norm(to);
-                let mut common = 0usize;
-                while common < fs.len() && common < ts.len() && fs[common] == ts[common] {
-                    common += 1;
-                }
-                let mut out: Vec<String> = Vec::new();
-                for _ in common..fs.len() {
-                    out.push("..".to_owned());
-                }
-                out.extend(ts[common..].iter().cloned());
-                let joined = if out.is_empty() {
-                    String::new()
-                } else {
-                    out.join("/")
-                };
-                self.win_leading_slash(&joined)
-            }
-            _ => {
-                // resolve：当前目录为基座
-                let mut buf = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                for p in &parts {
-                    buf.push(p);
-                }
-                self.win_leading_slash(&buf.to_string_lossy())
-            }
-        }
-    }
-
-    /// 路径输出的前导 `/` 转 `\`（对齐 Windows 语义的 Go filepath 输出）。
-    fn win_leading_slash(&self, s: &str) -> String {
-        // Windows 分隔符语义：路径输出统一为 `\`（Go filepath 对齐）
-        s.replace('/', "\\")
-    }
-
-    /// `new URL(href)`：轻量解析并物化属性（protocol/host/hostname/port/pathname/
-    /// search/hash/href/origin），对齐 Go `node:url` 输出。
-    pub(crate) fn url_constructor(&mut self, args: &[Value]) -> Value {
-        let href = match args.first() {
-            Some(v) => self.format_value(*v),
-            None => String::new(),
-        };
-        let mut properties: Vec<(&str, String)> = Vec::new();
-        properties.push(("href", href.clone()));
-
-        let (scheme, rest) = match href.split_once(':') {
-            Some((s, r)) if !r.is_empty() => (format!("{s}:"), r.strip_prefix("//").unwrap_or(r)),
-            _ => ("".to_owned(), href.as_str()),
-        };
-        properties.push(("protocol", scheme.clone()));
-
-        // authority 到首个 / ? #
-        let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        let authority = &rest[..authority_end];
-        let tail = &rest[authority_end..];
-        let (pathname, search, hash) = {
-            let q = tail.find('?');
-            let h = tail.find('#');
-            let path_end = q.or(h).unwrap_or(tail.len());
-            let pathname = &tail[..path_end];
-            let search = match q {
-                Some(qi) => {
-                    let se = h.map(|hi| hi.min(tail.len())).unwrap_or(tail.len());
-                    &tail[qi..se]
-                }
-                None => "",
-            };
-            let hash = match h {
-                Some(hi) => &tail[hi..],
-                None => "",
-            };
-            (pathname, search, hash)
-        };
-        properties.push(("pathname", pathname.to_owned()));
-        properties.push(("search", search.to_owned()));
-        properties.push(("hash", hash.to_owned()));
-
-        let userinfo_end = authority.find('@').map(|i| i + 1).unwrap_or(0);
-        let host_port = &authority[userinfo_end..];
-        let (host, port) = match host_port.split_once(':') {
-            Some((h, p)) => (h, p.to_owned()),
-            None => (host_port, String::new()),
-        };
-        properties.push(("hostname", host.to_owned()));
-        properties.push(("port", port.clone()));
-        properties.push((
-            "host",
-            if port.is_empty() {
-                host.to_owned()
-            } else {
-                format!("{host}:{port}")
-            },
-        ));
-        properties.push((
-            "origin",
-            if scheme.is_empty() {
-                String::new()
-            } else if port.is_empty() {
-                format!("{scheme}//{host}")
-            } else {
-                format!("{scheme}//{host}:{port}")
-            },
-        ));
-
-        let obj = self.alloc_ordinary();
-        for (k, v) in properties {
-            let s_ref = self.alloc_string(v);
-            let _ = self.set_property(Value::Object(obj), k, Value::Object(s_ref));
-        }
-        Value::Object(obj)
     }
 
     /// 判断值是否为可读流实例。
@@ -2664,7 +2508,8 @@ impl Vm {
         } {
             // process.nextTick(cb)：nextTick 优先微任务队列
             let cb = args.first().copied().unwrap_or(Value::Undefined);
-            self.nexttick_queue.push_back(cb);
+            let extra: Vec<Value> = args.iter().skip(1).copied().collect();
+            self.nexttick_queue.push_back((cb, extra));
             Ok(Value::Undefined)
         } else if matches!(method_name, "then" | "catch" | "finally")
             && matches!(receiver.case(), ValueCase::Object(rr)
@@ -3347,17 +3192,6 @@ impl Vm {
             };
             let r = self.alloc_string(result);
             Ok(Value::Object(r))
-        } else if matches!(
-            method_name,
-            "join" | "basename" | "dirname" | "extname" | "resolve" | "relative"
-        ) && self
-            .path_module
-            .is_some_and(|m| receiver == Value::Object(m))
-        {
-            // node:path 轻量内置（平台分隔符，对齐 Go `filepath` 语义）
-            let result = self.path_method(method_name, args);
-            let r = self.alloc_string(result);
-            Ok(Value::Object(r))
         } else if matches!(method_name, "isWellFormed" | "toWellFormed")
             && matches!(receiver.case(), ValueCase::Object(rr)
                     if matches!(
@@ -3498,13 +3332,33 @@ impl Vm {
                 .object_ctor
                 .is_some_and(|c| receiver == Value::Object(c))
         {
-            // Object.create(proto)：以精确原型分配新对象（null → 无原型）
+            // Object.create(proto, properties?)：以精确原型分配新对象
+            // （null → 无原型）；第二参数为属性描述符表，逐项经
+            // OrdinaryDefineOwnProperty 定义（ES2024 20.1.2.2）。
             let proto_val = args.first().copied().unwrap_or(Value::Undefined);
             let proto = match proto_val.case() {
                 ValueCase::Object(p) => Some(p),
-                _ => None,
+                ValueCase::Null => None,
+                // 非对象且非 null → TypeError（规范步骤 2；`Object.create()`
+                // 与 `Object.create(1)` 同此路径）
+                _ => {
+                    let shown = self.format_value(proto_val);
+                    return Err(self.type_error(&format!(
+                        "Object prototype may only be an Object or null: {shown}"
+                    )));
+                }
             };
             let obj = self.alloc_ordinary_with_exact_proto(proto);
+            // 第二参数缺省（undefined）→ 不定义任何属性；null/原始值 →
+            // ToObject 处抛 TypeError（`Object.create({}, null)`）
+            if let Some(props) = args.get(1).copied() {
+                if !matches!(props, Value::Undefined) {
+                    if !matches!(props.case(), ValueCase::Object(_)) {
+                        return Err(self.type_error("Cannot convert undefined or null to object"));
+                    }
+                    self.define_properties_from(Value::Object(obj), props)?;
+                }
+            }
             Ok(Value::Object(obj))
         } else if let Some(ta_res) = self.typed_array_dispatch(receiver, method_name, args) {
             // 类型化数组 / DataView / ArrayBuffer 实例方法
@@ -4729,6 +4583,7 @@ impl Vm {
                             // M5.4 切片二：`mock.timers.enable({apis:['setImmediate']})`
                             // 时由假时钟接管（只登记假队列，不写 macro_tasks）。
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            let extra: Vec<Value> = args.iter().skip(1).copied().collect();
                             if let Some(id) = crate::builtins::test::mock::fake_schedule(
                                 cb,
                                 0,
@@ -4741,9 +4596,10 @@ impl Vm {
                                 let last_due = self
                                     .macro_tasks
                                     .back()
-                                    .map(|(_, d, _, _, _)| *d)
+                                    .map(|(_, d, _, _, _, _)| *d)
                                     .unwrap_or(0);
-                                self.macro_tasks.push_back((id, last_due, 0, cb, false));
+                                self.macro_tasks
+                                    .push_back((id, last_due, 0, cb, extra, false));
                                 self.stack.push(Value::Number(id as f64));
                             }
                         } else if self.is_native_fn(Value::Object(r), "setTimeout")
@@ -4757,6 +4613,8 @@ impl Vm {
                                 })
                                 .unwrap_or(0);
                             let cb = args.first().copied().unwrap_or(Value::Undefined);
+                            // 首参之后的实参原样转交回调（Node 语义）
+                            let extra: Vec<Value> = args.iter().skip(2).copied().collect();
                             let repeating = self.is_native_fn(Value::Object(r), "setInterval");
                             // M5.4 切片二：假时钟接管判定（同上）。
                             let fake_api = if repeating {
@@ -4775,10 +4633,11 @@ impl Vm {
                                 let last_due = self
                                     .macro_tasks
                                     .back()
-                                    .map(|(_, d, _, _, _)| *d)
+                                    .map(|(_, d, _, _, _, _)| *d)
                                     .unwrap_or(0);
                                 let due = last_due + delay;
-                                self.macro_tasks.push_back((id, due, delay, cb, repeating));
+                                self.macro_tasks
+                                    .push_back((id, due, delay, cb, extra, repeating));
                                 // Node 返回 Timeout/Interval 句柄；简化返回数字 id
                                 // （clear* 接受数字或对象，数字自洽）
                                 self.stack.push(Value::Number(id as f64));

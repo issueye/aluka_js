@@ -44,10 +44,20 @@ pub(crate) fn schedule_delivery(vm: &mut Vm, cb: Value, delivery: Delivery) {
     DELIVERY_QUEUE.with(|q| q.borrow_mut().push_back(PendingDelivery { cb, delivery }));
     vm.timer_counter += 1;
     let id = vm.timer_counter;
-    let last_due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
+    let last_due = vm
+        .macro_tasks
+        .back()
+        .map(|(_, d, _, _, _, _)| *d)
+        .unwrap_or(0);
     let trampoline = vm.alloc_native_fn("crypto.deliver.async");
-    vm.macro_tasks
-        .push_back((id, last_due, 0, Value::Object(trampoline), false));
+    vm.macro_tasks.push_back((
+        id,
+        last_due,
+        0,
+        Value::Object(trampoline),
+        Vec::new(),
+        false,
+    ));
 }
 
 /// 蹦床处理器：弹出队首载荷并实参回放用户回调。

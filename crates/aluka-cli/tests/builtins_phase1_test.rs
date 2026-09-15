@@ -76,10 +76,9 @@ console.log("r6:" + p.resolve("", "z"));
     // 关键语义抽查（逐字对拍已保证整体一致）
     assert!(out.contains("j2:/x/y/z"), "绝对路径 join");
     assert!(out.contains("b2:file"), "basename 去扩展名二参");
-    assert!(
-        out.contains("b4:."),
-        "basename 空串 = .（Node.js 22 LTS 标准 口径）"
-    );
+    // Node `path.basename('')` === ''（Go `path.Base('')` 给 '.'；本项目以
+    // Node.js 22 LTS 为唯一 oracle，故取空串）
+    assert!(out.contains("b4:\n"), "basename 空串 = 空串（Node 口径）");
     assert!(out.contains("d2:."), "dirname 无分隔符 = .");
     assert!(out.contains("e2:"), "extname 隐藏文件为空");
     assert!(out.contains("r1:/a/c"), "resolve 绝对化 + .. 消解");
@@ -139,10 +138,14 @@ console.log("wr8:" + w.resolve("a", "..", "b"));
     );
     let out = common::assert_e2e_matches_go(&work, "probe.js");
     assert!(out.contains("wj1:a\\b"), "win32 join 输出反斜杠");
-    assert!(out.contains("wj4:C:foo"), "驱动相对不加分隔符");
+    // Node `win32.join('C:','foo')` === `C:\foo`（join 结果一律过 normalize，
+    // 中间必然插分隔符；Go `filepath.Join` 在此不插）
+    assert!(out.contains("wj4:C:\\foo"), "join 驱动相对仍插分隔符");
     assert!(out.contains("wb3:b"), "basename 去尾部斜杠");
-    assert!(out.contains("wb6:."), "basename 空串 = .");
-    assert!(out.contains("wd5:C:."), "dirname 驱动相对 = C:.");
+    // Node `win32.basename('')` === ''（Go `filepath.Base('')` 给 '.'）
+    assert!(out.contains("wb6:\n"), "basename 空串 = 空串（Node 口径）");
+    // Node `win32.dirname('C:')` === 'C:'（末段即设备根，其前无分隔符）
+    assert!(out.contains("wd5:C:\n"), "dirname 裸设备根 = C:");
     assert!(out.contains("we3:"), "extname 隐藏文件为空");
     assert!(out.contains("wr1:C:\\a\\b"), "resolve 绝对输入直接 Clean");
     assert!(out.contains("wr4:"), "resolve 驱动相对走同驱动 cwd");

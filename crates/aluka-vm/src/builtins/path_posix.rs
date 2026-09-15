@@ -25,62 +25,203 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
-    let methods: [(&str, BuiltinHandler); 6] = [
-        ("join", join),
-        ("basename", basename),
-        ("dirname", dirname),
-        ("extname", extname),
-        ("resolve", resolve),
-        ("relative", relative),
-    ];
-    for (name, handler) in methods {
+    for (name, handler) in METHODS {
         let f = vm.alloc_native_fn(&format!("path/posix.{name}"));
         set_module_prop(vm, obj, name, Value::Object(f))?;
-        register_handler(registry, "path/posix", name, handler);
+        register_handler(registry, "path/posix", name, *handler);
     }
+    // `path/posix` 模块自身的 `sep`/`delimiter`（`require('path/posix').sep`）
+    let sep_v = Value::Object(vm.alloc_string(SEP.to_owned()));
+    let delim_v = Value::Object(vm.alloc_string(DELIMITER.to_owned()));
+    set_module_prop(vm, obj, "sep", sep_v)?;
+    set_module_prop(vm, obj, "delimiter", delim_v)?;
     Ok(obj)
 }
 
-/// `join(...parts)`：`path.Join`（空元素跳过；结果 Clean）。
-fn join(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let elems: Vec<String> = args.iter().map(|v| vm.format_value(*v)).collect();
-    let s = vm.alloc_string(posix_join(&elems));
-    Ok(Value::Object(s))
+/// POSIX 分隔符语义的方法表（`path/posix` 与 `path.posix` 共用同一实现）。
+pub(crate) const METHODS: &[(&str, BuiltinHandler)] = &[
+    ("join", join),
+    ("normalize", normalize),
+    ("relative", relative),
+    ("basename", basename),
+    ("dirname", dirname),
+    ("extname", extname),
+    ("resolve", resolve),
+    ("isAbsolute", is_absolute),
+];
+
+/// `isAbsolute(p)`：POSIX 语义——首字符为 `/`。
+fn is_absolute(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    Ok(Value::Boolean(path.starts_with('/')))
 }
 
-/// `basename(p[, ext])`：末元素（去尾部斜杠）；提供 ext 且尾部匹配时去掉。
-fn basename(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if args.is_empty() {
-        return Ok(Value::Object(vm.alloc_string(String::new())));
+/// POSIX 分隔符 / 路径列表分隔符（`path.posix.sep` / `path.posix.delimiter`）。
+pub(crate) const SEP: &str = "/";
+pub(crate) const DELIMITER: &str = ":";
+
+/// `normalize(p)`：Node `posix.normalize` 逐字移植——保留**尾部分隔符**
+///（`'a/'` → `'a/'`）与根形态（`'/'` → `'/'`），空段折叠但不做 Go 式
+/// 的「结果恒无尾斜杠」归一。
+fn normalize(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    // Node `validateString(path, 'path')`：缺参/非串一概 TypeError
+    // （`path.normalize()` 在 Node 抛 ERR_INVALID_ARG_TYPE，不返回 '.'）
+    let Some(first) = args.first() else {
+        return Err(
+            vm.type_error("The \"path\" argument must be of type string. Received undefined")
+        );
+    };
+    if !vm.is_string_value(*first) {
+        let shown = vm.format_value(*first);
+        return Err(vm.type_error(&format!(
+            "The \"path\" argument must be of type string. Received {shown}"
+        )));
     }
-    let mut b = posix_base(&vm.format_value(args[0]));
-    if let Some(ext) = args.get(1) {
-        let ext = vm.format_value(*ext);
-        if !ext.is_empty() && b.len() > ext.len() && b.ends_with(&ext) {
-            b.truncate(b.len() - ext.len());
+    let p = vm.format_value(*first);
+    Ok(Value::Object(vm.alloc_string(posix_normalize(&p))))
+}
+
+/// Node `posix.normalize`。
+fn posix_normalize(path: &str) -> String {
+    if path.is_empty() {
+        return ".".to_owned();
+    }
+    let b = path.as_bytes();
+    let is_absolute = b[0] == b'/';
+    let trailing_sep = b[b.len() - 1] == b'/';
+    let mut out = posix_normalize_string(path, !is_absolute);
+    if out.is_empty() {
+        if is_absolute {
+            return "/".to_owned();
+        }
+        return if trailing_sep {
+            "./".to_owned()
+        } else {
+            ".".to_owned()
+        };
+    }
+    if trailing_sep {
+        out.push('/');
+    }
+    if is_absolute { format!("/{out}") } else { out }
+}
+
+/// `normalizeString(path, allowAboveRoot, '/', isPosixPathSeparator)` 的 POSIX
+/// 实例化：折叠 `.`/`..` 与空段。`allow_above_root` 为 false（绝对路径）
+/// 时丢弃越根的 `..`，否则保留（`'../a'` 原样）。
+fn posix_normalize_string(path: &str, allow_above_root: bool) -> String {
+    let mut resolved: Vec<&str> = Vec::new();
+    for raw in path.split('/') {
+        match raw {
+            "" | "." => {}
+            ".." => match resolved.last() {
+                // 可回退：抵消上一个普通段
+                Some(&last) if last != ".." => {
+                    resolved.pop();
+                }
+                _ => {
+                    if allow_above_root {
+                        resolved.push("..");
+                    }
+                }
+            },
+            other => resolved.push(other),
         }
     }
-    Ok(Value::Object(vm.alloc_string(b)))
+    resolved.join("/")
 }
 
-/// `dirname(p)`：Split 后 Clean（无分隔符时 `"."`）。
+/// `join(...parts)`：Node `posix.join` —— 空元素跳过，其余以 `/` 相连后
+/// 过 `normalize`（因此保留尾部分隔符；全空 → `'.'`）。
+fn join(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let parts: Vec<String> = args
+        .iter()
+        .map(|v| vm.format_value(*v))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let s = if parts.is_empty() {
+        ".".to_owned()
+    } else {
+        posix_normalize(&parts.join("/"))
+    };
+    Ok(Value::Object(vm.alloc_string(s)))
+}
+
+/// `basename(p[, ext])`：Node `posix.basename` 逐字移植（原串切片，不做
+/// Clean；`''` / 全分隔符 → `''`；suffix 逐字符比对回退）。
+fn basename(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(first) = args.first() else {
+        return Ok(Value::Object(vm.alloc_string(String::new())));
+    };
+    let path = vm.format_value(*first);
+    let suffix = args.get(1).map(|v| vm.format_value(*v));
+    Ok(Value::Object(vm.alloc_string(
+        crate::builtins::path_node::node_basename(
+            &path,
+            suffix.as_deref(),
+            crate::builtins::path_node::is_posix_sep,
+            false,
+        ),
+    )))
+}
+
+/// `dirname(p)`：Node `posix.dirname` 逐字移植（原串切片）。
 fn dirname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let p = match args.first() {
         Some(v) => vm.format_value(*v),
         None => return Ok(Value::Object(vm.alloc_string(".".to_owned()))),
     };
-    let s = vm.alloc_string(posix_dir(&p));
-    Ok(Value::Object(s))
+    Ok(Value::Object(vm.alloc_string(node_posix_dirname(&p))))
 }
 
-/// `extname(p)`：Node 语义（基于 basename 的最后一个 `.`；首点隐藏文件 → `""`）。
-fn extname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if args.is_empty() {
-        return Ok(Value::Object(vm.alloc_string(String::new())));
+/// Node `posix.dirname`。
+fn node_posix_dirname(path: &str) -> String {
+    if path.is_empty() {
+        return ".".to_owned();
     }
-    let base = posix_base(&vm.format_value(args[0]));
-    let s = vm.alloc_string(node_extname(&base));
-    Ok(Value::Object(s))
+    let b = path.as_bytes();
+    let has_root = b[0] == b'/';
+    let mut end: isize = -1;
+    let mut matched_slash = true;
+    let mut i = b.len() as isize - 1;
+    while i >= 1 {
+        if b[i as usize] == b'/' {
+            if !matched_slash {
+                end = i;
+                break;
+            }
+        } else {
+            matched_slash = false;
+        }
+        i -= 1;
+    }
+    if end == -1 {
+        return if has_root {
+            "/".to_owned()
+        } else {
+            ".".to_owned()
+        };
+    }
+    if has_root && end == 1 {
+        return "//".to_owned();
+    }
+    path[..end as usize].to_owned()
+}
+
+/// `extname(p)`：Node `posix.extname` 逐字移植（`preDotState` 状态机，
+/// `'..'` 与首点隐藏文件 → `''`；此前经 basename 间接实现，`'..'` 误判为
+/// `'.'`）。
+fn extname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = match args.first() {
+        Some(v) => vm.format_value(*v),
+        None => return Ok(Value::Object(vm.alloc_string(String::new()))),
+    };
+    Ok(Value::Object(vm.alloc_string(
+        crate::builtins::path_node::node_extname(&path, crate::builtins::path_node::is_posix_sep),
+    )))
 }
 
 /// `resolve(...parts)`：绝对化；相对结果基于当前工作目录（ToSlash 转 `/`）。
@@ -185,7 +326,10 @@ impl<'a> LazyBuf<'a> {
 fn posix_join(elems: &[String]) -> String {
     let size: usize = elems.iter().map(|e| e.len()).sum();
     if size == 0 {
-        return String::new();
+        // 全空元素：Go `path.Join` 在此返回 ""，但 Node `path.join('')`
+        // 必须为 "."（Join 后仍要过 Clean，Clean("") === "."）。
+        // 无参 `path.join()` 同样为 "."。
+        return ".".to_owned();
     }
     let mut buf = String::new();
     for e in elems {
@@ -259,49 +403,6 @@ fn posix_clean(p: &str) -> String {
         String::from_utf8(out.s[..out.w].to_vec()).unwrap_or_else(|_| p.to_owned())
     } else {
         String::from_utf8(out.buf[..out.w].to_vec()).unwrap_or_else(|_| p.to_owned())
-    }
-}
-
-/// `path.Base`：末元素；空串 → `"."`；纯斜杠 → `"/"`。
-fn posix_base(p: &str) -> String {
-    if p.is_empty() {
-        return ".".to_owned();
-    }
-    let bytes = p.as_bytes();
-    let mut end = bytes.len();
-    while end > 0 && bytes[end - 1] == b'/' {
-        end -= 1;
-    }
-    let mut start = 0usize;
-    let mut i = end;
-    while i > 0 {
-        if bytes[i - 1] == b'/' {
-            start = i;
-            break;
-        }
-        i -= 1;
-    }
-    if start == end {
-        return "/".to_owned();
-    }
-    String::from_utf8(bytes[start..end].to_vec()).unwrap_or_else(|_| p.to_owned())
-}
-
-/// `path.Dir`：Split 后 Clean。
-fn posix_dir(p: &str) -> String {
-    let bytes = p.as_bytes();
-    let mut i = bytes.len();
-    while i > 0 && bytes[i - 1] != b'/' {
-        i -= 1;
-    }
-    posix_clean(&p[..i])
-}
-
-/// Node extname：取 basename 中最后一个 `.` 之后；`.` 在首位（隐藏文件）→ `""`。
-fn node_extname(base: &str) -> String {
-    match base.rfind('.') {
-        Some(idx) if idx > 0 => base[idx..].to_owned(),
-        _ => String::new(),
     }
 }
 

@@ -347,8 +347,12 @@ pub(crate) enum ProcEvent {
     ExecDone {
         /// JS 回调
         cb: Value,
-        /// 错误串（无错为 None → 回调首参 null）
-        err: Option<String>,
+        /// 退出码（正常结束为 Some；spawn 失败为 None）
+        code: Option<i32>,
+        /// spawn 失败串（`spawn <program> <err>`；成功为 None）
+        spawn_err: Option<String>,
+        /// 命令显示串（错误对象的 `cmd` 属性）
+        cmd: String,
         /// 收集的 stdout
         stdout: String,
         /// 收集的 stderr
@@ -583,13 +587,47 @@ fn dispatch_proc_event(vm: &mut Vm, ev: ProcEvent) -> Result<(), VmError> {
         }
         ProcEvent::ExecDone {
             cb,
-            err,
+            code,
+            spawn_err,
+            cmd,
             stdout,
             stderr,
         } => {
-            let err_val = match err {
-                None => Value::Null,
-                Some(msg) => Value::Object(vm.alloc_string(msg)),
+            // Node 语义：失败时首参是 Error 实例（`err.code` 为退出码或
+            // `ENOENT` 等错误码、`err.cmd` 为命令串、`err.message` 为
+            // `Command failed: <cmd>` 且附 stderr）。此前传纯字符串，
+            // 真实包读 `err.code` 一律取到 undefined，无法区分失败原因。
+            let failed = spawn_err.is_some() || code.is_some_and(|c| c != 0);
+            let err_val = if !failed {
+                Value::Null
+            } else {
+                let message = match &spawn_err {
+                    Some(msg) => msg.clone(),
+                    None => {
+                        let mut m = format!("Command failed: {cmd}");
+                        if !stderr.is_empty() {
+                            m.push('\n');
+                            m.push_str(&stderr);
+                        }
+                        m
+                    }
+                };
+                let e = vm.alloc_error_instance(&message);
+                let code_val = match (spawn_err.as_ref(), code) {
+                    (Some(_), _) => Value::Object(vm.alloc_string("ENOENT".to_owned())),
+                    (None, Some(c)) => Value::Number(c as f64),
+                    _ => Value::Undefined,
+                };
+                let _ = vm.set_property(Value::Object(e), "code", code_val);
+                let cmd_v = Value::Object(vm.alloc_string(cmd.clone()));
+                let _ = vm.set_property(Value::Object(e), "cmd", cmd_v);
+                let _ = vm.set_property(Value::Object(e), "killed", Value::Boolean(false));
+                let _ = vm.set_property(Value::Object(e), "signal", Value::Null);
+                let out_v = Value::Object(vm.alloc_string(stdout.clone()));
+                let _ = vm.set_property(Value::Object(e), "stdout", out_v);
+                let err_v = Value::Object(vm.alloc_string(stderr.clone()));
+                let _ = vm.set_property(Value::Object(e), "stderr", err_v);
+                Value::Object(e)
             };
             let out = vm.alloc_string(stdout);
             let err_s = vm.alloc_string(stderr);

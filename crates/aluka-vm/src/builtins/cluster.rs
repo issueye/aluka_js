@@ -571,7 +571,7 @@ fn cluster_fork(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     // 同步阶段事件计数为 0（实测 oracle `after-fork-sync fork-events-seen=0`）。
     let nt = vm.alloc_native_fn("cluster.__emitForkNT");
     with_pending_fork(|q| q.push_back(worker.0));
-    vm.nexttick_queue.push_back(Value::Object(nt));
+    vm.nexttick_queue.push_back((Value::Object(nt), Vec::new()));
     Ok(Value::Object(worker))
 }
 
@@ -1080,7 +1080,7 @@ fn cluster_disconnect(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if worker_vals.is_empty() {
         // Node：`process.nextTick(() => intercom.emit('disconnect'))`。
         let nt = vm.alloc_native_fn("cluster.__intercomDisconnectNT");
-        vm.nexttick_queue.push_back(Value::Object(nt));
+        vm.nexttick_queue.push_back((Value::Object(nt), Vec::new()));
     } else {
         for w in worker_vals {
             let ValueCase::Object(r) = w.case() else {
@@ -1303,7 +1303,7 @@ fn process_disconnect(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     }
     set_process_connected(vm, false);
     let nt = vm.alloc_native_fn("cluster.__selfDisconnectNT");
-    vm.nexttick_queue.push_back(Value::Object(nt));
+    vm.nexttick_queue.push_back((Value::Object(nt), Vec::new()));
     Ok(Value::Undefined)
 }
 

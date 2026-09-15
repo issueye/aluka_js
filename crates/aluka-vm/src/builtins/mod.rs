@@ -42,6 +42,7 @@ pub mod markdown;
 pub mod module;
 pub mod net;
 pub mod os;
+pub mod path_node;
 pub mod path_posix;
 pub mod path_win32;
 pub mod perf_hooks;
@@ -303,11 +304,58 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
     }
     // 原型方法面（属性挂载 + Function.prototype.toString handler）
     crate::builtins::surface::register_surface(vm, &mut registry);
-    // path 模块方法值调用 handler（NativeFn 名 "path.X" → path_method 语义）
-    for m in [
-        "join", "basename", "dirname", "extname", "resolve", "relative",
-    ] {
-        register_handler(&mut registry, "path", m, path_method_dispatch);
+    // 平台 `path` 模块的方法表：按目标平台转挂 `path/posix` 或 `path/win32`
+    // 的实现（此前自带一套 `std::path` 轻量实现，既不折叠 `.`/`..` 也不做
+    // 平台化的卷处理——`path.join('a/b','../c')` 输出 `a\b\..\c`）。
+    // `path.posix`/`path.win32` 两个子模块恒可用（与平台无关），
+    // `path.sep`/`path.delimiter` 随之绑定。
+    let (path_methods, path_sep, path_delim) = if cfg!(windows) {
+        (
+            crate::builtins::path_win32::METHODS,
+            crate::builtins::path_win32::SEP,
+            crate::builtins::path_win32::DELIMITER,
+        )
+    } else {
+        (
+            crate::builtins::path_posix::METHODS,
+            crate::builtins::path_posix::SEP,
+            crate::builtins::path_posix::DELIMITER,
+        )
+    };
+    for (m, handler) in path_methods {
+        register_handler(&mut registry, "path", m, *handler);
+    }
+    // `path` 对象面：`posix`/`win32` 子模块对象 + sep/delimiter 常量
+    if let Some(path_mod) = vm.path_module {
+        for (sub, methods, sep, delim) in [
+            (
+                "posix",
+                crate::builtins::path_posix::METHODS,
+                crate::builtins::path_posix::SEP,
+                crate::builtins::path_posix::DELIMITER,
+            ),
+            (
+                "win32",
+                crate::builtins::path_win32::METHODS,
+                crate::builtins::path_win32::SEP,
+                crate::builtins::path_win32::DELIMITER,
+            ),
+        ] {
+            let sub_obj = vm.alloc_ordinary();
+            for (m, _) in methods {
+                let f = vm.alloc_native_fn(&format!("path.{sub}.{m}"));
+                let _ = vm.set_property(Value::Object(sub_obj), m, Value::Object(f));
+            }
+            let sep_v = Value::Object(vm.alloc_string(sep.to_owned()));
+            let delim_v = Value::Object(vm.alloc_string(delim.to_owned()));
+            let _ = vm.set_property(Value::Object(sub_obj), "sep", sep_v);
+            let _ = vm.set_property(Value::Object(sub_obj), "delimiter", delim_v);
+            let _ = vm.set_property(Value::Object(path_mod), sub, Value::Object(sub_obj));
+        }
+        let sep_v = Value::Object(vm.alloc_string(path_sep.to_owned()));
+        let delim_v = Value::Object(vm.alloc_string(path_delim.to_owned()));
+        let _ = vm.set_property(Value::Object(path_mod), "sep", sep_v);
+        let _ = vm.set_property(Value::Object(path_mod), "delimiter", delim_v);
     }
     // process.stdout/stderr.write：readline 等把提示与输出写到流对象
     register_handler(
@@ -359,18 +407,6 @@ fn stream_write_stderr(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         .unwrap_or_default();
     eprint!("{text}");
     Ok(Value::Boolean(true))
-}
-
-/// `path.join/basename/...` 值调用分派（NativeFn 名 `path.X`；方法名经
-/// pending_native_name 取末段）。
-fn path_method_dispatch(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let method = pending_native_name()
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_owned();
-    let out = vm.path_method(&method, args);
-    Ok(Value::Object(vm.alloc_string(out)))
 }
 
 /// 模块注册表便捷宏：声明模块与方法的处理器映射。

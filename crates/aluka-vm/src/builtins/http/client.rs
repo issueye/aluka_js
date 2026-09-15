@@ -363,7 +363,11 @@ fn client_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let timeout = super::int_arg(args, 0, 0);
     let cb = args.get(1).copied().filter(|v| super::is_function(vm, *v));
     if timeout > 0 {
-        let due_base = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
+        let due_base = vm
+            .macro_tasks
+            .back()
+            .map(|(_, d, _, _, _, _)| *d)
+            .unwrap_or(0);
         if let Some(cb) = cb {
             schedule_task(vm, cb, timeout as u64);
         }
@@ -377,6 +381,7 @@ fn client_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
             due_base + timeout as u64,
             timeout as u64,
             Value::Object(emit_fn),
+            Vec::new(),
             false,
         ));
     }

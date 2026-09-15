@@ -216,15 +216,24 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     Ok(obj)
 }
 
-/// 为模块对象上的构造器属性补 `prototype`/`constructor` 环（Go
+/// 为模块对象上的**构造器函数**补 `prototype`/`constructor` 环（Go
 /// `newIncomingMessageCtor` 等的 prototype 表面）。
+///
+/// 注意挂载对象是**构造器函数本身**（`http.IncomingMessage.prototype`），
+/// 不是模块对象——真实包按 `Object.create(http.IncomingMessage.prototype)`
+/// 派生原型链（express `lib/request.js` / `lib/response.js`），挂到模块上
+/// 会让该表达式取到 undefined。同一 helper 被多次调用时也必须各挂各的，
+/// 否则后一次会覆盖前一次（模块上只有一个 `prototype` 键）。
 fn set_ctor_prototype(vm: &mut Vm, module_obj: ObjectRef, name: &str) -> Result<(), VmError> {
     let Ok(ctor) = vm.get_property(Value::Object(module_obj), name) else {
         return Ok(());
     };
+    let ValueCase::Object(ctor_ref) = ctor.case() else {
+        return Ok(());
+    };
     let proto = vm.alloc_ordinary();
     set_module_prop(vm, proto, "constructor", ctor)?;
-    set_module_prop(vm, module_obj, "prototype", Value::Object(proto))?;
+    vm.set_native_fn_property(ctor_ref, "prototype", Value::Object(proto));
     Ok(())
 }
 

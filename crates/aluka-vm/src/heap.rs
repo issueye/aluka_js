@@ -396,12 +396,22 @@ impl Vm {
         })
     }
 
-    /// 为原生函数对象写入自有属性（如 `node:test` spy 的 `.mock` 观测面）。
+    /// 为原生函数对象写入自有属性（如 `node:test` spy 的 `.mock` 观测面、
+    /// 内建构造器的 `prototype` 表面）。
+    ///
+    /// `NativeFn`（`alloc_native_fn`）与 `NativeCtor`（`alloc_native_ctor`）
+    /// 都带 `properties` 表：只认前者会让 `http.IncomingMessage.prototype`、
+    /// `Buffer.prototype` 这类**构造器**上的写入静默丢失（真实包按
+    /// `Object.create(X.prototype)` 派生原型链时会取到 undefined）。
     ///
     /// 属性值中的对象引用经 `trace_refs` 对象值分支纳入 GC 根，无需写屏障。
     pub fn set_native_fn_property(&mut self, r: ObjectRef, key: &str, val: Value) {
-        if let Some(HeapObject::NativeFn { properties, .. }) = self.heap.get_mut(r.0 as usize) {
-            properties.insert(key.to_owned(), val);
+        match self.heap.get_mut(r.0 as usize) {
+            Some(HeapObject::NativeFn { properties, .. })
+            | Some(HeapObject::NativeCtor { properties, .. }) => {
+                properties.insert(key.to_owned(), val);
+            }
+            _ => {}
         }
     }
 
@@ -409,7 +419,8 @@ impl Vm {
     #[must_use]
     pub fn get_native_fn_property(&self, r: ObjectRef, key: &str) -> Option<Value> {
         match self.heap.get(r.0 as usize) {
-            Some(HeapObject::NativeFn { properties, .. }) => properties.get(key).copied(),
+            Some(HeapObject::NativeFn { properties, .. })
+            | Some(HeapObject::NativeCtor { properties, .. }) => properties.get(key).copied(),
             _ => None,
         }
     }

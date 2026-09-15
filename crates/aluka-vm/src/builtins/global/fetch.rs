@@ -699,12 +699,12 @@ fn do_sync_http_request(
     use std::net::TcpStream;
     let addr = format!("{host}:{port}");
     let mut stream = TcpStream::connect(&addr).map_err(|e| format!("fetch: connect: {e}"))?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .ok();
-    stream
-        .set_write_timeout(Some(std::time::Duration::from_secs(10)))
-        .ok();
+    // 非阻塞 + 泵驱动：fetch 与目标服务器可能**同进程**（`http.createServer`
+    // 后 `fetch` 自己的端口）。阻塞读会把事件循环钉死在这里，同进程服务器
+    // 的 accept/响应泵永远得不到执行 → 10s 读超时。改为非阻塞轮询，每次
+    // WouldBlock 都泵一轮事件源与微任务，让服务器有机会收包回包。
+    stream.set_nonblocking(true).ok();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut request = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n");
     for (k, v) in headers {
         request.push_str(&format!("{k}: {v}\r\n"));
@@ -717,9 +717,26 @@ fn do_sync_http_request(
     if let Some(b) = body {
         request.push_str(&vm.format_value(*b));
     }
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|e| format!("fetch: write: {e}"))?;
+    // 非阻塞写：WouldBlock 时同样泵事件源（对端读缓冲满时不能死等）
+    {
+        let bytes = request.as_bytes();
+        let mut sent = 0usize;
+        while sent < bytes.len() {
+            match stream.write(&bytes[sent..]) {
+                Ok(0) => return Err("fetch: write: 连接在请求发送完成前关闭".to_owned()),
+                Ok(n) => sent += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err("fetch: 写入请求超时".to_owned());
+                    }
+                    let _ = vm.pump_event_sources();
+                    let _ = vm.drain_microtasks();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(e) => return Err(format!("fetch: write: {e}")),
+            }
+        }
+    }
     // RFC 9112 §6.3 定界规则 1：HEAD 请求的响应没有 body
     let head_only = method.eq_ignore_ascii_case("HEAD");
     let mut response_bytes = Vec::new();
@@ -750,6 +767,16 @@ fn do_sync_http_request(
                     // 畸形响应（状态行非法）：立即失败，不空等到读超时
                     Err(message) => return Err(message),
                 }
+            }
+            // 暂无数据：泵一轮事件源再试（同进程服务器靠这里获得执行机会）
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    timed_out = true;
+                    break;
+                }
+                let _ = vm.pump_event_sources();
+                let _ = vm.drain_microtasks();
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
             // 读超时：连接仍在，但响应没有完整到达——不得当成成功
             Err(e) if is_read_timeout(&e) => {

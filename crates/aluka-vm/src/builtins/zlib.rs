@@ -286,9 +286,19 @@ fn run_async(vm: &mut Vm, args: &[Value], func: Transform) -> Result<Value, VmEr
     let deliver_fn = vm.alloc_native_fn("zlib.asyncDeliver");
     vm.timer_counter += 1;
     let id = vm.timer_counter;
-    let last_due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
-    vm.macro_tasks
-        .push_back((id, last_due, 0, Value::Object(deliver_fn), false));
+    let last_due = vm
+        .macro_tasks
+        .back()
+        .map(|(_, d, _, _, _, _)| *d)
+        .unwrap_or(0);
+    vm.macro_tasks.push_back((
+        id,
+        last_due,
+        0,
+        Value::Object(deliver_fn),
+        Vec::new(),
+        false,
+    ));
     Ok(Value::Undefined)
 }
 

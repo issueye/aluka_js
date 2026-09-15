@@ -707,9 +707,13 @@ fn run(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     let cb = vm.alloc_native_fn("test:postedRun.task");
     vm.timer_counter += 1;
     let id = vm.timer_counter;
-    let due = vm.macro_tasks.back().map(|(_, d, _, _, _)| *d).unwrap_or(0);
+    let due = vm
+        .macro_tasks
+        .back()
+        .map(|(_, d, _, _, _, _)| *d)
+        .unwrap_or(0);
     vm.macro_tasks
-        .push_back((id, due, 0, Value::Object(cb), false));
+        .push_back((id, due, 0, Value::Object(cb), Vec::new(), false));
 
     Ok(Value::Object(stream))
 }

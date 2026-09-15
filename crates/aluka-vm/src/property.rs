@@ -1662,6 +1662,22 @@ impl Vm {
     ///
     /// 本运行时数据属性恒为可写/可枚举/可配置（无属性位存储）；访问器经
     /// Ordinary 的 getter/setter 表判定。属性不存在时返回 undefined。
+    /// 键的**不可枚举**判定：`ordinary_define_property` 在 enumerable 缺省/
+    /// 为 false 时把键登记进容器自身的 `non_enum` 集合（Ordinary 与 Closure
+    /// 两个变体各有该字段），`Object.keys`/`own_entries` 亦按此过滤。
+    /// 描述面读取须反映同一事实（否则 `{value:1}` 的报告为 enumerable:true，
+    /// 与 `Object.keys` 的空结果自相矛盾）。
+    pub(crate) fn key_is_non_enumerable(&self, obj: Value, key: &str) -> bool {
+        let Some(r) = obj.as_object() else {
+            return false;
+        };
+        match self.heap.get(r.0 as usize) {
+            Some(HeapObject::Ordinary { non_enum, .. })
+            | Some(HeapObject::Closure { non_enum, .. }) => non_enum.contains(key),
+            _ => false,
+        }
+    }
+
     pub(crate) fn ordinary_property_descriptor(
         &mut self,
         obj: Value,
@@ -1705,12 +1721,21 @@ impl Vm {
                     if let Some(sf) = s {
                         let _ = self.set_property(Value::Object(desc), "set", sf);
                     }
+                    // 访问器同样按 defineProperty 登记报标志位
+                    let enum_ = !self.key_is_non_enumerable(obj, key);
+                    let conf = match obj.as_object() {
+                        Some(r) => !self
+                            .non_configurable
+                            .get(&(r.0 as usize))
+                            .is_some_and(|ks| ks.iter().any(|k| k == key)),
+                        None => true,
+                    };
                     let _ =
-                        self.set_property(Value::Object(desc), "enumerable", Value::Boolean(true));
+                        self.set_property(Value::Object(desc), "enumerable", Value::Boolean(enum_));
                     let _ = self.set_property(
                         Value::Object(desc),
                         "configurable",
-                        Value::Boolean(true),
+                        Value::Boolean(conf),
                     );
                     return Ok(Value::Object(desc));
                 }
@@ -1738,9 +1763,82 @@ impl Vm {
             None => (true, true),
         };
         let _ = self.set_property(Value::Object(desc), "writable", Value::Boolean(w));
-        let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(true));
+        let e = !self.key_is_non_enumerable(obj, key);
+        let _ = self.set_property(Value::Object(desc), "enumerable", Value::Boolean(e));
         let _ = self.set_property(Value::Object(desc), "configurable", Value::Boolean(c));
         Ok(Value::Object(desc))
+    }
+
+    /// `IsCallable`：闭包 / 原生函数 / 原生构造器。
+    pub(crate) fn is_callable_value(&self, val: Value) -> bool {
+        let ValueCase::Object(r) = val.case() else {
+            return false;
+        };
+        matches!(
+            self.heap.get(r.0 as usize),
+            Some(
+                HeapObject::Closure { .. }
+                    | HeapObject::NativeFn { .. }
+                    | HeapObject::NativeCtor { .. }
+            )
+        )
+    }
+
+    /// `ToPropertyDescriptor(Obj)` 的校验部分（ES2024 7.3.25）：描述子必须
+    /// 为对象（否则 TypeError），且 `get`/`set` 必须可调用或 undefined。
+    ///
+    /// 规范化结果直接交 `ordinary_define_property` 消费——该函数只按名取值，
+    /// 键的合法性/取值器可调用性在此一次性拦下（`Object.defineProperty` 与
+    /// `Object.defineProperties`/`Object.create` 第二参数共用同一入口）。
+    pub(crate) fn validate_property_descriptor(&mut self, desc: Value) -> Result<(), VmError> {
+        if !matches!(desc.case(), ValueCase::Object(_)) {
+            let shown = self.format_value(desc);
+            return Err(
+                self.type_error(&format!("Property description must be an object: {shown}"))
+            );
+        }
+        for (key, label) in [("get", "Getter"), ("set", "Setter")] {
+            if !self.has_property(desc, key) {
+                continue;
+            }
+            let v = self.get_property(desc, key)?;
+            if matches!(v, Value::Undefined) || self.is_callable_value(v) {
+                continue;
+            }
+            let shown = self.format_value(v);
+            return Err(self.type_error(&format!("{label} must be a function: {shown}")));
+        }
+        Ok(())
+    }
+
+    /// `ObjectDefineProperties(O, Properties)`（ES2024 20.1.2.3.1）：
+    /// 遍历 `Properties` 的**自有且可枚举**键，逐个 `ToPropertyDescriptor`
+    /// 后定义到 `O`。
+    ///
+    /// 键面复用 `own_properties`——它已按「自有 + 可枚举」过滤，正是规范
+    /// 步骤 4b 的判定（`Object.defineProperty(d,'k',{value:{...},
+    /// enumerable:false})` 的 k 必须被跳过）。取值走 `get_property` 而非
+    /// 复用 `own_properties` 的第二元，因为规范要求 `Get(Properties, key)`
+    /// ——描述子表上挂 getter 时须实际调用。
+    pub(crate) fn define_properties_from(
+        &mut self,
+        target: Value,
+        properties: Value,
+    ) -> Result<(), VmError> {
+        if matches!(properties, Value::Undefined) {
+            return Ok(());
+        }
+        let keys: Vec<String> = self
+            .own_properties(properties)
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        for key in keys {
+            let desc = self.get_property(properties, &key)?;
+            self.validate_property_descriptor(desc)?;
+            self.ordinary_define_property(target, &key, desc)?;
+        }
+        Ok(())
     }
 
     /// 按描述对象定义属性（`Object.defineProperty` 底层语义）。

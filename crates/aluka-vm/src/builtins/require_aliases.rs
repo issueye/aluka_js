@@ -23,7 +23,7 @@
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::{Value, ValueCase};
+use crate::value::Value;
 use aluka_core::ObjectRef;
 
 /// `require("process")` / `require("node:process")`。
@@ -387,22 +387,20 @@ fn url_resolve(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 
 /// `url.format(obj_or_str)`：对象取 `href` 属性，字符串原样返回。
 fn url_format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    let out = match args.first().map(|v| v.case()) {
-        Some(ValueCase::Object(r)) => {
-            let mut href = String::new();
-            if matches!(
-                vm.heap.get(r.index()),
-                Some(crate::heap::HeapObject::Ordinary { .. })
-            ) {
-                if let Some(s) = vm.own_value(r.index(), "href").and_then(|v| v.as_object()) {
-                    if let Some(crate::heap::HeapObject::String(t)) = vm.heap.get(s.index()) {
-                        href = t.clone();
-                    }
-                }
+    let out = match args.first().copied() {
+        // 传对象（含 WHATWG `URL` 实例）时取 `href`——**必须走属性读取**
+        // 而非 `own_value` 直查：`URL` 的 href 是访问器（挂在 getter 表
+        // 里），直查自有数据槽只会拿到空串（`url.format(new URL(...))`
+        // 曾恒返回 ""）。
+        Some(v) if v.as_object().is_some() => {
+            let href = vm.get_property(v, "href").unwrap_or(Value::Undefined);
+            if matches!(href, Value::Undefined | Value::Null) {
+                String::new()
+            } else {
+                vm.format_value(href)
             }
-            href
         }
-        Some(v) => vm.format_value(Value::from(v)),
+        Some(v) => vm.format_value(v),
         None => String::new(),
     };
     Ok(Value::Object(vm.alloc_string(out)))

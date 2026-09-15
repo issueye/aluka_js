@@ -297,14 +297,18 @@ fn run_collect_command(
     let finish_task = proc_common::begin_exec_task();
     // 属主线程 id：回调句柄属于发起线程的 Vm 堆，事件须回投给属主
     let owner = std::thread::current().id();
+    // 命令显示串（错误对象 `err.cmd` 与 `Command failed:` 前缀用）
+    let display = cmd_display(&cmd, &program);
     std::thread::spawn(move || {
-        let (err, stdout, stderr) = match cmd.output() {
+        let (code, spawn_err, stdout, stderr) = match cmd.output() {
             Ok(out) => (
-                (!out.status.success()).then(|| go_exit_status_string(&out.status)),
+                out.status.code(),
+                None,
                 String::from_utf8_lossy(&out.stdout).to_string(),
                 String::from_utf8_lossy(&out.stderr).to_string(),
             ),
             Err(e) => (
+                None,
                 Some(go_spawn_error_string(&program, &e)),
                 String::new(),
                 String::new(),
@@ -314,7 +318,9 @@ fn run_collect_command(
             owner,
             ProcEvent::ExecDone {
                 cb,
-                err,
+                code,
+                spawn_err,
+                cmd: display,
                 stdout,
                 stderr,
             },
@@ -335,8 +341,7 @@ fn cp_exec(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(cb) = find_callback(vm, args, 1) else {
         return Ok(Value::Undefined);
     };
-    let mut cmd = Command::new(shell_program());
-    cmd.arg(shell_flag()).arg(&command);
+    let cmd = shell_command(&command);
     run_collect_command(vm, cmd, shell_program().to_owned(), cb)?;
     Ok(Value::Undefined)
 }
@@ -696,25 +701,16 @@ fn cp_exec_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
     let command = vm.format_value(command_val);
     let opts = parse_sync_opts(vm, args.get(1).copied());
-    if cfg!(windows) {
-        let parts: Vec<String> = command
-            .split_whitespace()
-            .map(|p| p.trim_matches('"').to_owned())
-            .collect();
-        let Some(program) = parts.first().cloned() else {
-            return throw_exec_error(vm, "", "execSync: empty command".to_owned(), -1);
-        };
-        let rest: Vec<String> = parts[1..].to_vec();
-        let mut cmd = Command::new(&program);
-        cmd.args(&rest);
-        let result = run_sync_command(vm, cmd, &program, &opts)?;
-        sync_result_or_throw(vm, result, go_cmd_string(&program, &rest), &opts)
+    // 与 `exec` 同源：命令整串交给 shell（此前 Windows 分支按空白拆分并
+    // 剥引号，`execSync('node -e "..."')` 会被拆成错误 argv）
+    let cmd = shell_command(&command);
+    let display = if cfg!(windows) {
+        format!("cmd /d /s /c \"{command}\"")
     } else {
-        let mut cmd = Command::new("/bin/sh");
-        cmd.arg("-c").arg(&command);
-        let result = run_sync_command(vm, cmd, "/bin/sh", &opts)?;
-        sync_result_or_throw(vm, result, format!("/bin/sh -c {command}"), &opts)
-    }
+        format!("/bin/sh -c {command}")
+    };
+    let result = run_sync_command(vm, cmd, shell_program(), &opts)?;
+    sync_result_or_throw(vm, result, display, &opts)
 }
 
 // ---------------------------------------------------------------------------
@@ -783,6 +779,64 @@ fn apply_windows_hide(cmd: &mut Command, hide: bool) {
 #[cfg(not(windows))]
 fn apply_windows_hide(_cmd: &mut Command, _hide: bool) {}
 
+/// 构造「shell 执行整串命令」的 `Command`（`exec` / `execSync` 共用）。
+///
+/// **Windows 必须走 `raw_arg` 原样投递**：`Command::arg` 会按 MSVC 规则
+/// 对实参加引号并转义内部引号，而 `cmd.exe` 不认这种转义——于是
+/// `exec('node -e "console.log(7)"')` 实际执行的是
+/// `node -e \"console.log(7)\"`，子进程静默无输出（Node 用
+/// `windowsVerbatimArguments` 规避的正是这一点，命令整串按原样跟在
+/// `/d /s /c` 之后）。
+fn shell_command(command: &str) -> Command {
+    let mut cmd = Command::new(shell_program());
+    if cfg!(windows) {
+        // `/d` 跳过 AutoRun、`/s` 保留整串语义、`/c` 执行后退出；
+        // 命令外加一层引号是 Node 的形态（`"${command}"`）
+        cmd.raw_arg(format!(" /d /s /c \"{command}\""));
+    } else {
+        cmd.arg(shell_flag()).arg(command);
+    }
+    cmd
+}
+
+/// Windows `raw_arg` 仅在 windows 平台存在。
+#[cfg(windows)]
+trait RawArgExt {
+    fn raw_arg(&mut self, text: String) -> &mut Command;
+}
+
+#[cfg(windows)]
+impl RawArgExt for Command {
+    fn raw_arg(&mut self, text: String) -> &mut Command {
+        use std::os::windows::process::CommandExt;
+        CommandExt::raw_arg(self, text)
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+trait RawArgExt {
+    fn raw_arg(&mut self, text: String) -> &mut Command;
+}
+
+#[cfg(not(windows))]
+impl RawArgExt for Command {
+    fn raw_arg(&mut self, _text: String) -> &mut Command {
+        self
+    }
+}
+
+/// `Command` 的可读显示串（`program arg1 arg2`；Windows 的 `raw_arg` 内容
+/// 也会被拼上，因此 `exec` 显示为 `cmd /d /s /c "<命令>"`）。
+fn cmd_display(cmd: &Command, program: &str) -> String {
+    let mut s = program.to_owned();
+    for a in cmd.get_args() {
+        s.push(' ');
+        s.push_str(&a.to_string_lossy());
+    }
+    s
+}
+
 /// Go exec.Cmd.String()：解析后路径 + 参数以空格连接。
 pub(crate) fn go_cmd_string(program: &str, args: &[String]) -> String {
     let mut s = go_look_path(program).unwrap_or_else(|| program.to_owned());
@@ -791,14 +845,6 @@ pub(crate) fn go_cmd_string(program: &str, args: &[String]) -> String {
         s.push_str(a);
     }
     s
-}
-
-/// Go ExitError.Error()：`exit status N` / `signal: killed`。
-fn go_exit_status_string(status: &std::process::ExitStatus) -> String {
-    status.code().map_or_else(
-        || "signal: killed".to_owned(),
-        |c| format!("exit status {c}"),
-    )
 }
 
 /// Go spawn 失败错误串：找不到命令时为

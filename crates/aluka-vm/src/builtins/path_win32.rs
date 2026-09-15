@@ -24,19 +24,335 @@ pub const MODULE: ModuleDef = ModuleDef {
 
 fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
-    let methods: [(&str, BuiltinHandler); 5] = [
-        ("join", join),
-        ("basename", basename),
-        ("dirname", dirname),
-        ("extname", extname),
-        ("resolve", resolve),
-    ];
-    for (name, handler) in methods {
+    for (name, handler) in METHODS {
         let f = vm.alloc_native_fn(&format!("path/win32.{name}"));
         set_module_prop(vm, obj, name, Value::Object(f))?;
-        register_handler(registry, "path/win32", name, handler);
+        register_handler(registry, "path/win32", name, *handler);
     }
+    // `path/win32` 模块自身的 `sep`/`delimiter`（`require('path/win32').sep`）
+    let sep_v = Value::Object(vm.alloc_string(SEP.to_owned()));
+    let delim_v = Value::Object(vm.alloc_string(DELIMITER.to_owned()));
+    set_module_prop(vm, obj, "sep", sep_v)?;
+    set_module_prop(vm, obj, "delimiter", delim_v)?;
     Ok(obj)
+}
+
+/// Windows 分隔符语义的方法表（`path/win32` 与平台 `path` 共用同一实现，
+/// 仅 NativeFn 名前缀不同——由 [`crate::builtins::register_all`] 逐项转挂）。
+pub(crate) const METHODS: &[(&str, BuiltinHandler)] = &[
+    ("join", join),
+    ("normalize", normalize),
+    ("relative", relative),
+    ("basename", basename),
+    ("dirname", dirname),
+    ("extname", extname),
+    ("resolve", resolve),
+    ("isAbsolute", is_absolute),
+];
+
+/// `isAbsolute(p)`：win32 语义——卷根起始（`C:\x`）、UNC 根
+/// （`\\host\share\x`）、或单分隔符起始（`\x` / `/x`）皆为绝对。
+/// `C:a` 是驱动相对路径，**不是**绝对路径。
+fn is_absolute(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    Ok(Value::Boolean(win_is_absolute(&path)))
+}
+
+/// Node `win32.isAbsolute`。
+fn win_is_absolute(path: &str) -> bool {
+    let b = path.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    if is_sep(b[0]) {
+        if b.len() == 1 {
+            return true;
+        }
+        if is_sep(b[1]) {
+            // UNC：跳过 `\\` 与主机段，再跳过分隔符与共享段，余下非空才算绝对
+            let mut i = 2usize;
+            while i < b.len() && !is_sep(b[i]) {
+                i += 1;
+            }
+            if i == b.len() {
+                return false;
+            }
+            while i < b.len() && is_sep(b[i]) {
+                i += 1;
+            }
+            if i == b.len() {
+                return false;
+            }
+            while i < b.len() && !is_sep(b[i]) {
+                i += 1;
+            }
+            return i != b.len();
+        }
+        return true;
+    }
+    // 设备根：`C:\` `C:/` 绝对；`C:` `C:a` 驱动相对
+    b.len() > 2 && b[0].is_ascii_alphabetic() && b[1] == b':' && is_sep(b[2])
+}
+
+/// 当前平台的分隔符 / 路径列表分隔符（`path.sep` / `path.delimiter`）。
+pub(crate) const SEP: &str = "\\";
+pub(crate) const DELIMITER: &str = ";";
+
+/// `normalize(p)`：Node `win32.normalize` 逐字移植。
+///
+/// 与 Go `filepath.Clean` 的差异都在可观测输出上：**保留尾部分隔符**
+/// （`'a/'` → `'a\\'`）、UNC 根补尾分隔符（`'//srv/share'` →
+/// `'\\\\srv\\share\\'`）、无分隔符的 `'C:'` → `'C:.'`，以及
+/// CVE-2024-36139 的「非绝对路径改写成可能被 Windows 当绝对路径解释」防护。
+fn normalize(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    // Node `validateString(path, 'path')`：缺参/非串一概 TypeError
+    // （`path.normalize()` 在 Node 抛 ERR_INVALID_ARG_TYPE，不返回 '.'）
+    let Some(first) = args.first() else {
+        return Err(
+            vm.type_error("The \"path\" argument must be of type string. Received undefined")
+        );
+    };
+    if !vm.is_string_value(*first) {
+        let shown = vm.format_value(*first);
+        return Err(vm.type_error(&format!(
+            "The \"path\" argument must be of type string. Received {shown}"
+        )));
+    }
+    let p = vm.format_value(*first);
+    Ok(Value::Object(vm.alloc_string(win_normalize(&p))))
+}
+
+/// Node `win32.normalize`（`lib/path.js`）。
+fn win_normalize(path: &str) -> String {
+    let b = path.as_bytes();
+    let len = b.len();
+    if len == 0 {
+        return ".".to_owned();
+    }
+    if len == 1 {
+        // 单字符：POSIX 分隔符归一为 `\`，否则原样
+        return if b[0] == b'/' {
+            "\\".to_owned()
+        } else {
+            path.to_owned()
+        };
+    }
+
+    let mut root_end = 0usize;
+    let mut device: Option<String> = None;
+    let mut is_absolute = false;
+    let code = b[0];
+
+    if is_sep(code) {
+        is_absolute = true;
+        if is_sep(b[1]) {
+            // 可能的 UNC 根
+            let mut j = 2usize;
+            let mut last = j;
+            while j < len && !is_sep(b[j]) {
+                j += 1;
+            }
+            if j < len && j != last {
+                let first_part = &path[last..j];
+                last = j;
+                while j < len && is_sep(b[j]) {
+                    j += 1;
+                }
+                if j < len && j != last {
+                    last = j;
+                    while j < len && !is_sep(b[j]) {
+                        j += 1;
+                    }
+                    if j == len || j != last {
+                        if first_part == "." || first_part == "?" {
+                            // 设备根（`\\.\PHYSICALDRIVE0`）
+                            device = Some(format!("\\\\{first_part}"));
+                            root_end = 4;
+                            if let Some(colon) = path.find(':') {
+                                let possible = &path[4..colon + 1];
+                                if is_windows_reserved_name(possible, possible.len() as isize - 1) {
+                                    device = Some(format!("\\\\?\\{possible}"));
+                                    root_end = 4 + possible.len();
+                                }
+                            }
+                        } else if j == len {
+                            // 恰好是 UNC 根本身：补尾分隔符后返回
+                            return format!("\\\\{first_part}\\{}\\", &path[last..]);
+                        } else {
+                            // UNC 根 + 余部
+                            device = Some(format!("\\\\{first_part}\\{}", &path[last..j]));
+                            root_end = j;
+                        }
+                    }
+                }
+            }
+        } else {
+            root_end = 1;
+        }
+    } else {
+        let colon_index = match path.find(':') {
+            Some(i) => i as isize,
+            None => -1,
+        };
+        if colon_index > 0 {
+            if b[0].is_ascii_alphabetic() && colon_index == 1 {
+                device = Some(path[..2].to_owned());
+                root_end = 2;
+                if len > 2 && is_sep(b[2]) {
+                    is_absolute = true;
+                    root_end = 3;
+                }
+            } else if is_windows_reserved_name(path, colon_index) {
+                device = Some(path[..colon_index as usize + 1].to_owned());
+                root_end = colon_index as usize + 1;
+            }
+        }
+    }
+
+    let mut tail = if root_end < len {
+        win_normalize_string(&path[root_end..], !is_absolute)
+    } else {
+        String::new()
+    };
+    if tail.is_empty() && !is_absolute {
+        tail = ".".to_owned();
+    }
+    if !tail.is_empty() && is_sep(b[len - 1]) {
+        tail.push('\\');
+    }
+    if !is_absolute && device.is_none() && path.contains(':') {
+        // CVE-2024-36139：尾串形如 `C:` 时必须前缀 `.\`，否则 Windows 会
+        // 把它解释成绝对路径
+        if tail.len() >= 2 && tail.as_bytes()[0].is_ascii_alphabetic() && tail.as_bytes()[1] == b':'
+        {
+            return format!(".\\{tail}");
+        }
+        let mut index = path.find(':');
+        while let Some(i) = index {
+            if i == len - 1 || is_sep(b[i + 1]) {
+                return format!(".\\{tail}");
+            }
+            index = path[i + 1..].find(':').map(|k| k + i + 1);
+        }
+    }
+    if let Some(colon_index) = path.find(':') {
+        if is_windows_reserved_name(path, colon_index as isize) {
+            let d = device.clone().unwrap_or_default();
+            return format!(".\\{d}{tail}");
+        }
+    }
+    match device {
+        None => {
+            if is_absolute {
+                format!("\\{tail}")
+            } else {
+                tail
+            }
+        }
+        Some(d) => {
+            if is_absolute {
+                format!("{d}\\{tail}")
+            } else {
+                format!("{d}{tail}")
+            }
+        }
+    }
+}
+
+/// `normalizeString(path, allowAboveRoot, '\\', isPathSeparator)` 的 Windows
+/// 实例化（与 POSIX 版同构，仅分隔符谓词不同，输出以 `\` 连接）。
+fn win_normalize_string(path: &str, allow_above_root: bool) -> String {
+    let mut resolved: Vec<&str> = Vec::new();
+    for raw in path.split(is_sep_c) {
+        match raw {
+            "" | "." => {}
+            ".." => match resolved.last() {
+                Some(&last) if last != ".." => {
+                    resolved.pop();
+                }
+                _ => {
+                    if allow_above_root {
+                        resolved.push("..");
+                    }
+                }
+            },
+            other => resolved.push(other),
+        }
+    }
+    resolved.join("\\")
+}
+
+/// `isWindowsReservedName(name, colonIndex)`：`CON`/`PRN`/`AUX`/`NUL`/
+/// `COM1`–`COM9`/`LPT1`–`LPT9`（Node `lib/path.js` 的保留设备名表）。
+fn is_windows_reserved_name(name: &str, colon_index: isize) -> bool {
+    if colon_index < 0 {
+        return false;
+    }
+    let end = colon_index as usize;
+    let Some(part) = name.get(..end) else {
+        return false;
+    };
+    if part.is_empty() {
+        return false;
+    }
+    let upper = part.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    if upper.len() != 4 {
+        return false;
+    }
+    let head = &upper[..3];
+    let digit = upper.as_bytes()[3];
+    matches!(head, "COM" | "LPT") && (b'1'..=b'9').contains(&digit)
+}
+
+/// `relative(from, to)`：先 `Clean` 再按段求差（Node `path.relative`）。
+fn relative(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let from = win_normalize(
+        &args
+            .first()
+            .map(|v| vm.format_value(*v))
+            .unwrap_or_default(),
+    );
+    let to = win_normalize(&args.get(1).map(|v| vm.format_value(*v)).unwrap_or_default());
+    Ok(Value::Object(vm.alloc_string(win_relative(&from, &to))))
+}
+
+/// Windows `relative`：`\`/`/` 均作分隔符，输出以 `\` 连接
+///（Node 用 `toNamespacedPath` 之外的同一段差分算法）。
+fn win_relative(from: &str, to: &str) -> String {
+    let segs = |s: &str| -> Vec<String> {
+        s.split(is_sep_c)
+            .filter(|x| !x.is_empty() && *x != ".")
+            .map(str::to_owned)
+            .collect()
+    };
+    let fs = segs(from);
+    let ts = segs(to);
+    let mut common = 0usize;
+    while common < fs.len() && common < ts.len() && fs[common].eq_ignore_ascii_case(&ts[common]) {
+        common += 1;
+    }
+    let mut out: Vec<String> = Vec::new();
+    for _ in common..fs.len() {
+        out.push("..".to_owned());
+    }
+    out.extend(ts[common..].iter().cloned());
+    if out.is_empty() {
+        // Node：同路径 → 空串（POSIX 的 `relative` 同样返回 `''`，
+        // 此前本实现返回 `'.'`）
+        return String::new();
+    }
+    out.join("\\")
+}
+
+/// `split(s)` 接受的分隔符谓词（`u8` 形态，供 `str::split`）。
+fn is_sep_c(c: char) -> bool {
+    c == '\\' || c == '/'
 }
 
 /// `join(...parts)`：`filepath.Join`（走 Go windows join：首元素卷保留、
@@ -47,19 +363,22 @@ fn join(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     Ok(Value::Object(s))
 }
 
-/// `basename(p[, ext])`：末元素（去尾部斜杠；体积名剔除）；ext 匹配时去掉。
+/// `basename(p[, ext])`：Node `win32.basename` 逐字移植（原串切片；
+/// `''` / 全分隔符 → `''`；suffix 逐字符比对回退）。
 fn basename(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if args.is_empty() {
+    let Some(first) = args.first() else {
         return Ok(Value::Object(vm.alloc_string(String::new())));
-    }
-    let mut b = win_base(&vm.format_value(args[0]));
-    if let Some(ext) = args.get(1) {
-        let ext = vm.format_value(*ext);
-        if !ext.is_empty() && b.len() > ext.len() && b.ends_with(&ext) {
-            b.truncate(b.len() - ext.len());
-        }
-    }
-    Ok(Value::Object(vm.alloc_string(b)))
+    };
+    let path = vm.format_value(*first);
+    let suffix = args.get(1).map(|v| vm.format_value(*v));
+    Ok(Value::Object(vm.alloc_string(
+        crate::builtins::path_node::node_basename(
+            &path,
+            suffix.as_deref(),
+            crate::builtins::path_node::is_win_sep,
+            true,
+        ),
+    )))
 }
 
 /// `dirname(p)`：Split 后 Clean（`"file.txt"` → `"."`；`"C:foo"` → `"C:."`）。
@@ -68,18 +387,109 @@ fn dirname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         Some(v) => vm.format_value(*v),
         None => return Ok(Value::Object(vm.alloc_string(".".to_owned()))),
     };
-    let s = vm.alloc_string(win_dir(&p));
+    let s = vm.alloc_string(node_win_dirname(&p));
     Ok(Value::Object(s))
 }
 
-/// `extname(p)`：Node 语义（基于 basename 的最后一个 `.`；首点隐藏文件 → `""`）。
-fn extname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
-    if args.is_empty() {
-        return Ok(Value::Object(vm.alloc_string(String::new())));
+/// Node `path.win32.dirname` 的逐字移植（`lib/path.js` win32 `dirname`）。
+///
+/// 与 Go `filepathlite.Dir` 的关键差异：Node 返回**原串切片**，保留输入
+/// 里分隔符的原始写法（`'a/b/c'` → `'a/b'`），并显式处理 UNC/设备卷根
+/// （`'C:\a'` → `'C:\'`、`'\\srv\sh\f'` → `'\\srv\sh\'`）。
+fn node_win_dirname(path: &str) -> String {
+    let b = path.as_bytes();
+    let len = b.len();
+    if len == 0 {
+        return ".".to_owned();
     }
-    let base = win_base(&vm.format_value(args[0]));
-    let s = vm.alloc_string(node_extname(&base));
-    Ok(Value::Object(s))
+    // 仅一个分隔符：直接返回（避免落到下面的 "." 分支）
+    if len == 1 {
+        return if is_sep(b[0]) {
+            path.to_owned()
+        } else {
+            ".".to_owned()
+        };
+    }
+
+    let mut root_end: isize = -1;
+    let mut offset = 0usize;
+    if is_sep(b[0]) {
+        // UNC 根：`\\host\share`
+        root_end = 1;
+        offset = 1;
+        if is_sep(b[1]) {
+            let mut j = 2usize;
+            let mut last = j;
+            while j < len && !is_sep(b[j]) {
+                j += 1;
+            }
+            if j < len && j != last {
+                last = j;
+                while j < len && is_sep(b[j]) {
+                    j += 1;
+                }
+                if j < len && j != last {
+                    last = j;
+                    while j < len && !is_sep(b[j]) {
+                        j += 1;
+                    }
+                    if j == len {
+                        // 恰好是 UNC 根本身
+                        return path.to_owned();
+                    }
+                    if j != last {
+                        // UNC 根 + 余部：跨越根后分隔符，按「普通根」处理
+                        root_end = (j + 1) as isize;
+                        offset = j + 1;
+                    }
+                }
+            }
+        }
+    } else if is_windows_device_root(b[0]) && b[1] == b':' {
+        // 设备根 `C:` / `C:\`
+        let re: isize = if len > 2 && is_sep(b[2]) { 3 } else { 2 };
+        root_end = re;
+        offset = re as usize;
+    }
+
+    let mut end: isize = -1;
+    let mut matched_slash = true;
+    let mut i = len as isize - 1;
+    while i >= offset as isize {
+        if is_sep(b[i as usize]) {
+            if !matched_slash {
+                end = i;
+                break;
+            }
+        } else {
+            matched_slash = false;
+        }
+        i -= 1;
+    }
+    if end == -1 {
+        if root_end == -1 {
+            return ".".to_owned();
+        }
+        end = root_end;
+    }
+    path[..end as usize].to_owned()
+}
+
+/// `isWindowsDeviceRoot`：`A`–`Z` / `a`–`z`。
+fn is_windows_device_root(c: u8) -> bool {
+    c.is_ascii_alphabetic()
+}
+
+/// `extname(p)`：Node `win32.extname` 逐字移植（`preDotState` 状态机；
+/// `'..'` 与首点隐藏文件 → `''`）。
+fn extname(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = match args.first() {
+        Some(v) => vm.format_value(*v),
+        None => return Ok(Value::Object(vm.alloc_string(String::new()))),
+    };
+    Ok(Value::Object(vm.alloc_string(
+        crate::builtins::path_node::node_extname(&path, crate::builtins::path_node::is_win_sep),
+    )))
 }
 
 /// `resolve(...parts)`：`filepath.Abs(filepath.Join(...))`（Windows：
@@ -239,6 +649,11 @@ fn win_clean(p: &str) -> String {
         let c = path[r];
         if is_sep(c) {
             r += 1;
+        } else if c == b'.' && (r + 1 == n || is_sep(path[r + 1])) {
+            // "." 元素：整体跳过（Go `filepathlite.Clean` 的
+            // `path[r] == '.' && (r+1 == n || IsPathSeparator(path[r+1]))`
+            // 分支——漏掉它会让 `filepath.Join("a",".","b")` 输出 `a\.\b`）
+            r += 1;
         } else if c == b'.'
             && r + 1 < n
             && path[r + 1] == b'.'
@@ -314,97 +729,85 @@ fn path_bytes_to_string(b: &[u8]) -> String {
     String::from_utf8(b.to_vec()).unwrap_or_default()
 }
 
-/// `filepath.Join`（Windows 实现，go1.25 join/joinNonEmpty）。
+/// Node `path.win32.join`（`lib/path.js`）：空元素跳过 → 以 `\` 相连 →
+/// 防 UNC 误判的首部斜杠压缩 → 保留设备名时只做分隔符归一 → 否则
+/// `win32.normalize`。
+///
+/// 关键点：**结果过 normalize**，因此尾部分隔符会被保留
+/// （`join('a/')` → `'a\\'`），UNC 根会补尾分隔符
+/// （`join('//srv','share')` → `'\\\\srv\\share\\'`）。Go 的
+/// `filepath.Join` 在同样输入下分别给 `'a'` 与 `'\\\\srv\\share'`。
 fn win_join(elems: &[String]) -> String {
-    let mut b: Vec<u8> = Vec::new();
-    let mut last_char = 0u8;
-    for e in elems {
-        let mut eb = e.as_bytes();
-        if b.is_empty() {
-            // 首个非空元素原样加入；空元素跳过（last_char 不变）
-        } else if is_sep(last_char) {
-            // 尾部分隔符：剥离下一元素前导分隔符，避免拼出 UNC
-            while !eb.is_empty() && is_sep(eb[0]) {
-                eb = &eb[1..];
-            }
-            // `\` + `??...` 需要补 `.\`（Root Local Device 语义）
-            if b.len() == 1
-                && eb.len() >= 2
-                && eb[0] == b'?'
-                && eb[1] == b'?'
-                && (eb.len() == 2 || is_sep(eb[2]))
-            {
-                b.extend_from_slice(b".\\");
-            }
-        } else if last_char == b':' {
-            // 驱动相对：不加分隔符
-        } else {
-            b.push(b'\\');
-            last_char = b'\\';
-        }
-        if !eb.is_empty() {
-            b.extend_from_slice(eb);
-            last_char = eb[eb.len() - 1];
-        }
-    }
-    if b.is_empty() {
-        return String::new();
-    }
-    win_clean(&path_bytes_to_string(&b))
-}
-
-/// `filepathlite.VolumeName`。
-fn win_volume_name(p: &str) -> String {
-    let b = p.as_bytes();
-    let vol_len = volume_name_len(b);
-    path_bytes_to_string(&from_slash(&b[..vol_len]))
-}
-
-/// `filepathlite.Base`：末元素（去尾部斜杠、剔体积名；空 → `.`；纯斜杠 → `\`）。
-fn win_base(p: &str) -> String {
-    if p.is_empty() {
+    let parts: Vec<&String> = elems.iter().filter(|e| !e.is_empty()).collect();
+    if parts.is_empty() {
         return ".".to_owned();
     }
-    let b = p.as_bytes();
-    let mut end = b.len();
-    while end > 0 && is_sep(b[end - 1]) {
-        end -= 1;
-    }
-    let vol_len = volume_name_len(&b[..end]);
-    let mut i = end;
-    while i > vol_len && !is_sep(b[i - 1]) {
-        i -= 1;
-    }
-    let elem = &b[i..end];
-    if elem.is_empty() {
-        // 体积名即全部（如 `C:`/`C:/`）、或全是分隔符 → 根分隔符
-        return "\\".to_owned();
-    }
-    path_bytes_to_string(elem)
-}
+    let first_part = parts[0].as_str();
+    let joined: String = parts
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join("\\");
 
-/// `filepathlite.Dir`：Split 后 Clean（体积拼接；UNC 卷特判）。
-fn win_dir(p: &str) -> String {
-    let b = p.as_bytes();
-    let vol = win_volume_name(p);
-    let vol_len = vol.len();
-    let mut i = b.len();
-    while i > vol_len && !is_sep(b[i - 1]) {
-        i -= 1;
+    // 首个非空串以「恰好两个分隔符 + 至少一个非分隔符」开头时，视为用户
+    // 有意构造 UNC 路径，不做前导斜杠压缩
+    let mut slash_count = 0usize;
+    let fb = first_part.as_bytes();
+    let mut needs_replace = true;
+    if !fb.is_empty() && is_sep(fb[0]) {
+        slash_count += 1;
+        if fb.len() > 1 && is_sep(fb[1]) {
+            slash_count += 1;
+            if fb.len() > 2 {
+                if is_sep(fb[2]) {
+                    slash_count += 1;
+                } else {
+                    needs_replace = false;
+                }
+            }
+        }
     }
-    let dir = win_clean(&p[vol_len..i]);
-    if dir == "." && vol_len > 2 {
-        return vol; // UNC 卷
+    let mut joined = joined;
+    if needs_replace {
+        let jb = joined.as_bytes();
+        while slash_count < jb.len() && is_sep(jb[slash_count]) {
+            slash_count += 1;
+        }
+        if slash_count >= 2 {
+            joined = format!("\\{}", &joined[slash_count..]);
+        }
     }
-    format!("{vol}{dir}")
-}
 
-/// Node extname：取 basename 中最后一个 `.` 之后；`.` 在首位（隐藏文件）→ `""`。
-fn node_extname(base: &str) -> String {
-    match base.rfind('.') {
-        Some(idx) if idx > 0 => base[idx..].to_owned(),
-        _ => String::new(),
+    // 任一段含 Windows 保留设备名时跳过 normalize（`CON`/`COM1` 等）
+    let mut segs: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let jb = joined.as_bytes();
+    let mut i = 0usize;
+    while i < jb.len() {
+        if jb[i] == b'\\' {
+            if !cur.is_empty() {
+                segs.push(std::mem::take(&mut cur));
+            }
+            while i + 1 < jb.len() && jb[i + 1] == b'\\' {
+                i += 1;
+            }
+        } else {
+            cur.push(jb[i] as char);
+        }
+        i += 1;
     }
+    if !cur.is_empty() {
+        segs.push(cur);
+    }
+    if segs.iter().any(|p| match p.find(':') {
+        Some(ci) => is_windows_reserved_name(p, ci as isize),
+        None => false,
+    }) {
+        // 保留设备名：只把 `/` 归一为 `\`，不做路径折叠
+        return joined.replace('/', "\\");
+    }
+
+    win_normalize(&joined)
 }
 
 /// `filepath.Abs`（Windows）：`GetFullPathName` 语义 + Clean。

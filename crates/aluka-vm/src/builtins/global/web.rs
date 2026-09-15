@@ -17,25 +17,114 @@ pub(crate) fn url_search_params_ctor(vm: &mut Vm, args: &[Value]) -> Result<Valu
         Value::Boolean(true),
     );
     for method in [
-        "append", "get", "getAll", "has", "set", "delete", "toString",
+        "append", "get", "getAll", "has", "set", "delete", "toString", "keys", "values", "entries",
+        "forEach", "sort",
     ] {
         let f = vm.alloc_native_fn(&format!("URLSearchParams.{method}"));
         let _ = vm.set_property(Value::Object(usp), method, Value::Object(f));
+    }
+    // `size` 是访问器（新增/删除条目后随之变化）
+    {
+        let g = vm.alloc_native_fn("URLSearchParams.size");
+        let d = vm.alloc_ordinary();
+        let _ = vm.set_property(Value::Object(d), "get", Value::Object(g));
+        let _ = vm.set_property(Value::Object(d), "enumerable", Value::Boolean(true));
+        let _ = vm.set_property(Value::Object(d), "configurable", Value::Boolean(true));
+        vm.ordinary_define_property(Value::Object(usp), "size", Value::Object(d))?;
     }
     let entries = usp_parse_init(vm, args.first().copied().unwrap_or(Value::Undefined));
     usp_rewrite(vm, Value::Object(usp), &entries);
     Ok(Value::Object(usp))
 }
 
+/// `application/x-www-form-urlencoded` 序列化（WHATWG URL 标准）：
+/// 字母数字与 `*-._` 原样，空格转 `+`，其余按 UTF-8 百分号编码。
+pub(crate) fn form_urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match *b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                out.push(*b as char);
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// `application/x-www-form-urlencoded` 解析：`+` 还原为空格，再做百分号解码。
+pub(crate) fn form_urldecode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                match u8::from_str_radix(hex, 16) {
+                    Ok(v) => {
+                        out.push(v);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 pub(crate) fn usp_parse_init(vm: &mut Vm, init: Value) -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = Vec::new();
+    // 对象（数组/字典）初始化必须先于字符串分支判定——对象经
+    // `format_value` 得 "[object Object]"，会被误当查询串解析
+    if init.as_object().is_some() && !vm.is_string_value(init) {
+        if let Some(r) = init.as_object() {
+            let is_arr = matches!(
+                vm.heap.get(r.index()),
+                Some(crate::heap::HeapObject::Array { .. })
+            );
+            if is_arr {
+                let elements: Vec<Value> = match vm.heap.get(r.index()) {
+                    Some(crate::heap::HeapObject::Array { elements, .. }) => elements.clone(),
+                    _ => Vec::new(),
+                };
+                for e in elements {
+                    let pair = vm.to_array_values(e);
+                    if pair.len() >= 2 {
+                        entries.push((vm.format_value(pair[0]), vm.format_value(pair[1])));
+                    }
+                }
+            } else {
+                for (k, v) in vm.own_entries(r.index()) {
+                    if !k.starts_with('_') {
+                        entries.push((k, vm.format_value(v)));
+                    }
+                }
+            }
+        }
+        return entries;
+    }
     let init_text = vm.format_value(init);
     if !init_text.is_empty() && !init.is_undefined() && !init.is_null() && !init.is_boolean() {
-        for pair in init_text.split('&').filter(|p| !p.is_empty()) {
+        let body = init_text.strip_prefix('?').unwrap_or(&init_text);
+        for pair in body.split('&').filter(|p| !p.is_empty()) {
             let mut it = pair.splitn(2, '=');
             entries.push((
-                it.next().unwrap_or("").to_owned(),
-                it.next().unwrap_or("").to_owned(),
+                form_urldecode(it.next().unwrap_or("")),
+                form_urldecode(it.next().unwrap_or("")),
             ));
         }
         return entries;
@@ -116,6 +205,8 @@ pub(crate) fn usp_rewrite(vm: &mut Vm, receiver: Value, entries: &[(String, Stri
         .collect();
     let arr = vm.alloc_array(vals);
     let _ = vm.set_property(receiver, "_uspEntries", Value::Object(arr));
+    // 与 URL 双向联动：作为 `url.searchParams` 时每次改写回写 url.search
+    crate::builtins::global::url_obj::sync_owner_from_usp(vm, receiver);
 }
 
 pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
@@ -206,10 +297,50 @@ pub(crate) fn url_search_params_method(vm: &mut Vm, args: &[Value]) -> Result<Va
             let r = current_receiver();
             let s: String = usp_entries(vm, r)
                 .iter()
-                .map(|(k, v)| format!("{k}={v}"))
+                .map(|(k, v)| format!("{}={}", form_urlencode(k), form_urlencode(v)))
                 .collect::<Vec<_>>()
                 .join("&");
             Ok(Value::Object(vm.alloc_string(s)))
+        }
+        "size" => {
+            let r = current_receiver();
+            Ok(Value::Number(usp_entries(vm, r).len() as f64))
+        }
+        "keys" | "values" | "entries" => {
+            let r = current_receiver();
+            let items: Vec<Value> = usp_entries(vm, r)
+                .iter()
+                .map(|(k, v)| match method {
+                    "keys" => Value::Object(vm.alloc_string(k.clone())),
+                    "values" => Value::Object(vm.alloc_string(v.clone())),
+                    _ => {
+                        let pair = vec![
+                            Value::Object(vm.alloc_string(k.clone())),
+                            Value::Object(vm.alloc_string(v.clone())),
+                        ];
+                        Value::Object(vm.alloc_array(pair))
+                    }
+                })
+                .collect();
+            Ok(Value::Object(vm.alloc_array(items)))
+        }
+        "forEach" => {
+            let r = current_receiver();
+            let cb = args.first().copied().unwrap_or(Value::Undefined);
+            for (k, v) in usp_entries(vm, r) {
+                let kv = Value::Object(vm.alloc_string(k));
+                let vv = Value::Object(vm.alloc_string(v));
+                vm.invoke_callable(cb, Value::Undefined, &[vv, kv, r])?;
+            }
+            Ok(Value::Undefined)
+        }
+        "sort" => {
+            let r = current_receiver();
+            let mut e = usp_entries(vm, r);
+            // 规范：按 name 的**码元**序稳定排序（同 name 保持原有相对顺序）
+            e.sort_by(|a, b| a.0.cmp(&b.0));
+            usp_rewrite(vm, r, &e);
+            Ok(Value::Undefined)
         }
         _ => Ok(Value::Undefined),
     }
