@@ -271,6 +271,39 @@ impl Vm {
         Ok(())
     }
 
+    /// 登记一个宏任务，返回句柄 id。
+    ///
+    /// 到期时间 = **当前虚拟时钟 + `delay`**（Node 语义：相对注册时刻的延时）。
+    /// 同批注册的零延迟任务因此到期时间相同，排空时按插入顺序执行
+    /// （`drain_macro_tasks` 的「最早到期」选取在相等时不替换，保持 FIFO）。
+    pub(crate) fn schedule_macro_task(
+        &mut self,
+        delay: u64,
+        cb: Value,
+        args: Vec<Value>,
+        repeating: bool,
+    ) -> u64 {
+        self.timer_counter += 1;
+        let id = self.timer_counter;
+        let due = self.macro_clock_ms.saturating_add(delay);
+        self.macro_tasks
+            .push_back((id, due, delay, cb, args, repeating));
+        id
+    }
+
+    /// 泵一轮 I/O 事件源并**立即排空微任务**。
+    ///
+    /// Node 在每个回调（含 I/O 回调）返回后都会清空微任务队列。等待分片里若只
+    /// 泵事件源而不排微任务，I/O 回调内兑现的 Promise 续体会被推迟到**本次宏任务
+    /// 排空结束**——实测缺陷：`server.listen()` 的 Promise 在存在挂起定时器时迟迟
+    /// 不兑现（探针 `tools/probe-timer-vs-io.js`：Node `+13ms`；修复前要等定时器全部到期，且被
+    /// `process.exit` 抢先）。
+    pub(crate) fn pump_io_and_microtasks(&mut self) -> Result<bool, VmError> {
+        let progressed = self.pump_event_sources()?;
+        self.drain_microtasks()?;
+        Ok(progressed)
+    }
+
     /// 排空宏任务（`setTimeout`/`setInterval`）：按**到期时间**升序执行
     /// （同批注册的定时器按注册顺序，周期任务到期后重排 `due += delay`）。
     /// 已 clear 的句柄跳过。末尾泵一轮内置库事件源（net/http/child_process
@@ -280,9 +313,20 @@ impl Vm {
         // 收集全部任务，反复取「到期最早」的执行（用例规模小，线性扫描足够）
         let mut tasks: Vec<(u64, u64, u64, Value, Vec<Value>, bool)> =
             self.macro_tasks.drain(..).collect();
-        let mut now = 0u64;
+        // 时钟从**持久值**起算并写回：此前从 0 起算，等待时长与实际经过时间
+        // 脱节（见 `macro_clock_ms` 文档）。
+        let mut now = self.macro_clock_ms;
         let mut ran_timer = false;
         loop {
+            // 合并执行期间**新注册**的宏任务（回调内 `setTimeout`/`setImmediate`/
+            // `server.close(cb)` 等）。Node 在每个回调返回后重新评估定时器队列：
+            // 新注册的 0ms 定时器必须排在快照中更晚到期的任务之前。此前不合并，
+            // 新任务要等本轮快照全部执行完才被接手——快照里若有较晚到期的定时器
+            // （或该定时器回调 `process.exit()`），新任务就被**永久饿死**
+            // （实测：定时器回调内再注册的定时器与 `server.close(cb)` 均不触发）。
+            if !self.macro_tasks.is_empty() {
+                tasks.extend(self.macro_tasks.drain(..));
+            }
             let mut best: Option<(usize, u64)> = None;
             for (i, (_, due, _, _, _, _)) in tasks.iter().enumerate() {
                 if best.is_none_or(|(_, bd)| *due < bd) {
@@ -293,20 +337,43 @@ impl Vm {
             let (id, _, delay_ms, cb, cb_args, repeating) = tasks.remove(idx);
             if due > now {
                 self.wait_until_due(due, &mut now)?;
+                // 等待期间可能出现**更早到期**的任务（Node 逐阶段重评估定时器
+                // 队列）：把当前任务放回工作集，交给下一轮按最早到期重选。
+                // 否则会先跑完已选中的晚到期任务（实测：6000ms watchdog 抢先于
+                // 等待期间注册的 0ms `server.close(cb)`——探针
+                // `tools/probe-http-close.js`）。
+                if self
+                    .macro_tasks
+                    .iter()
+                    .any(|(_, new_due, _, _, _, _)| *new_due < due)
+                {
+                    tasks.push((id, due, delay_ms, cb, cb_args, repeating));
+                    continue;
+                }
             }
             if self.active_timers.contains(&id) {
                 continue;
             }
             // 回调实参回放（`setImmediate(fn, a, b)` 等 Node 语义）
             self.invoke_callable(cb, Value::Undefined, &cb_args)?;
+            // 每个定时器回调返回后**立即排空微任务**（Node 在每个宏任务后都有
+            // 微任务检查点）。否则回调内兑现的 Promise 续体要等本轮全部定时器
+            // 跑完——若后续定时器回调 `process.exit()`，续体被永久丢弃
+            // （实测：`server.close(cb)` 内 resolve 的 `.then` 被 6000ms watchdog
+            // 的 process.exit 抢先——探针
+            // `tools/probe-http-close.js`）。
+            self.drain_microtasks()?;
             ran_timer = true;
             if repeating && !self.active_timers.contains(&id) {
                 tasks.push((id, due + delay_ms, delay_ms, cb, cb_args, true));
             }
         }
-        // 内置库事件源泵：宏任务排空后轮询 I/O 事件源，有进展则告知调用方
-        // 继续交替排空（事件回调可能追加微任务 / 宏任务）。
-        let pumped = self.pump_event_sources()?;
+        // 时钟持久化：宏任务回调内新注册的定时器相对**本轮到期的时刻**计
+        // （Node 语义），而不是相对更早的注册时刻。须在泵/微任务之前写回——
+        // 回调内新注册的定时器要看到已推进的时钟。
+        self.macro_clock_ms = now;
+        // 内置库事件源泵 + 微任务排空（事件回调可能追加微任务 / 宏任务）
+        let pumped = self.pump_io_and_microtasks()?;
         Ok(ran_timer || pumped)
     }
 
@@ -331,9 +398,25 @@ impl Vm {
             let slice = (due - *now).min(WAIT_SLICE_MS);
             std::thread::sleep(std::time::Duration::from_millis(slice));
             *now += slice;
+            // 时钟先写回：泵出的回调若注册新定时器，应相对已推进的时钟计。
+            self.macro_clock_ms = *now;
+            // 泵事件源 + **立即排空微任务**（Node：I/O 回调返回后清空微任务；
+            // 只泵不排会让回调内兑现的 Promise 续体等到定时器全部到期）。
             // 泵出的回调可能追加微任务/宏任务；新增宏任务落在 self.macro_tasks，
             // 由顶层循环下一轮接手（本轮 tasks 已在本地，不重入）。
-            self.pump_event_sources()?;
+            self.pump_io_and_microtasks()?;
+            // 期间新注册且**已经到期**的任务立即让出等待：Node 在每个阶段重新
+            // 评估定时器队列，0ms 定时器不会被更早开始等待的长定时器挡住
+            // （实测缺陷：`server.close(cb)` 在 .then 里注册，被 6000ms 的
+            // watchdog 睡眠挡住，直到 watchdog 触发才轮到——探针
+            // `tools/probe-http-close.js`）。
+            if self
+                .macro_tasks
+                .iter()
+                .any(|(_, new_due, _, _, _, _)| *new_due < due)
+            {
+                break;
+            }
         }
         Ok(())
     }

@@ -239,16 +239,7 @@ pub(crate) fn schedule_raw(
         return Ok(id);
     }
     let repeating = matches!(api, mock::FakeApi::SetInterval);
-    vm.timer_counter += 1;
-    let id = vm.timer_counter;
-    let last_due = vm
-        .macro_tasks
-        .back()
-        .map(|(_, d, _, _, _, _)| *d)
-        .unwrap_or(0);
-    let due = last_due + delay;
-    vm.macro_tasks
-        .push_back((id, due, delay, cb, Vec::new(), repeating));
+    let id = vm.schedule_macro_task(delay, cb, Vec::new(), repeating);
     Ok(Value::Number(id as f64))
 }
 

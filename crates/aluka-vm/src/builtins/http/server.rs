@@ -78,6 +78,8 @@ pub(crate) fn create_server_object_tls(
         "once",
         "off",
         "removeListener",
+        "removeAllListeners",
+        "listenerCount",
         "listen",
         "close",
         "address",
@@ -114,6 +116,8 @@ pub(crate) fn register_handlers(registry: &mut BuiltinRegistry) {
                 ("once", instance_once),
                 ("off", instance_off),
                 ("removeListener", instance_off),
+                ("removeAllListeners", instance_remove_all),
+                ("listenerCount", instance_listener_count),
             ],
         ),
         (
@@ -138,6 +142,8 @@ pub(crate) fn register_handlers(registry: &mut BuiltinRegistry) {
                 ("once", instance_once),
                 ("off", instance_off),
                 ("removeListener", instance_off),
+                ("removeAllListeners", instance_remove_all),
+                ("listenerCount", instance_listener_count),
             ],
         ),
     ] {
@@ -184,6 +190,31 @@ fn instance_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         state::remove_listener(r.0, &name, *cb);
     }
     Ok(receiver)
+}
+
+/// 实例 `removeAllListeners([event])`：不带事件名清空该对象全部监听器
+/// （Node 语义；真实项目用它摘掉 `data` 处理器后自行 drain）。
+fn instance_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ValueCase::Object(r) = receiver.case() else {
+        return Ok(receiver);
+    };
+    let event = args.first().map(|v| vm.format_value(*v));
+    state::remove_all_listeners(r.0, event.as_deref());
+    Ok(receiver)
+}
+
+/// 实例 `listenerCount(event)`：返回该事件当前监听器数量。
+fn instance_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ValueCase::Object(r) = receiver.case() else {
+        return Ok(Value::Number(0.0));
+    };
+    let count = args
+        .first()
+        .map(|v| state::listener_count(r.0, &vm.format_value(*v)))
+        .unwrap_or(0);
+    Ok(Value::Number(count as f64))
 }
 
 // --- 服务器方法 ----------------------------------------------------------

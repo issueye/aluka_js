@@ -120,18 +120,23 @@ impl CallArgs {
 }
 
 impl Vm {
-    /// 解析可调用对象：闭包返回 (函数模板索引, 上值)；裸函数模板索引返回 (索引, 空上值)。
+    /// 解析可调用对象：仅**闭包**携带函数模板索引与上值。
+    ///
+    /// 此前这里还有一条「裸函数模板索引」回退——只要对象句柄的堆索引小于当前
+    /// 函数表长度就当作模板索引。该约定在 Rust VM 中**没有任何创建者**（模板
+    /// 一律经 `alloc_closure*` 包装），却会劫持索引较小的真实对象：函数表随
+    /// `require` 追加而增长，一旦 `table_len > 某内建对象的堆索引`，该对象就被
+    /// 误解析成函数模板并执行**另一个函数**（实测：`AppError` 构造器里的
+    /// `super(m)` 以 `Error`（NativeCtor，堆索引 55 < 表长 64）为 callee，被
+    /// 解析成 `module_functions[55]` = `TaskService_remove` 并执行其函数体）。
+    /// 这也是缺陷「顺序/布局敏感」的成因：表长随已加载模块数变化。
     pub(crate) fn resolve_callable(&self, callee: Value) -> (Option<usize>, Vec<Upvalue>) {
-        if let Some(r) = callee.as_object() {
-            if let Some(HeapObject::Closure {
+        if let Some(r) = callee.as_object()
+            && let Some(HeapObject::Closure {
                 func_idx, upvalues, ..
             }) = self.heap.get(r.0 as usize)
-            {
-                return (Some(*func_idx), upvalues.clone());
-            }
-            if (r.0 as usize) < self.module_functions.len() {
-                return (Some(r.0 as usize), Vec::new());
-            }
+        {
+            return (Some(*func_idx), upvalues.clone());
         }
         (None, Vec::new())
     }
@@ -981,6 +986,17 @@ impl Vm {
             // async 函数（同步完成）：结果包装为 fulfilled Promise
             Ok(v) if tmpl.is_async => {
                 let p = self.alloc_fulfilled_promise(v);
+                Ok(Value::Object(p))
+            }
+            // async 函数**同步抛错**（首次 await 之前）：规范
+            // AsyncFunctionStart/AsyncBlockStart 要求把异常转为**返回 Promise 的
+            // 拒绝**，而不是向调用方同步抛出。此前只包装 `Ok`，同步 throw 直接以
+            // `Err` 逃逸到调用方——真实项目实测：`async route() { … throw … }`
+            // 的异常穿透 `handle().catch(...)` 变成模块级未捕获错误（探针
+            // `demo/taskboard-demo/tools/probe-async-throw.js` /
+            // demo 的 404 路径）。
+            Err(VmError::Thrown(reason)) if tmpl.is_async => {
+                let p = self.alloc_rejected_promise(reason);
                 Ok(Value::Object(p))
             }
             other => other,

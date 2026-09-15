@@ -313,6 +313,39 @@ fn take_listeners(obj: u32, event: &str) -> Vec<Value> {
     })
 }
 
+/// 移除实例监听器：`event` 为 `None` 时清空该对象**全部**事件（Node
+/// `removeAllListeners()`／`removeAllListeners(event)` 两种形态）。
+pub(crate) fn remove_all_listeners(obj: u32, event: Option<&str>) {
+    LISTENERS.with(|g| {
+        let mut binding = g.borrow_mut();
+        let Some(map) = binding.as_mut() else {
+            return;
+        };
+        match event {
+            Some(name) => {
+                if let Some(entry) = map.get_mut(&obj) {
+                    entry.remove(name);
+                }
+            }
+            None => {
+                map.remove(&obj);
+            }
+        }
+    });
+}
+
+/// 查询某实例上某事件的监听器数量（Node `listenerCount(event)`）。
+pub(crate) fn listener_count(obj: u32, event: &str) -> usize {
+    LISTENERS.with(|g| {
+        g.borrow()
+            .as_ref()
+            .and_then(|m| m.get(&obj))
+            .and_then(|e| e.get(event))
+            .map(|l| l.len())
+            .unwrap_or(0)
+    })
+}
+
 /// 查询是否存在某事件的监听器。
 pub(crate) fn has_listener(obj: u32, event: &str) -> bool {
     LISTENERS.with(|g| {
@@ -363,15 +396,7 @@ pub(crate) fn emit(vm: &mut Vm, target: Value, event: &str, args: &[Value]) -> R
 /// 计算宏任务到期时间（与 `timers.rs::schedule_raw` 同一语义：
 /// 追加到当前队列末尾的 `delay` 偏移之上），并压入队列。
 pub(crate) fn schedule_task(vm: &mut Vm, cb: Value, delay: u64) {
-    vm.timer_counter += 1;
-    let id = vm.timer_counter;
-    let last_due = vm
-        .macro_tasks
-        .back()
-        .map(|(_, d, _, _, _, _)| *d)
-        .unwrap_or(0);
-    vm.macro_tasks
-        .push_back((id, last_due + delay, delay, cb, Vec::new(), false));
+    vm.schedule_macro_task(delay, cb, Vec::new(), false);
 }
 
 /// 响应绑定快照（`finalize_response` 的读视图；锁外构造响应字节用）。

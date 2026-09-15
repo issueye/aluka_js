@@ -37,10 +37,36 @@ pub(crate) fn register_handlers(registry: &mut BuiltinRegistry) {
         ("once", client_once),
         ("off", client_off),
         ("removeListener", client_off),
+        ("removeAllListeners", client_remove_all),
+        ("listenerCount", client_listener_count),
     ] {
         register_handler(registry, "http:request", method, handler);
     }
     register_handler(registry, "http:internal", "timeoutEmit", timeout_emit);
+}
+
+/// `ClientRequest` 实例的 `removeAllListeners([event])`。
+fn client_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ValueCase::Object(r) = receiver.case() else {
+        return Ok(receiver);
+    };
+    let event = args.first().map(|v| vm.format_value(*v));
+    super::state::remove_all_listeners(r.0, event.as_deref());
+    Ok(receiver)
+}
+
+/// `ClientRequest` 实例的 `listenerCount(event)`。
+fn client_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ValueCase::Object(r) = receiver.case() else {
+        return Ok(Value::Number(0.0));
+    };
+    let count = args
+        .first()
+        .map(|v| super::state::listener_count(r.0, &vm.format_value(*v)))
+        .unwrap_or(0);
+    Ok(Value::Number(count as f64))
 }
 
 /// 构造 `ClientRequest` 实例对象（Go `newClientRequestProto`）。
@@ -72,6 +98,8 @@ pub(crate) fn create_request_object(
         "once",
         "off",
         "removeListener",
+        "removeAllListeners",
+        "listenerCount",
     ] {
         let fn_ref = vm.alloc_native_fn(&format!("http:request.{method}"));
         let _ = vm.set_property(Value::Object(obj), method, Value::Object(fn_ref));
@@ -363,27 +391,14 @@ fn client_set_timeout(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let timeout = super::int_arg(args, 0, 0);
     let cb = args.get(1).copied().filter(|v| super::is_function(vm, *v));
     if timeout > 0 {
-        let due_base = vm
-            .macro_tasks
-            .back()
-            .map(|(_, d, _, _, _, _)| *d)
-            .unwrap_or(0);
         if let Some(cb) = cb {
             schedule_task(vm, cb, timeout as u64);
         }
         let emit_fn = vm.alloc_native_fn("http:internal.timeoutEmit");
         state::push_timeout_target(receiver);
-        // 与回调同队尾：显式追加到同一到期时刻，保证先 callback 后事件。
-        vm.timer_counter += 1;
-        let id = vm.timer_counter;
-        vm.macro_tasks.push_back((
-            id,
-            due_base + timeout as u64,
-            timeout as u64,
-            Value::Object(emit_fn),
-            Vec::new(),
-            false,
-        ));
+        // 与回调同到期时刻（`schedule_task` 亦为「当前时钟 + timeout」），
+        // 保证先 callback 后事件的插入顺序
+        vm.schedule_macro_task(timeout as u64, Value::Object(emit_fn), Vec::new(), false);
     }
     Ok(receiver)
 }

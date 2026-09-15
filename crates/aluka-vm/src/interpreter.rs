@@ -186,6 +186,16 @@ pub struct Vm {
     /// res)` 正依赖 `setImmediate` 的三参回放——丢掉即让 express 的
     /// `logerror(err)` 收到 undefined，读取 `err.stack` 崩溃）。
     pub(crate) macro_tasks: std::collections::VecDeque<(u64, u64, u64, Value, Vec<Value>, bool)>,
+    /// 宏任务**虚拟时钟**（毫秒）：定时器到期时间 = 该时钟 + 延迟。
+    ///
+    /// 由 `drain_macro_tasks` 的等待推进并**持久化**（跨调用累积）。此前到期时间
+    /// 取「队尾任务的 due + delay」且排空时的 `now` 从 0 起算：
+    /// `setTimeout(f, 3000)` 之后注册的 `setTimeout(g, 300)` 会被排到 3300ms，
+    /// **触发顺序颠倒且整体迟到**（Node：300ms 先于 3000ms）。真实项目实测：
+    /// 挂起的 `setTimeout` 会把 HTTP `listen` 回调等在定时器之后（探针
+    /// `demo/taskboard-demo/tools/probe-timer-vs-io.js`：
+    /// Node 13ms / 修复前 5725ms）。
+    pub(crate) macro_clock_ms: u64,
     /// 真实 worker 线程 spawn 钩子（装配层注入；None 时 `new Worker` 走
     /// 同进程伪 worker 路径，见 `worker_threads` 模块文档）
     pub worker_entry: Option<std::sync::Arc<crate::worker::WorkerEntryFn>>,
@@ -399,6 +409,7 @@ impl Vm {
             nexttick_queue: std::collections::VecDeque::new(),
             microtask_queue: std::collections::VecDeque::new(),
             macro_tasks: std::collections::VecDeque::new(),
+            macro_clock_ms: 0,
             timer_counter: 0,
             active_timers: std::collections::HashSet::new(),
             promise_ctor: None,
@@ -2978,7 +2989,14 @@ impl Vm {
             Ok(result)
         } else if matches!(
             method_name,
-            "on" | "once" | "off" | "removeListener" | "emit"
+            "on" | "once"
+                | "addListener"
+                | "off"
+                | "removeListener"
+                | "removeAllListeners"
+                | "listenerCount"
+                | "listeners"
+                | "emit"
         ) && matches!(receiver.case(), ValueCase::Object(rr)
                 if matches!(
                     self.heap.get(rr.0 as usize),
@@ -2988,12 +3006,13 @@ impl Vm {
             // EventEmitter：on/once 注册监听器，emit 触发，off/removeListener 移除
             if let Some(rr) = receiver.as_object() {
                 match method_name {
-                    "on" | "once" => {
+                    "on" | "once" | "addListener" => {
                         let name = args
                             .first()
                             .map(|v| self.to_property_key(*v))
                             .unwrap_or_default();
                         let cb = args.get(1).copied().unwrap_or(Value::Undefined);
+                        // `addListener` 是 `on` 的别名（Node 语义）
                         let once = method_name == "once";
                         if let Some(HeapObject::EventEmitter { listeners }) =
                             self.heap.get_mut(rr.0 as usize)
@@ -3002,6 +3021,34 @@ impl Vm {
                             self.gc_write_barrier(rr, cb);
                         }
                         Ok(receiver)
+                    }
+                    "listenerCount" => {
+                        let name = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
+                        let count = match self.heap.get(rr.0 as usize) {
+                            Some(HeapObject::EventEmitter { listeners }) => {
+                                listeners.get(&name).map(|l| l.len()).unwrap_or(0)
+                            }
+                            _ => 0,
+                        };
+                        Ok(Value::Number(count as f64))
+                    }
+                    "listeners" => {
+                        let name = args
+                            .first()
+                            .map(|v| self.to_property_key(*v))
+                            .unwrap_or_default();
+                        let cbs: Vec<Value> = match self.heap.get(rr.0 as usize) {
+                            Some(HeapObject::EventEmitter { listeners }) => listeners
+                                .get(&name)
+                                .map(|l| l.iter().map(|(cb, _)| *cb).collect())
+                                .unwrap_or_default(),
+                            _ => Vec::new(),
+                        };
+                        let arr = self.alloc_array(cbs);
+                        Ok(Value::Object(arr))
                     }
                     "emit" => {
                         let name = args
@@ -3036,7 +3083,23 @@ impl Vm {
                         Ok(Value::Boolean(!emit_args.is_empty()))
                     }
                     _ => {
-                        // off / removeListener：移除匹配的监听器
+                        // off / removeListener：移除匹配的监听器；removeAllListeners：
+                        // 无事件名时清空全部事件，有名时只清该事件（Node 语义）
+                        if method_name == "removeAllListeners" {
+                            // 先算事件名（不可变借用），再取可变借用，避免冲突
+                            let target = args.first().map(|v| self.to_property_key(*v));
+                            if let Some(HeapObject::EventEmitter { listeners }) =
+                                self.heap.get_mut(rr.0 as usize)
+                            {
+                                match target {
+                                    Some(name) => {
+                                        listeners.remove(&name);
+                                    }
+                                    None => listeners.clear(),
+                                }
+                            }
+                            return Ok(receiver);
+                        }
                         let name = args
                             .first()
                             .map(|v| self.to_property_key(*v))
@@ -4019,14 +4082,15 @@ impl Vm {
                             let ret = handler(self, args)?;
                             Ok(ret)
                         } else {
+                            // 方法值必须是闭包才可解析为函数模板（「裸函数模板
+                            // 索引」回退已移除：它会把堆索引较小的真实对象误当
+                            // 模板并执行另一函数，见 resolve_callable 文档）
                             let (f_idx, uvs) =
                                 if let Some(HeapObject::Closure {
                                     func_idx, upvalues, ..
                                 }) = self.heap.get(m_ref.0 as usize)
                                 {
                                     (Some(*func_idx), upvalues.clone())
-                                } else if (m_ref.0 as usize) < self.module_functions.len() {
-                                    (Some(m_ref.0 as usize), Vec::new())
                                 } else {
                                     (None, Vec::new())
                                 };
@@ -4586,15 +4650,7 @@ impl Vm {
                             ) {
                                 self.stack.push(id);
                             } else {
-                                self.timer_counter += 1;
-                                let id = self.timer_counter;
-                                let last_due = self
-                                    .macro_tasks
-                                    .back()
-                                    .map(|(_, d, _, _, _, _)| *d)
-                                    .unwrap_or(0);
-                                self.macro_tasks
-                                    .push_back((id, last_due, 0, cb, extra, false));
+                                let id = self.schedule_macro_task(0, cb, extra, false);
                                 self.stack.push(Value::Number(id as f64));
                             }
                         } else if self.is_native_fn(Value::Object(r), "setTimeout")
@@ -4622,17 +4678,7 @@ impl Vm {
                             {
                                 self.stack.push(id);
                             } else {
-                                self.timer_counter += 1;
-                                let id = self.timer_counter;
-                                // 到期时间 = 队尾累计到期 + 延迟（同批注册按时间序）
-                                let last_due = self
-                                    .macro_tasks
-                                    .back()
-                                    .map(|(_, d, _, _, _, _)| *d)
-                                    .unwrap_or(0);
-                                let due = last_due + delay;
-                                self.macro_tasks
-                                    .push_back((id, due, delay, cb, extra, repeating));
+                                let id = self.schedule_macro_task(delay, cb, extra, repeating);
                                 // Node 返回 Timeout/Interval 句柄；简化返回数字 id
                                 // （clear* 接受数字或对象，数字自洽）
                                 self.stack.push(Value::Number(id as f64));
@@ -5117,14 +5163,14 @@ impl Vm {
                     let callee = self.pop()?;
                     let this_val = *self.locals.first().unwrap_or(&Value::Undefined);
                     if let Some(c_ref) = callee.as_object() {
+                        // 仅闭包可解析为函数模板（「裸函数模板索引」回退已移除，
+                        // 见 resolve_callable 文档：该回退会执行另一函数体）
                         let (f_idx, uvs) =
                             if let Some(HeapObject::Closure {
                                 func_idx, upvalues, ..
                             }) = self.heap.get(c_ref.0 as usize)
                             {
                                 (Some(*func_idx), upvalues.clone())
-                            } else if (c_ref.0 as usize) < self.module_functions.len() {
-                                (Some(c_ref.0 as usize), Vec::new())
                             } else {
                                 (None, Vec::new())
                             };

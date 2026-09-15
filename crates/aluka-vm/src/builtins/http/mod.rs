@@ -206,6 +206,8 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         ("once", message_once),
         ("off", message_off),
         ("removeListener", message_off),
+        ("removeAllListeners", message_remove_all),
+        ("listenerCount", message_listener_count),
         ("resume", message_noop_self),
         ("pause", message_noop_self),
         ("destroy", message_noop_self),
@@ -297,6 +299,8 @@ fn server_response_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> 
         "cork",
         "uncork",
         "setTimeout",
+        "removeAllListeners",
+        "listenerCount",
     ] {
         let fn_ref = vm.alloc_native_fn(&format!("http:response.{method}"));
         let _ = vm.set_property(Value::Object(obj), method, Value::Object(fn_ref));
@@ -534,6 +538,8 @@ pub(crate) fn build_message_instance(
         "once",
         "off",
         "removeListener",
+        "removeAllListeners",
+        "listenerCount",
         "resume",
         "pause",
         "destroy",
@@ -581,6 +587,30 @@ fn message_off(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         }
     }
     Ok(receiver)
+}
+
+/// `message.removeAllListeners([event])`：清空（指定/全部）事件的监听器。
+fn message_remove_all(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ValueCase::Object(r) = receiver.case() else {
+        return Ok(receiver);
+    };
+    let event = args.first().map(|v| vm.format_value(*v));
+    state::remove_all_listeners(r.0, event.as_deref());
+    Ok(receiver)
+}
+
+/// `message.listenerCount(event)`：该事件的监听器数量。
+fn message_listener_count(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let ValueCase::Object(r) = receiver.case() else {
+        return Ok(Value::Number(0.0));
+    };
+    let count = args
+        .first()
+        .map(|v| state::listener_count(r.0, &vm.format_value(*v)))
+        .unwrap_or(0);
+    Ok(Value::Number(count as f64))
 }
 
 /// `message.resume/pause/destroy/unpipe`：aluka 消息一次性给出，全部 no-op。
