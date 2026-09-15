@@ -533,8 +533,31 @@ impl Vm {
         {
             self.set_prototype_of(Value::Object(err), Some(p));
         }
-        let name = self.alloc_string(ctor_name.to_owned());
-        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        // `name` 挂在**子类原型**上（Node：`new TypeError('t').name` 读自
+        // `TypeError.prototype.name`）——实例不落自有 name，否则
+        // `Object.getOwnPropertyNames(err)` 多出一项、与 Node 不符。
+        // 子类原型的 name 已由 `error_subclass_ctor` 建好；此处只兜底
+        //（原型缺 name 时才补，避免无谓写入）。
+        let proto_has_name = if let Some(ValueCase::Object(p)) =
+            self.get_property(ctor, "prototype").ok().map(|v| v.case())
+        {
+            self.has_own_slot(p.0 as usize, "name")
+        } else {
+            false
+        };
+        if !proto_has_name {
+            let name = self.alloc_string(ctor_name.to_owned());
+            if let Some(ValueCase::Object(p)) =
+                self.get_property(ctor, "prototype").ok().map(|v| v.case())
+            {
+                let _ = self.set_property(Value::Object(p), "name", Value::Object(name));
+                self.mark_non_enumerable(Value::Object(p), "name");
+            }
+        }
+        // 子类改名后同步 stack 首行（`TypeError: msg`），并统一收口可枚举性
+        // （Node：`Object.keys(err)` 为空集）
+        self.refresh_error_stack_name(err);
+        self.refresh_error_enumerability(err);
     }
 
     /// 构造带对应原型 + `name` 的 Error 抛出值（TypeError/RangeError 等；
@@ -542,13 +565,15 @@ impl Vm {
     pub(crate) fn typed_error(&mut self, ctor_name: &str, msg: &str) -> VmError {
         let ctor = self.error_subclass_ctor(ctor_name);
         let err = self.alloc_error_instance(msg);
-        let name = self.alloc_string(ctor_name.to_owned());
-        let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+        // name 挂在子类原型（`error_subclass_ctor` 已建；实例不落自有 name）
         if let Some(ValueCase::Object(p)) =
             self.get_property(ctor, "prototype").ok().map(|v| v.case())
         {
             self.set_prototype_of(Value::Object(err), Some(p));
         }
+        // 子类名已就位：同步 stack 首行 + 统一收口可枚举性
+        self.refresh_error_stack_name(err);
+        self.refresh_error_enumerability(err);
         VmError::Thrown(Value::Object(err))
     }
 

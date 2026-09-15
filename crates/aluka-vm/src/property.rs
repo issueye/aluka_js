@@ -112,6 +112,20 @@ impl Vm {
     /// 枚举 Ordinary 对象自有属性（键 + 值，快速/字典两模式均保插入序；
     /// 跳过删除项；访问器键并入，值取访问器函数）。
     pub(crate) fn own_entries(&self, idx: usize) -> Vec<(String, Value)> {
+        self.own_entries_impl(idx, false)
+    }
+
+    /// 自有**全部**字符串键条目（`Object.getOwnPropertyNames` 用）：
+    /// 与 [`Vm::own_entries`] 的差别是**不过滤不可枚举键**。
+    pub(crate) fn own_entries_all(&self, idx: usize) -> Vec<(String, Value)> {
+        self.own_entries_impl(idx, true)
+    }
+
+    /// 自有条目枚举实现：`include_non_enum` 决定是否保留不可枚举键。
+    fn own_entries_impl(&self, idx: usize, include_non_enum: bool) -> Vec<(String, Value)> {
+        let keep = |non_enum: &std::collections::HashSet<String>, k: &str| {
+            include_non_enum || !non_enum.contains(k)
+        };
         let Some(HeapObject::Ordinary {
             props,
             deleted,
@@ -130,7 +144,7 @@ impl Vm {
                 };
                 let mut out = Vec::with_capacity(s.len());
                 for (i, name) in s.names().enumerate() {
-                    if deleted.contains(name) || non_enum.contains(name) {
+                    if deleted.contains(name) || !keep(non_enum, name) {
                         continue;
                     }
                     out.push((
@@ -145,20 +159,20 @@ impl Vm {
             }
             OrdinaryProps::Dict { properties, .. } => properties
                 .iter()
-                .filter(|(k, _)| !deleted.contains(k) && !non_enum.contains(k))
+                .filter(|(k, _)| !deleted.contains(k) && keep(non_enum, k))
                 .map(|(k, v)| (k.clone(), *v))
                 .collect(),
         };
         // 访问器键并入（Object.keys/entries 应包含可枚举访问器属性；
         // 值取访问器函数值——parser 类惰性 getter 的求值结果即该函数）
         for (k, g) in getters.iter() {
-            if !non_enum.contains(k) && !out.iter().any(|(k2, _)| k2 == k) {
+            if keep(non_enum, k) && !out.iter().any(|(k2, _)| k2 == k) {
                 out.push((k.clone(), *g));
             }
         }
         // 纯 setter 键亦并入（值以 undefined 占位；getter 键已由上一循环并入）
         for k in setters.keys() {
-            if !non_enum.contains(k) && !out.iter().any(|(k2, _)| k2 == k) {
+            if keep(non_enum, k) && !out.iter().any(|(k2, _)| k2 == k) {
                 out.push((k.clone(), Value::Undefined));
             }
         }
@@ -1344,7 +1358,25 @@ impl Vm {
     ///
     /// 普通对象取属性字典；数组产出索引键与 `length`；Proxy 经 ownKeys +
     /// get trap 派发。其余类型为空集。
+    /// 自有**可枚举**属性面（`Object.keys` / `JSON.stringify` / `for-in` 用）：
+    /// 过滤 `deleted` 与非枚举键（`non_enum`）。
     pub(crate) fn own_properties(&mut self, obj: Value) -> Vec<(String, Value)> {
+        self.own_properties_impl(obj, false)
+    }
+
+    /// 自有**全部**字符串键属性面（`Object.getOwnPropertyNames` 用）：
+    /// 与 [`Vm::own_properties`] 唯一差别是**不过滤不可枚举键**
+    /// （Node：`getOwnPropertyNames` 含不可枚举自有属性，`keys` 不含）。
+    pub(crate) fn own_property_names(&mut self, obj: Value) -> Vec<(String, Value)> {
+        self.own_properties_impl(obj, true)
+    }
+
+    /// 自有属性枚举实现：`include_non_enum` 决定是否保留不可枚举键。
+    fn own_properties_impl(&mut self, obj: Value, include_non_enum: bool) -> Vec<(String, Value)> {
+        // 不可枚举过滤谓词（include_non_enum 时恒放行）
+        let keep = |non_enum: &std::collections::HashSet<String>, k: &str| {
+            include_non_enum || !non_enum.contains(k)
+        };
         // globalThis：自有面即全局变量表（属性读写直通 globals——
         // 见 get/set_property 的 _isGlobalThis 分支；Object.keys/
         // getOwnPropertyNames 须反映同一视图）
@@ -1393,7 +1425,11 @@ impl Vm {
             if idx < self.heap.len() {
                 match &self.heap[idx] {
                     HeapObject::Ordinary { .. } => {
-                        return self.own_entries(idx);
+                        return if include_non_enum {
+                            self.own_entries_all(idx)
+                        } else {
+                            self.own_entries(idx)
+                        };
                     }
                     HeapObject::Closure {
                         properties,
@@ -1403,13 +1439,25 @@ impl Vm {
                     } => {
                         // 函数对象的自有面（Object.keys(require('body-parser'))
                         // 等：prototype + defineProperty 挂载的访问器键）
-                        let mut out: Vec<(String, Value)> = properties
-                            .iter()
-                            .filter(|(k, _)| !non_enum.contains(*k))
-                            .map(|(k, v)| (k.clone(), *v))
-                            .collect();
+                        // 规范序（Node 实测）：`length`、`name` 在**最前**，随后
+                        // 其余自有键按创建序。`length`/`name` 在本实现中不入
+                        // `properties`（由 `get_property` 的函数对象分支合成），
+                        // 故此处按序前置——否则 `getOwnPropertyNames(fn)` 只得
+                        // `["prototype"]`（Node 为 `["length","name","prototype"]`）。
+                        let mut out: Vec<(String, Value)> = Vec::new();
+                        if include_non_enum {
+                            out.push(("length".to_owned(), Value::Undefined));
+                            let fname = properties.get("name").copied().unwrap_or(Value::Undefined);
+                            out.push(("name".to_owned(), fname));
+                        }
+                        for (k, v) in properties.iter() {
+                            if k == "length" || k == "name" || !keep(non_enum, k) {
+                                continue;
+                            }
+                            out.push((k.clone(), *v));
+                        }
                         for (k, g) in getters.iter() {
-                            if !non_enum.contains(k) && !out.iter().any(|(k2, _)| k2 == k) {
+                            if keep(non_enum, k) && !out.iter().any(|(k2, _)| k2 == k) {
                                 out.push((k.clone(), *g));
                             }
                         }

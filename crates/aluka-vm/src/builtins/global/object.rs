@@ -56,7 +56,7 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                 )
             });
             let items: Vec<Value> = vm
-                .own_properties(target)
+                .own_property_names(target)
                 .into_iter()
                 // `keys` 只列可枚举自有键：字符串包装的 length 不可枚举
                 .filter(|(k, _)| !(is_keys && is_str && k == "length"))

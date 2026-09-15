@@ -592,6 +592,19 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // ---- Error 静态面 ----
     if let Some(ector) = vm.error_ctor {
         vm.builtin_registry.register_module_object("Error", ector);
+        // `Error.prototype.toString()`（规范 S20.5.3.4）：`name` 与 `message`
+        // 按有效值组合——`name` 空 → 仅 message；message 空 → 仅 name；
+        // 两者皆空 → 空串。供 `String(err)` / 模板串 / 未捕获渲染使用。
+        if let Some(proto) = vm.error_prototype {
+            let to_string = vm.alloc_native_fn("Error.prototype.toString");
+            let _ = vm.set_property(Value::Object(proto), "toString", Value::Object(to_string));
+            register_handler(
+                registry,
+                "Error.prototype",
+                "toString",
+                error::error_proto_to_string,
+            );
+        }
         let cap = vm.alloc_native_fn("Error.captureStackTrace");
         let _ = vm.set_property(
             Value::Object(ector),

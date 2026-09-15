@@ -566,18 +566,133 @@ impl Vm {
     }
 
     /// 在堆上分配 Error 实例（`message` / `name` 为自有属性），返回句柄。
+    ///
+    /// 属性面按 Node 对齐（`Object.getOwnPropertyNames(new Error('m'))`）：
+    /// - 传了 message（非 `undefined`）→ 自有 `message`，**不可枚举**（`Object.keys` 为空）；
+    ///   未传或传 `undefined` → **无**自有 `message`（读值沿链命中 Error.prototype.message）
+    ///   且 `stack` 首行无 `: ` 段（Node 实测：`new Error()` → `"Error"`）；
+    /// - 自有 `name` 仅作**内部规范化**（子类构造/格式化直读自有槽），由
+    ///   [`Vm::refresh_error_enumerability`] 在全部构造完成后统一标记为不可枚举，
+    ///   使其在 `Object.keys`/`getOwnPropertyNames`/`JSON.stringify` 上与 Node 一致；
+    /// - 自有 `stack` 字符串（首行 `Name: message`），创建后即存在（带实参调用）。
+    ///
+    /// `stack` 帧内容为**尽力而为**：本运行时无源映射与列号，帧取自
+    /// [`crate::call::call_chain_snapshot`]（函数名 + 入口文件），行号置 0、
+    /// 列号置 1，格式对齐 V8（`    at fn (file:0:1)`）；无函数帧时退化为
+    /// `    at <module> (file)`。栈**结构化**：`Array.isArray(e.stack)` 为 false
+    /// （Node 为字符串），`Error.captureStackTrace` 会在其后覆写为「调用点数组」形态。
     pub fn alloc_error_instance(&mut self, message: &str) -> ObjectRef {
-        let message_ref = self.alloc_string(message.to_owned());
-        let name_ref = self.alloc_string("Error".to_owned());
-        // 走 shape 迁移（root → +message → +name），与其他对象构造共用同一
-        // shape 树，属性读写路径与 `set_property` 完全一致。实例原型指向
-        // 独立 Error.prototype（链 Object.prototype）——普通对象字面量原型
-        // 链不含 Error.prototype，`{} instanceof Error` 为 false
+        self.alloc_error_instance_with(message, true)
+    }
+
+    /// 构造**无自有 `message`** 的 Error 实例（`new Error()` / `new Error(undefined)`）。
+    ///
+    /// 规范：这两者与 `new Error('')` 的属性面不同——前者无自有 message
+    /// （读值沿链得 Error.prototype.message = `''`），后者有自有 `message=''`；
+    /// `stack` 首行相应为 `Error`（无 `: ` 段），与 Node 实测一致。
+    pub fn alloc_error_instance_no_message(&mut self) -> ObjectRef {
+        self.alloc_error_instance_with("", false)
+    }
+
+    /// 构造实现：`has_message` 决定是否落自有 `message` 槽。
+    fn alloc_error_instance_with(&mut self, message: &str, has_message: bool) -> ObjectRef {
         let err_proto = self.error_prototype.or(self.object_prototype);
         let obj = self.alloc_ordinary_with_exact_proto(err_proto);
-        let _ = self.set_property(Value::Object(obj), "message", Value::Object(message_ref));
-        let _ = self.set_property(Value::Object(obj), "name", Value::Object(name_ref));
+        // **键序**：Node 的 `Object.getOwnPropertyNames(new Error('m'))` 为
+        // `["stack", "message"]`——先落 stack（创建时刻捕获调用帧），再落 message。
+        let stack_text = self.build_error_stack(message, has_message);
+        let stack_ref = self.alloc_string(stack_text);
+        let _ = self.set_property(Value::Object(obj), "stack", Value::Object(stack_ref));
+        // `name` **不**落实例（规范：`Error.prototype.name`；`e.name` 沿链命中）。
+        // 子类实例的 name 由 `attach_error_proto` 挂到各自原型上。
+        if has_message {
+            let message_ref = self.alloc_string(message.to_owned());
+            let _ = self.set_property(Value::Object(obj), "message", Value::Object(message_ref));
+        }
         obj
+    }
+
+    /// 生成错误 `stack` 文本（首行 `Name: message`，其后为调用帧）。
+    fn build_error_stack(&mut self, message: &str, has_message: bool) -> String {
+        // 名字取**当前有效名**（沿原型链读 `name`）：子类构造在 alloc 之后
+        // 才改原型，故这里通常得到 "Error"，随后由 `refresh_error_stack_name`
+        // 按最终 name 同步首行（`TypeError: msg`）。
+        let name = self
+            .error_prototype
+            .and_then(|p| self.own_value(p.index(), "name"))
+            .map(|v| self.format_value(v))
+            .unwrap_or_else(|| "Error".to_owned());
+        let head = if has_message && !message.is_empty() {
+            format!("{name}: {message}")
+        } else {
+            name
+        };
+        let frames = crate::call::call_chain_snapshot();
+        let file = if self.entry_file.is_empty() {
+            "<anonymous>".to_owned()
+        } else {
+            self.entry_file.clone()
+        };
+        let mut out = head;
+        if frames.is_empty() {
+            out.push_str(&format!("\n    at <module> ({file})"));
+        } else {
+            // 由内向外：V8 首帧是**出错点所在函数**
+            for (_, name) in frames.iter().rev() {
+                if name.is_empty() {
+                    out.push_str(&format!("\n    at <anonymous> ({file}:0:1)"));
+                } else {
+                    out.push_str(&format!("\n    at {name} ({file}:0:1)"));
+                }
+            }
+        }
+        out
+    }
+
+    /// 刷新错误实例的属性面（**构造收尾统一入口**）：
+    /// 把自有 `name`/`message`/`stack` 标记为不可枚举（Node：`Object.keys(err)` 为空集），
+    /// 并在 name 已改为子类名时同步 `stack` 首行。
+    ///
+    /// 调用时机：`new Error/TypeError/...` 构造分支、`attach_error_proto`、
+    /// `typed_error` 返回前——这些点之后 name/stack 不再变化。
+    pub(crate) fn refresh_error_enumerability(&mut self, err: ObjectRef) {
+        for key in ["name", "message", "stack"] {
+            self.mark_non_enumerable(Value::Object(err), key);
+        }
+    }
+
+    /// 依据实例当前**有效** `name`（沿原型链，实例通常无自有 name）同步
+    /// `stack` 首行（子类构造 / `attach_error_proto` 后调用）。
+    pub(crate) fn refresh_error_stack_name(&mut self, err: ObjectRef) {
+        let name = self
+            .get_property(Value::Object(err), "name")
+            .ok()
+            .map(|v| self.format_value(v))
+            .filter(|s| !s.is_empty() && s != "undefined")
+            .unwrap_or_else(|| "Error".to_owned());
+        let message = self
+            .get_property(Value::Object(err), "message")
+            .ok()
+            .map(|v| self.format_value(v))
+            .unwrap_or_default();
+        let head = if message.is_empty() {
+            name
+        } else {
+            format!("{name}: {message}")
+        };
+        // 仅替换首行，保留既有帧
+        let old = self
+            .get_property(Value::Object(err), "stack")
+            .ok()
+            .map(|v| self.format_value(v))
+            .unwrap_or_default();
+        let frames = old.split_once('\n').map(|(_, rest)| rest.to_owned());
+        let new_stack = match frames {
+            Some(rest) => format!("{head}\n{rest}"),
+            None => head,
+        };
+        let v = self.alloc_string(new_stack);
+        let _ = self.set_property(Value::Object(err), "stack", Value::Object(v));
     }
 }
 

@@ -6,8 +6,12 @@ use crate::value::{Upvalue, Value, ValueCase};
 use std::cell::RefCell;
 
 thread_local! {
-    /// 轻量 JS 调用链（诊断用）：(func_idx, 模板名)，invoke_function 进入时推入、退出时弹出
-    static CALL_CHAIN: RefCell<Vec<(usize, String)>> = const { RefCell::new(Vec::new()) };
+    /// 轻量 JS 调用链（诊断 + 错误 `stack` 生成）：(func_idx, 模板名)，
+    /// `invoke_function` 进入时推入、退出时弹出。
+    ///
+    /// 模板名用 `Rc<str>`：调用链在**每次函数调用**上维护，若用 `String` 则
+    /// 每次调用都要克隆函数名（堆分配），热路径代价不可忽略。
+    static CALL_CHAIN: RefCell<Vec<(usize, std::rc::Rc<str>)>> = const { RefCell::new(Vec::new()) };
 }
 
 /// 调用链帧守卫：作用域结束时弹出栈顶（含错误传播路径）。
@@ -19,6 +23,14 @@ impl Drop for FrameGuard {
             c.borrow_mut().pop();
         });
     }
+}
+
+/// 当前 JS 调用链快照（由内向外：首元素为**最内层**帧）——错误 `stack` 生成用。
+///
+/// 元素为 `(func_idx, 模板名)`；无活跃帧（模块顶层）时返回空表。
+#[must_use]
+pub fn call_chain_snapshot() -> Vec<(usize, std::rc::Rc<str>)> {
+    CALL_CHAIN.with(|c| c.borrow().clone())
 }
 
 /// 打印当前调用链（诊断开关：ALUKA_REQ_DEBUG）。
@@ -384,17 +396,29 @@ impl Vm {
                     | "EvalError" | "URIError" => {
                         // message 未传或为 undefined 时按规范置空串；
                         // 子类实例 name 置子类名（对齐 Node：e.name === 'TypeError'）
-                        let message = match args.first() {
-                            None => String::new(),
-                            Some(v) if v.is_undefined() => String::new(),
-                            Some(v) => self.format_value(*v),
+                        let (message, has_arg) = match args.first() {
+                            None => (String::new(), false),
+                            Some(v) if v.is_undefined() => (String::new(), false),
+                            Some(v) => (self.format_value(*v), true),
                         };
-                        let err = self.alloc_error_instance(&message);
+                        // 规范：未传 message 时**不落自有 message 槽**
+                        //（`new Error()` 的 Object.getOwnPropertyNames 只需 stack；
+                        //  `new Error('')` 才带自有 message）——Node 实测口径
+                        self.last_error_message = has_arg.then(|| message.clone());
+                        let err = if has_arg {
+                            self.alloc_error_instance(&message)
+                        } else {
+                            self.alloc_error_instance_no_message()
+                        };
                         if name != "Error" {
                             // 实例挂**独立**子类原型（instanceof TypeError 判
                             // 型；error_subclass_ctor 的 prototype.constructor
                             // 判定面配套——共享 Error.prototype 时代已终结）
+                            // attach_error_proto 内部同步 stack 首行 + 收口可枚举性
                             self.attach_error_proto(err, name);
+                        } else {
+                            // 构造收尾：name/message/stack 一律不可枚举（Node）
+                            self.refresh_error_enumerability(err);
                         }
                         return Ok(Value::Object(err));
                     }
@@ -824,8 +848,9 @@ impl Vm {
                 return Ok(self.jit_run(func_idx, &jit, args, tmpl.num_params as usize, upvalues));
             }
         }
-        // 调用链登记：进入解释帧推入，任何退出路径（含 ?）由 FrameGuard 弹出
-        CALL_CHAIN.with(|c| c.borrow_mut().push((func_idx, tmpl.name.clone())));
+        // 调用链登记：进入解释帧推入，任何退出路径（含 ?）由 FrameGuard 弹出。
+        // 函数名以 `Rc<str>` 共享（模板名 → 链帧零拷贝），错误 `stack` 生成时复用。
+        CALL_CHAIN.with(|c| c.borrow_mut().push((func_idx, tmpl.name.clone().into())));
         let _frame_guard = FrameGuard;
         let old_func_idx = std::mem::replace(&mut self.current_func_idx, func_idx as i64);
         let old_coverage_func = self.coverage.as_mut().map(|c| {

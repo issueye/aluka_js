@@ -417,12 +417,31 @@ impl Ser<'_> {
         // 先登记：cause 可循环指回自身
         self.objects.push(r);
         let idx = r as usize;
+        let val = Value::Object(aluka_core::ObjectRef(r));
+        // `name`/`message`/`stack` 读**有效值**（沿原型链）：规范里
+        // `name` 位于 `Error.prototype` / `<Sub>Error.prototype`（实例**无**
+        // 自有 name）——此前读自有槽（own_text）致克隆体恒为 "Error"，
+        // `instanceof TypeError` 随之丢失。
         let name = self
             .vm
-            .own_text(idx, "name")
+            .get_property(val, "name")
+            .ok()
+            .map(|v| self.vm.format_value(v))
+            .filter(|s| !s.is_empty() && s != "undefined")
             .unwrap_or_else(|| "Error".to_owned());
-        let message = self.vm.own_text(idx, "message").unwrap_or_default();
-        let stack = self.vm.own_text(idx, "stack");
+        let message = self
+            .vm
+            .get_property(val, "message")
+            .ok()
+            .map(|v| self.vm.format_value(v))
+            .filter(|s| s != "undefined")
+            .unwrap_or_default();
+        let stack = self
+            .vm
+            .get_property(val, "stack")
+            .ok()
+            .map(|v| self.vm.format_value(v))
+            .filter(|s| s != "undefined");
         let cause = self.vm.own_value(idx, "cause");
         let mut flags = 0u8;
         if stack.is_some() {
@@ -860,19 +879,6 @@ impl Vm {
         // 此处原实现无屏障，属既有缺口，一并补上）
         self.gc_write_barrier(map, key);
         self.gc_write_barrier(map, val);
-    }
-
-    /// 自有属性的文本形态（克隆 Error 的 name/message/stack 用）：堆字符串
-    /// 直取原文，其余按 `format_value` 归一（Node 实测克隆体 `message` 恒为
-    /// 字符串）。属性不存在（或已被删除）返回 `None`。
-    fn own_text(&self, idx: usize, key: &str) -> Option<String> {
-        let v = self.own_value(idx, key)?;
-        if let Some(r) = v.as_object() {
-            if let Some(HeapObject::String(s)) = self.heap.get(r.0 as usize) {
-                return Some(s.clone());
-            }
-        }
-        Some(self.format_value(v))
     }
 }
 

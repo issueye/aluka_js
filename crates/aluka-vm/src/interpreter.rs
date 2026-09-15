@@ -158,6 +158,12 @@ pub struct Vm {
     pub(crate) require_base_stack: Vec<std::path::PathBuf>,
     /// 入口文件路径（CJS `__filename`）
     pub(crate) entry_file: String,
+    /// 最近一次 `new Error(...)` 的 message 实参（`None` = 未传 / `undefined`）。
+    ///
+    /// 供**子类构造**在 `alloc_error_instance` 之后同步 `stack` 首行
+    /// （`new TypeError('t')` → `TypeError: t`）：`alloc_error_instance` 此刻
+    /// 尚不知道子类名，先按 `Error` 渲染，随 `attach_error_proto` 改名后同步。
+    pub(crate) last_error_message: Option<String>,
     /// 最近执行指令的下标（错误定位用）
     pub last_pc: usize,
     /// 解释器属性读取 IC（直接映射，见 `pic.rs`）
@@ -457,6 +463,7 @@ impl Vm {
             base_dir: None,
             require_base_stack: Vec::new(),
             entry_file: String::new(),
+            last_error_message: None,
             require_fn: None,
             require_bases: HashMap::new(),
             fs_object: None,
@@ -556,6 +563,18 @@ impl Vm {
         if let Some(ctor) = vm.error_ctor {
             let _ = vm.set_property(Value::Object(err_proto), "constructor", Value::Object(ctor));
         }
+        // 规范：`Error.prototype.name = "Error"`（非枚举）、`message = ""`——
+        // 实例**不**自带 name/message，读值沿原型链命中（Node 实测：
+        // `Object.getOwnPropertyNames(new Error())` 只有 `["stack"]`）。
+        // 此前把 name 挂实例自有，导致 `e.name` 与 `getOwnPropertyNames` 双偏离。
+        let err_name = vm.alloc_string("Error".to_owned());
+        vm.set_property(Value::Object(err_proto), "name", Value::Object(err_name))
+            .ok();
+        vm.mark_non_enumerable(Value::Object(err_proto), "name");
+        let err_msg = vm.alloc_string(String::new());
+        vm.set_property(Value::Object(err_proto), "message", Value::Object(err_msg))
+            .ok();
+        vm.mark_non_enumerable(Value::Object(err_proto), "message");
         vm.array_ctor = Some(vm.alloc_native_ctor("Array", vm.array_prototype));
         vm.object_ctor = Some(vm.alloc_native_ctor("Object", obj_proto));
         // RegExp 构造器与原型：字面量 RegExp 对象的 source/flags/lastIndex/

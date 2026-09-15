@@ -7,6 +7,36 @@ use crate::value::{Value, ValueCase};
 
 const CALLSITE_FRAMES: usize = 12;
 
+/// `Error.prototype.toString()`：按规范 S20.5.3.4 组合 `name` 与 `message`。
+///
+/// - `name` 缺省 → `"Error"`；`message` 缺省 / 空串 → 只输出 name；
+/// - 两者皆为空串 → 返回空串（规范允许，V8 亦如此）。
+///
+/// 供 `String(err)`、模板串插值、未捕获异常渲染统一复用（此前依赖各调用点
+/// 自行读 `name`/`message` 拼接，形态不一）。
+pub(crate) fn error_proto_to_string(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let receiver = current_receiver();
+    let name = vm
+        .get_property(receiver, "name")
+        .ok()
+        .map(|v| vm.format_value(v))
+        .filter(|s| s != "undefined")
+        .unwrap_or_else(|| "Error".to_owned());
+    let message = vm
+        .get_property(receiver, "message")
+        .ok()
+        .map(|v| vm.format_value(v))
+        .filter(|s| s != "undefined")
+        .unwrap_or_default();
+    let text = match (name.is_empty(), message.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => message,
+        (false, true) => name,
+        (false, false) => format!("{name}: {message}"),
+    };
+    Ok(Value::Object(vm.alloc_string(text)))
+}
+
 pub(crate) fn error_capture_stack_trace(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let Some(target) = args.first().copied() else {
         return Ok(Value::Undefined);
