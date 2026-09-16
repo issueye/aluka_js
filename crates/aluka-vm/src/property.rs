@@ -185,6 +185,15 @@ impl Vm {
                 out.push((k.clone(), Value::Undefined));
             }
         }
+        // 访问器键经 defineProperty 占位进有序存储后，键已在 `out`（取序生效）；
+        // 值面回填访问器函数值，保持与上方追加路径一致的既有消费语义
+        for (k, v) in out.iter_mut() {
+            if matches!(*v, Value::Undefined)
+                && let Some(g) = getters.get(k)
+            {
+                *v = *g;
+            }
+        }
         out
     }
     /// 克隆专用自有属性枚举：`(键, Some(数据值))` = 数据属性；`(键, None)`
@@ -1605,10 +1614,12 @@ impl Vm {
                     props,
                     deleted,
                     non_enum,
+                    getters,
+                    setters,
                     proto,
                     ..
                 } => {
-                    let ks = match props {
+                    let mut ks = match props {
                         OrdinaryProps::Shape { shape, .. } => self
                             .shape_table
                             .shape(*shape)
@@ -1625,6 +1636,20 @@ impl Vm {
                             .map(|(k, _)| k.clone())
                             .collect(),
                     };
+                    // 访问器（getter/setter）属性也是**可枚举自有属性**，for-in
+                    // 必须列出——`getters`/`setters` 存在独立表、不在 `props` 的
+                    // shape/dict 名集里，此前被整体漏掉：CJS 互操作链
+                    // （`__importStar` / `__exportStar` 用 `for (var p in mod)`）
+                    // 对「以 getter 定义的导出对象」枚举结果为**空**
+                    //（zod `index.cjs` 实测：`Object.keys` 107 / for-in 0）。
+                    for k in getters.keys().chain(setters.keys()) {
+                        if !deleted.contains(k)
+                            && !non_enum.contains(k)
+                            && !ks.iter().any(|x| x == k)
+                        {
+                            ks.push(k.clone());
+                        }
+                    }
                     (ks, *proto)
                 }
                 HeapObject::Array {
@@ -1782,6 +1807,17 @@ impl Vm {
     /// 合成对象属性的特性描述对象（`Object.getOwnPropertyDescriptor` 底层）。
     ///
     /// 本运行时数据属性恒为可写/可枚举/可配置（无属性位存储）；访问器经
+    /// 键在容器访问器表（getter/setter）中是否已注册（Ordinary 与 Closure）。
+    pub(crate) fn own_accessor_registered(&self, idx: usize, key: &str) -> bool {
+        match self.heap.get(idx) {
+            Some(HeapObject::Ordinary {
+                getters, setters, ..
+            }) => getters.contains_key(key) || setters.contains_key(key),
+            Some(HeapObject::Closure { getters, .. }) => getters.contains_key(key),
+            _ => false,
+        }
+    }
+
     /// Ordinary 的 getter/setter 表判定。属性不存在时返回 undefined。
     /// 键的**不可枚举**判定：`ordinary_define_property` 在 enumerable 缺省/
     /// 为 false 时把键登记进容器自身的 `non_enum` 集合（Ordinary 与 Closure
@@ -2021,6 +2057,17 @@ impl Vm {
             } else {
                 None
             };
+            // 该键此前是否已注册为访问器（重定义场景）：是则跳过占位写入，
+            // 否则 set_property 会经 setter 派发表而非数据路径
+            let already_accessor = self.own_accessor_registered(idx, key);
+            if !already_accessor {
+                // 键占位进有序属性存储：访问器键由此进入**插入序**——枚举面
+                // （Object.keys / for-in / 克隆）与 Node 的插入序对齐。此前
+                // 访问器仅存 HashMap（无序），zod 109 个导出键枚举顺序全反。
+                // 读取面 getters 表优先于数据槽，占位 Undefined 不可见；
+                // 不可配置键的数据写会被拒绝（对齐 JS 重配置 TypeError）。
+                self.set_property(obj, key, Value::Undefined)?;
+            }
             if let Some(HeapObject::Ordinary {
                 getters,
                 setters,
@@ -2047,6 +2094,15 @@ impl Vm {
                     getters.insert(key.to_owned(), g);
                 }
                 remember_enumerable(non_enum, key);
+            }
+            // 非可配置访问器登记：描述符面（getOwnPropertyDescriptor 的
+            // configurable）与删除/重配置守卫据此判定。此前访问器分支漏登记，
+            // 缺省 false 被报告成 true（zod `__createBinding` 产物实 differing）。
+            if !configurable {
+                let e = self.non_configurable.entry(idx).or_default();
+                if !e.iter().any(|k| k == key) {
+                    e.push(key.to_owned());
+                }
             }
             // 写屏障：容器注册访问器函数值（g/s 可为年轻闭包）
             if let Some(g) = g_val {

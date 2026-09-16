@@ -53,20 +53,35 @@ impl Vm {
     /// 之后 [`Vm::run_module`] 遇到「入口函数返回闭包」时按 7 参 CJS 签名
     /// 调用；未调用本方法时保持既有行为（无参调用，golden 语料零回归）。
     pub fn setup_cjs(&mut self, entry_path: &Path) {
-        let base = entry_path
+        self.setup_cjs_dual(entry_path, entry_path);
+    }
+
+    /// 双基准装配：`resolve_path` 为**解析基准**（镜像目录——`.bc` 与
+    /// node_modules 镜像所在），`source_path` 为**观察基准**（源码路径，
+    /// `__filename`/`__dirname`/`import.meta` 对用户可见）。
+    pub fn setup_cjs_dual(&mut self, resolve_path: &Path, source_path: &Path) {
+        let base = resolve_path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         self.base_dir = Some(base.clone());
-        self.entry_file = entry_path.display().to_string();
+        self.source_dir = source_path.parent().map(Path::to_path_buf);
+        self.entry_file = source_path.display().to_string();
         let require = self.alloc_native_fn("require");
         self.require_fn = Some(require);
         // 内联入口形态的全局绑定（module.exports 重赋值 / exports 挂载）
         let exports = Value::Object(self.alloc_ordinary());
         let module_obj = Value::Object(self.alloc_ordinary());
         let _ = self.set_property(module_obj, "exports", exports);
-        let filename = Value::Object(self.alloc_string(entry_path.display().to_string()));
-        let dirname = Value::Object(self.alloc_string(base.clone().display().to_string()));
+        let filename = Value::Object(self.alloc_string(source_path.display().to_string()));
+        let dirname = Value::Object(
+            self.alloc_string(
+                source_path
+                    .parent()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| base.display().to_string()),
+            ),
+        );
         self.set_global("exports", exports);
         self.set_global("module", module_obj);
         self.set_global("__filename", filename);
@@ -461,6 +476,30 @@ impl Vm {
     }
 
     fn resolve_specifier_from(&self, base: &Path, specifier: &str) -> Option<PathBuf> {
+        // 绝对路径说明符（ESM 相对源在编译期改写为 `__dirname + "/" + spec`
+        // 后的形态——await 挂起会弹 require 基准栈，恢复后相对解析的基准
+        // 不再可靠）：直接按字节码候选解析
+        if Path::new(specifier).is_absolute() {
+            let abs = normalize_path(Path::new(specifier));
+            if let Some(hit) = module_candidates(&abs) {
+                return Some(hit);
+            }
+            // 镜像回退：入口以**源码目录**为 `__dirname` 基准，而字节码
+            // 在 `<构建根>/aluka_build/` 镜像下——沿各级祖先尝试
+            // `<祖先>/aluka_build/<相对路径>.bc`（依赖模块的 `__dirname`
+            // 已是镜像内目录，直接命中上方同目录分支）
+            let mut ancestor = abs.parent().map(Path::to_path_buf);
+            while let Some(a) = ancestor {
+                if let Ok(rel) = abs.strip_prefix(&a) {
+                    let cand = a.join("aluka_build").join(rel).with_extension("bc");
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
+                }
+                ancestor = a.parent().map(Path::to_path_buf);
+            }
+            return None;
+        }
         let is_relative = specifier.starts_with("./")
             || specifier.starts_with("../")
             || specifier.starts_with('/');
@@ -508,11 +547,22 @@ impl Vm {
                     if let Ok(text) = std::fs::read_to_string(&pkg_json) {
                         if let Some(parsed) = aluka_module::parse_json(&text) {
                             if let Some(exports) = parsed.get("exports") {
+                                // 条件匹配：require 优先，未中再试 import
+                                //（`__aluka_import__` 复用本链路；typebox
+                                // 等 ESM-only 包只配 `import`/`default`，
+                                // 仅按 require 匹配会整体 miss）
                                 if let Some(target) = aluka_module::resolve_exports(
                                     exports,
                                     &subpath,
                                     aluka_module::ConditionKind::Require,
-                                ) {
+                                )
+                                .or_else(|| {
+                                    aluka_module::resolve_exports(
+                                        exports,
+                                        &subpath,
+                                        aluka_module::ConditionKind::Import,
+                                    )
+                                }) {
                                     let joined = normalize_path(&pkg_root.join(target));
                                     if let Some(p) = module_candidates(&joined) {
                                         return Some(p);

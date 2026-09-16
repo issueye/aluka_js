@@ -582,6 +582,13 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             "preventExtensions",
             // ES2022 `Object.hasOwn(o, k)`：`hasOwnProperty` 的安全等价形态
             "hasOwn",
+            // `keys` / `create` / `getOwnPropertySymbols`：此前**只在** CALL_METHOD
+            // 硬编码分支实现、未挂属性也未登记分派 ⇒ `typeof Object.keys` 为
+            // "undefined"、提取后调用报 "undefined is not a function"
+            //（lodash 的 `overArg(Object.keys, Object)` 依赖该形态）。
+            "keys",
+            "create",
+            "getOwnPropertySymbols",
         ] {
             let f = vm.alloc_native_fn(&format!("Object.{method}"));
             let _ = vm.set_property(Value::Object(octor), method, Value::Object(f));

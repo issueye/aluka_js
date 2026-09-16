@@ -275,9 +275,48 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// 经 CJS 链路解析并执行依赖模块：同步完成（无 TLA）直接返回 exports
 /// 对象；异步完成（TLA）返回该模块的完成 Promise——导入方 wrapper 的
 /// `await __aluka_import__(...)` 挂起至依赖完成，DAG 由事件循环涌现。
+///
+/// CJS→ESM 互操作（Node ESM spec）：目标是 CJS 模块（exports 无
+/// `__esModule` 标记）时返回**合成命名空间**——`default = module.exports`、
+/// 命名导出 = 自有可枚举**标识符形**字符串键快照。此前裸返回 exports，
+/// `import _ from 'lodash'` 的 `_` 为 undefined（`ns.default` 落空），
+/// 属性访问 TypeError 后被顶层静默吞掉。TLA 异步目标必为 ESM（带
+/// `__esModule`），Promise 原样透传不二次包装。
 fn module_import(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let spec = args.first().copied().unwrap_or(Value::Undefined);
-    vm.import_module_entry(spec)
+    let entry = vm.import_module_entry(spec)?;
+    let ValueCase::Object(r) = entry.case() else {
+        return Ok(entry);
+    };
+    // Promise（TLA 模块完成链）：不包装
+    if matches!(
+        vm.heap.get(r.0 as usize),
+        Some(crate::heap::HeapObject::Promise { .. })
+    ) {
+        return Ok(entry);
+    }
+    let esm_flag = matches!(vm.get_property(entry, "__esModule")?, v if vm.truthy(v));
+    if esm_flag {
+        return Ok(entry);
+    }
+    // 合成命名空间：default + 标识符形自有可枚举键快照（cjs-module-lexer
+    // 仅静态可检出的标识符名成为命名导出；此处取自有可枚举键的保守近似）
+    let ns = vm.alloc_ordinary();
+    vm.set_property(Value::Object(ns), "default", entry)?;
+    for (k, v) in vm.own_properties(entry) {
+        if is_identifier_like(&k) {
+            vm.set_property(Value::Object(ns), &k, v)?;
+        }
+    }
+    Ok(Value::Object(ns))
+}
+
+/// 键是否形如 JS 标识符（命名空间命名导出过滤：排除 `foo-bar`/`1x` 等
+/// 无法作为导入绑定名的键）。
+fn is_identifier_like(k: &str) -> bool {
+    let mut chars = k.chars();
+    matches!(chars.next(), Some(c) if c.is_alphabetic() || c == '_' || c == '$')
+        && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
 }
 
 /// `import.meta.resolve(specifier)`：相对 meta 对象的 `_metaDir` 解析。

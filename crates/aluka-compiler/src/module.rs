@@ -146,6 +146,34 @@ fn collect_ident_uses_in_expr(expr: &Expr, uses: &mut Vec<String>) {
                 collect_ident_uses(stmt, uses);
             }
         }
+        // 类表达式：extends 链、构造器体、方法体与字段初始化中的标识符
+        // 都须收集（`class extends Base {...}` 的自由变量捕获依赖）
+        Expr::Class {
+            super_class,
+            constructor,
+            methods,
+            fields,
+            ..
+        } => {
+            if let Some(super_expr) = super_class {
+                collect_ident_uses_in_expr(super_expr, uses);
+            }
+            if let Some(ctor) = constructor {
+                for stmt in &ctor.body {
+                    collect_ident_uses(stmt, uses);
+                }
+            }
+            for m in methods {
+                for stmt in &m.body {
+                    collect_ident_uses(stmt, uses);
+                }
+            }
+            for (_, _, init) in fields {
+                if let Some(e) = init {
+                    collect_ident_uses_in_expr(e, uses);
+                }
+            }
+        }
         Expr::Yield { value: Some(v), .. } => collect_ident_uses_in_expr(v, uses),
         Expr::Yield { value: None, .. } => {}
         Expr::Await(arg) => collect_ident_uses_in_expr(arg, uses),
@@ -218,6 +246,10 @@ pub(crate) fn collect_ident_uses(s: &SpannedStmt, uses: &mut Vec<String>) {
         }
         Stmt::While { cond, body } | Stmt::DoWhile { cond, body } => {
             collect_ident_uses_in_expr(cond, uses);
+            collect_ident_uses(body, uses);
+        }
+        Stmt::With { obj, body } => {
+            collect_ident_uses_in_expr(obj, uses);
             collect_ident_uses(body, uses);
         }
         Stmt::For {
@@ -638,6 +670,33 @@ impl ModuleCompiler {
             top_unit.code[instr_idx].operand = child_idx as u32;
         }
 
+        // 类表达式占位延迟装配（MakeClass 操作数回填；与闭包回填同款
+        // 递归策略——方法体内再定义类表达式时经嵌套单元的同类循环处理）
+        while let Some((instr_idx, class_expr, uid, parent_info)) = top_unit.class_backpatches.pop()
+        {
+            let Expr::Class {
+                name,
+                super_class,
+                constructor,
+                methods,
+                fields,
+            } = &class_expr
+            else {
+                continue;
+            };
+            let _ = super_class;
+            let class_idx = self.compile_class(
+                name.as_deref().unwrap_or(""),
+                super_class.is_some(),
+                constructor,
+                methods,
+                fields,
+                Some(&parent_info),
+                uid,
+            );
+            top_unit.code[instr_idx].operand = class_idx as u32;
+        }
+
         if let Some(slot) = top_unit.completion_slot {
             // eval 完成值链收口：恒以完成值槽内容返回（未写时为
             // undefined——`eval('var z;')` 的完成值即 undefined）
@@ -785,6 +844,32 @@ impl ModuleCompiler {
             let child_idx = self.compile_function_with_parent(&closure_def, Some(&parent_info));
             unit.code[instr_idx].operand = child_idx as u32;
         }
+
+        // 类表达式占位延迟装配（MakeClass 操作数回填；与闭包回填同款
+        // 递归策略——方法体内再定义类表达式时经嵌套单元的同类循环处理）
+        while let Some((instr_idx, class_expr, uid, parent_info)) = unit.class_backpatches.pop() {
+            let Expr::Class {
+                name,
+                super_class,
+                constructor,
+                methods,
+                fields,
+            } = &class_expr
+            else {
+                continue;
+            };
+            let _ = super_class;
+            let class_idx = self.compile_class(
+                name.as_deref().unwrap_or(""),
+                super_class.is_some(),
+                constructor,
+                methods,
+                fields,
+                Some(&parent_info),
+                uid,
+            );
+            unit.code[instr_idx].operand = class_idx as u32;
+        }
         // wrapper 以 exports 对象收口：异步完成（TLA/await import）时
         // 完成值即 exports，加载器的 import promise 链以此兑现依赖命名空间
         unit.code
@@ -837,6 +922,21 @@ impl ModuleCompiler {
     }
 
     /// ESM 语句编译：`export` 绑定到 `exports` 槽，其余走普通语句编译。
+    /// ESM import 源表达式：相对说明符改写为 `__dirname + "/spec"`（绝对
+    /// 路径形态）——ESM wrapper 常态 async，首个 await 即弹 require 基准
+    /// 栈，恢复后相对解析不可靠；裸说明符原样走 node_modules 链路。
+    fn esm_source_expr(source: &str) -> Expr {
+        if source.starts_with("./") || source.starts_with("../") {
+            Expr::Binary {
+                op: "+".to_owned(),
+                left: Box::new(Expr::Ident("__dirname".to_owned())),
+                right: Box::new(Expr::String(format!("/{source}"))),
+            }
+        } else {
+            Expr::String(source.to_owned())
+        }
+    }
+
     fn compile_esm_stmt(&mut self, s: &SpannedStmt, unit: &mut CompiledUnit, exports_slot: usize) {
         let stmt = &s.stmt;
         use aluka_parser::ast::ExportDecl;
@@ -890,6 +990,44 @@ impl ModuleCompiler {
             Stmt::Export(ExportDecl::Named {
                 decl: None,
                 specifiers,
+                source: Some(src),
+            }) => {
+                // 命名重导出 `export { a, b as c } from 'src'`：编译为
+                //   var __ns_N = await __aluka_import__(src);
+                //   exports.a = __ns_N.a; exports.c = __ns_N.b;
+                //（cbor/index.js 等 barrel 依赖；此前无 source 臂静默漏导）
+                let ns = format!("__aluka_ns_{}", self.esm_import_counter);
+                self.esm_import_counter += 1;
+                let ns_decl = SpannedStmt::new(
+                    Stmt::VarDecl {
+                        name: ns.clone(),
+                        init: Some(Expr::Await(Box::new(Expr::Call {
+                            callee: Box::new(Expr::Ident("__aluka_import__".to_owned())),
+                            args: vec![Self::esm_source_expr(src)],
+                        }))),
+                        kind: VarKind::Var,
+                    },
+                    0,
+                );
+                self.compile_esm_stmt(&ns_decl, unit, exports_slot);
+                for spec in specifiers {
+                    let bind = SpannedStmt::new(
+                        Stmt::Expr(Expr::IndexAssign {
+                            obj: Box::new(Expr::Ident("exports".to_owned())),
+                            index: Box::new(Expr::String(spec.exported.clone())),
+                            value: Box::new(Expr::Member {
+                                obj: Box::new(Expr::Ident(ns.clone())),
+                                prop: spec.local.clone(),
+                            }),
+                        }),
+                        0,
+                    );
+                    compile_stmt(&bind, unit, false);
+                }
+            }
+            Stmt::Export(ExportDecl::Named {
+                decl: None,
+                specifiers,
                 ..
             }) => {
                 for spec in specifiers {
@@ -909,8 +1047,99 @@ impl ModuleCompiler {
                 unit.code.push(Instr::new(Op::SetProp, key));
                 unit.code.push(Instr::new(Op::Pop, 0));
             }
-            Stmt::Export(ExportDecl::All { .. }) => {
-                // 命名空间重导出暂不支持：静默忽略（不会错误绑定）
+            Stmt::Export(ExportDecl::All { source, .. }) => {
+                // `export * from 'src'`：依赖命名空间的**自有可枚举键**
+                //（排除 `default`）快照重导出。经 for-in 合成实现——
+                // pi/protocol 的 barrel index 全靠它，此前静默忽略致
+                // 命名导入全数落空。活跃绑定语义登记后续项。
+                let ns = format!("__aluka_ns_{}", self.esm_import_counter);
+                self.esm_import_counter += 1;
+                let ns_decl = SpannedStmt::new(
+                    Stmt::VarDecl {
+                        name: ns.clone(),
+                        init: Some(Expr::Await(Box::new(Expr::Call {
+                            callee: Box::new(Expr::Ident("__aluka_import__".to_owned())),
+                            args: vec![Self::esm_source_expr(source)],
+                        }))),
+                        kind: VarKind::Var,
+                    },
+                    0,
+                );
+                self.compile_esm_stmt(&ns_decl, unit, exports_slot);
+                let key_var = format!("__aluka_rk_{}", self.esm_import_counter);
+                let forin = SpannedStmt::new(
+                    Stmt::ForIn {
+                        pattern: aluka_parser::ast::VarPattern::Ident(key_var.clone()),
+                        right: Expr::Ident(ns.clone()),
+                        body: Box::new(SpannedStmt::new(
+                            Stmt::If {
+                                cond: Expr::Binary {
+                                    op: "!==".to_owned(),
+                                    left: Box::new(Expr::Ident(key_var.clone())),
+                                    right: Box::new(Expr::String("default".to_owned())),
+                                },
+                                then_branch: Box::new(SpannedStmt::new(
+                                    Stmt::Expr(Expr::IndexAssign {
+                                        obj: Box::new(Expr::Ident("exports".to_owned())),
+                                        index: Box::new(Expr::Ident(key_var.clone())),
+                                        value: Box::new(Expr::Index {
+                                            obj: Box::new(Expr::Ident(ns.clone())),
+                                            index: Box::new(Expr::Ident(key_var.clone())),
+                                        }),
+                                    }),
+                                    0,
+                                )),
+                                else_branch: None,
+                            },
+                            0,
+                        )),
+                    },
+                    0,
+                );
+                self.compile_esm_stmt(&forin, unit, exports_slot);
+            }
+            Stmt::Function(func_def) => {
+                // ESM 顶层函数声明：CJS 路径的装配提升在 compile_esm 中
+                // 不生效，此处直接编译并绑定槽位（此前漏处理致顶层
+                // `function t(){}` 调用报 ReferenceError——真实 ESM 探针
+                // 首行即崩）。提升到 import 之前的规范语义登记后续项。
+                let parent_info =
+                    ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
+                let fn_idx = self.compile_function_with_parent(func_def, Some(&parent_info));
+                let slot = if let Some(&s) = unit.symbol_map.get(&func_def.name) {
+                    s
+                } else {
+                    let s = unit.locals;
+                    unit.locals += 1;
+                    unit.symbol_map.insert(func_def.name.clone(), s);
+                    s
+                };
+                unit.code.push(Instr::new(Op::MakeClosure, fn_idx as u32));
+                unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+            }
+            Stmt::Class {
+                name,
+                super_class,
+                constructor,
+                methods,
+                fields,
+            } => {
+                // ESM 顶层类声明：此前 Stmt::Class 落入 no-op 分支致类导出
+                //（`export class FrameDecoder`）未绑定——按类表达式取值后
+                // 绑定槽位并挂导出（pi protocol framing 依赖）
+                let boxed_super = super_class.as_ref().map(|e| Box::new(e.clone()));
+                crate::codegen::emit_class_expr(
+                    unit,
+                    Some(name),
+                    &Some(name.clone()),
+                    &boxed_super,
+                    constructor,
+                    methods,
+                    fields,
+                );
+                if let Some(&slot) = unit.symbol_map.get(name) {
+                    self.emit_export_prop(unit, exports_slot, slot, name);
+                }
             }
             Stmt::Import(decl) => {
                 // M2.2 异步模块加载器 DAG：import 编译为
@@ -926,7 +1155,7 @@ impl ModuleCompiler {
                         name: ns.clone(),
                         init: Some(Expr::Await(Box::new(Expr::Call {
                             callee: Box::new(Expr::Ident("__aluka_import__".to_owned())),
-                            args: vec![Expr::String(decl.source.clone())],
+                            args: vec![Self::esm_source_expr(&decl.source)],
                         }))),
                         kind: VarKind::Var,
                     },
@@ -1120,6 +1349,27 @@ impl ModuleCompiler {
                 let s = unit.locals;
                 unit.locals += 1;
                 unit.symbol_map.insert("arguments".to_owned(), s);
+                Some(s as i32)
+            } else {
+                None
+            }
+        };
+
+        // `new.target`：函数体（含嵌套）引用保留名时分配局部槽位，运行时由
+        // VM 按 `header_extras.new_target_slot` 写入（`new` 调用 → 构造器本身；
+        // 普通调用 → `undefined`）。箭头函数不绑定自己的 new.target，故不分配
+        //（其引用落回 undefined；词法上抛为登记后续项）。
+        let new_target_slot = {
+            let mut uses = Vec::new();
+            for stmt in &def.body {
+                collect_ident_uses(stmt, &mut uses);
+            }
+            let references = uses.iter().any(|n| n == aluka_parser::ast::NEW_TARGET_SYM);
+            if references && !def.is_arrow {
+                let s = unit.locals;
+                unit.locals += 1;
+                unit.symbol_map
+                    .insert(aluka_parser::ast::NEW_TARGET_SYM.to_owned(), s);
                 Some(s as i32)
             } else {
                 None
@@ -1337,6 +1587,32 @@ impl ModuleCompiler {
             unit.code[instr_idx].operand = child_idx as u32;
         }
 
+        // 类表达式占位延迟装配（MakeClass 操作数回填；与闭包回填同款
+        // 递归策略——方法体内再定义类表达式时经嵌套单元的同类循环处理）
+        while let Some((instr_idx, class_expr, uid, parent_info)) = unit.class_backpatches.pop() {
+            let Expr::Class {
+                name,
+                super_class,
+                constructor,
+                methods,
+                fields,
+            } = &class_expr
+            else {
+                continue;
+            };
+            let _ = super_class;
+            let class_idx = self.compile_class(
+                name.as_deref().unwrap_or(""),
+                super_class.is_some(),
+                constructor,
+                methods,
+                fields,
+                Some(&parent_info),
+                uid,
+            );
+            unit.code[instr_idx].operand = class_idx as u32;
+        }
+
         if unit.code.is_empty()
             || !matches!(
                 unit.code.last().map(|i| i.op),
@@ -1390,7 +1666,7 @@ impl ModuleCompiler {
         self.header_extras.push(FuncHeaderExtras {
             arguments_slot: args_slot.unwrap_or(-1),
             no_arguments_object: args_slot.is_none(),
-            new_target_slot: -1,
+            new_target_slot: new_target_slot.unwrap_or(-1),
             inlinable: false,
         });
         idx

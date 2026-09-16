@@ -188,6 +188,9 @@ impl Vm {
                 1 => {
                     // Getter（存方法闭包值，保留 upvalue 捕获）
                     if let Some(t_ref) = target.as_object() {
+                        if !self.own_accessor_registered(t_ref.0 as usize, &name) {
+                            let _ = self.set_property(target, &name, Value::Undefined);
+                        }
                         if let Some(HeapObject::Ordinary {
                             getters,
                             has_accessors,
@@ -202,6 +205,9 @@ impl Vm {
                 2 => {
                     // Setter
                     if let Some(t_ref) = target.as_object() {
+                        if !self.own_accessor_registered(t_ref.0 as usize, &name) {
+                            let _ = self.set_property(target, &name, Value::Undefined);
+                        }
                         if let Some(HeapObject::Ordinary {
                             setters,
                             has_accessors,

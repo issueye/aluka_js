@@ -356,6 +356,15 @@ pub(crate) enum BigIntArith {
     Pow,
 }
 
+/// BigInt 位运算种类（`& | ^ << >>`；`~` 走 [`Vm::bigint_bit_not`]）。
+pub(crate) enum BigIntBit {
+    And,
+    Or,
+    Xor,
+    Shl,
+    Shr,
+}
+
 impl Vm {
     /// ECMAScript ToBoolean（借助本 VM 堆判定字符串内容）。
     #[must_use]
@@ -648,6 +657,87 @@ impl Vm {
             }
         };
         Ok(Value::Object(self.alloc_bigint(text)))
+    }
+
+    /// BigInt 位运算（`& | ^ << >>`）：两操作数均须为 BigInt（任一侧为
+    /// BigInt 时分派至此；混用数值按规范 TypeError）。CBOR 编解码、
+    /// uuidv7 等真实包的顶层初始化依赖（`1n << 41n` 此前误走数值
+    /// ToNumber 通道抛 TypeError）。
+    pub(crate) fn bigint_bitwise(
+        &mut self,
+        left: Value,
+        right: Value,
+        op: BigIntBit,
+    ) -> Result<Value, VmError> {
+        use crate::bigdec::{BigIntBitKind, bigint_bit_op, bigint_shift};
+        let left = self.wrapper_primitive(left).unwrap_or(left);
+        let right = self.wrapper_primitive(right).unwrap_or(right);
+        let lprim = self.to_primitive_number(left)?;
+        if self.is_symbol(lprim) {
+            return Err(self.type_error("Cannot convert a Symbol value to a number"));
+        }
+        let rprim = self.to_primitive_number(right)?;
+        if self.is_symbol(rprim) {
+            return Err(self.type_error("Cannot convert a Symbol value to a number"));
+        }
+        let (lb, rb) = match (self.bigint_text(&lprim), self.bigint_text(&rprim)) {
+            (Some(l), Some(r)) => (l, r),
+            _ => {
+                return Err(
+                    self.type_error("Cannot mix BigInt and other types, use explicit conversions")
+                );
+            }
+        };
+        let text = match op {
+            BigIntBit::And => bigint_bit_op(&lb, &rb, BigIntBitKind::And),
+            BigIntBit::Or => bigint_bit_op(&lb, &rb, BigIntBitKind::Or),
+            BigIntBit::Xor => bigint_bit_op(&lb, &rb, BigIntBitKind::Xor),
+            BigIntBit::Shl => bigint_shift(&lb, self.shift_amount(&rb)?, false)
+                .ok_or_else(|| self.typed_error("RangeError", "Maximum BigInt size exceeded"))?,
+            BigIntBit::Shr => bigint_shift(&lb, self.shift_amount(&rb)?, true)
+                .ok_or_else(|| self.typed_error("RangeError", "Maximum BigInt size exceeded"))?,
+        };
+        Ok(Value::Object(self.alloc_bigint(text)))
+    }
+
+    /// 移位量解析：BigInt 十进制串 → u64（负数/超界 → RangeError）。
+    fn shift_amount(&mut self, text: &str) -> Result<u64, VmError> {
+        let t = text.trim().trim_start_matches('+');
+        let (neg, digits) = match t.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, t),
+        };
+        let mut acc: u64 = 0;
+        for b in digits.bytes() {
+            if !b.is_ascii_digit() {
+                continue;
+            }
+            acc = acc
+                .checked_mul(10)
+                .and_then(|v| v.checked_add((b - b'0') as u64))
+                .ok_or_else(|| self.typed_error("RangeError", "Maximum BigInt size exceeded"))?;
+            if acc > (1 << 26) {
+                return Err(self.typed_error("RangeError", "Maximum BigInt size exceeded"));
+            }
+        }
+        if neg && acc != 0 {
+            return Err(self.typed_error("RangeError", "Maximum BigInt size exceeded"));
+        }
+        Ok(acc)
+    }
+
+    /// `~a`（BigInt 按位非 = -a-1）。
+    pub(crate) fn bigint_bit_not(&mut self, v: Value) -> Result<Value, VmError> {
+        let prim = self.wrapper_primitive(v).unwrap_or(v);
+        let p = self.to_primitive_number(prim)?;
+        let Some(text) = self.bigint_text(&p) else {
+            return Err(
+                self.type_error("Cannot mix BigInt and other types, use explicit conversions")
+            );
+        };
+        Ok(Value::Object(
+            self.alloc_bigint(crate::bigdec::bigint_bit_not(&text)),
+        ))
     }
 
     /// 二元/一元数值算子（`-` `*` `/` `%` `**` 位运算、一元 ±）的操作数

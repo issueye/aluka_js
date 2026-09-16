@@ -55,18 +55,29 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                     Some(crate::heap::HeapObject::String(_))
                 )
             });
-            // `keys` 只要**可枚举**自有键 → `own_properties`；
-            // `getOwnPropertyNames` 含不可枚举自有键 → `own_property_names`
+            let is_array = target.as_object().is_some_and(|r| {
+                matches!(
+                    vm.heap.get(r.0 as usize),
+                    Some(crate::heap::HeapObject::Array { .. })
+                )
+            });
+            // `keys` 只要**可枚举**自有键 → `own_properties`（数组 `length`
+            // 与符号键须排除——此前仅 CALL_METHOD 硬编码分支过滤，属性面
+            // 直调 `Object.keys([1,2])` 泄漏成 3）；`getOwnPropertyNames`
+            // 含不可枚举自有键（含数组 `length`，规范如此）但排除符号键
             let items: Vec<Value> = if is_keys {
                 vm.own_properties(target)
                     .into_iter()
-                    // 字符串包装的 length 不可枚举
-                    .filter(|(k, _)| !(is_str && k == "length"))
+                    // 字符串包装的 length 不可枚举；数组 length 亦不可枚举
+                    .filter(|(k, _)| !((is_str || is_array) && k == "length"))
+                    // 符号键不是字符串键（`Object.keys` 须排除）
+                    .filter(|(k, _)| crate::symbol::parse_symbol_key(k).is_none())
                     .map(|(k, _)| Value::Object(vm.alloc_string(k)))
                     .collect()
             } else {
                 vm.own_property_names(target)
                     .into_iter()
+                    .filter(|(k, _)| crate::symbol::parse_symbol_key(k).is_none())
                     .map(|(k, _)| Value::Object(vm.alloc_string(k)))
                     .collect()
             };
@@ -218,6 +229,48 @@ pub(crate) fn object_static(vm: &mut Vm, args: &[Value]) -> Result<Value, VmErro
                     .collect(),
             };
             Ok(Value::Object(vm.alloc_array(out)))
+        }
+        "create" => {
+            // `Object.create(proto, properties?)`（ES2024 20.1.2.2）：以精确原型
+            // 分配新对象（`null` → 无原型）；第二参数为描述符表，逐项经
+            // OrdinaryDefineOwnProperty 定义（与 `defineProperties` 共用入口）。
+            let proto_val = args.first().copied().unwrap_or(Value::Undefined);
+            let proto = match proto_val.case() {
+                ValueCase::Object(p) => Some(p),
+                ValueCase::Null => None,
+                // 非对象且非 null → TypeError（`Object.create()` / `Object.create(1)`）
+                _ => {
+                    let shown = vm.format_value(proto_val);
+                    return Err(vm.type_error(&format!(
+                        "Object prototype may only be an Object or null: {shown}"
+                    )));
+                }
+            };
+            let obj = vm.alloc_ordinary_with_exact_proto(proto);
+            if let Some(props) = args.get(1).copied() {
+                if !matches!(props, Value::Undefined) {
+                    if !matches!(props.case(), ValueCase::Object(_)) {
+                        return Err(vm.type_error("Cannot convert undefined or null to object"));
+                    }
+                    vm.define_properties_from(Value::Object(obj), props)?;
+                }
+            }
+            Ok(Value::Object(obj))
+        }
+        // `Object.getOwnPropertySymbols(obj)`：符号键还原为符号值
+        "getOwnPropertySymbols" => {
+            let syms: Vec<Value> = match target.as_object() {
+                Some(r) => vm
+                    .own_property_names(Value::Object(r))
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .filter_map(|k| crate::symbol::parse_symbol_key(&k))
+                    .map(Value::Object)
+                    .collect(),
+                None => Vec::new(),
+            };
+            let arr = vm.alloc_array(syms);
+            Ok(Value::Object(arr))
         }
         "fromEntries" => {
             let arg = args.first().copied().unwrap_or(Value::Undefined);

@@ -272,6 +272,13 @@ pub enum Op {
     /// 解析（访问器 getter 的 `this` 须为实例而非原型——规范
     /// SuperProperty : super . IdentifierName 的 GetValue 用 actualThis）
     GetSuperProp = 109,
+    /// [110] PUSH_WITH_SCOPE - `with (obj)` 对象环境：弹出栈顶对象推入
+    /// VM 动态作用域栈（null/undefined → TypeError） (操作数: OperandNone)
+    PushWithScope = 110,
+    /// [111] WITH_RESTORE - with 作用域栈截断至操作数深度（绝对值；
+    /// 正常退出 / break/continue 跨越 / catch 着陆统一走截断，幂等）
+    /// (操作数: OperandInt)
+    WithRestore = 111,
 }
 
 impl Op {
@@ -395,6 +402,8 @@ impl Op {
             107 => Some(Op::RequireObjectCoercible),
             108 => Some(Op::SetSuperProp),
             109 => Some(Op::GetSuperProp),
+            110 => Some(Op::PushWithScope),
+            111 => Some(Op::WithRestore),
             _ => None,
         }
     }
@@ -513,6 +522,8 @@ impl Op {
             Op::RequireObjectCoercible => "REQUIRE_OBJECT_COERCIBLE",
             Op::SetSuperProp => "SET_SUPER_PROP",
             Op::GetSuperProp => "GET_SUPER_PROP",
+            Op::PushWithScope => "PUSH_WITH_SCOPE",
+            Op::WithRestore => "WITH_RESTORE",
         }
     }
 
@@ -630,6 +641,8 @@ impl Op {
             Op::RequireObjectCoercible => OperandKind::None,
             Op::SetSuperProp => OperandKind::ConstIdx,
             Op::GetSuperProp => OperandKind::ConstIdx,
+            Op::PushWithScope => OperandKind::None,
+            Op::WithRestore => OperandKind::Int,
         }
     }
 
@@ -760,6 +773,8 @@ impl Op {
             Op::SetSuperProp => -1,
             // 弹 proto/this 两值，压回属性值 → 净 -1
             Op::GetSuperProp => -1,
+            Op::PushWithScope => -1,
+            Op::WithRestore => 0,
         }
     }
 
@@ -876,6 +891,8 @@ impl Op {
             // 弹 proto/obj 两值，压回 obj → 净 -1
             Op::SetProtoObj => StackEffect::Fixed(-1),
             Op::GetSuperProp => StackEffect::Fixed(-1),
+            Op::PushWithScope => StackEffect::Fixed(-1),
+            Op::WithRestore => StackEffect::Fixed(0),
             Op::RequireObjectCoercible => StackEffect::Fixed(0),
             Op::SetSuperProp => StackEffect::Fixed(-1),
         }
@@ -996,6 +1013,8 @@ impl Op {
             Op::End => 0,
             Op::SetSuperProp => 0,
             Op::GetSuperProp => 0,
+            Op::PushWithScope => 1,
+            Op::WithRestore => 0,
         }
     }
 
@@ -1114,6 +1133,8 @@ impl Op {
             // 弹 this 与 value 两值
             Op::SetSuperProp => 2,
             Op::GetSuperProp => 2,
+            Op::PushWithScope => 0,
+            Op::WithRestore => 0,
         }
     }
 
@@ -1231,6 +1252,8 @@ impl Op {
             Op::RequireObjectCoercible => false,
             Op::SetSuperProp => false,
             Op::GetSuperProp => false,
+            Op::PushWithScope => false,
+            Op::WithRestore => false,
         }
     }
 
@@ -1348,6 +1371,8 @@ impl Op {
             Op::RequireObjectCoercible => false,
             Op::SetSuperProp => false,
             Op::GetSuperProp => false,
+            Op::PushWithScope => false,
+            Op::WithRestore => false,
         }
     }
 
@@ -1465,6 +1490,8 @@ impl Op {
             Op::RequireObjectCoercible => false,
             Op::SetSuperProp => false,
             Op::GetSuperProp => false,
+            Op::PushWithScope => false,
+            Op::WithRestore => false,
         }
     }
 }
@@ -1492,11 +1519,13 @@ mod tests {
 
     #[test]
     fn opcodes_roundtrip_all_110_variants() {
-        for b in 0..=109u8 {
+        // 0..=111：现有全部操作码（110 PUSH_WITH_SCOPE / 111 WITH_RESTORE，
+        // 轮一百登记段）
+        for b in 0..=111u8 {
             let op = Op::from_opcode(b).expect("必须成功解码有效操作码");
             assert_eq!(op.opcode(), b);
         }
-        assert_eq!(Op::from_opcode(110), None);
+        assert_eq!(Op::from_opcode(112), None);
         assert_eq!(Op::from_opcode(255), None);
     }
 

@@ -59,7 +59,21 @@ pub fn execute_bc_with_script(
     install_worker_entry(&mut vm);
     // `argv[0]`：源码构建场景取源脚本，直执行场景取字节码路径
     inject_process_argv(&mut vm, script.unwrap_or(input), cli_args);
-    vm.setup_cjs(input); // CJS 模块上下文（require/exports/循环依赖）
+    // CJS 模块上下文（require/exports/循环依赖）。源码构建场景以**源脚本**
+    // 路径为基准（`__dirname`/`__filename`/相对 require 与 Node 一致——
+    // 此前用 .bc 镜像路径，ESM 相对导入的绝对化基准随之错位）；入口
+    // 路径按 cwd 绝对化（相对路径的 parent 为空 → `__dirname` 成空串）
+    let cjs_base = script.unwrap_or(input);
+    let cjs_base_abs = if cjs_base.is_absolute() {
+        cjs_base.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(cjs_base)
+    };
+    // 解析基准 = 字节码镜像路径（`aluka_build/` 下才有 .bc 与 node_modules
+    // 镜像）；观察基准 = 源码路径（`__dirname`/`import.meta` 用户可见面）
+    vm.setup_cjs_dual(input, &cjs_base_abs);
     // 函数扩展标量头（arguments 槽位等）
     if let Err(err) = vm.load_module(&data[payload_range], &module) {
         eprintln!("错误: functions 标量头不完整: {err}");

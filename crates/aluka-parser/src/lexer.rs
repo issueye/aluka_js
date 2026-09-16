@@ -100,6 +100,7 @@ const KEYWORDS: &[&str] = &[
     "new",
     "this",
     "super",
+    "with",
     "true",
     "false",
     "null",

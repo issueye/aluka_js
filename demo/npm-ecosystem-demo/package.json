@@ -1,0 +1,13 @@
+{
+  "name": "npm-ecosystem-demo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aluka 真实生态实测：主流 npm 包（lodash/zod/chalk/commander）加载与典型 API 对拍",
+  "type": "commonjs",
+  "dependencies": {
+    "lodash": "^4.17.21",
+    "zod": "^3.23.8",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0"
+  }
+}

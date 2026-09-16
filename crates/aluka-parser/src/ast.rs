@@ -3,6 +3,16 @@
 //! 节点保持"贴近源码"的形状（不做提前 desugar），使 `aluka-compiler` 能
 //! 自行决定 lowering 策略——装饰器、可选链都在编译期展开。
 
+/// `new.target` 的**编译器内保留标识符**。
+///
+/// 元属性在语法层解析为对该名的标识符引用——编译器在函数单元为其分配局部槽位
+/// （`header_extras.new_target_slot`），运行时由 VM 在 `new` 调用入口写入被
+/// 构造的构造器（普通调用为 `undefined`）。保留前缀 `__aluka_` 保证与用户
+/// 标识符不冲突（同 `HOME_OBJECT_SYM` / `THIS_SYM` 约定）。
+///
+/// 真实生态需要：zod `ZodError.cjs` 的 `const actualProto = new.target.prototype`。
+pub const NEW_TARGET_SYM: &str = "__aluka_new_target__";
+
 /// 表达式。
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
@@ -158,6 +168,20 @@ pub enum Expr {
     },
     /// 函数表达式或箭头函数：`function(params) { body }` 或 `(params) => expr`
     Function(FunctionDef),
+    /// 类表达式：`class Name? { ... }` 出现在表达式位（typebox 的
+    /// `return class { constructor() {...} }` 依赖）
+    Class {
+        /// 绑定名（匿名类表达式为 None）
+        name: Option<String>,
+        /// 父类表达式（可选）
+        super_class: Option<Box<Expr>>,
+        /// 构造函数定义（可选）
+        constructor: Option<FunctionDef>,
+        /// 类方法列表
+        methods: Vec<ClassMethodDef>,
+        /// 类字段（`field = init` / `static s = init`）
+        fields: Vec<(String, bool, Option<Expr>)>,
+    },
     /// 正则表达式字面量：`/pattern/flags`
     RegExp {
         /// 正则表达式模式字符串
@@ -281,6 +305,15 @@ pub enum Stmt {
         /// 循环条件表达式
         cond: Expr,
         /// 循环体语句
+        body: Box<SpannedStmt>,
+    },
+    /// With 对象环境语句：`with (obj) body`（ES ObjectEnvironmentRecord——
+    /// 体内未绑定标识符经 obj 自有/原型属性解析；lodash `_.template`
+    /// 编译产物的 `with(obj){...}` 依赖）
+    With {
+        /// 环境对象表达式
+        obj: Expr,
+        /// 受环境影响的语句
         body: Box<SpannedStmt>,
     },
     /// Do-While 循环语句：`do body while (cond)`

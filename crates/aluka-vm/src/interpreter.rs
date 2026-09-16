@@ -158,6 +158,11 @@ pub struct Vm {
     pub(crate) require_base_stack: Vec<std::path::PathBuf>,
     /// 入口文件路径（CJS `__filename`）
     pub(crate) entry_file: String,
+    /// 入口**源码**目录（`__dirname`/`import.meta.dirname` 的观察值）：
+    /// 与 `base_dir`（解析基准 = 镜像目录）分离——`aluka run src/app.js`
+    /// 时解析走 `aluka_build/`（.bc 与 node_modules 镜像在此），而用户
+    /// 可见的路径必须是源码树
+    pub(crate) source_dir: Option<std::path::PathBuf>,
     /// 最近一次 `new Error(...)` 的 message 实参（`None` = 未传 / `undefined`）。
     ///
     /// 供**子类构造**在 `alloc_error_instance` 之后同步 `stack` 首行
@@ -273,6 +278,12 @@ pub struct Vm {
     /// 内建不可配置键注册表（delete 返回 false——`delete Number.NaN ===
     /// false`，Sputnik S8.6.1_A3 族）
     pub non_configurable: std::collections::HashMap<usize, Vec<String>>,
+    /// with 对象环境栈（`with (obj)` 的动态作用域链，内层在后）：
+    /// `PUSH_WITH_SCOPE` 推入、`WITH_RESTORE` 截断；LoadGlobal/StoreGlobal/
+    /// TypeofGlobal 在栈非空时**先**按内层→外层查对象自有/原型属性
+    /// （ES ObjectEnvironmentRecord HasBinding→Get/Set）。跨调用帧由
+    /// `invoke_function` 保存/复位隔离。
+    pub with_scopes: Vec<Value>,
     /// 不可扩展对象集合（`Object.freeze`/`preventExtensions`/`seal` 登记）：
     /// `Object.isExtensible` false、`isFrozen`/`isSealed` 按冻结级别判定；
     /// 新增属性写入静默忽略（sloppy）/抛 TypeError（strict，待运行时
@@ -444,6 +455,7 @@ impl Vm {
             non_writable: std::collections::HashMap::new(),
             non_enumerable: std::collections::HashMap::new(),
             non_configurable: std::collections::HashMap::new(),
+            with_scopes: Vec::new(),
             non_extensible: std::collections::HashSet::new(),
             frozen_objects: std::collections::HashSet::new(),
             json_replacer_fn: None,
@@ -461,9 +473,11 @@ impl Vm {
             promise_resumes: HashMap::new(),
             module_exports: HashMap::new(),
             base_dir: None,
+            source_dir: None,
             require_base_stack: Vec::new(),
             entry_file: String::new(),
             last_error_message: None,
+
             require_fn: None,
             require_bases: HashMap::new(),
             fs_object: None,
@@ -1060,6 +1074,21 @@ impl Vm {
 
     /// 全局名解析：`None` 表示该标识符**不可解析**（未声明的全局读取——
     /// 调用方按 `LoadGlobal` 抛 ReferenceError / `typeof` 返回 "undefined"）。
+    /// with 对象环境链解析：内层 → 外层逐层查自有/原型属性，命中即取值
+    /// （getter 触发）。栈空或全未命中返回 None，调用方回落既有全局解析。
+    pub(crate) fn resolve_through_with_scopes(&mut self, name: &str) -> Option<Value> {
+        if self.with_scopes.is_empty() {
+            return None;
+        }
+        let scopes: Vec<Value> = self.with_scopes.clone();
+        for w in scopes.into_iter().rev() {
+            if self.has_property(w, name) {
+                return self.get_property(w, name).ok();
+            }
+        }
+        None
+    }
+
     pub(crate) fn resolve_global(&mut self, name: &str) -> Option<Value> {
         if let Some(v) = self.resolve_cjs_injected(name) {
             return Some(v);
@@ -4387,50 +4416,92 @@ impl Vm {
                 }
                 Op::BitNot => {
                     let top = self.pop()?;
-                    // 位运算走**字符串感知**的 ToNumber（`~"5"` → -6）：
-                    // 此前用自由函数 `to_number`（字符串一律 NaN → 0）
-                    let n = crate::ops::to_int32(self.numeric_operand(top)?);
-                    self.stack.push(Value::Number(f64::from(!n)));
+                    // BigInt 按位非（~1n === -2n）
+                    if self.is_bigint_value(top) {
+                        let r = self.bigint_bit_not(top)?;
+                        self.stack.push(r);
+                    } else {
+                        // 位运算走**字符串感知**的 ToNumber（`~"5"` → -6）：
+                        // 此前用自由函数 `to_number`（字符串一律 NaN → 0）
+                        let n = crate::ops::to_int32(self.numeric_operand(top)?);
+                        self.stack.push(Value::Number(f64::from(!n)));
+                    }
                 }
                 Op::BitAnd => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
-                    let b = crate::ops::to_int32(self.numeric_operand(right)?);
-                    let res = a & b;
-                    self.stack.push(Value::Number(f64::from(res)));
+                    // BigInt 双目位运算：任一侧为 BigInt 即走 BigInt 通道
+                    //（`1n << 41n` 等 CBOR/uuid 真实包依赖；此前误走数值
+                    // ToNumber 通道恒抛 TypeError）
+                    if self.is_bigint_value(left) || self.is_bigint_value(right) {
+                        let r = self.bigint_bitwise(left, right, crate::ops::BigIntBit::And)?;
+                        self.stack.push(r);
+                    } else {
+                        let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                        let b = crate::ops::to_int32(self.numeric_operand(right)?);
+                        let res = a & b;
+                        self.stack.push(Value::Number(f64::from(res)));
+                    }
                 }
                 Op::BitOr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
-                    let b = crate::ops::to_int32(self.numeric_operand(right)?);
-                    let res = a | b;
-                    self.stack.push(Value::Number(f64::from(res)));
+                    // BigInt 双目位运算：任一侧为 BigInt 即走 BigInt 通道
+                    //（`1n << 41n` 等 CBOR/uuid 真实包依赖；此前误走数值
+                    // ToNumber 通道恒抛 TypeError）
+                    if self.is_bigint_value(left) || self.is_bigint_value(right) {
+                        let r = self.bigint_bitwise(left, right, crate::ops::BigIntBit::Or)?;
+                        self.stack.push(r);
+                    } else {
+                        let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                        let b = crate::ops::to_int32(self.numeric_operand(right)?);
+                        let res = a | b;
+                        self.stack.push(Value::Number(f64::from(res)));
+                    }
                 }
                 Op::BitXor => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
-                    let b = crate::ops::to_int32(self.numeric_operand(right)?);
-                    let res = a ^ b;
-                    self.stack.push(Value::Number(f64::from(res)));
+                    // BigInt 双目位运算：任一侧为 BigInt 即走 BigInt 通道
+                    //（`1n << 41n` 等 CBOR/uuid 真实包依赖；此前误走数值
+                    // ToNumber 通道恒抛 TypeError）
+                    if self.is_bigint_value(left) || self.is_bigint_value(right) {
+                        let r = self.bigint_bitwise(left, right, crate::ops::BigIntBit::Xor)?;
+                        self.stack.push(r);
+                    } else {
+                        let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                        let b = crate::ops::to_int32(self.numeric_operand(right)?);
+                        let res = a ^ b;
+                        self.stack.push(Value::Number(f64::from(res)));
+                    }
                 }
                 Op::Shl => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
-                    let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
-                    let res = a.wrapping_shl(shift as u32);
-                    self.stack.push(Value::Number(f64::from(res)));
+                    // BigInt 左移（CBOR/uuid 顶层初始化依赖）
+                    if self.is_bigint_value(left) || self.is_bigint_value(right) {
+                        let r = self.bigint_bitwise(left, right, crate::ops::BigIntBit::Shl)?;
+                        self.stack.push(r);
+                    } else {
+                        let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                        let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
+                        let res = a.wrapping_shl(shift as u32);
+                        self.stack.push(Value::Number(f64::from(res)));
+                    }
                 }
                 Op::Shr => {
                     let right = self.pop()?;
                     let left = self.pop()?;
-                    let a = crate::ops::to_int32(self.numeric_operand(left)?);
-                    let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
-                    let res = a.wrapping_shr(shift as u32);
-                    self.stack.push(Value::Number(f64::from(res)));
+                    // BigInt 算术右移
+                    if self.is_bigint_value(left) || self.is_bigint_value(right) {
+                        let r = self.bigint_bitwise(left, right, crate::ops::BigIntBit::Shr)?;
+                        self.stack.push(r);
+                    } else {
+                        let a = crate::ops::to_int32(self.numeric_operand(left)?);
+                        let shift = crate::ops::to_int32(self.numeric_operand(right)?) & 0x1f;
+                        let res = a.wrapping_shr(shift as u32);
+                        self.stack.push(Value::Number(f64::from(res)));
+                    }
                 }
                 Op::UShr => {
                     let right = self.pop()?;
@@ -4545,17 +4616,46 @@ impl Vm {
                 Op::LoadGlobal => {
                     // 操作数是常量池索引，解引用出全局对象名（对齐 Go 版 OpLoadGlobal）
                     let name = constant_string(&constants, instr.operand as usize);
-                    match self.resolve_global(&name) {
-                        Some(val) => self.stack.push(val),
-                        // 未声明标识符读取：规范 ReferenceError（`typeof` 走
-                        // TypeofGlobal 通道不受影响）
-                        None => {
-                            let err = self.alloc_error_instance(&format!("{name} is not defined"));
-                            self.attach_error_proto(err, "ReferenceError");
-                            let n = self.alloc_string("ReferenceError".to_owned());
-                            let _ = self.set_property(Value::Object(err), "name", Value::Object(n));
-                            return Err(VmError::Thrown(Value::Object(err)));
+                    // with 对象环境优先于全局（ES 作用域链：with 记录位于
+                    // 全局记录之前；仅影响词法处于其体内的指令，跨帧隔离
+                    // 由 invoke_function 保存/复位保证）
+                    if let Some(v) = self.resolve_through_with_scopes(&name) {
+                        self.stack.push(v);
+                    } else {
+                        match self.resolve_global(&name) {
+                            Some(val) => self.stack.push(val),
+                            // 未声明标识符读取：规范 ReferenceError（`typeof` 走
+                            // TypeofGlobal 通道不受影响）
+                            None => {
+                                let err =
+                                    self.alloc_error_instance(&format!("{name} is not defined"));
+                                self.attach_error_proto(err, "ReferenceError");
+                                let n = self.alloc_string("ReferenceError".to_owned());
+                                let _ =
+                                    self.set_property(Value::Object(err), "name", Value::Object(n));
+                                return Err(VmError::Thrown(Value::Object(err)));
+                            }
                         }
+                    }
+                }
+
+                Op::PushWithScope => {
+                    let v = self.pop()?;
+                    // `with (null/undefined)`：ToObject 失败 → TypeError
+                    if matches!(v, Value::Null | Value::Undefined) {
+                        return Err(VmError::Thrown(Value::Object(self.alloc_error_instance(
+                            "Cannot convert undefined or null to object",
+                        ))));
+                    }
+                    self.with_scopes.push(v);
+                }
+
+                Op::WithRestore => {
+                    // 截断至操作数深度（绝对值、幂等）：正常退出、break/
+                    // continue 跨越与 try 着陆共用同一机制
+                    let depth = instr.operand as usize;
+                    if self.with_scopes.len() > depth {
+                        self.with_scopes.truncate(depth);
                     }
                 }
 
@@ -5016,6 +5116,11 @@ impl Vm {
                         (obj.case(), fn_val.case())
                     {
                         let _ = f_ref;
+                        // 键占位进有序属性存储（枚举插入序；见
+                        // ordinary_define_property 访问器分支同款注释）
+                        if !self.own_accessor_registered(o_ref.0 as usize, &key) {
+                            let _ = self.set_property(obj, &key, Value::Undefined);
+                        }
                         if let Some(HeapObject::Ordinary {
                             getters,
                             has_accessors,
@@ -5035,6 +5140,9 @@ impl Vm {
                         (obj.case(), fn_val.case())
                     {
                         let _ = f_ref;
+                        if !self.own_accessor_registered(o_ref.0 as usize, &key) {
+                            let _ = self.set_property(obj, &key, Value::Undefined);
+                        }
                         if let Some(HeapObject::Ordinary {
                             setters,
                             has_accessors,
@@ -5055,6 +5163,9 @@ impl Vm {
                         (obj.case(), fn_val.case())
                     {
                         let _ = f_ref;
+                        if !self.own_accessor_registered(o_ref.0 as usize, &key) {
+                            let _ = self.set_property(obj, &key, Value::Undefined);
+                        }
                         if let Some(HeapObject::Ordinary {
                             getters,
                             has_accessors,
@@ -5075,6 +5186,9 @@ impl Vm {
                         (obj.case(), fn_val.case())
                     {
                         let _ = f_ref;
+                        if !self.own_accessor_registered(o_ref.0 as usize, &key) {
+                            let _ = self.set_property(obj, &key, Value::Undefined);
+                        }
                         if let Some(HeapObject::Ordinary {
                             setters,
                             has_accessors,
@@ -5334,7 +5448,17 @@ impl Vm {
                     // CJS 注入名在模块函数帧内写入所属模块作用域（模块隔离）
                     let name = constant_string(&constants, instr.operand as usize);
                     let val = self.pop()?;
-                    if crate::modules::CJS_INJECTED_NAMES.contains(&name.as_ref())
+                    // with 对象环境**已有**该属性时写入该对象（setter 触发/
+                    // 数据更新；缺失时不新建——sloppy 隐式全局仍落全局表）
+                    let scopes_snapshot: Vec<Value> = self.with_scopes.clone();
+                    let with_target = scopes_snapshot
+                        .iter()
+                        .rev()
+                        .copied()
+                        .find(|w| self.has_property(*w, &name));
+                    if let Some(w) = with_target {
+                        self.set_property(w, &name, val)?;
+                    } else if crate::modules::CJS_INJECTED_NAMES.contains(&name.as_ref())
                         && let Some(si) = self.module_scope_of(self.current_func_idx)
                         && let Some(scope) = self.module_scopes.get_mut(si)
                     {
@@ -5360,10 +5484,12 @@ impl Vm {
                 }
                 Op::TypeofGlobal => {
                     let name = constant_string(&constants, instr.operand as usize);
-                    // 全局名解析：先全局变量表；未命中时查 globalThis 对象的
-                    // 自有/原型属性（`Object.defineProperties(this, {y: {get(){}}})`
-                    // 后 `typeof y` 须触发 getter——S11.4.3 族）
-                    let mut v = self.resolve_global(&name);
+                    // with 对象环境优先（`typeof` 对未声明标识符的豁免不改变
+                    // 作用域链次序——with 记录先于全局记录）
+                    let mut v = self.resolve_through_with_scopes(&name);
+                    if v.is_none() {
+                        v = self.resolve_global(&name);
+                    }
                     if v.is_none() {
                         let gt = self
                             .globals

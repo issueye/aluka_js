@@ -9,6 +9,15 @@ use crate::ast::{
 };
 use crate::lexer::{Lexer, Token, TokenKind};
 
+/// 类体解析产物：`(super, constructor, methods, fields)`——`class` 关键字
+/// 之后的共享尾部（语句与表达式两种形态共用）。
+type ClassTail = (
+    Option<Box<Expr>>,
+    Option<FunctionDef>,
+    Vec<ClassMethodDef>,
+    Vec<(String, bool, Option<Expr>)>,
+);
+
 /// 语法分析器。
 pub struct Parser<'src> {
     tokens: Vec<Token>,
@@ -482,6 +491,14 @@ impl<'src> Parser<'src> {
             let _ = self.expect_punct(")");
             let body = Box::new(self.parse_stmt());
             return Self::at(line, Stmt::While { cond, body });
+        }
+
+        if self.match_keyword("with") {
+            let _ = self.expect_punct("(");
+            let obj = self.parse_expr();
+            let _ = self.expect_punct(")");
+            let body = Box::new(self.parse_stmt());
+            return Self::at(line, Stmt::With { obj, body });
         }
 
         if self.match_keyword("do") {
@@ -1098,7 +1115,10 @@ impl<'src> Parser<'src> {
                 // 走不到下方 Ident 臂——需单独拦截）
                 self.advance();
                 self.record_error("SyntaxError: async 函数形参名不允许为 await".to_owned());
-            } else if let TokenKind::Ident(param_name) = self.advance().kind {
+            } else if let Some(param_name) = self.advance_ident_like() {
+                // 形参名走 advance_ident_like：上下文关键字（from/of/as/
+                // get/set/static/async 等）是普通标识符——color-convert
+                // `function link(from, to)` 实测依赖
                 // async 形参名不得为 arguments/eval（规范早错误）；
                 // strict 语义下**所有**函数形参名均不得为 arguments/eval
                 //（StrictFormalParameters——onlyStrict 变体负例族）
@@ -1252,16 +1272,51 @@ impl<'src> Parser<'src> {
     }
 
     fn parse_class_stmt(&mut self) -> Stmt {
-        let name = if let TokenKind::Ident(id) = self.advance().kind {
+        let name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
+            self.advance();
             id
         } else {
             "AnonymousClass".to_owned()
         };
+        let (super_class, constructor, methods, class_fields) = self.parse_class_tail(Some(&name));
+        Stmt::Class {
+            name,
+            super_class: super_class.map(|b| *b),
+            constructor,
+            methods,
+            fields: class_fields,
+        }
+    }
+
+    /// 类表达式：`class Name? { ... }` 出现在表达式位（typebox 的
+    /// `return class { constructor() {...} }` 依赖；匿名类绑定名为 None）。
+    fn parse_class_expr(&mut self) -> Expr {
+        let name = if let TokenKind::Ident(id) = self.peek().kind.clone() {
+            self.advance();
+            Some(id)
+        } else {
+            None
+        };
+        let (super_class, constructor, methods, class_fields) =
+            self.parse_class_tail(name.as_deref());
+        Expr::Class {
+            name,
+            super_class,
+            constructor,
+            methods,
+            fields: class_fields,
+        }
+    }
+
+    /// `class` 关键字之后的共享尾部（extends 子句 + 类体），语句/表达式
+    /// 两种形态共用；`name` 为 None 时按匿名类解析。
+    fn parse_class_tail(&mut self, name: Option<&str>) -> ClassTail {
+        let name_str = name.unwrap_or("");
         let super_class = if self.match_keyword("extends") {
             // 父类表达式可含成员访问（`class D extends ns.Base {}` ——
             // axios/agent-base 等真实包的既有写法）；`parse_expr_primary`
             // 只解析主表达式，故改用 unary 层级（含 Member/Call 后缀链）
-            Some(self.parse_unary())
+            Some(Box::new(self.parse_unary()))
         } else {
             None
         };
@@ -1370,6 +1425,16 @@ impl<'src> Parser<'src> {
             } else if let TokenKind::Keyword(kw) = self.peek().kind.clone() {
                 self.advance();
                 kw
+            } else if let TokenKind::String(s) = self.peek().kind.clone() {
+                // 字符串字面量成员名（`"~validate"(data) {}` / `get "x"() {}` /
+                // `static "z"() {}`）：键为字面量文本，**不是**计算键
+                // （zod v3 types.cjs 的 `"~validate"(data)` 依赖此形态）
+                self.advance();
+                s
+            } else if let TokenKind::Number(n) = self.peek().kind.clone() {
+                // 数值字面量成员名（`1() {}` / `get 2() {}`）：按数字文本作键
+                self.advance();
+                format!("{n}")
             } else if self.check_punct("#") {
                 // 私有成员（`#p = 3` / `#m() {}`）：以 `#名` 作为成员名
                 // （VM 侧按普通属性存储——私有性的强校验未实现，登记为近似）
@@ -1444,7 +1509,7 @@ impl<'src> Parser<'src> {
 
             if m_name == "constructor" && !is_computed_key {
                 constructor = Some(FunctionDef {
-                    name: format!("{name}_constructor"),
+                    name: format!("{name_str}_constructor"),
                     params,
                     is_var_args,
                     body,
@@ -1470,13 +1535,7 @@ impl<'src> Parser<'src> {
         let _ = self.expect_punct("}");
         self.super_disallowed = outer_super;
 
-        Stmt::Class {
-            name,
-            super_class,
-            constructor,
-            methods,
-            fields: class_fields,
-        }
+        (super_class, constructor, methods, class_fields)
     }
 
     /// 解析表达式入口
@@ -2104,6 +2163,8 @@ impl<'src> Parser<'src> {
                         self.record_error(format!("SyntaxError: 意外的关键字 '{kw}'"));
                         Expr::Ident(kw)
                     }
+                    // 类表达式：`return class {...}` / `x = class extends B {}`
+                    "class" => self.parse_class_expr(),
                     "function" => {
                         let is_generator = self.match_punct("*");
                         let mut def = self.parse_function_def(false, is_generator);
@@ -2149,6 +2210,23 @@ impl<'src> Parser<'src> {
                         }
                     }
                     "new" => {
+                        // `new.target` 元属性（被 new 调用时为新目标构造器）——
+                        // 须在 callee 解析前拦截，否则 `.target` 会被当作成员访问
+                        // （zod ZodError.cjs：`const actualProto = new.target.prototype`）。
+                        // 表示为保留标识符，由编译器分配槽位、VM 在构造入口写入。
+                        if self.check_punct(".") {
+                            let save = self.pos;
+                            self.advance(); // '.'
+                            if let TokenKind::Ident(p) | TokenKind::Keyword(p) =
+                                self.peek().kind.clone()
+                            {
+                                if p == "target" {
+                                    self.advance();
+                                    return Expr::Ident(crate::ast::NEW_TARGET_SYM.to_owned());
+                                }
+                            }
+                            self.pos = save;
+                        }
                         // callee 支持成员访问链（`new a.B()` / `new ns.Foo.Ctor()`）：
                         // 只吃 `.` 属性访问，`(` 归 New 的实参列表
                         let mut callee = self.parse_expr_primary();
@@ -2405,7 +2483,7 @@ impl<'src> Parser<'src> {
                             if self.match_punct("...") {
                                 is_var_args = true;
                             }
-                            if let TokenKind::Ident(param_name) = self.advance().kind {
+                            if let Some(param_name) = self.advance_ident_like() {
                                 params.push(param_name);
                                 self.skip_type_annotation();
                             }
@@ -2721,7 +2799,7 @@ impl<'src> Parser<'src> {
                 };
                 prologue_stmts.push(Self::at(dline, Stmt::DestructureDecl { pattern, init }));
                 self.skip_type_annotation();
-            } else if let TokenKind::Ident(p_name) = self.advance().kind {
+            } else if let Some(p_name) = self.advance_ident_like() {
                 params.push(p_name.clone());
                 self.skip_type_annotation();
                 // 默认参数 `param = default`：与具名函数同款

@@ -247,6 +247,15 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         }
     }
 
+    // `Array.isArray(v)` 属性面 + 分派：CALL_METHOD 有硬编码分支，但**属性面**
+    // 此前未挂载 ⇒ `typeof Array.isArray` 为 "undefined"，提取为值后调用报
+    // "undefined is not a function"（lodash `overArg`、多数工具库的类型判定依赖）。
+    if let Some(ac) = vm.array_ctor {
+        let f = vm.alloc_native_fn("Array.isArray");
+        let _ = vm.set_property(Value::Object(ac), "isArray", Value::Object(f));
+        register_handler(registry, "Array", "isArray", array_is_array);
+    }
+
     // Function.prototype：toString 真实 handler（interpreter 侧注册），
     // call/apply/bind 属性占位（调用形态经解释器通用协议消化）
     let fn_p = fn_proto(vm);
@@ -475,6 +484,17 @@ pub fn register_surface(vm: &mut Vm, registry: &mut BuiltinRegistry) {
         "Symbol.iterator",
         iterator_self_handler,
     );
+}
+
+/// `Array.isArray(v)`：数组判定（CALL_METHOD 硬编码分支之外的属性面入口，
+/// 供 `const f = Array.isArray` 提取后调用）。
+pub(crate) fn array_is_array(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let is_arr = args
+        .first()
+        .copied()
+        .map(|v| vm.is_array_value(v))
+        .unwrap_or(false);
+    Ok(Value::Boolean(is_arr))
 }
 
 macro_rules! proto_getter {

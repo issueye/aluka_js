@@ -12,8 +12,11 @@ use crate::RegexError;
 pub(crate) enum ClassItem {
     /// 单个字符
     Ch(char),
-    /// 字符范围（含两端）
-    Range(char, char),
+    /// 单个码点（可容纳代理区码点 `\uD800..=\uDFFF`——Rust `char` 无法表示，
+    /// 由匹配器按 UTF-16 代理码元语义参与判定）
+    Cp(u32),
+    /// 码点范围（含两端；同上可覆盖代理区带）
+    Range(u32, u32),
     /// `\d`
     Digit,
     /// `\D`
@@ -345,6 +348,9 @@ impl Parser {
     }
 
     /// 字符类成员直到 `]`（调用方已消费 `[` 与可选 `^`）。
+    ///
+    /// 成员以码点（u32）参与范围判定——`\xHH` / `\uHHHH` 转义可产生代理区
+    /// 码点（如 lodash 的 `[\ud800-\udfff]`），Rust `char` 无法承载。
     fn parse_class_items(&mut self) -> Result<Vec<ClassItem>, RegexError> {
         let mut items = Vec::new();
         // `]` 作为首字符是字面量
@@ -359,14 +365,15 @@ impl Parser {
             }
             let lo = if c == '\\' {
                 match self.parse_class_escape()? {
-                    ClassEscape::Char(ch) => ch,
+                    ClassEscape::Char(ch) => ch as u32,
+                    ClassEscape::Cp(cp) => cp,
                     ClassEscape::Shorthand(item) => {
                         items.push(item);
                         continue;
                     }
                 }
             } else {
-                c
+                c as u32
             };
             // 范围 `a-z`（`-` 在 `]` 前是字面量）
             if self.peek() == Some('-') && self.chars.get(self.pos + 1).is_some_and(|&n| n != ']') {
@@ -374,25 +381,36 @@ impl Parser {
                 let hi_raw = self.bump().expect("peek 已确认存在");
                 let hi = if hi_raw == '\\' {
                     match self.parse_class_escape()? {
-                        ClassEscape::Char(ch) => ch,
+                        ClassEscape::Char(ch) => ch as u32,
+                        ClassEscape::Cp(cp) => cp,
                         ClassEscape::Shorthand(_) => {
-                            return Err(self.err("invalid range bound"));
+                            return Err(self.err("shorthand as range bound"));
                         }
                     }
                 } else {
-                    hi_raw
+                    hi_raw as u32
                 };
                 if hi < lo {
                     return Err(self.err("range out of order"));
                 }
                 items.push(ClassItem::Range(lo, hi));
             } else {
-                items.push(ClassItem::Ch(lo));
+                items.push(Self::cp_item(lo));
             }
         }
     }
 
-    /// 类内转义：`\d \D \w \W \s \S` 或字面字符。
+    /// 码点 → 类成员（代理区码点无法转 `char`，以 [`ClassItem::Cp`] 承载）。
+    fn cp_item(cp: u32) -> ClassItem {
+        match char::from_u32(cp) {
+            Some(c) => ClassItem::Ch(c),
+            None => ClassItem::Cp(cp),
+        }
+    }
+
+    /// 类内转义：`\d \D \w \W \s \S` 或字面字符（含 `\xHH` / `\uHHHH` /
+    /// `\u{...}` 码点转义与 `\0` NUL——此前缺失致 `[^\x00-\x2f...]` 类否定
+    /// 集完全错乱，lodash `words` 的 reAsciiWord 实测匹配出 `[" ","-","z"]`）。
     fn parse_class_escape(&mut self) -> Result<ClassEscape, RegexError> {
         let c = self.bump().ok_or_else(|| self.err("unterminated escape"))?;
         Ok(match c {
@@ -405,8 +423,69 @@ impl Parser {
             'n' => ClassEscape::Char('\n'),
             't' => ClassEscape::Char('\t'),
             'r' => ClassEscape::Char('\r'),
+            'f' => ClassEscape::Char('\u{c}'),
+            'v' => ClassEscape::Char('\u{b}'),
+            // `\0`：NUL（后随数字的 `\08` 形态语料未涉，按 NUL 处理）
+            '0' => ClassEscape::Char('\0'),
+            'x' => ClassEscape::Char(self.parse_hex_escape(2)?),
+            'u' => {
+                let cp = self.parse_unicode_escape()?;
+                match char::from_u32(cp) {
+                    Some(c) => ClassEscape::Char(c),
+                    None => ClassEscape::Cp(cp),
+                }
+            }
+            'b' => ClassEscape::Char('\u{8}'),
             other => ClassEscape::Char(other),
         })
+    }
+
+    /// 读取恰好 `n` 位十六进制数字（`\xHH` / `\uHHHH` 的定宽形式）。
+    fn parse_hex_escape(&mut self, n: usize) -> Result<char, RegexError> {
+        let mut v = 0u32;
+        for _ in 0..n {
+            let c = self
+                .bump()
+                .ok_or_else(|| self.err("unterminated hex escape"))?;
+            let d = c.to_digit(16).ok_or_else(|| self.err("bad hex escape"))?;
+            v = v * 16 + d;
+        }
+        char::from_u32(v).ok_or_else(|| self.err("hex escape out of range"))
+    }
+
+    /// `\uHHHH` 定宽或 `\u{H+}` 括号码点转义（返回原始码点，代理区不折叠）。
+    fn parse_unicode_escape(&mut self) -> Result<u32, RegexError> {
+        if self.peek() == Some('{') {
+            self.pos += 1;
+            let mut v = 0u32;
+            loop {
+                let c = self
+                    .bump()
+                    .ok_or_else(|| self.err("unterminated \\u{ escape"))?;
+                if c == '}' {
+                    break;
+                }
+                let d = c
+                    .to_digit(16)
+                    .ok_or_else(|| self.err("bad \\u{ code point"))?;
+                v = v * 16 + d;
+                if v > 0x10_FFFF {
+                    return Err(self.err("code point out of range"));
+                }
+            }
+            return Ok(v);
+        }
+        let mut v = 0u32;
+        for _ in 0..4 {
+            let c = self
+                .bump()
+                .ok_or_else(|| self.err("unterminated unicode escape"))?;
+            let d = c
+                .to_digit(16)
+                .ok_or_else(|| self.err("bad unicode escape"))?;
+            v = v * 16 + d;
+        }
+        Ok(v)
     }
 
     /// 类外转义：`\d \D \w \W \s \S` 展开为单成员字符类；`\k<name>` 命名组
@@ -419,6 +498,22 @@ impl Parser {
             'n' => Node::Char('\n'),
             't' => Node::Char('\t'),
             'r' => Node::Char('\r'),
+            'f' => Node::Char('\u{c}'),
+            'v' => Node::Char('\u{b}'),
+            // `\0`：NUL（后随数字时按规范不做此解释，语料未涉）
+            '0' if !self.peek().is_some_and(|ch| ch.is_ascii_digit()) => Node::Char('\0'),
+            // `\xHH` / `\uHHHH` / `\u{H+}`：码点转义（代理区码点包成单成员类）
+            'x' => Node::Char(self.parse_hex_escape(2)?),
+            'u' => {
+                let cp = self.parse_unicode_escape()?;
+                match char::from_u32(cp) {
+                    Some(c) => Node::Char(c),
+                    None => Node::Class {
+                        negated: false,
+                        items: vec![ClassItem::Cp(cp)],
+                    },
+                }
+            }
             'd' => Node::Class {
                 negated: false,
                 items: vec![Digit],
@@ -490,6 +585,8 @@ impl Parser {
 enum ClassEscape {
     /// 字面字符
     Char(char),
+    /// 代理区码点（`\uD800..=\uDFFF`——`char` 无法表示）
+    Cp(u32),
     /// 类简写成员
     Shorthand(ClassItem),
 }

@@ -1,0 +1,3 @@
+# 构建镜像与调试产物（`aluka run <probe>` 自动重建，无需入库）
+aluka_build/
+tmpdis/

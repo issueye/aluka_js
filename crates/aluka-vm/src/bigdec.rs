@@ -240,7 +240,7 @@ impl BigNat {
     }
 
     /// 有效位宽（零为 0）。
-    fn bit_len(&self) -> usize {
+    pub(crate) fn bit_len(&self) -> usize {
         match self.words.len() {
             0 => 0,
             n => 32 * (n - 1) + (32 - self.words[n - 1].leading_zeros() as usize),
@@ -248,14 +248,14 @@ impl BigNat {
     }
 
     /// 第 `i` 位（小端字序）。
-    fn bit(&self, i: usize) -> bool {
+    pub(crate) fn bit(&self, i: usize) -> bool {
         self.words
             .get(i / 32)
             .is_some_and(|w| (w >> (i % 32)) & 1 == 1)
     }
 
     /// 置/清第 `i` 位（必要时扩容字表）。
-    fn set_bit(&mut self, i: usize, v: bool) {
+    pub(crate) fn set_bit(&mut self, i: usize, v: bool) {
         let wi = i / 32;
         if wi >= self.words.len() {
             if !v {
@@ -883,6 +883,140 @@ fn next_up(x: f64) -> f64 {
     }
     let bits = x.to_bits();
     f64::from_bits(if x > 0.0 { bits + 1 } else { bits - 1 })
+}
+
+/// JS BigInt 位运算底层：`&`/`|`/`^`/`<<`/`>>`/`~`（十进制串入/出）。
+///
+/// 语义为**无穷宽二进制补码**：以「两操作数位宽 + 2」的补码宽度做逐位
+/// 运算即精确（操作数按构造必然落在可表示域内，运算结果亦然）；负数按
+/// 补码展开（`-x ≡ ¬(x-1)`），移位为算术移位（右移补符号位）。
+///
+/// 十进制串 → (负号, BigNat 绝对值)。空串/纯符号按 0。
+fn bigint_parse(text: &str) -> (bool, BigNat) {
+    let t = text.trim();
+    let (neg, digits) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, t.strip_prefix('+').unwrap_or(t)),
+    };
+    let mut nat = BigNat::default();
+    for b in digits.bytes() {
+        if b.is_ascii_digit() {
+            nat.mul_small(10);
+            nat.add_small((b - b'0') as u32);
+        }
+    }
+    (neg && !nat.is_zero(), nat)
+}
+
+/// 绝对值减一（负数补码展开用；调用方保证非零）。
+fn bigint_dec_one(nat: &BigNat) -> BigNat {
+    let mut m = nat.clone();
+    m.sub_big(&BigNat::from_u64(1));
+    m
+}
+
+/// 符号十进制值 → 宽 `width`（LSB 首序）的补码位向量。
+fn bigint_to_bits(neg: bool, mag: &BigNat, width: usize) -> Vec<bool> {
+    let mut bits = vec![false; width];
+    if !neg {
+        for (i, slot) in bits.iter_mut().enumerate().take(mag.bit_len()) {
+            *slot = mag.bit(i);
+        }
+        return bits;
+    }
+    // 负数：补码 = ¬(|x| - 1)（含符号扩展的高位全 1）
+    let m1 = bigint_dec_one(mag);
+    for (i, slot) in bits.iter_mut().enumerate() {
+        *slot = if i < m1.bit_len() { !m1.bit(i) } else { true };
+    }
+    bits
+}
+
+/// 补码位向量 → 规范十进制串（最高位为符号位：1 即负，幅值 = ¬bits + 1）。
+fn bigint_from_bits(bits: &[bool]) -> String {
+    let neg = bits.last().copied().unwrap_or(false);
+    let mut nat = BigNat::default();
+    if !neg {
+        for (i, b) in bits.iter().enumerate() {
+            if *b {
+                nat.set_bit(i, true);
+            }
+        }
+        return nat.to_decimal_string();
+    }
+    for (i, b) in bits.iter().enumerate() {
+        if !*b {
+            nat.set_bit(i, true);
+        }
+    }
+    nat.add_small(1);
+    format!("-{}", nat.to_decimal_string())
+}
+
+/// 位运算种类。
+pub(crate) enum BigIntBitKind {
+    And,
+    Or,
+    Xor,
+}
+
+/// `a & b` / `a | b` / `a ^ b`（两操作数均须为 BigInt 十进制串）。
+pub(crate) fn bigint_bit_op(a: &str, b: &str, kind: BigIntBitKind) -> String {
+    let (aneg, amag) = bigint_parse(a);
+    let (bneg, bmag) = bigint_parse(b);
+    let width = amag.bit_len().max(bmag.bit_len()) + 2;
+    let abits = bigint_to_bits(aneg, &amag, width);
+    let bbits = bigint_to_bits(bneg, &bmag, width);
+    let out: Vec<bool> = abits
+        .iter()
+        .zip(bbits.iter())
+        .map(|(x, y)| match kind {
+            BigIntBitKind::And => x & y,
+            BigIntBitKind::Or => x | y,
+            BigIntBitKind::Xor => x ^ y,
+        })
+        .collect();
+    bigint_from_bits(&out)
+}
+
+/// `a << n` / `a >> n`（算术移位；`right` 为真时右移补符号位）。
+/// 移位量超上限按 Node 语义 RangeError（调用方转译）。
+pub(crate) fn bigint_shift(a: &str, n: u64, right: bool) -> Option<String> {
+    // 移位量上限：1<<25 位（4MB 级结果）已远超真实负载
+    if n > (1 << 25) {
+        return None;
+    }
+    let (aneg, amag) = bigint_parse(a);
+    let base = amag.bit_len().max(1) + 2;
+    let abits = bigint_to_bits(aneg, &amag, base);
+    let out: Vec<bool> = if right {
+        let sign = *abits.last().unwrap_or(&false);
+        (0..base)
+            .map(|i| {
+                if i + n as usize >= base {
+                    sign
+                } else {
+                    abits[i + n as usize]
+                }
+            })
+            .collect()
+    } else {
+        let mut out = vec![false; base + n as usize];
+        for (i, b) in abits.iter().enumerate() {
+            out[i + n as usize] = *b;
+        }
+        out
+    };
+    Some(bigint_from_bits(&out))
+}
+
+/// `~a`（按位非 = -a-1）。
+pub(crate) fn bigint_bit_not(a: &str) -> String {
+    let (aneg, amag) = bigint_parse(a);
+    let base = amag.bit_len().max(1) + 2;
+    let abits = bigint_to_bits(aneg, &amag, base);
+    let out: Vec<bool> = abits.iter().map(|b| !b).collect();
+    bigint_from_bits(&out)
 }
 
 #[cfg(test)]

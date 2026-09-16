@@ -2,7 +2,8 @@ use crate::module::collect_ident_uses;
 use crate::scope::{CompiledUnit, HOME_OBJECT_SYM, LoopScope, ParentScopeInfo, THIS_SYM};
 use aluka_bytecode::{Constant, Instr, Op, TryEntry};
 use aluka_parser::ast::{
-    Expr, Program, PropKey, PropValue, SpannedStmt, Stmt, VarKind, VarPattern,
+    ClassMethodDef, Expr, FunctionDef, Program, PropKey, PropValue, SpannedStmt, Stmt, VarKind,
+    VarPattern,
 };
 
 /// `PushInt` 立即值能表示的上界（24 位操作数）。超过它的数值走常量池。
@@ -400,13 +401,22 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
 
             unit.loop_stack.push(LoopScope {
                 label: unit.pending_label.take(),
+                with_depth_at_entry: unit.with_depth,
                 ..Default::default()
             });
+            let body_seal_base = unit.locals;
             compile_stmt(body, unit, false);
             let scope = unit.loop_stack.pop().unwrap_or_default();
 
+            // continue 落点在体末：先封印本迭代环境再回跳条件
+            //（体声明的块级绑定被闭包捕获时须逐迭代隔离）
+            let while_continue_target = unit.code.len();
             for c_jmp in scope.continue_jumps {
-                backpatch_jump(unit, c_jmp, loop_start);
+                backpatch_jump(unit, c_jmp, while_continue_target);
+            }
+            if unit.locals > body_seal_base {
+                unit.code
+                    .push(Instr::new(Op::CloseUpvalues, body_seal_base as u32));
             }
 
             let loop_jmp_idx = emit_jump(unit, Op::Jmp);
@@ -422,19 +432,45 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                 unit.code.push(Instr::new(Op::PushUndefined, 0));
             }
         }
+        Stmt::With { obj, body } => {
+            // with 对象环境：对象入动态作用域栈，体内未绑定标识符经
+            // LoadGlobal/TypeofGlobal/StoreGlobal 的 with 优先解析消化
+            // （lodash `_.template` 编译产物 `with(obj){...}` 依赖）。
+            // 退出用绝对深度截断（幂等）：正常路径、break/continue 跨越、
+            // try 着陆统一同一机制，不依赖配对弹栈。
+            compile_expr(obj, unit);
+            unit.code.push(Instr::new(Op::PushWithScope, 0));
+            let depth_before = unit.with_depth;
+            unit.with_depth += 1;
+            compile_stmt(body, unit, false);
+            unit.with_depth = depth_before;
+            unit.code
+                .push(Instr::new(Op::WithRestore, depth_before as u32));
+            if is_last {
+                unit.code.push(Instr::new(Op::PushUndefined, 0));
+            }
+        }
         Stmt::DoWhile { body, cond } => {
             let loop_start = unit.code.len();
 
             unit.loop_stack.push(LoopScope {
                 label: unit.pending_label.take(),
+                with_depth_at_entry: unit.with_depth,
                 ..Default::default()
             });
+            let body_seal_base = unit.locals;
             compile_stmt(body, unit, false);
             let scope = unit.loop_stack.pop().unwrap_or_default();
 
             let continue_target = unit.code.len();
             for c_jmp in scope.continue_jumps {
                 backpatch_jump(unit, c_jmp, continue_target);
+            }
+
+            // 封印本迭代环境（体块级绑定逐迭代隔离；基线 == locals 不发射）
+            if unit.locals > body_seal_base {
+                unit.code
+                    .push(Instr::new(Op::CloseUpvalues, body_seal_base as u32));
             }
 
             compile_expr(cond, unit);
@@ -494,6 +530,7 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
 
                 unit.loop_stack.push(LoopScope {
                     label: unit.pending_label.take(),
+                    with_depth_at_entry: unit.with_depth,
                     ..Default::default()
                 });
                 compile_stmt(body, unit, false);
@@ -552,14 +589,23 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
 
                 unit.loop_stack.push(LoopScope {
                     label: unit.pending_label.take(),
+                    with_depth_at_entry: unit.with_depth,
                     ..Default::default()
                 });
+                let body_seal_base = unit.locals;
                 compile_stmt(body, unit, false);
                 let scope = unit.loop_stack.pop().unwrap_or_default();
 
                 let update_start = unit.code.len();
                 for c_jmp in scope.continue_jumps {
                     backpatch_jump(unit, c_jmp, update_start);
+                }
+
+                // 封印本迭代环境（体块级绑定逐迭代隔离；continue 落点在
+                // 封印之前——同迭代内绑定保持活跃；基线 == locals 不发射）
+                if unit.locals > body_seal_base {
+                    unit.code
+                        .push(Instr::new(Op::CloseUpvalues, body_seal_base as u32));
                 }
 
                 record_loop_line(unit, s.line);
@@ -620,6 +666,7 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
 
             unit.loop_stack.push(LoopScope {
                 label: unit.pending_label.take(),
+                with_depth_at_entry: unit.with_depth,
                 ..Default::default()
             });
 
@@ -627,7 +674,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             unit.code.push(Instr::new(Op::LoadLocal, tmp_idx as u32));
             unit.code.push(Instr::new(Op::GetElem, 0));
 
-            match pattern {
+            // 逐次迭代绑定隔离：头部绑定被闭包捕获时经 head/iter 双槽 +
+            // 迭代末 CloseUpvalues 封印，对齐 JS「每迭代新建绑定」语义
+            //（chalk `for (const [styleName, style] of ...)` 实测依赖）
+            let head_slots: Vec<(String, usize)> = match pattern {
                 VarPattern::Ident(name) => {
                     let slot = if let Some(s) = unit.symbol_map.get(name) {
                         *s
@@ -638,14 +688,40 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                         s
                     };
                     unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    vec![(name.clone(), slot)]
                 }
                 VarPattern::Array(_) | VarPattern::Object(_) => {
                     let tmp_slot = unit.locals;
                     unit.locals += 1;
                     unit.code.push(Instr::new(Op::StoreLocal, tmp_slot as u32));
                     compile_bind_pattern(pattern, tmp_slot, unit);
+                    let mut names = Vec::new();
+                    collect_pattern_names(pattern, &mut names);
+                    names
+                        .into_iter()
+                        .filter_map(|n| unit.symbol_map.get(&n).map(|s| (n, *s)))
+                        .collect()
                 }
+            };
+            let iter_pairs: Vec<(String, usize, usize)> = head_slots
+                .iter()
+                .filter(|(n, _)| stmt_has_closure_capturing(body, n))
+                .map(|(n, h)| {
+                    let it = unit.locals;
+                    unit.locals += 1;
+                    (n.clone(), *h, it)
+                })
+                .collect();
+            for (n, h, it) in &iter_pairs {
+                unit.code.push(Instr::new(Op::LoadLocal, *h as u32));
+                unit.code.push(Instr::new(Op::StoreLocal, *it as u32));
+                unit.symbol_map.insert(n.clone(), *it);
             }
+            let body_seal_base = iter_pairs
+                .iter()
+                .map(|(_, _, it)| *it)
+                .min()
+                .unwrap_or(unit.locals);
 
             compile_stmt(body, unit, false);
 
@@ -653,6 +729,16 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             let continue_target = unit.code.len();
             for c_jmp in scope.continue_jumps {
                 backpatch_jump(unit, c_jmp, continue_target);
+            }
+
+            // 迭代末封印本迭代环境（iter 槽与体内声明的块级绑定）；
+            // 哨兵基线（== locals，体内未声明绑定）不发射——操作数须 < num_locals
+            if unit.locals > body_seal_base {
+                unit.code
+                    .push(Instr::new(Op::CloseUpvalues, body_seal_base as u32));
+            }
+            for (n, h, _it) in &iter_pairs {
+                unit.symbol_map.insert(n.clone(), *h);
             }
 
             unit.code.push(Instr::new(Op::LoadLocal, tmp_idx as u32));
@@ -712,13 +798,17 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
 
             unit.loop_stack.push(LoopScope {
                 label: unit.pending_label.take(),
+                with_depth_at_entry: unit.with_depth,
                 ..Default::default()
             });
 
             unit.code.push(Instr::new(Op::LoadLocal, tmp_result as u32));
             unit.code.push(Instr::new(Op::GetProp, name_value));
 
-            match pattern {
+            // 逐次迭代绑定隔离：头部绑定被闭包捕获时经 head/iter 双槽 +
+            // 迭代末 CloseUpvalues 封印，对齐 JS「每迭代新建绑定」语义
+            //（chalk `for (const [styleName, style] of ...)` 实测依赖）
+            let head_slots: Vec<(String, usize)> = match pattern {
                 VarPattern::Ident(name) => {
                     let slot = if let Some(s) = unit.symbol_map.get(name) {
                         *s
@@ -729,14 +819,40 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
                         s
                     };
                     unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+                    vec![(name.clone(), slot)]
                 }
                 VarPattern::Array(_) | VarPattern::Object(_) => {
                     let tmp_slot = unit.locals;
                     unit.locals += 1;
                     unit.code.push(Instr::new(Op::StoreLocal, tmp_slot as u32));
                     compile_bind_pattern(pattern, tmp_slot, unit);
+                    let mut names = Vec::new();
+                    collect_pattern_names(pattern, &mut names);
+                    names
+                        .into_iter()
+                        .filter_map(|n| unit.symbol_map.get(&n).map(|s| (n, *s)))
+                        .collect()
                 }
+            };
+            let iter_pairs: Vec<(String, usize, usize)> = head_slots
+                .iter()
+                .filter(|(n, _)| stmt_has_closure_capturing(body, n))
+                .map(|(n, h)| {
+                    let it = unit.locals;
+                    unit.locals += 1;
+                    (n.clone(), *h, it)
+                })
+                .collect();
+            for (n, h, it) in &iter_pairs {
+                unit.code.push(Instr::new(Op::LoadLocal, *h as u32));
+                unit.code.push(Instr::new(Op::StoreLocal, *it as u32));
+                unit.symbol_map.insert(n.clone(), *it);
             }
+            let body_seal_base = iter_pairs
+                .iter()
+                .map(|(_, _, it)| *it)
+                .min()
+                .unwrap_or(unit.locals);
 
             compile_stmt(body, unit, false);
 
@@ -744,6 +860,16 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             let continue_target = unit.code.len();
             for c_jmp in scope.continue_jumps {
                 backpatch_jump(unit, c_jmp, continue_target);
+            }
+
+            // 迭代末封印本迭代环境（iter 槽与体内声明的块级绑定）；
+            // 哨兵基线（== locals，体内未声明绑定）不发射——操作数须 < num_locals
+            if unit.locals > body_seal_base {
+                unit.code
+                    .push(Instr::new(Op::CloseUpvalues, body_seal_base as u32));
+            }
+            for (n, h, _it) in &iter_pairs {
+                unit.symbol_map.insert(n.clone(), *h);
             }
 
             let loop_back = emit_jump(unit, Op::Jmp);
@@ -760,7 +886,6 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             }
         }
         Stmt::Break { label } => {
-            let jmp = emit_jump(unit, Op::Jmp);
             // 目标层：无标签 → 栈顶；带标签 → 从顶向下首个同名循环
             //（break 直接跳出该层循环，中间层的 break_jumps 不经过）
             let target_rel = match &label {
@@ -773,11 +898,25 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             };
             if let Some(rel) = target_rel {
                 let top = unit.loop_stack.len() - 1;
+                let entry_depth = unit
+                    .loop_stack
+                    .get(top - rel)
+                    .map(|s| s.with_depth_at_entry)
+                    .unwrap_or(0);
+                // 跨 with 边界跳出：跳转前截断动态作用域栈至目标入层深度
+                if unit.with_depth > entry_depth {
+                    unit.code
+                        .push(Instr::new(Op::WithRestore, entry_depth as u32));
+                }
+                let jmp = emit_jump(unit, Op::Jmp);
                 if let Some(scope) = unit.loop_stack.get_mut(top - rel) {
                     scope.break_jumps.push(jmp);
                 }
-            } else if let Some(scope) = unit.loop_stack.last_mut() {
-                scope.break_jumps.push(jmp);
+            } else {
+                let jmp = emit_jump(unit, Op::Jmp);
+                if let Some(scope) = unit.loop_stack.last_mut() {
+                    scope.break_jumps.push(jmp);
+                }
             }
         }
         Stmt::Labeled { label, body } => {
@@ -788,7 +927,6 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             unit.pending_label = None;
         }
         Stmt::Continue { label } => {
-            let jmp = emit_jump(unit, Op::Jmp);
             // 目标层：无标签 → 栈顶；带标签 → 从顶向下首个同名循环
             //（单条 Jmp 直接跳到目标层 continue 位置，中间层被自然越过）
             let target_rel = match &label {
@@ -801,11 +939,25 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             };
             if let Some(rel) = target_rel {
                 let top = unit.loop_stack.len() - 1;
+                let entry_depth = unit
+                    .loop_stack
+                    .get(top - rel)
+                    .map(|s| s.with_depth_at_entry)
+                    .unwrap_or(0);
+                // 跨 with 边界 continue：跳转前截断动态作用域栈至目标入层深度
+                if unit.with_depth > entry_depth {
+                    unit.code
+                        .push(Instr::new(Op::WithRestore, entry_depth as u32));
+                }
+                let jmp = emit_jump(unit, Op::Jmp);
                 if let Some(scope) = unit.loop_stack.get_mut(top - rel) {
                     scope.continue_jumps.push(jmp);
                 }
-            } else if let Some(scope) = unit.loop_stack.last_mut() {
-                scope.continue_jumps.push(jmp);
+            } else {
+                let jmp = emit_jump(unit, Op::Jmp);
+                if let Some(scope) = unit.loop_stack.last_mut() {
+                    scope.continue_jumps.push(jmp);
+                }
             }
         }
         Stmt::Return(maybe_expr) => {
@@ -840,6 +992,7 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             });
 
             unit.code.push(Instr::new(Op::TryEnter, try_idx as u32));
+            let try_with_depth = unit.with_depth;
             compile_stmt(body, unit, false);
             let end_pc = (unit.code.len() * 4) as u32;
             unit.try_table[try_idx].end_pc = end_pc;
@@ -850,6 +1003,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             if let Some(cb) = catch_body {
                 let catch_pc = (unit.code.len() * 4) as u32;
                 unit.try_table[try_idx].catch_pc = catch_pc;
+                // 异常跨 with 边界进入 handler：着陆先截断动态作用域栈至
+                // try 入层深度（WithRestore 不动值栈，异常对象仍在栈顶）
+                unit.code
+                    .push(Instr::new(Op::WithRestore, try_with_depth as u32));
                 if let Some(param_name) = catch_param {
                     let slot = if let Some(&s) = unit.symbol_map.get(param_name) {
                         s
@@ -875,6 +1032,10 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
             if let Some(fb) = finally_body {
                 let finally_pc = (unit.code.len() * 4) as u32;
                 unit.try_table[try_idx].finally_pc = finally_pc;
+                // finally 着陆（异常路径）同样截断；正常路径落入时栈深已
+                // ≤ try 入层深度，WithRestore 幂等空操作
+                unit.code
+                    .push(Instr::new(Op::WithRestore, try_with_depth as u32));
                 compile_stmt(fb, unit, false);
                 let finally_end_pc = (unit.code.len() * 4) as u32;
                 unit.try_table[try_idx].finally_end_pc = finally_end_pc;
@@ -897,6 +1058,7 @@ pub(crate) fn compile_stmt(s: &SpannedStmt, unit: &mut CompiledUnit, is_last: bo
 
             unit.loop_stack.push(LoopScope {
                 label: unit.pending_label.take(),
+                with_depth_at_entry: unit.with_depth,
                 ..Default::default()
             });
 
@@ -1059,6 +1221,68 @@ pub(crate) fn add_constant(unit: &mut CompiledUnit, c: Constant) -> u32 {
         let idx = unit.constants.len() as u32;
         unit.constants.push(c);
         idx
+    }
+}
+
+/// 类表达式取值发射（`Expr::Class` 编译与 ESM `export class` 共用）：
+/// super 机器码内联发射（与语句路径同款 `__home_ctor_/proto_` 槽约定），
+/// MakeClass 占位指令经 `class_backpatches` 延迟装配回填。`bind_name` 为
+/// Some 时把类值同时绑入当前作用域。
+pub(crate) fn emit_class_expr(
+    unit: &mut CompiledUnit,
+    bind_name: Option<&str>,
+    name: &Option<String>,
+    super_class: &Option<Box<Expr>>,
+    constructor: &Option<FunctionDef>,
+    methods: &[ClassMethodDef],
+    fields: &[(String, bool, Option<Expr>)],
+) {
+    let uid = unit.class_uid_counter;
+    unit.class_uid_counter += 1;
+    if let Some(super_expr) = super_class.as_deref() {
+        compile_expr(super_expr, unit);
+        unit.code.push(Instr::new(Op::Dup, 0));
+        let ctor_sym = format!("__home_ctor_{uid}__");
+        let ctor_slot = unit.locals;
+        unit.locals += 1;
+        unit.symbol_map.insert(ctor_sym, ctor_slot);
+        unit.code.push(Instr::new(Op::StoreLocal, ctor_slot as u32));
+        unit.code.push(Instr::new(Op::LoadLocal, ctor_slot as u32));
+        let proto_idx = add_constant(unit, Constant::String("prototype".to_owned()));
+        unit.code.push(Instr::new(Op::GetProp, proto_idx));
+        let proto_sym = format!("__home_proto_{uid}__");
+        let proto_slot = unit.locals;
+        unit.locals += 1;
+        unit.symbol_map.insert(proto_sym, proto_slot);
+        unit.code
+            .push(Instr::new(Op::StoreLocal, proto_slot as u32));
+    }
+    let parent_info = ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
+    let instr_idx = unit.code.len();
+    unit.code.push(Instr::new(Op::MakeClass, 0));
+    unit.class_backpatches.push((
+        instr_idx,
+        Expr::Class {
+            name: name.clone(),
+            super_class: super_class.clone(),
+            constructor: constructor.clone(),
+            methods: methods.to_vec(),
+            fields: fields.to_vec(),
+        },
+        uid,
+        parent_info,
+    ));
+    if let Some(n) = bind_name {
+        let slot = if let Some(&sl) = unit.symbol_map.get(n) {
+            sl
+        } else {
+            let sl = unit.locals;
+            unit.locals += 1;
+            unit.symbol_map.insert(n.to_string(), sl);
+            sl
+        };
+        unit.code.push(Instr::new(Op::Dup, 0));
+        unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
     }
 }
 
@@ -1741,6 +1965,25 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
             let target_idx = unit.code.len();
             backpatch_jump(unit, opt_jmp_idx, target_idx);
         }
+        Expr::Class {
+            name,
+            super_class,
+            constructor,
+            methods,
+            fields,
+        } => {
+            // 类表达式：与 ESM `export class` 共用发射助手（见 emit_class_expr）
+            emit_class_expr(
+                unit,
+                name.as_deref(),
+                name,
+                super_class,
+                constructor,
+                methods,
+                fields,
+            );
+        }
+
         Expr::Function(def) => {
             let instr_idx = unit.code.len();
             unit.code.push(Instr::new(Op::MakeClosure, 0));
@@ -1859,6 +2102,25 @@ pub(crate) fn compile_expr(expr: &Expr, unit: &mut CompiledUnit) {
     }
 }
 
+/// 收集解构模式的全部叶子绑定名（for-in/of head/iter 双槽隔离用）。
+fn collect_pattern_names(pattern: &VarPattern, out: &mut Vec<String>) {
+    match pattern {
+        VarPattern::Ident(n) => out.push(n.clone()),
+        VarPattern::Array(elems) => {
+            for e in elems {
+                if !e.is_hole {
+                    out.push(e.name.clone());
+                }
+            }
+        }
+        VarPattern::Object(props) => {
+            for prop in props {
+                collect_pattern_names(&prop.value, out);
+            }
+        }
+    }
+}
+
 /// 静态分析：检查语句及其子树中的闭包是否引用了指定的局部变量名
 fn stmt_has_closure_capturing(s: &SpannedStmt, target_name: &str) -> bool {
     let stmt = &s.stmt;
@@ -1889,6 +2151,10 @@ fn stmt_has_closure_capturing(s: &SpannedStmt, target_name: &str) -> bool {
         }
         Stmt::While { cond, body } | Stmt::DoWhile { cond, body } => {
             expr_has_closure_capturing(cond, target_name)
+                || stmt_has_closure_capturing(body, target_name)
+        }
+        Stmt::With { obj, body } => {
+            expr_has_closure_capturing(obj, target_name)
                 || stmt_has_closure_capturing(body, target_name)
         }
         Stmt::Return(Some(expr)) => expr_has_closure_capturing(expr, target_name),
@@ -1974,12 +2240,65 @@ fn expr_has_closure_capturing(expr: &Expr, target_name: &str) -> bool {
             }
             uses.iter().any(|u| u == target_name)
         }
+        Expr::Class {
+            super_class,
+            constructor,
+            methods,
+            fields,
+            ..
+        } => {
+            let mut hit = super_class
+                .as_ref()
+                .is_some_and(|e| expr_has_closure_capturing(e, target_name));
+            if !hit && let Some(ctor) = constructor {
+                let mut uses = Vec::new();
+                for st in &ctor.body {
+                    collect_ident_uses(st, &mut uses);
+                }
+                hit = uses.iter().any(|u| u == target_name);
+            }
+            if !hit {
+                for m in methods {
+                    let mut uses = Vec::new();
+                    for st in &m.body {
+                        collect_ident_uses(st, &mut uses);
+                    }
+                    if uses.iter().any(|u| u == target_name) {
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            if !hit {
+                for (_, _, init) in fields {
+                    if let Some(e) = init
+                        && expr_has_closure_capturing(e, target_name)
+                    {
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            hit
+        }
         Expr::Unary { expr, .. } => expr_has_closure_capturing(expr, target_name),
         Expr::Binary { left, right, .. } => {
             expr_has_closure_capturing(left, target_name)
                 || expr_has_closure_capturing(right, target_name)
         }
         Expr::Assign { value, .. } => expr_has_closure_capturing(value, target_name),
+        // 属性/下标赋值（`styles[styleName] = { get(){...} }`——chalk 样式
+        // 表构建形态）：赋值目标链与值表达式都要下探，漏掉会令循环
+        // 逐次迭代绑定隔离的捕获检测失效
+        Expr::MemberAssign { obj, value, .. } => {
+            expr_has_closure_capturing(obj, target_name)
+                || expr_has_closure_capturing(value, target_name)
+        }
+        Expr::IndexAssign { obj, index, value } => {
+            expr_has_closure_capturing(obj, target_name)
+                || expr_has_closure_capturing(index, target_name)
+                || expr_has_closure_capturing(value, target_name)
+        }
         Expr::Update { target, .. } => expr_has_closure_capturing(target, target_name),
         Expr::Conditional {
             cond,

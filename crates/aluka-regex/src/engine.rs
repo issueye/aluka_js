@@ -177,7 +177,23 @@ impl Regex {
                 let Some(&ch) = ctx.input.get(pos) else {
                     return false;
                 };
-                let hit = items.iter().any(|item| self.class_item_matches(item, ch));
+                let mut hit = items.iter().any(|item| self.class_item_matches(item, ch));
+                // UTF-16 代理码元仿真：天文层字符（cp ≥ 0x10000）在 JS 中以
+                // 高/低代理码元对参与匹配（`[\ud800-\udfff]` 须命中
+                // `'\u{1f600}'`——lodash hasUnicode/reUnicode 的判定基础）
+                if !hit {
+                    let cp = ch as u32;
+                    if cp >= 0x1_0000 {
+                        let high = 0xD800 + ((cp - 0x1_0000) >> 10);
+                        let low = 0xDC00 + ((cp - 0x1_0000) & 0x3FF);
+                        hit = items
+                            .iter()
+                            .any(|item| self.surrogate_item_matches(item, high))
+                            || items
+                                .iter()
+                                .any(|item| self.surrogate_item_matches(item, low));
+                    }
+                }
                 if hit != *negated {
                     cont(pos + 1, caps)
                 } else {
@@ -378,13 +394,26 @@ impl Regex {
     fn class_item_matches(&self, item: &ClassItem, ch: char) -> bool {
         match item {
             ClassItem::Ch(c) => self.char_eq(Some(ch), *c),
+            ClassItem::Cp(cp) => {
+                // 代理区码点成员不与 BMP 字符直接相等（短路在前）
+                if (0xD800..=0xDFFF).contains(cp) {
+                    return false;
+                }
+                if self.ignore_case {
+                    let lc = ch.to_lowercase().next().unwrap_or(ch);
+                    let uc = ch.to_uppercase().next().unwrap_or(ch);
+                    (char::from_u32(*cp) == Some(lc)) || (char::from_u32(*cp) == Some(uc))
+                } else {
+                    *cp == ch as u32
+                }
+            }
             ClassItem::Range(lo, hi) => {
                 if self.ignore_case {
                     let lc = ch.to_lowercase().next().unwrap_or(ch);
                     let uc = ch.to_uppercase().next().unwrap_or(ch);
-                    (*lo..=*hi).contains(&lc) || (*lo..=*hi).contains(&uc)
+                    (*lo..=*hi).contains(&(lc as u32)) || (*lo..=*hi).contains(&(uc as u32))
                 } else {
-                    (*lo..=*hi).contains(&ch)
+                    (*lo..=*hi).contains(&(ch as u32))
                 }
             }
             ClassItem::Digit => ch.is_ascii_digit(),
@@ -393,6 +422,16 @@ impl Regex {
             ClassItem::NotWord => !(ch.is_alphanumeric() || ch == '_'),
             ClassItem::Space => ch.is_whitespace(),
             ClassItem::NotSpace => !ch.is_whitespace(),
+        }
+    }
+
+    /// 代理码元对类成员判定（仅码点成员/范围参与；忽略大小写不适用于
+    /// 代理区）。`cp` 须为代理区码点——BMP 字符按主路径判定，不经此处。
+    fn surrogate_item_matches(&self, item: &ClassItem, cp: u32) -> bool {
+        match item {
+            ClassItem::Range(lo, hi) => (*lo..=*hi).contains(&cp),
+            ClassItem::Cp(c) => *c == cp,
+            _ => false,
         }
     }
 }
@@ -561,5 +600,33 @@ mod tests {
         // 未参与匹配的组：反向引用按空串成功
         let opt = Regex::compile(r"(?:(x)|y)\1z", "").expect("compile");
         assert!(opt.test("yz").expect("run"));
+    }
+
+    #[test]
+    fn hex_and_unicode_escapes_in_classes() {
+        // lodash reAsciiWord 形态：否定类 + 十六进制转义范围（此前转义
+        // 缺失致类集错乱，匹配出 " "/"-"/"z"）
+        let words = Regex::compile(r"[^\x00-\x2f\x3a-\x40\x5b-\x60\x7b-\x7f]+", "g").expect("c");
+        let m = words.find("foo bar-baz").expect("run").expect("match");
+        assert_eq!((m.start, m.end), (0, 3), "首个词 foo");
+        // ASCII 串不触代理区类（lodash hasUnicode('abc') = false）
+        let hu = Regex::compile(
+            "[\\u200d\\ud800-\\udfff\\u0300-\\u036f\\ufe20-\\ufe2f\\ufe0e\\ufe0f]",
+            "",
+        )
+        .expect("c");
+        assert!(!hu.test("abc").expect("run"));
+        // 代理区类命中天文层字符（UTF-16 代理码元仿真）
+        assert!(hu.test("a\u{1f600}b").expect("run"));
+        // reUnicode 形态：exec 循环对纯 ASCII 无匹配
+        let ru =
+            Regex::compile("[\\ud800-\\udfff]|[\\u0300-\\u036f\\ufe20-\\ufe2f]", "g").expect("c");
+        assert!(ru.find("abc").expect("run").is_none());
+        // 括号码点转义 `\u{...}`
+        let cp = Regex::compile(r"\u{1F600}", "").expect("c");
+        assert!(cp.test("\u{1f600}").expect("run"));
+        // `\x41` 等价 'A'
+        let hex = Regex::compile(r"\x41", "").expect("c");
+        assert!(hex.test("A").expect("run"));
     }
 }

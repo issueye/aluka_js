@@ -14,6 +14,24 @@ thread_local! {
     static CALL_CHAIN: RefCell<Vec<(usize, std::rc::Rc<str>)>> = const { RefCell::new(Vec::new()) };
 }
 
+thread_local! {
+    /// `new.target` 传递槽：`do_construct` / `do_construct_this` 在进入构造器帧前
+    /// 写入，`invoke_function` 读取并复位。
+    ///
+    /// 用 thread_local 而非 `Vm` 字段：`Vm` 派生 `Default`，而 `Value` 未实现它。
+    static PENDING_NEW_TARGET: RefCell<Value> = const { RefCell::new(Value::Undefined) };
+}
+
+/// 写入待传的 `new.target`（构造入口调用）。
+pub(crate) fn set_pending_new_target(v: Value) {
+    PENDING_NEW_TARGET.with(|c| *c.borrow_mut() = v);
+}
+
+/// 取走并复位待传的 `new.target`（`invoke_function` 帧建立后调用）。
+fn take_pending_new_target() -> Value {
+    PENDING_NEW_TARGET.with(|c| std::mem::replace(&mut *c.borrow_mut(), Value::Undefined))
+}
+
 /// 调用链帧守卫：作用域结束时弹出栈顶（含错误传播路径）。
 struct FrameGuard;
 
@@ -354,6 +372,22 @@ impl Vm {
                 crate::builtins::set_current_receiver(this_val);
                 crate::builtins::set_pending_callee(callee);
                 return handler(self, args);
+            }
+            // 静态方法作为**值**调用（`const f = Object.keys; f(o)` /
+            // `Array.isArray` 提取后调用）：这类方法在本引擎里由 CALL_METHOD 的
+            // 硬编码分支实现、**不在分派表**，故按 "<命名空间>.<方法>" 反查
+            // 命名空间对象（Object/Array/...）后转发同一分支，语义单一来源。
+            // lodash 的 `overArg(Object.keys, Object)` 依赖此形态。
+            let static_split = match self.heap.get(r.0 as usize) {
+                Some(HeapObject::NativeFn { name, .. }) => name
+                    .split_once('.')
+                    .map(|(ns, m)| (ns.to_owned(), m.to_owned())),
+                _ => None,
+            };
+            if let Some((ns, method)) = static_split
+                && let Some(ns_obj) = self.resolve_global(&ns)
+            {
+                return self.call_method_dispatch(ns_obj, &method, args, 0);
             }
         }
         let (f_idx, uvs) = self.resolve_callable(callee);
@@ -707,6 +741,8 @@ impl Vm {
         let instance_val = Value::Object(instance_ref);
         let (f_idx, uvs) = self.resolve_callable(callee);
         if let Some(fi) = f_idx {
+            // `new.target` = 本次构造所用构造器（规范 [[Construct]] 语义）
+            set_pending_new_target(callee);
             let res = self.invoke_function(fi, instance_val, args, uvs)?;
             if matches!(res.case(), ValueCase::Object(_)) {
                 return Ok(res);
@@ -724,6 +760,18 @@ impl Vm {
         let this_val = *self.locals.first().unwrap_or(&Value::Undefined);
         let (f_idx, uvs) = self.resolve_callable(callee);
         if let Some(fi) = f_idx {
+            // `super(...)` 沿用**派生构造器**的 new.target（规范：super 调用不改变 new.target）
+            let parent_slot = self
+                .module_header_extras
+                .get(self.current_func_idx.max(0) as usize)
+                .map(|e| e.new_target_slot)
+                .filter(|s| *s >= 0);
+            if let Some(slot) = parent_slot {
+                let slot = slot as usize;
+                if slot < self.locals.len() {
+                    set_pending_new_target(self.locals[slot]);
+                }
+            }
             return self.invoke_function(fi, this_val, args, uvs);
         }
         // 内建构造器的 `super(...)`（`class E extends Error { constructor(m)
@@ -861,6 +909,9 @@ impl Vm {
         // 函数名以 `Rc<str>` 共享（模板名 → 链帧零拷贝），错误 `stack` 生成时复用。
         CALL_CHAIN.with(|c| c.borrow_mut().push((func_idx, tmpl.name.clone().into())));
         let _frame_guard = FrameGuard;
+        // with 对象环境跨帧隔离：调用者的动态作用域链不延续进被调帧
+        //（ES 词法作用域闭包语义；帧退出各恢复点对称还原）
+        let saved_with_scopes = std::mem::take(&mut self.with_scopes);
         let old_func_idx = std::mem::replace(&mut self.current_func_idx, func_idx as i64);
         let old_coverage_func = self.coverage.as_mut().map(|c| {
             (
@@ -893,6 +944,21 @@ impl Vm {
         self.bind_call_args(this_val, args, tmpl.num_params as usize, tmpl.is_var_args);
         // `arguments` 对象注入（对齐 Go：编译器给出槽位 + 未引用标记；
         // 仅对引用 arguments 的函数构建，性能零影响）
+        // `new.target` 注入：`new` 调用时为新目标构造器，普通调用为 `undefined`。
+        // 值由 `do_construct`/`do_construct_this` 在进入本帧前写入 `pending_new_target`，
+        // 此处**消费并复位**——嵌套的普通调用因此读到 `undefined`（规范语义）。
+        if let Some(slot) = self
+            .module_header_extras
+            .get(func_idx)
+            .map(|e| e.new_target_slot)
+            .filter(|s| *s >= 0)
+        {
+            let slot = slot as usize;
+            if slot < self.locals.len() {
+                self.locals[slot] = take_pending_new_target();
+            }
+        }
+
         if let Some(extras) = self.module_header_extras.get(func_idx) {
             if extras.arguments_slot >= 0 && !extras.no_arguments_object {
                 let slot = extras.arguments_slot as usize;
@@ -934,6 +1000,7 @@ impl Vm {
                 self.current_constants = old_constants.clone();
                 self.current_try_table = old_try_table;
                 self.current_func_idx = old_func_idx;
+                self.with_scopes = saved_with_scopes;
                 if let (Some(cov), Some((of, oh))) = (self.coverage.as_mut(), old_coverage_func) {
                     cov.cur_func = of;
                     cov.last_hit = oh;
@@ -1004,6 +1071,7 @@ impl Vm {
         self.try_stack = saved_frame.try_stack;
         self.current_try_table = old_try_table;
         self.current_func_idx = old_func_idx;
+        self.with_scopes = saved_with_scopes;
         if let (Some(cov), Some((of, oh))) = (self.coverage.as_mut(), old_coverage_func) {
             cov.cur_func = of;
             cov.last_hit = oh;
@@ -1196,6 +1264,23 @@ impl Vm {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
+        // ESM 入口 wrapper 常态 async：顶层异常表现为**入口 Promise 拒绝**。
+        // 此前拒绝被静默丢弃（exit 0、无任何输出）——Node 语义是 Uncaught
+        // 打印并退出 1，此处转回 Thrown 走既有未捕获渲染。
+        if let ValueCase::Object(r) = ret.case() {
+            if let Some(HeapObject::Promise {
+                pending,
+                value,
+                is_rejected,
+                ..
+            }) = self.heap.get(r.0 as usize)
+            {
+                if *is_rejected {
+                    return Err(VmError::Thrown(*value));
+                }
+                let _ = pending;
+            }
+        }
         Ok(ret)
     }
 
@@ -1213,16 +1298,26 @@ impl Vm {
             .require_fn
             .unwrap_or_else(|| self.alloc_native_fn("require"));
         let filename = Value::Object(self.alloc_string(self.entry_file.clone()));
+        // 观察基准（`__dirname`/`import.meta.dirname`）优先源码目录
         let dirname = Value::Object(
             self.alloc_string(
-                self.base_dir
+                self.source_dir
                     .as_ref()
+                    .or(self.base_dir.as_ref())
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_default(),
             ),
         );
         // CJS wrapper 的 this = **exports 对象**（`typeof this === "object"`，
         // 与 modules.rs 的 require 加载路径一致；此前传 undefined）
+        // `import.meta` 同 require 加载路径（modules.rs）物化——ESM 入口
+        // 此前传 undefined，`import.meta.url` 即 TypeError 被静默吞掉
+        let import_meta = self.build_import_meta(
+            self.entry_file.clone(),
+            self.base_dir
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+        );
         let ret = self.invoke_function(
             func_idx,
             exports,
@@ -1233,11 +1328,19 @@ impl Vm {
                 filename,
                 dirname,
                 Value::Undefined, // __import
-                Value::Undefined, // __importMeta
+                Value::Object(import_meta),
             ],
             upvalues,
         )?;
         let _ = ret;
+        // ESM 入口 wrapper 常态 async：返回值是**入口完成 Promise**（完成值
+        // 为 exports）——原样上交 run_module 的事件循环后置拒绝检查；CJS
+        // wrapper 返回 undefined，维持 module.exports 收口
+        if matches!(ret.case(), ValueCase::Object(r)
+            if matches!(self.heap.get(r.0 as usize), Some(HeapObject::Promise { .. })))
+        {
+            return Ok(ret);
+        }
         // 模块可能重赋值 module.exports：以最终值为准
         self.get_property(module_obj, "exports")
     }

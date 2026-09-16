@@ -160,6 +160,25 @@ pub fn entry_bc_path(input: &Path, output: Option<&Path>) -> PathBuf {
         .with_extension("bc")
 }
 
+/// 最近 `package.json` 的 `"type"` 是否为 `"module"`（Node ESM 判定：
+/// 自文件目录向上找首个含 package.json 的目录；无 package.json 按 CJS）。
+fn package_type_is_module(file: &Path) -> bool {
+    let mut dir = file.parent().map(Path::to_path_buf);
+    while let Some(d) = dir {
+        let pkg = d.join("package.json");
+        if pkg.is_file()
+            && let Ok(text) = std::fs::read_to_string(&pkg)
+            && let Some(parsed) = aluka_module::parse_json(&text)
+            && let Some(t) = parsed.get("type")
+            && t.as_str() == Some("module")
+        {
+            return true;
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    false
+}
+
 /// 编译单个源文件到镜像 .bc 路径。
 fn compile_one(file: &Path, outdir: &Path, root: &Path, optimize: bool) -> Result<(), String> {
     let rel = rel_from(file, root);
@@ -174,7 +193,17 @@ fn compile_one(file: &Path, outdir: &Path, root: &Path, optimize: bool) -> Resul
         .as_deref()
     {
         Some("mjs" | "mts") => ModuleKind::Esm,
-        _ => ModuleKind::CommonJs,
+        Some("cjs" | "cts") => ModuleKind::CommonJs,
+        // `.js`/`.ts` 按最近 package.json 的 `"type"` 判定（Node 语义）——
+        // 此前恒按 CJS，真实 ESM 包（pi 全 workspace `"type": "module"`）
+        // 的命名导入全数落空
+        _ => {
+            if package_type_is_module(file) {
+                ModuleKind::Esm
+            } else {
+                ModuleKind::CommonJs
+            }
+        }
     };
     let path_str = file.to_string_lossy();
     let mut unit = LanguageRegistry::global()
@@ -295,11 +324,21 @@ fn resolve_require(from: &Path, spec: &str) -> Option<PathBuf> {
                 if let Ok(text) = std::fs::read_to_string(&pkg_json) {
                     if let Some(parsed) = aluka_module::parse_json(&text) {
                         if let Some(exports) = parsed.get("exports") {
+                            // 条件匹配：require 优先，未中再试 import（ESM-only
+                            // 包 typebox 等只配 `import`/`default`——与运行时
+                            // resolve_module 的双条件回退镜像）
                             if let Some(target) = aluka_module::resolve_exports(
                                 exports,
                                 &subpath,
                                 aluka_module::ConditionKind::Require,
-                            ) {
+                            )
+                            .or_else(|| {
+                                aluka_module::resolve_exports(
+                                    exports,
+                                    &subpath,
+                                    aluka_module::ConditionKind::Import,
+                                )
+                            }) {
                                 let joined = normalize_components(&pkg_root.join(target));
                                 if let Some(p) = source_candidates(&joined) {
                                     return Some(p);

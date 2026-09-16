@@ -364,12 +364,13 @@ pub(crate) fn text_encoder_encode(vm: &mut Vm, args: &[Value]) -> Result<Value, 
         .first()
         .map(|v| vm.format_value(*v))
         .unwrap_or_default();
-    let bytes: Vec<Value> = s
-        .as_bytes()
-        .iter()
-        .map(|b| Value::Number(*b as f64))
-        .collect();
-    Ok(Value::Object(vm.alloc_array(bytes)))
+    let bytes: Vec<u8> = s.as_bytes().to_vec();
+    // 产物须为**真 Uint8Array**（`payload instanceof Uint8Array` 品牌
+    // 检查——pi 的 protocol framing 等；此前返回普通数组）
+    let len = bytes.len();
+    let buf = vm.alloc_array_buffer(bytes, false, false, 0);
+    let ta = vm.alloc_typed_array(crate::typed_array::TypedKind::Uint8, buf, 0, len);
+    Ok(Value::Object(ta))
 }
 
 // ===== TextDecoder =====

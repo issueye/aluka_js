@@ -1,7 +1,7 @@
 //! 编译产物单元与层级符号作用域定义。
 
 use aluka_bytecode::{Constant, FuncTemplate, Instr, TryEntry, UpvalueCapture};
-use aluka_parser::ast::FunctionDef;
+use aluka_parser::ast::{Expr, FunctionDef};
 use std::collections::HashMap;
 
 /// 作用域类型。
@@ -110,6 +110,9 @@ pub struct LoopScope {
     /// 循环所属标签（`label: for(..){}`；裸循环为 None）——
     /// `continue label` / `break label` 按此从栈顶向下匹配
     pub label: Option<String>,
+    /// 循环入层时的 with 作用域深度——break/continue 跨 with 边界跳出时，
+    /// 跳转前经 `WithRestore` 截断动态作用域栈至此
+    pub with_depth_at_entry: usize,
 }
 
 /// 父级词法作用域符号信息，支持多层嵌套闭包向外逐级捕获变量（直接局部变量或父级上值）。
@@ -171,6 +174,10 @@ pub struct CompiledUnit {
     pub loop_stack: Vec<LoopScope>,
     /// 表达式闭包占位回填表项：(指令流索引, 函数定义, 创建时的父级作用域快照)
     pub closure_backpatches: Vec<(usize, FunctionDef, ParentScopeInfo)>,
+    /// 类表达式占位回填表项：(MakeClass 指令索引, 类表达式, 类 UID, 父级作用域快照)
+    pub class_backpatches: Vec<(usize, Expr, usize, ParentScopeInfo)>,
+    /// 类表达式 UID 计数器（home 槽符号命名唯一性；跨延迟装配保持一致）
+    pub class_uid_counter: usize,
     /// 隶属的类模板 ID（如果有）
     pub class_id: Option<usize>,
     /// 是否为变长参数函数
@@ -180,6 +187,9 @@ pub struct CompiledUnit {
     pub scope_shadow_log: Vec<(String, Option<usize>)>,
     /// 当前嵌套块深度（0 为函数/模块顶层）
     pub block_depth: usize,
+    /// 当前 with 对象环境嵌套深度（`with` 语句进出同步增减；标识符
+    /// 动态解析与 `WithRestore` 截断目标据此计算）
+    pub with_depth: usize,
     /// 函数体含直接 `eval(...)` 调用形态（动态求值作用域降级标记：
     /// 运行时据此物化局部名表，支持直接求值的词法穿透与写回）
     pub has_direct_eval: bool,
