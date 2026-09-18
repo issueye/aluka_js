@@ -42,6 +42,11 @@ pub struct Parser<'src> {
     /// 是否处于生成器函数体内（yield 为生成器运算符；非生成器语境
     /// `yield` 是普通标识符——`var yield = 'y'` / `get [yield]()`）
     in_generator: bool,
+    /// TypeScript 解析语境（`.ts/.mts/.cts/.tsx`）。仅在**语法歧义**处影响
+    /// 判定（`f<T>(x)` 的泛型实参 vs `a < b > (c)` 比较链、`x!` 的非空断言
+    /// vs 换行后 `!y` 的 ASI）；无歧义的 TS 形态（类型注解、成员修饰符）在
+    /// 两种语境下都按 TS 解释——它们在 JS 里本就是语法错误。
+    ts: bool,
 }
 
 /// 解析源码文本为 AST 语法树。
@@ -95,7 +100,13 @@ impl<'src> Parser<'src> {
             strict: false,
             in_generator: false,
             super_disallowed: false,
+            ts: false,
         }
+    }
+
+    /// 置位 TypeScript 解析语境（见 [`Parser`] 的 `ts` 字段）。
+    pub fn set_typescript_mode(&mut self, on: bool) {
+        self.ts = on;
     }
 
     /// 当前 token 的源码行号（自游标增量统计换行，均摊 O(n)）。
@@ -317,35 +328,403 @@ impl<'src> Parser<'src> {
         }
     }
 
-    /// 跳过 TypeScript 类型注解（例如 `: number`, `: Array<string>`, `: (x: number) => void` 等）
+    /// 跳过 TypeScript 类型注解（例如 `: number`, `: Array<string>`,
+    /// `: (x: number) => void`, `: { a: number }` 等）。
     fn skip_type_annotation(&mut self) {
         if self.match_punct(":") {
-            let mut paren_depth = 0;
-            let mut angle_depth = 0;
-            while self.pos < self.tokens.len() {
-                let tok = self.peek();
-                if let TokenKind::Punct(p) = &tok.kind {
-                    match p.as_str() {
-                        "(" => paren_depth += 1,
-                        ")" => {
-                            if paren_depth > 0 {
-                                paren_depth -= 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        "<" => angle_depth += 1,
-                        ">" if angle_depth > 0 => {
-                            angle_depth -= 1;
-                        }
-                        "{" | "=" | ";" | "," if paren_depth == 0 && angle_depth == 0 => {
-                            break;
-                        }
-                        _ => {}
+            self.skip_type();
+        }
+    }
+
+    /// 跳过一段 TypeScript 类型。
+    ///
+    /// 状态机：`need_primary`（期待类型原语）↔ 已取得原语（可接后缀）。
+    /// 只有**确定属于类型**的 token 才被消耗，因此既覆盖
+    /// `readonly T[]` / `keyof T` / `Array<Map<string, T>>` / `{ a: number }` /
+    /// `(x: number) => void` / `A | B`，也不会把后续语句的首个标识符吞进
+    /// 类型里（`const a = b as Foo` 换行 `const c = 1` 的 ASI 语义）。
+    fn skip_type(&mut self) {
+        let mut need_primary = true;
+        // 上一个原语是否为括号组：只有函数类型形参表（`(a: X) => Y`）之后的
+        // `=>` 才属于类型本身；`(x: string): string => x` 里的 `=>` 是**箭头
+        // 函数**的语法记号，必须留给调用方，否则返回值注解会把箭头吃掉
+        let mut last_was_paren = false;
+        while self.peek().kind != TokenKind::Eof {
+            let kind = self.peek().kind.clone();
+            let text = self.peek().text.clone();
+            match &kind {
+                // 类型前缀关键字：其后仍须一个原语（`readonly number[]`）
+                TokenKind::Ident(_) | TokenKind::Keyword(_)
+                    if need_primary
+                        && matches!(
+                            text.as_str(),
+                            "readonly"
+                                | "keyof"
+                                | "typeof"
+                                | "infer"
+                                | "unique"
+                                | "new"
+                                | "abstract"
+                                | "asserts"
+                        ) =>
+                {
+                    self.advance();
+                }
+                // 类型原语：限定名首段 / 字面量类型 / 泛型名
+                TokenKind::Ident(_)
+                | TokenKind::Keyword(_)
+                | TokenKind::String(_)
+                | TokenKind::Number(_)
+                | TokenKind::BigInt(_)
+                    if need_primary =>
+                {
+                    self.advance();
+                    need_primary = false;
+                    last_was_paren = false;
+                }
+                // 负数字面量类型（`-1`）
+                TokenKind::Punct(p) if p == "-" && need_primary => {
+                    self.advance();
+                }
+                // 复合原语：括号类型 / 对象类型 / 元组类型 / 函数类型形参表
+                TokenKind::Punct(p) if p == "(" && need_primary => {
+                    self.skip_balanced("(", ")");
+                    need_primary = false;
+                    last_was_paren = true;
+                }
+                TokenKind::Punct(p) if p == "{" && need_primary => {
+                    self.skip_balanced("{", "}");
+                    need_primary = false;
+                    last_was_paren = false;
+                }
+                TokenKind::Punct(p) if p == "[" && need_primary => {
+                    self.skip_balanced("[", "]");
+                    need_primary = false;
+                    last_was_paren = false;
+                }
+                // 后缀：泛型实参 / 数组与下标 / 限定名
+                TokenKind::Punct(p) if p == "<" && !need_primary => {
+                    if !self.skip_angle_group() {
+                        break;
                     }
                 }
+                TokenKind::Punct(p) if p == "[" && !need_primary => {
+                    self.skip_balanced("[", "]");
+                }
+                TokenKind::Punct(p) if p == "." && !need_primary => {
+                    self.advance();
+                    need_primary = true;
+                }
+                // 类型谓词：`value is Plugin` / `err is Error`（`is` 在词法层
+                // 是普通标识符，只在已取得原语后的位置作类型连接词）
+                TokenKind::Ident(w) if w == "is" && !need_primary => {
+                    self.advance();
+                    need_primary = true;
+                }
+                // 组合子：联合 / 交叉 / 函数类型箭头 / 元组展开
+                TokenKind::Punct(p) if p == "|" || p == "&" => {
+                    self.advance();
+                    need_primary = true;
+                }
+                TokenKind::Punct(p) if p == "=>" && !need_primary && last_was_paren => {
+                    self.advance();
+                    need_primary = true;
+                    last_was_paren = false;
+                }
+                TokenKind::Punct(p) if p == "..." && need_primary => {
+                    self.advance();
+                }
+                _ => break,
+            }
+        }
+    }
+
+    /// 平衡扫描一对定界符（含嵌套）。未配对时停在 EOF。
+    fn skip_balanced(&mut self, open: &str, close: &str) -> bool {
+        if !self.check_punct(open) {
+            return false;
+        }
+        let mut depth = 0usize;
+        while self.peek().kind != TokenKind::Eof {
+            if let TokenKind::Punct(p) = &self.peek().kind {
+                if p == open {
+                    depth += 1;
+                } else if p == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        self.advance();
+                        return true;
+                    }
+                }
+            }
+            self.advance();
+        }
+        false
+    }
+
+    /// 平衡扫描 `<...>`：`>>`/`>>>` 是单 token，按字符数一次收口多层。
+    ///
+    /// 类型实参内部可以出现括号/方括号/花括号（`Promise<{ a: number; b: string }>`、
+    /// `Map<string, Array<T>>`），故 `;` 只在**括号嵌套归零**时才是语句边界；
+    /// 嵌套内的 `;` 属对象类型成员分隔符。
+    fn skip_angle_group(&mut self) -> bool {
+        if !self.check_punct("<") {
+            return false;
+        }
+        let mut depth = 0usize;
+        let mut inner = 0i32;
+        while self.peek().kind != TokenKind::Eof {
+            if let TokenKind::Punct(p) = &self.peek().kind {
+                match p.as_str() {
+                    "(" | "[" | "{" => inner += 1,
+                    ")" | "]" | "}" if inner > 0 => inner -= 1,
+                    "<" => depth += 1,
+                    ";" if inner == 0 => {
+                        // 语句边界：不可能是类型实参内容 —— 按比较链解释
+                        return false;
+                    }
+                    _ if p.starts_with('>') && p.chars().all(|c| c == '>') => {
+                        if p.len() >= depth {
+                            depth = 0;
+                        } else {
+                            depth -= p.len();
+                        }
+                        if depth == 0 {
+                            self.advance();
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.advance();
+        }
+        false
+    }
+
+    /// 声明或调用位置的可选类型参数列表 `<T, U extends X = Y>`。
+    ///
+    /// 判定为「类型参数」而非「小于号」的条件：尖括号平衡成立，且**后继
+    /// token** 属于 {`(`, `{`, `=>`, `extends`, `implements`}（逗号、换行等
+    /// 位置一律按比较链解释）。失败时游标回退并返回 false。
+    fn try_skip_type_args(&mut self) -> bool {
+        if !self.check_punct("<") {
+            return false;
+        }
+        let save = self.pos;
+        if !self.skip_angle_group() {
+            self.pos = save;
+            return false;
+        }
+        let next_ok = self.check_punct("(")
+            || self.check_punct("{")
+            || self.check_punct("=>")
+            || self.check_keyword("extends")
+            || self.check_soft_keyword("implements");
+        if !next_ok {
+            self.pos = save;
+            return false;
+        }
+        true
+    }
+
+    /// 剥离语句位的 TS 类型层声明：`interface` / `type` / `declare`。
+    ///
+    /// 三者都是**软关键字**（可作普通标识符），故仅在形态明确时才吞：
+    /// `interface X` 后必须随标识符、`type X` 后必须随 `=`/`<`、`declare`
+    /// 后必须随一个声明关键字（`declare = 1` 仍是赋值语句）。
+    fn skip_ts_declaration(&mut self) -> bool {
+        if self.check_soft_keyword("interface")
+            && matches!(self.peek_ahead(1).kind, TokenKind::Ident(_))
+        {
+            self.advance();
+            self.advance();
+            let _ = self.try_skip_type_args();
+            if self.match_keyword("extends") {
+                loop {
+                    self.skip_type();
+                    if !self.match_punct(",") {
+                        break;
+                    }
+                }
+            }
+            if self.check_punct("{") {
+                self.skip_balanced("{", "}");
+            }
+            return true;
+        }
+        if self.check_soft_keyword("type")
+            && matches!(self.peek_ahead(1).kind, TokenKind::Ident(_))
+            && (self.peek_ahead(2).is_punct("=") || self.peek_ahead(2).is_punct("<"))
+        {
+            while !self.check_punct(";") && self.peek().kind != TokenKind::Eof {
                 self.advance();
             }
+            self.eat_semi();
+            return true;
+        }
+        if self.check_soft_keyword("declare")
+            && matches!(
+                &self.peek_ahead(1).kind,
+                TokenKind::Ident(w) | TokenKind::Keyword(w)
+                    if matches!(
+                        w.as_str(),
+                        "class"
+                            | "const"
+                            | "function"
+                            | "enum"
+                            | "interface"
+                            | "let"
+                            | "module"
+                            | "namespace"
+                            | "var"
+                            | "global"
+                            | "type"
+                            | "abstract"
+                    )
+            )
+        {
+            self.advance();
+            // 环境声明体（`declare namespace N { ... }` / `declare global { ... }`）
+            loop {
+                match &self.peek().kind {
+                    TokenKind::Eof => break,
+                    TokenKind::Punct(p) if p == "{" => {
+                        let _ = self.skip_balanced("{", "}");
+                        break;
+                    }
+                    TokenKind::Punct(p) if p == ";" => {
+                        self.eat_semi();
+                        break;
+                    }
+                    _ => {
+                        self.advance();
+                    }
+                }
+            }
+            return true;
+        }
+        false
+    }
+
+    /// 软关键字匹配（TS 关键字在词法层有的是标识符、有的入关键字表，
+    /// 两种词法形态都接受）。
+    fn match_soft_keyword(&mut self, word: &str) -> bool {
+        if self.check_soft_keyword(word) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 软关键字判定（不消耗）。
+    fn check_soft_keyword(&self, word: &str) -> bool {
+        matches!(&self.peek().kind, TokenKind::Ident(w) | TokenKind::Keyword(w) if w == word)
+    }
+
+    /// `implements A, B<C>` 子句（存在则跳过）。
+    fn skip_implements_clause(&mut self) {
+        if self.match_soft_keyword("implements") {
+            loop {
+                self.skip_type();
+                if !self.match_punct(",") {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// 形参名后的 TS 后缀：`?` 可选标记 → `!` → `: 类型`。
+    fn skip_param_suffix(&mut self) {
+        let _ = self.match_punct("?");
+        let _ = self.match_punct("!");
+        self.skip_type_annotation();
+    }
+
+    /// `this: T` 伪形参（TS 语境；剥离后不占实参位）。
+    fn check_this_param(&self) -> bool {
+        self.check_keyword("this") && self.peek_ahead(1).is_punct(":")
+    }
+
+    /// 类成员前导修饰符（TS）：返回 `(是否 static, 是否 abstract/declare)`。
+    ///
+    /// 全部是软关键字——仅当**后随另一修饰符或成员键**（标识符 / `#` /
+    /// `[` / 字符串 / 数字）时才按修饰符消耗；否则该单词就是成员名本身
+    /// （`private = 1`、`static() {}`、`readonly;` 皆属此类）。
+    fn take_member_modifiers(&mut self) -> (bool, bool) {
+        let mut is_static = false;
+        let mut is_erased = false;
+        while let TokenKind::Ident(word) | TokenKind::Keyword(word) = self.peek().kind.clone() {
+            let kind = match word.as_str() {
+                "public" | "private" | "protected" => 1,
+                "readonly" => 2,
+                "override" => 3,
+                "static" => 4,
+                "abstract" => 5,
+                "declare" => 6,
+                _ => break,
+            };
+            // 后随须为成员键或另一修饰符：`private x` / `private [k]` /
+            // `static readonly x`；`private` 后随 `(`/`=`/`;`/`:`/`?` 时
+            // 是成员名而非修饰符
+            let follows = match &self.peek_ahead(1).kind {
+                TokenKind::Ident(w) | TokenKind::Keyword(w) => {
+                    matches!(
+                        w.as_str(),
+                        "public"
+                            | "private"
+                            | "protected"
+                            | "readonly"
+                            | "override"
+                            | "static"
+                            | "abstract"
+                            | "declare"
+                            | "async"
+                            | "get"
+                            | "set"
+                    ) || !w.is_empty()
+                }
+                TokenKind::String(_) | TokenKind::Number(_) | TokenKind::Punct(_) => {
+                    matches!(&self.peek_ahead(1).kind, TokenKind::Punct(p) if p == "#" || p == "[" || p == "*")
+                }
+                _ => false,
+            };
+            if !follows {
+                break;
+            }
+            self.advance();
+            match kind {
+                4 => is_static = true,
+                5 | 6 => is_erased = true,
+                _ => {}
+            }
+        }
+        (is_static, is_erased)
+    }
+
+    /// 擦除 `abstract` / `declare` 成员的声明（strip-only 语义：类型层面
+    /// 的成员不产生任何运行时可见对象——Node 22 实测 `abstract m(): T;`
+    /// 剥离后原型上无该方法）。
+    fn skip_erased_member(&mut self) {
+        if self.check_punct("*") {
+            self.advance();
+        }
+        if self.check_punct("[") {
+            self.skip_balanced("[", "]");
+        } else if self.peek().kind != TokenKind::Eof {
+            self.advance();
+        }
+        if self.check_punct("(") {
+            self.skip_balanced("(", ")");
+        }
+        let _ = self.match_punct("?");
+        let _ = self.match_punct("!");
+        self.skip_type_annotation();
+        if self.check_punct("{") {
+            self.skip_balanced("{", "}");
+        } else {
+            self.eat_semi();
         }
     }
 
@@ -377,41 +756,12 @@ impl<'src> Parser<'src> {
             if self.peek().kind == TokenKind::Eof {
                 break;
             }
-            // 跳过 TS interface / type 声明
-            if self.check_keyword("interface") {
-                self.advance();
-                // 跳过名字
-                self.advance();
-                // 跳过主体 `{ ... }`
-                if self.match_punct("{") {
-                    let mut depth = 1;
-                    while depth > 0 && self.peek().kind != TokenKind::Eof {
-                        if self.match_punct("{") {
-                            depth += 1;
-                        } else if self.match_punct("}") {
-                            depth -= 1;
-                        } else {
-                            self.advance();
-                        }
-                    }
-                }
+            // TS 类型层声明（interface / type / declare）：与语句位同一套
+            // 判定（含 `interface X extends A, B {}` 的继承子句与
+            // `declare namespace N { ... }` 的环境体）
+            if self.skip_ts_declaration() {
                 continue;
             }
-            // TS 类型别名：`type Foo = ...` / `type Foo<T> = ...`。`type` 是
-            // 软关键字（真实包常用作变量名），仅在后随 Ident + `=`/`<` 时
-            // 按别名声明跳过
-            if matches!(&self.peek().kind, TokenKind::Ident(t) if t == "type")
-                && matches!(self.peek_ahead(1).kind, TokenKind::Ident(_))
-                && (self.peek_ahead(2).is_punct("=") || self.peek_ahead(2).is_punct("<"))
-            {
-                self.advance();
-                while !self.check_punct(";") && self.peek().kind != TokenKind::Eof {
-                    self.advance();
-                }
-                self.eat_semi();
-                continue;
-            }
-
             body.push(self.parse_stmt());
         }
         Program { body }
@@ -420,6 +770,18 @@ impl<'src> Parser<'src> {
     /// 解析语句
     pub fn parse_stmt(&mut self) -> SpannedStmt {
         let line = self.cur_line();
+        // TS 类型层声明在语句位一律剥离（块内同样适用——`declare namespace
+        // N { interface X {} }` 的内层 interface 不再走语句解析）
+        if self.skip_ts_declaration() {
+            return Self::at(line, Stmt::Block(Vec::new()));
+        }
+        // `abstract class X {}`：`abstract` 是类型层修饰符，剥离后按普通
+        // 类声明解析（`abstract` 作变量名时后随 `class` 才是该形态）
+        if self.check_soft_keyword("abstract")
+            && matches!(&self.peek_ahead(1).kind, TokenKind::Keyword(k) if k == "class")
+        {
+            self.advance();
+        }
         if (self.peek().kind == TokenKind::Keyword("import".to_owned())
             || self.peek().kind == TokenKind::Ident("import".to_owned()))
             && !self.peek_ahead(1).is_punct("(")
@@ -943,6 +1305,22 @@ impl<'src> Parser<'src> {
         } else if self.match_punct("{") {
             let mut props = Vec::new();
             while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
+                // 对象 rest：`{ a, b: v, ...rest }`。规范形态仅允许标识符
+                // 绑定（禁止嵌套模式与默认值），且必为最后一项。
+                if self.match_punct("...") {
+                    let name = if let TokenKind::Ident(id) = self.advance().kind {
+                        id
+                    } else {
+                        String::new()
+                    };
+                    props.push(ObjectPatternProp {
+                        key: name.clone(),
+                        value: VarPattern::Ident(name),
+                        default_value: None,
+                        is_rest: true,
+                    });
+                    break;
+                }
                 let key = if let TokenKind::Ident(id) = self.advance().kind {
                     id
                 } else {
@@ -962,6 +1340,7 @@ impl<'src> Parser<'src> {
                     key,
                     value,
                     default_value,
+                    is_rest: false,
                 });
                 if !self.match_punct(",") {
                     break;
@@ -1061,6 +1440,8 @@ impl<'src> Parser<'src> {
         } else {
             String::new()
         };
+        // TS 类型形参：`function id<T>(v: T): T`
+        let _ = self.try_skip_type_args();
         let _ = self.expect_punct("(");
         let mut params = Vec::new();
         let mut is_var_args = false;
@@ -1115,6 +1496,10 @@ impl<'src> Parser<'src> {
                 // 走不到下方 Ident 臂——需单独拦截）
                 self.advance();
                 self.record_error("SyntaxError: async 函数形参名不允许为 await".to_owned());
+            } else if self.check_this_param() {
+                // `this: T` 伪形参（TS）：仅类型占位，剥离后不占实参位
+                self.advance();
+                self.skip_type_annotation();
             } else if let Some(param_name) = self.advance_ident_like() {
                 // 形参名走 advance_ident_like：上下文关键字（from/of/as/
                 // get/set/static/async 等）是普通标识符——color-convert
@@ -1127,7 +1512,7 @@ impl<'src> Parser<'src> {
                     self.record_error(format!("SyntaxError: 形参名不允许为 {param_name}"));
                 }
                 params.push(param_name.clone());
-                self.skip_type_annotation();
+                self.skip_param_suffix();
                 // 默认参数 `param = default`：运行时参数为 undefined 时取默认值
                 //（对齐 Go 前端：函数体 prologue 注入条件赋值）
                 if self.match_punct("=") {
@@ -1278,6 +1663,8 @@ impl<'src> Parser<'src> {
         } else {
             "AnonymousClass".to_owned()
         };
+        // TS 类型形参：`class Store<T extends Entity> extends Base`
+        let _ = self.try_skip_type_args();
         let (super_class, constructor, methods, class_fields) = self.parse_class_tail(Some(&name));
         Stmt::Class {
             name,
@@ -1297,6 +1684,7 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
+        let _ = self.try_skip_type_args();
         let (super_class, constructor, methods, class_fields) =
             self.parse_class_tail(name.as_deref());
         Expr::Class {
@@ -1320,6 +1708,12 @@ impl<'src> Parser<'src> {
         } else {
             None
         };
+        // `class C extends Base<T>` 的父类泛型实参（`<` 在表达式位是
+        // 小于号，故仅在「`>` 后紧接 `{`/`implements`」时按类型实参收口）
+        if self.check_punct("<") {
+            let _ = self.try_skip_type_args();
+        }
+        self.skip_implements_clause();
 
         let _ = self.expect_punct("{");
         let mut constructor = None;
@@ -1330,19 +1724,22 @@ impl<'src> Parser<'src> {
 
         let mut class_fields: Vec<(String, bool, Option<Expr>)> = Vec::new();
         while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
+            // TS 成员修饰符（`public`/`private`/`protected`/`readonly`/
+            // `abstract`/`declare`/`override`/`static`）是软关键字：仅当
+            // 后随另一修饰符或成员键时才按修饰符消耗（`private = 1` 是名为
+            // private 的字段）。`abstract`/`declare` 成员按 strip-only 语义
+            // **整体擦除**，不生成原型方法或实例字段。
+            let (is_static, is_erased_member) = self.take_member_modifiers();
+            if is_erased_member {
+                self.skip_erased_member();
+                continue;
+            }
             // 类字段（`field = 1;` / `static s = 2;` / `field;`）：以
             // `__class_field_<name>` 子语句收集，装配期注入构造器
             // （实例字段 `this.name = init` / 静态字段挂构造器）
             {
                 let save = self.pos;
-                let is_static_field = matches!(&self.peek().kind, TokenKind::Ident(s) if s == "static")
-                    && !self.peek_ahead(1).is_punct("(")
-                    && !self.peek_ahead(1).is_punct("=")
-                    && !self.peek_ahead(1).is_punct(";")
-                    && {
-                        self.advance();
-                        true
-                    };
+                let is_static_field = is_static;
                 let mut fname = String::new();
                 if self.check_punct("#") {
                     self.advance();
@@ -1359,9 +1756,18 @@ impl<'src> Parser<'src> {
                     self.advance();
                     fname = format!("{n}");
                 }
+                // TS 字段的确定赋值/可选标记与类型注解：`n!: number;` /
+                // `n?: T;` / `n: T = init;`（方法名后随 `(` 时不进入本分支）
+                if !fname.is_empty() && !self.check_punct("(") {
+                    let _ = self.match_punct("!");
+                    let _ = self.match_punct("?");
+                    self.skip_type_annotation();
+                }
+                // 字段终止符：`=`（带初值）/ `;` / `}`（体尾无分号——
+                // `class C { x = 1 }` 与 `class C { x?: T }`）
                 if !fname.is_empty()
                     && !self.check_punct("(")
-                    && (self.check_punct("=") || self.check_punct(";"))
+                    && (self.check_punct("=") || self.check_punct(";") || self.check_punct("}"))
                 {
                     let init = if self.match_punct("=") {
                         Some(self.parse_expr())
@@ -1378,13 +1784,16 @@ impl<'src> Parser<'src> {
                 self.pos = save;
             }
             // `static` 非保留字（词法为 Ident）：仅在后随键名/访问器/计算键
-            // 时作修饰符——`static() {}` 是名为 static 的普通方法
-            let is_static = matches!(&self.peek().kind, TokenKind::Ident(s) if s == "static")
-                && !self.peek_ahead(1).is_punct("(")
-                && {
-                    self.advance();
-                    true
-                };
+            // 时作修饰符——`static() {}` 是名为 static 的普通方法。上方
+            // take_member_modifiers 已消耗 TS 组合里的 static，此处兜底
+            // 未被其收下的形态。
+            let is_static = is_static
+                || (matches!(&self.peek().kind, TokenKind::Ident(s) if s == "static")
+                    && !self.peek_ahead(1).is_punct("(")
+                    && {
+                        self.advance();
+                        true
+                    });
             // async 方法前缀：`async m() {}` / `async *m() {}`（axios 的
             // AxiosHeaders 等类大量使用；async 仅在**后随方法名/`*`** 时
             // 作修饰符——`async() {}` 是名为 async 的普通方法）
@@ -1446,14 +1855,39 @@ impl<'src> Parser<'src> {
                     String::new()
                 }
             } else if self.check_punct("[") {
-                is_computed_key = true;
                 // 计算键：`get ['a']() {}` / `[Symbol.iterator]() {}`——
                 // **解析完整表达式**后取其静态名（成员表达式 `a.b` 取文本
                 // 尾名；字面量取字面值）。此前只取首个 token，致
-                // `[Symbol.iterator]` 落为 "Symbol"
+                // `[Symbol.iterator]` 落为 "Symbol"。
                 self.advance();
                 let key_expr = self.parse_expr();
+                let mut well_known: Option<String> = None;
                 let key_txt = match &key_expr {
+                    // 知名符号键：`[Symbol.iterator]` 压缩为 "@@iterator"
+                    // 文本名，由 VM 类装配期还原为符号的 mangled 键——
+                    // 迭代协议/toStringTag 等按符号查找，字符串键永远命中
+                    // 不了。其余计算键维持「栈传值」形态（kind 0x20）。
+                    Expr::Member { obj, prop }
+                        if matches!(obj.as_ref(), Expr::Ident(id) if id == "Symbol")
+                            && matches!(
+                                prop.as_str(),
+                                "iterator"
+                                    | "asyncIterator"
+                                    | "hasInstance"
+                                    | "isConcatSpreadable"
+                                    | "match"
+                                    | "replace"
+                                    | "search"
+                                    | "species"
+                                    | "split"
+                                    | "toPrimitive"
+                                    | "toStringTag"
+                                    | "unscopables"
+                            ) =>
+                    {
+                        well_known = Some(prop.clone());
+                        format!("@@{prop}")
+                    }
                     Expr::String(s) => s.clone(),
                     Expr::Number(n) => format!("{n}"),
                     Expr::Ident(id) => id.clone(),
@@ -1461,26 +1895,57 @@ impl<'src> Parser<'src> {
                     other => format!("{other:?}"),
                 };
                 let _ = self.expect_punct("]");
+                if well_known.is_some() {
+                    // 压缩形态不经栈传值：按普通（文本）键装配
+                    is_computed_key = false;
+                } else {
+                    is_computed_key = true;
+                }
                 key_txt
             } else {
                 break;
             };
 
+            // 泛型方法：`get<T>(k: string): T {}`
+            let _ = self.try_skip_type_args();
             let _ = self.expect_punct("(");
             let mut params = Vec::new();
             let mut is_var_args = false;
+            // 形参默认值降级：与具名函数同款——体前注入
+            // `param = (param === undefined ? 默认值 : param)` 条件赋值。
+            // 此前只「消费语法」，默认值从未生效（`constructor(a, b = {})`
+            // 缺省实参时 b 为 undefined）。
+            let mut prologue_stmts: Vec<SpannedStmt> = Vec::new();
             while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
                 // rest 参数（`concat(...targets) {}`——axios 的 AxiosHeaders
                 // 等类方法大量使用）
                 if self.match_punct("...") {
                     is_var_args = true;
                 }
-                if let Some(p) = self.advance_ident_like() {
-                    params.push(p);
+                if self.check_this_param() {
+                    self.advance();
                     self.skip_type_annotation();
-                    // 默认值：允许出现（值由运行期处理；此处仅消费语法）
+                } else if let Some(p) = self.advance_ident_like() {
+                    params.push(p.clone());
+                    self.skip_param_suffix();
                     if self.match_punct("=") {
-                        let _ = self.parse_expr();
+                        let default_expr = self.parse_expr();
+                        let pline = self.cur_line();
+                        prologue_stmts.push(Self::at(
+                            pline,
+                            Stmt::Expr(Expr::Assign {
+                                name: p.clone(),
+                                value: Box::new(Expr::Conditional {
+                                    cond: Box::new(Expr::Binary {
+                                        op: "===".to_owned(),
+                                        left: Box::new(Expr::Ident(p.clone())),
+                                        right: Box::new(Expr::Undefined),
+                                    }),
+                                    then_expr: Box::new(default_expr),
+                                    else_expr: Box::new(Expr::Ident(p.clone())),
+                                }),
+                            }),
+                        ));
                     }
                 }
                 if !self.match_punct(",") {
@@ -1499,13 +1964,17 @@ impl<'src> Parser<'src> {
             let body_stmt = self.parse_stmt();
             self.in_generator = outer_gen;
             self.in_async = outer_async;
-            let body = match body_stmt {
+            let mut body = match body_stmt {
                 SpannedStmt {
                     stmt: Stmt::Block(stmts),
                     ..
                 } => stmts,
                 other => vec![other],
             };
+            if !prologue_stmts.is_empty() {
+                prologue_stmts.append(&mut body);
+                body = prologue_stmts;
+            }
 
             if m_name == "constructor" && !is_computed_key {
                 constructor = Some(FunctionDef {
@@ -2038,6 +2507,11 @@ impl<'src> Parser<'src> {
                 };
                 continue;
             }
+            // TS 泛型调用实参：`f<A>(x)` / `obj.m<T>(x)`（仅 TS 语境——
+            // JS 里 `a < b` 是小于号，且 `(a<b)>(c)` 是合法表达式）
+            if self.ts && self.check_punct("<") && self.try_skip_type_args() {
+                continue;
+            }
             // 普通函数调用: fn(a, b)
             if self.match_punct("(") {
                 let args = self.parse_args();
@@ -2047,9 +2521,18 @@ impl<'src> Parser<'src> {
                 };
                 continue;
             }
-            // TypeScript `as Type` 断言零成本剥离
+            // TypeScript `as Type` / `as const` 断言零成本剥离
             if self.match_keyword("as") {
-                // 跳过类型名
+                if self.check_keyword("const") {
+                    self.advance();
+                } else {
+                    self.skip_type();
+                }
+                continue;
+            }
+            // TS 非空断言 `x!`（仅 TS 语境：JS 里换行后的 `!y` 由 ASI 起新
+            // 语句，吞掉会破坏语义）
+            if self.ts && self.check_punct("!") {
                 self.advance();
                 continue;
             }
@@ -2182,6 +2665,19 @@ impl<'src> Parser<'src> {
                             Expr::Function(def)
                         } else if self.is_arrow_function() {
                             self.parse_arrow_function_from_paren(true)
+                        } else if self.ts && self.check_punct("<") && {
+                            // TS 泛型 async 箭头：`async <T>(v: T) => v`
+                            let save = self.pos;
+                            let ok = self.skip_angle_group() && self.check_punct("(");
+                            self.pos = save;
+                            ok
+                        } {
+                            let _ = self.skip_angle_group();
+                            if self.is_arrow_function() {
+                                self.parse_arrow_function_from_paren(true)
+                            } else {
+                                Expr::Ident(kw)
+                            }
                         } else if let TokenKind::Ident(id) = self.peek().kind.clone() {
                             if self.peek_ahead(1).kind == TokenKind::Punct("=>".to_owned()) {
                                 self.advance(); // 消耗 id
@@ -2244,6 +2740,10 @@ impl<'src> Parser<'src> {
                             }
                             break;
                         }
+                        // `new Map<string, ResourceService<Entity>>()`
+                        if self.ts && self.check_punct("<") {
+                            let _ = self.try_skip_type_args();
+                        }
                         let args = if self.match_punct("(") {
                             self.parse_args()
                         } else {
@@ -2251,6 +2751,24 @@ impl<'src> Parser<'src> {
                         };
                         Expr::New {
                             callee: Box::new(callee),
+                            args,
+                        }
+                    }
+                    // 动态导入 `import(specifier[, options])`：编译为专管
+                    // 全局调用 __aluka_dynamic_import__（VM 侧保证「恒返回
+                    // Promise」的动态导入语义）
+                    "import" if self.peek().kind == TokenKind::Punct("(".to_owned()) => {
+                        self.advance(); // 消耗 `(`
+                        let mut args = Vec::new();
+                        while !self.check_punct(")") && self.peek().kind != TokenKind::Eof {
+                            args.push(self.parse_expr());
+                            if !self.match_punct(",") {
+                                break;
+                            }
+                        }
+                        let _ = self.expect_punct(")");
+                        Expr::Call {
+                            callee: Box::new(Expr::Ident("__aluka_dynamic_import__".to_owned())),
                             args,
                         }
                     }
@@ -2585,6 +3103,20 @@ impl<'src> Parser<'src> {
                     self.advance();
                     return Expr::Undefined;
                 }
+                // TS 泛型箭头函数：`const id = <T>(x: T): T => x`。
+                // 表达式**主位**的 `<` 不可能是小于号（无左操作数），故无歧义；
+                // 仅在尖括号后可接箭头形参表时按此解释，否则维持判死通道。
+                if self.ts && self.check_punct("<") && {
+                    let save = self.pos;
+                    let ok = self.skip_angle_group() && self.check_punct("(");
+                    self.pos = save;
+                    ok
+                } {
+                    let _ = self.skip_angle_group();
+                    if self.is_arrow_function() {
+                        return self.parse_arrow_function_from_paren(false);
+                    }
+                }
                 // 比较类标点永不处于表达式主位（`;-->` 的 `>` 曾被静默吞）
                 if let TokenKind::Punct(p) = &self.peek().kind {
                     if matches!(
@@ -2721,18 +3253,33 @@ impl<'src> Parser<'src> {
                             && self.tokens[j].kind == TokenKind::Punct(":".to_owned())
                         {
                             j += 1;
-                            // 类型注解扫描：遇结构性终止符立即停（`?`/`:`/
-                            // `,`/`)`/`]`/`}`/`;`/`=`）——否则三元表达式
-                            // `t ? (1) : async s => ...` 的 `:` 会让扫描
-                            // 一路吃到 else 分支的 `=>`，把 then 分支的
+                            // 类型注解扫描：括号/方括号/花括号内视为类型内容
+                            // （`string[]` / `Array<T>` / `{a: number}`），
+                            // 深度归零后的结构性 token 才是边界（`?`/`:`/`,`/
+                            // `)`/`]`/`}`/`;`/`=`）或命中箭头 `=>`——否则三元
+                            // 表达式 `t ? (1) : async s => ...` 的 `:` 会让
+                            // 扫描一路吃到 else 分支的 `=>`，把 then 分支的
                             // 括号误判成箭头形参表
-                            while j < self.tokens.len()
-                                && !matches!(
-                                    &self.tokens[j].kind,
-                                    TokenKind::Punct(p)
-                                        if matches!(p.as_str(), "=>" | ";" | "?" | ":" | "," | ")" | "]" | "}" | "=")
-                                )
-                            {
+                            let mut type_depth = 0i32;
+                            while j < self.tokens.len() {
+                                if let TokenKind::Punct(p) = &self.tokens[j].kind {
+                                    match p.as_str() {
+                                        "(" | "[" | "{" | "<" => type_depth += 1,
+                                        ")" | "]" | "}" => {
+                                            if type_depth == 0 {
+                                                break;
+                                            }
+                                            type_depth -= 1;
+                                        }
+                                        // `>>`/`>>>` 是单 token：一次收口多层泛型
+                                        _ if p.starts_with('>') && p.chars().all(|c| c == '>') => {
+                                            type_depth -= p.len() as i32;
+                                        }
+                                        "=>" if type_depth == 0 => break,
+                                        ";" | "?" | ":" | "," | "=" if type_depth == 0 => break,
+                                        _ => {}
+                                    }
+                                }
                                 j += 1;
                             }
                         }
@@ -2798,10 +3345,10 @@ impl<'src> Parser<'src> {
                     Expr::Ident(param_name)
                 };
                 prologue_stmts.push(Self::at(dline, Stmt::DestructureDecl { pattern, init }));
-                self.skip_type_annotation();
+                self.skip_param_suffix();
             } else if let Some(p_name) = self.advance_ident_like() {
                 params.push(p_name.clone());
-                self.skip_type_annotation();
+                self.skip_param_suffix();
                 // 默认参数 `param = default`：与具名函数同款
                 // prologue 条件赋值（undefined 时取默认值）
                 if self.match_punct("=") {
@@ -2897,6 +3444,18 @@ impl<'src> Parser<'src> {
         } else if self.match_punct("{") {
             // 命名导入：import { a, b as c } from 'mod';
             while !self.check_punct("}") && self.peek().kind != TokenKind::Eof {
+                // 内联类型说明符：`import { createApp, type App } from ...`
+                // （`type` 后随另一标识符/关键字才是修饰符；`{ type }` /
+                // `{ type as t }` 仍是名为 type 的绑定）
+                if matches!(&self.peek().kind, TokenKind::Ident(t) if t == "type")
+                    && matches!(
+                        self.peek_ahead(1).kind,
+                        TokenKind::Ident(_) | TokenKind::Keyword(_)
+                    )
+                    && !matches!(&self.peek_ahead(1).kind, TokenKind::Ident(t) if t == "as")
+                {
+                    self.advance();
+                }
                 let imported = match self.advance().kind {
                     TokenKind::Ident(s) | TokenKind::Keyword(s) => s,
                     _ => break,
@@ -2928,6 +3487,22 @@ impl<'src> Parser<'src> {
 
     fn parse_export_stmt(&mut self) -> Stmt {
         self.advance(); // 消耗 export
+
+        // `export type X = ...` / `export interface X { ... }`：类型层声明
+        // 无运行时导出面，整体剥离（`export type { A }` 亦然）
+        if self.skip_ts_declaration() {
+            return Stmt::Block(Vec::new());
+        }
+        if self.check_soft_keyword("type") && self.peek_ahead(1).is_punct("{") {
+            self.advance();
+            let _ = self.skip_balanced("{", "}");
+            let _ = self.match_keyword("from");
+            if let TokenKind::String(_) = self.peek().kind {
+                self.advance();
+            }
+            self.eat_semi();
+            return Stmt::Block(Vec::new());
+        }
 
         // export default ...
         if self.match_keyword("default") {

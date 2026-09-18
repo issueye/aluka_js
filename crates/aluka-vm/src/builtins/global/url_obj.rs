@@ -553,6 +553,12 @@ pub(crate) fn url_ctor(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     };
 
     let inst = vm.alloc_ordinary();
+    // 原型链接：实例沿 URL.prototype（`u instanceof URL` / 方法沿链查找）
+    if let Some(ctor) = vm.globals.get("URL").copied() {
+        if let ValueCase::Object(proto) = vm.get_property(ctor, "prototype")?.case() {
+            vm.set_prototype_of(Value::Object(inst), Some(proto));
+        }
+    }
     // `_builtinNs` 让 `try_dispatch` 把实例方法派到 "URL:instance.X"
     let ns = Value::Object(vm.alloc_string("URL:instance".to_owned()));
     let _ = vm.set_property(Value::Object(inst), "_builtinNs", ns);

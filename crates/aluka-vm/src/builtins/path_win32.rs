@@ -1,4 +1,4 @@
-﻿//! `path/win32` 内置模块：Win32（`\`）分隔符语义的路径操作。
+//! `path/win32` 内置模块：Win32（`\`）分隔符语义的路径操作。
 //!
 //! 语义实测对齐 Node.js 22 LTS 标准（`nodeos.NewPathWin32`）→ Go 标准库 `path/filepath`
 //! （Windows 平台版，go1.25 `filepathlite`）：
@@ -37,6 +37,116 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     Ok(obj)
 }
 
+/// `path.parse(p)` → `{ root, dir, base, ext, name }`。
+///
+/// 由既有 dirname/basename/extname 助手组装（同平台语义单一来源）：
+/// `dir` 为 `.` 时按 Node 语义归空串；`name` = `base` 去除 `ext` 尾。
+fn parse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let p = match args.first() {
+        Some(v) => vm.format_value(*v),
+        None => String::new(),
+    };
+    let root = {
+        let b = p.as_bytes();
+        // 卷根前缀：盘符（`C:` / `C:\`）、UNC/设备根、单分隔符
+        if b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic() {
+            let n = if b.len() >= 3 && is_sep(b[2]) { 3 } else { 2 };
+            p[..n].to_owned()
+        } else if b.len() >= 2 && is_sep(b[0]) && is_sep(b[1]) {
+            // UNC/设备根：\server\share\ 或 \\.\x\
+            let mut n = 2;
+            let mut seen = 0;
+            while n < b.len() && seen < 2 {
+                if is_sep(b[n]) {
+                    seen += 1;
+                    if seen == 2 {
+                        n += 1;
+                        break;
+                    }
+                }
+                n += 1;
+            }
+            p[..n.min(p.len())].to_owned()
+        } else if !b.is_empty() && is_sep(b[0]) {
+            p[..1].to_owned()
+        } else {
+            String::new()
+        }
+    }
+    .to_owned();
+    let dir = {
+        let src_val = Value::Object(vm.alloc_string(p.clone()));
+        let d = dirname(vm, &[src_val])?;
+        let text = vm.format_value(d);
+        if text == "." { String::new() } else { text }
+    };
+    let base_src = Value::Object(vm.alloc_string(p.clone()));
+    let base_val = basename(vm, &[base_src])?;
+    let base = vm.format_value(base_val);
+    let ext = if base.is_empty() {
+        String::new()
+    } else {
+        let ext_src = Value::Object(vm.alloc_string(base.clone()));
+        let e = extname(vm, &[ext_src])?;
+        vm.format_value(e)
+    };
+    let name = base.strip_suffix(ext.as_str()).unwrap_or(&base).to_owned();
+
+    let out = vm.alloc_ordinary();
+    let set = |vm: &mut Vm, k: &str, v: String| -> Result<(), VmError> {
+        let s = vm.alloc_string(v);
+        vm.set_property(Value::Object(out), k, Value::Object(s))?;
+        Ok(())
+    };
+    set(vm, "root", root)?;
+    set(vm, "dir", dir)?;
+    set(vm, "base", base)?;
+    set(vm, "ext", ext)?;
+    set(vm, "name", name)?;
+    Ok(Value::Object(out))
+}
+
+/// `path.format(obj)`：`dir`/`root` + `base`（或 `name` + `ext`）重组。
+///
+/// Node 算法：`dir` 优先（未以分隔符收尾则补一个），否则用 `root`；
+/// `base` 优先于 `name` + `ext`。
+fn format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(obj) = args.first().copied() else {
+        return Ok(Value::Object(vm.alloc_string(String::new())));
+    };
+    let text_of = |vm: &mut Vm, key: &str| -> Result<String, VmError> {
+        let v = vm.get_property(obj, key)?;
+        Ok(vm.format_value(v))
+    };
+    let dir = text_of(vm, "dir")?;
+    let root = text_of(vm, "root")?;
+    let base = text_of(vm, "base")?;
+    let name = text_of(vm, "name")?;
+    let ext = text_of(vm, "ext")?;
+
+    let mut out = String::new();
+    if !dir.is_empty() {
+        out.push_str(&dir);
+        let dir_ends_sep = dir.as_bytes().last().is_some_and(|&b| is_sep(b));
+        if !dir_ends_sep {
+            out.push('\\');
+        }
+    } else if !root.is_empty() {
+        out.push_str(&root);
+    }
+    if !base.is_empty() {
+        out.push_str(&base);
+    } else {
+        if !name.is_empty() {
+            out.push_str(&name);
+        }
+        if !ext.is_empty() && (ext.starts_with('.') || !name.is_empty()) {
+            out.push_str(&ext);
+        }
+    }
+    Ok(Value::Object(vm.alloc_string(out)))
+}
+
 /// Windows 分隔符语义的方法表（`path/win32` 与平台 `path` 共用同一实现，
 /// 仅 NativeFn 名前缀不同——由 [`crate::builtins::register_all`] 逐项转挂）。
 pub(crate) const METHODS: &[(&str, BuiltinHandler)] = &[
@@ -48,6 +158,8 @@ pub(crate) const METHODS: &[(&str, BuiltinHandler)] = &[
     ("extname", extname),
     ("resolve", resolve),
     ("isAbsolute", is_absolute),
+    ("parse", parse),
+    ("format", format),
 ];
 
 /// `isAbsolute(p)`：win32 语义——卷根起始（`C:\x`）、UNC 根

@@ -5,6 +5,7 @@
 //! - 提供 `ok`、`equal`、`strictEqual`、`notStrictEqual`、`throws` 等核心方法；
 //! - 模块自身支持函数直调（truthy 判定断言）。
 
+use crate::builtins::assert::{does_not_match, does_not_throw, if_error, match_fn};
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::heap::HeapObject;
 use crate::interpreter::{Vm, VmError};
@@ -35,6 +36,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "notDeepStrictEqual",
         "throws",
         "fail",
+        "match",
+        "doesNotMatch",
+        "ifError",
+        "doesNotThrow",
     ] {
         let fn_ref = vm.alloc_native_fn(&format!("assert/strict.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
@@ -70,6 +75,12 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     );
     register_handler(registry, "assert/strict", "throws", throws);
     register_handler(registry, "assert/strict", "fail", fail);
+    // `assert/strict` 的判定面与 `assert` 同源（Node：strict 变体的区别在
+    // equal/deepEqual 的严格性，其余方法逐一同源）
+    register_handler(registry, "assert/strict", "match", match_fn);
+    register_handler(registry, "assert/strict", "doesNotMatch", does_not_match);
+    register_handler(registry, "assert/strict", "ifError", if_error);
+    register_handler(registry, "assert/strict", "doesNotThrow", does_not_throw);
     Ok(obj)
 }
 
@@ -89,11 +100,18 @@ fn ok(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if vm.truthy(val) {
         return Ok(Value::Undefined);
     }
-    let msg = if let Some(m) = args.get(1) {
-        format!("assert.ok: value is not truthy: {}", vm.format_value(*m))
-    } else {
-        "assert.ok: value is not truthy".to_string()
-    };
+    // 显式 message：字符串即整体消息、Error 对象原样抛出（Node 语义）
+    match args.get(1).copied() {
+        Some(err_val) if err_val.as_object().is_some() && !vm.is_string_value(err_val) => {
+            return Err(VmError::Thrown(err_val));
+        }
+        Some(msg_val) if !msg_val.is_undefined() => {
+            let text = vm.format_value(msg_val);
+            return Err(thrown(vm, &text));
+        }
+        _ => {}
+    }
+    let msg = "assert.ok: value is not truthy".to_string();
     Err(thrown(vm, &msg))
 }
 
@@ -209,8 +227,9 @@ fn throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
 }
 
 /// 构造异常抛出错误对象。
+/// 断言失败值：与 `assert` 同源，抛 `AssertionError`（Node 语义）。
 fn thrown(vm: &mut Vm, msg: &str) -> VmError {
-    VmError::Thrown(Value::Object(vm.alloc_string(msg.to_owned())))
+    vm.typed_error("AssertionError", msg)
 }
 
 /// 编译期签名校验锚定。

@@ -843,6 +843,19 @@ impl Vm {
             let _ = self.set_property(Value::Object(site), "_funcName", name_v);
             out.push(Value::Object(site));
         }
+        // 模块级帧补齐：本运行时的 CALL_CHAIN 只登记 `invoke_function` 进入的帧，
+        // 模块体（<main>）执行不经该路径——于是模块顶层捕获的调用点数组偏短，
+        // `depd/index.js::getStack` 这类「slice(1) 后取 [1] 当调用者」的用法会
+        // 拿到 undefined（Node 侧该位置是模块 wrapper 帧）。此处补一个最外层
+        // `<module>` 帧，使数组长度与 Node 同量级、索引语义对齐。
+        let site = self.alloc_ordinary();
+        let ns = self.alloc_string("callsite".to_owned());
+        let _ = self.set_property(Value::Object(site), "_builtinNs", Value::Object(ns));
+        let file_v = Value::Object(self.alloc_string(file.clone()));
+        let _ = self.set_property(Value::Object(site), "_file", file_v);
+        let name_v = Value::Object(self.alloc_string("<module>".to_owned()));
+        let _ = self.set_property(Value::Object(site), "_funcName", name_v);
+        out.push(Value::Object(site));
         out
     }
 

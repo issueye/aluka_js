@@ -81,6 +81,30 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // M4.3：AbortSignal 'abort' → 定时器清除（signal 联动内部通道）
     register_handler(registry, "timers", "signalClear", timers_signal_clear);
 
+    // 全局**裸名**分派键：全局解析返回名为裸名的原生函数（`setTimeout`），
+    // 直接调用走 Op::Call 的硬编码链，而**取值后间接调用**（`const f =
+    // setTimeout; f(cb, ms)`、`util.promisify(setTimeout)`、`Reflect.apply`）
+    // 经 invoke_callable 的分派表查找——无裸名键时一律
+    // "is not a function"。此处让两条路径同源。
+    registry
+        .dispatch
+        .insert("setTimeout".to_owned(), set_timeout);
+    registry
+        .dispatch
+        .insert("clearTimeout".to_owned(), clear_timeout);
+    registry
+        .dispatch
+        .insert("setInterval".to_owned(), set_interval);
+    registry
+        .dispatch
+        .insert("clearInterval".to_owned(), clear_interval);
+    registry
+        .dispatch
+        .insert("setImmediate".to_owned(), set_immediate);
+    registry
+        .dispatch
+        .insert("clearImmediate".to_owned(), clear_immediate);
+
     Ok(obj)
 }
 

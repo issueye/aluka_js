@@ -55,6 +55,7 @@ pub fn execute_bc_with_script(
 
     let mut vm = Vm::new(0);
     install_eval_provider(&mut vm);
+    install_source_module_provider(&mut vm);
     // M5.1：真实 worker 线程钩子（装配层独占编译能力）
     install_worker_entry(&mut vm);
     // `argv[0]`：源码构建场景取源脚本，直执行场景取字节码路径
@@ -111,6 +112,20 @@ pub fn execute_bc_with_script(
 
 /// 装配动态求值编译器 Hook：源码 → 编译 → 字节码模块。
 /// （eval / new Function 经此在运行时按需编译，动态产物仍强制 Verifier 校验）
+/// 装配源模块编译器 Hook（`bc_entry` 姊妹路径，语义见
+/// `crate::install_source_module_provider`）。
+fn install_source_module_provider(vm: &mut Vm) {
+    vm.set_source_module_provider(|file: &std::path::Path| {
+        let path_str = file.to_string_lossy();
+        let src = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+        let kind = aluka_compiler::module_kind::module_kind_for_source(file, &src);
+        let mut unit = LanguageRegistry::global()
+            .parse_source(&src, &path_str, kind)
+            .map_err(|e| e.to_string())?;
+        crate::compile_source_unit(&mut unit).map_err(|e| e.to_string())
+    });
+}
+
 fn install_eval_provider(vm: &mut Vm) {
     vm.set_eval_provider(|src: &str| {
         // 空源码：求值结果为 undefined（规范），无需编译

@@ -20,10 +20,15 @@ pub fn compile_module(program: &Program) -> BytecodeModule {
 
 /// 行覆盖编译：语句起始 `(pc, line)` 登记进函数模板 `line_table`
 /// （LCOV 覆盖率专用；`aluka test --test-reporter=lcov` 使用）。
+///
+/// `is_esm` 必须与常规编译一致——覆盖率模式此前恒按 CJS 编译，ESM 用例的
+/// import/export 在 `aluka test` 下被当 CJS 处理（绑定全丢：`import test
+/// from "node:test"` 后 `test is not defined`）。
 #[must_use]
-pub fn compile_module_with_coverage(program: &Program) -> BytecodeModule {
+pub fn compile_module_with_coverage(program: &Program, is_esm: bool) -> BytecodeModule {
     let mut compiler = ModuleCompiler::new();
     compiler.line_coverage = true;
+    compiler.is_esm = is_esm;
     compiler.compile(program)
 }
 
@@ -53,6 +58,9 @@ pub struct ModuleCompiler {
     pub implicit_globals: bool,
     /// ESM import 声明计数（合成命名空间绑定名的唯一性）
     pub esm_import_counter: usize,
+    /// ESM 顶层已提升函数名（`compile_esm` 的装配段登记；`export function`
+    /// 分支据此**跳过重复编译**，只补导出面）
+    pub esm_hoisted_fns: std::collections::HashSet<String>,
     /// LCOV 行覆盖：语句起始 (pc, line) 登记进各函数模板的 line_table
     /// （默认关；`aluka test --test-reporter=lcov` 开启）。行表不参与序列化。
     pub line_coverage: bool,
@@ -819,7 +827,73 @@ impl ModuleCompiler {
         }
         let exports_slot = unit.symbol_map["exports"];
 
+        // 顶层声明预注册 + 函数声明提升。
+        //
+        // Node 语义：`function` 声明在**模块记录实例化阶段**即完成绑定，
+        // 先于模块体的任何语句求值——`console.log(a()); function a(){}` 合法。
+        // 此前 ESM 路径单遍按源码顺序编译，函数绑定滞后于其之前的语句
+        // （`ReferenceError: a is not defined`）。
+        let mut declared: Vec<String> = Vec::new();
+        let mut hoisted_fns: Vec<&FunctionDef> = Vec::new();
         for stmt in &program.body {
+            let inner_fn = match &stmt.stmt {
+                Stmt::Export(aluka_parser::ast::ExportDecl::Named {
+                    decl: Some(inner), ..
+                }) => Some(&inner.stmt),
+                _ => None,
+            };
+            let node = inner_fn.unwrap_or(&stmt.stmt);
+            match node {
+                Stmt::Function(def) => {
+                    declared.push(def.name.clone());
+                    hoisted_fns.push(def);
+                }
+                Stmt::VarDecl { name, .. } => declared.push(name.clone()),
+                Stmt::MultiVarDecl { decls, .. } => {
+                    declared.extend(decls.iter().map(|(n, _)| n.clone()));
+                }
+                Stmt::Class { name, .. } => declared.push(name.clone()),
+                Stmt::DestructureDecl { pattern, .. } => {
+                    collect_pattern_names(pattern, &mut declared);
+                }
+                // import 绑定同样是模块实例化阶段的绑定：提升函数体内引用
+                // 导入名必须解析到同一槽位（否则退化成全局查找 → ReferenceError）
+                Stmt::Import(decl) => {
+                    for spec in &decl.specifiers {
+                        match spec {
+                            aluka_parser::ast::ImportSpecifier::Named { local, .. } => {
+                                declared.push(local.clone());
+                            }
+                            aluka_parser::ast::ImportSpecifier::Default(name)
+                            | aluka_parser::ast::ImportSpecifier::Namespace(name) => {
+                                declared.push(name.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        // 预注册槽位：提升函数的 ParentScopeInfo 快照必须含后续声明的名字，
+        // 否则其体内对后声明绑定的引用捕获不到 upvalue
+        for name in &declared {
+            ensure_slot(&mut unit, name);
+        }
+        for def in &hoisted_fns {
+            let parent_info =
+                ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
+            let fn_idx = self.compile_function_with_parent(def, Some(&parent_info));
+            let slot = unit.symbol_map.get(&def.name).copied().unwrap_or(0);
+            unit.code.push(Instr::new(Op::MakeClosure, fn_idx as u32));
+            unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
+            self.esm_hoisted_fns.insert(def.name.clone());
+        }
+
+        for stmt in &program.body {
+            // 函数声明已在提升段装配，主循环只处理其余语句
+            if matches!(&stmt.stmt, Stmt::Function(_)) {
+                continue;
+            }
             self.compile_esm_stmt(stmt, &mut unit, exports_slot);
         }
         // `__esModule` 标记（Node require(esm) 返回对象含该键）
@@ -951,6 +1025,16 @@ impl ModuleCompiler {
                     SpannedStmt {
                         stmt: Stmt::Function(func_def),
                         ..
+                    } if self.esm_hoisted_fns.contains(&func_def.name) => {
+                        // 提升段已编译并绑定槽位：此处只补导出面，避免二次
+                        // 编译产出第二个闭包对象覆盖绑定
+                        if let Some(&slot) = unit.symbol_map.get(&func_def.name) {
+                            self.emit_export_prop(unit, exports_slot, slot, &func_def.name);
+                        }
+                    }
+                    SpannedStmt {
+                        stmt: Stmt::Function(func_def),
+                        ..
                     } => {
                         let parent_info =
                             ParentScopeInfo::new(unit.symbol_map.clone(), unit.upvalue_map.clone());
@@ -968,10 +1052,51 @@ impl ModuleCompiler {
                         unit.code.push(Instr::new(Op::StoreLocal, slot as u32));
                         self.emit_export_prop(unit, exports_slot, slot, &func_def.name);
                     }
+                    // `export class C {}`：类声明**必须经 emit_class_expr 装配**
+                    // ——通用 compile_stmt 对 Stmt::Class 是空操作（类模板由
+                    // 模块编译器提取），落在 other 分支会连类本身都不产出。
+                    SpannedStmt {
+                        stmt:
+                            Stmt::Class {
+                                name,
+                                super_class,
+                                constructor,
+                                methods,
+                                fields,
+                            },
+                        ..
+                    } => {
+                        let boxed_super = super_class.as_ref().map(|e| Box::new(e.clone()));
+                        crate::codegen::emit_class_expr(
+                            unit,
+                            Some(name),
+                            &Some(name.clone()),
+                            &boxed_super,
+                            constructor,
+                            methods,
+                            fields,
+                        );
+                        if let Some(slot) = unit.symbol_map.get(name) {
+                            self.emit_export_prop(unit, exports_slot, *slot, name);
+                        }
+                    }
                     other => {
                         compile_stmt(other, unit, false);
                         if let SpannedStmt {
                             stmt: Stmt::VarDecl { name, .. },
+                            ..
+                        } = other
+                        {
+                            if let Some(slot) = unit.symbol_map.get(name) {
+                                self.emit_export_prop(unit, exports_slot, *slot, name);
+                            }
+                        }
+                        // `export class C {}`：类同样需要导出面。此前只处理了
+                        // VarDecl，类的导出属性从未落盘——`import { C }` 拿到
+                        // undefined（`export function` / `export { C }` 两条
+                        // 路径各自成立，唯独内联类声明漏挂）。
+                        if let SpannedStmt {
+                            stmt: Stmt::Class { name, .. },
                             ..
                         } = other
                         {
@@ -1881,6 +2006,23 @@ fn ensure_slot(unit: &mut CompiledUnit, name: &str) {
         let s = unit.locals;
         unit.locals += 1;
         unit.symbol_map.insert(name.to_owned(), s);
+    }
+}
+
+/// 递归收集解构模式内的全部绑定名（ESM 提升段的预注册用）。
+fn collect_pattern_names(pattern: &VarPattern, out: &mut Vec<String>) {
+    match pattern {
+        VarPattern::Ident(name) => out.push(name.clone()),
+        VarPattern::Array(elems) => {
+            // 数组元素是扁平形态（name/is_rest/default_value/is_hole），
+            // 名字直接取 `name`（空名 = 空洞）
+            out.extend(elems.iter().map(|elem| elem.name.clone()));
+        }
+        VarPattern::Object(props) => {
+            for prop in props {
+                collect_pattern_names(&prop.value, out);
+            }
+        }
     }
 }
 

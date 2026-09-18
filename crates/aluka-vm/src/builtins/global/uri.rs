@@ -48,12 +48,13 @@ fn decode_component_impl(
                         out.push(b);
                         i += 3;
                     }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
+                    // 非十六进制转义（`%zz` / `%2x`）：规范 URIError——
+                    // 此前按字面透传（Node 22 实测恒抛）
+                    Err(_) => return Err(vm.typed_error("URIError", "URI malformed")),
                 }
             }
+            // 截断的转义（`%` 悬尾 / `%4`）：规范 URIError
+            b'%' => return Err(vm.typed_error("URIError", "URI malformed")),
             b'+' if plus_as_space => {
                 out.push(b' ');
                 i += 1;
@@ -67,12 +68,7 @@ fn decode_component_impl(
     Ok(Value::Object(vm.alloc_string(
         match String::from_utf8(out) {
             Ok(s) => s,
-            Err(_) => {
-                let err = vm.alloc_string("URI malformed".to_owned());
-                let name = vm.alloc_string("URIError".to_owned());
-                let _ = vm.set_property(Value::Object(err), "name", Value::Object(name));
-                return Err(VmError::Thrown(Value::Object(err)));
-            }
+            Err(_) => return Err(vm.typed_error("URIError", "URI malformed")),
         },
     )))
 }

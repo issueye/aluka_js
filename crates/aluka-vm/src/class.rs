@@ -149,6 +149,17 @@ impl Vm {
                 m.name.clone()
             };
 
+            // 知名符号键还原：解析器把 `[Symbol.iterator]` 压缩为
+            // "@@iterator" 文本名（见 parser 计算键分支）——安装时换回符号
+            // 的 mangled 键，`obj[Symbol.iterator]` 与迭代协议才能命中。
+            let name = match name.strip_prefix("@@") {
+                Some(wk) => match self.well_known_symbol(wk).as_object() {
+                    Some(r) => crate::symbol::mangled_key(r),
+                    None => name,
+                },
+                None => name,
+            };
+
             // 静态成员名不得为 `prototype`（规范 TypeError；
             // `static ['prototype']() {}` 族用例断言此形态）
             if m.is_static && name == "prototype" {

@@ -41,6 +41,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "notDeepStrictEqual",
         "throws",
         "fail",
+        "match",
+        "doesNotMatch",
+        "ifError",
+        "doesNotThrow",
     ] {
         let fn_ref = vm.alloc_native_fn(&format!("assert.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
@@ -61,6 +65,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     );
     register_handler(registry, "assert", "throws", throws);
     register_handler(registry, "assert", "fail", fail);
+    register_handler(registry, "assert", "match", match_fn);
+    register_handler(registry, "assert", "doesNotMatch", does_not_match);
+    register_handler(registry, "assert", "ifError", if_error);
+    register_handler(registry, "assert", "doesNotThrow", does_not_throw);
     Ok(obj)
 }
 
@@ -80,7 +88,18 @@ fn ok(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     if vm.truthy(val) {
         return Ok(Value::Undefined);
     }
-    Err(thrown(vm, "assert.ok: value is not truthy"))
+    // 显式 message：字符串即整体消息、Error 对象原样抛出（Node 语义）；
+    // 缺省用默认诊断文本
+    match args.get(1).copied() {
+        Some(err_val) if err_val.as_object().is_some() && !vm.is_string_value(err_val) => {
+            Err(VmError::Thrown(err_val))
+        }
+        Some(msg_val) if !msg_val.is_undefined() => {
+            let text = vm.format_value(msg_val);
+            Err(thrown(vm, &text))
+        }
+        _ => Err(thrown(vm, "assert.ok: value is not truthy")),
+    }
 }
 
 /// `assert.equal(actual, expected)`：宽松相等（`==` 语义）。
@@ -267,8 +286,150 @@ fn throws(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     }
 }
 
+/// `assert.match(string, regexp[, message])`：字符串须匹配正则。
+///
+/// 判定走 JS 侧 `regexp.test`（`lastIndex` 等规范行为与正则实现同源），
+/// 类型不符按 Node 语义抛 TypeError。
+pub(crate) fn match_fn(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let (text, pattern) = pair(args);
+    let hit = regexp_test(vm, text, pattern, "assert.match")?;
+    if hit {
+        return Ok(Value::Undefined);
+    }
+    let detail = format!(
+        "{} does not match {}",
+        vm.format_value(text),
+        vm.format_value(pattern)
+    );
+    Err(assertion_failure(
+        vm,
+        "assert.match",
+        &detail,
+        args.get(2).copied(),
+    ))
+}
+
+/// `assert.doesNotMatch(string, regexp[, message])`：字符串不得匹配正则。
+pub(crate) fn does_not_match(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let (text, pattern) = pair(args);
+    if !regexp_test(vm, text, pattern, "assert.doesNotMatch")? {
+        return Ok(Value::Undefined);
+    }
+    let detail = format!(
+        "{} unexpectedly matches {}",
+        vm.format_value(text),
+        vm.format_value(pattern)
+    );
+    Err(assertion_failure(
+        vm,
+        "assert.doesNotMatch",
+        &detail,
+        args.get(2).copied(),
+    ))
+}
+
+/// `assert.ifError(value)`：`value` 非 undefined/null 时抛 AssertionError，
+/// 文案为 `ifError got unwanted exception: <inspect(value)>`（Node 22 实测：
+/// Error 取 `message`、字符串带引号、其余按 inspect）。
+pub(crate) fn if_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let value = args.first().copied().unwrap_or(Value::Undefined);
+    if value.is_undefined() || value.is_null() {
+        return Ok(Value::Undefined);
+    }
+    let detail = if vm.is_string_value(value) {
+        format!("'{}'", vm.format_value(value))
+    } else if value.as_object().is_some() {
+        let message = vm
+            .get_property(value, "message")
+            .unwrap_or(Value::Undefined);
+        if vm.is_string_value(message) {
+            vm.format_value(message)
+        } else {
+            vm.format_console_value(value)
+        }
+    } else {
+        vm.format_value(value)
+    };
+    Err(vm.typed_error(
+        "AssertionError",
+        &format!("ifError got unwanted exception: {detail}"),
+    ))
+}
+
+/// `assert.doesNotThrow(fn[, message])`：`fn` 必须正常返回。
+pub(crate) fn does_not_throw(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let Some(r) = args.first().copied().and_then(|v| v.as_object()) else {
+        return Err(thrown(
+            vm,
+            "assert.doesNotThrow: first argument must be a function",
+        ));
+    };
+    let Some(HeapObject::Closure {
+        func_idx, upvalues, ..
+    }) = vm.heap.get(r.index())
+    else {
+        return Err(thrown(
+            vm,
+            "assert.doesNotThrow: first argument must be a function",
+        ));
+    };
+    match vm.invoke_function(*func_idx, Value::Undefined, &[], upvalues.clone()) {
+        Ok(_) => Ok(Value::Undefined),
+        Err(err) => {
+            let detail = format!("Got unwanted exception: {err:?}");
+            Err(assertion_failure(
+                vm,
+                "assert.doesNotThrow",
+                &detail,
+                args.get(1).copied(),
+            ))
+        }
+    }
+}
+
+/// 正则判定：类型校验 + 经 JS 侧 `test` 方法求值。
+fn regexp_test(vm: &mut Vm, text: Value, pattern: Value, whom: &str) -> Result<bool, VmError> {
+    if !vm.is_string_value(text) {
+        return Err(vm.type_error(&format!("{whom}: first argument must be of type string")));
+    }
+    if !vm.is_regexp_obj(pattern) {
+        return Err(vm.type_error(&format!("{whom}: second argument must be a RegExp")));
+    }
+    let test_fn = vm.get_property(pattern, "test")?;
+    let out = vm.invoke_callable(test_fn, pattern, &[text])?;
+    Ok(vm.truthy(out))
+}
+
+/// 断言失败：抛 `AssertionError`（带 `.message`/`.name`/`stack`），
+/// 显式给出的 Error 对象按 Node 语义**原样抛出**。
+fn assertion_failure(
+    vm: &mut Vm,
+    whom: &str,
+    default_message: &str,
+    message: Option<Value>,
+) -> VmError {
+    match message {
+        // 显式传入的非字符串值（Error 对象等）按 Node 语义原样抛出
+        Some(custom) if custom.as_object().is_some() && !vm.is_string_value(custom) => {
+            VmError::Thrown(custom)
+        }
+        Some(extra) if !extra.is_undefined() => {
+            let text = vm.format_value(extra);
+            vm.typed_error("AssertionError", &format!("{whom}: {text}"))
+        }
+        _ => vm.typed_error("AssertionError", &format!("{whom}: {default_message}")),
+    }
+}
+
+/// 断言失败值：Node 语义抛 `AssertionError`（带 `name`/`message`/`stack`）。
+/// 此前抛裸字符串——`catch (e) { e.message }` 恒 undefined，且
+/// `e instanceof Error` 为假（Node 侧两者皆成立）。
 fn thrown(vm: &mut Vm, msg: &str) -> VmError {
-    VmError::Thrown(Value::Object(vm.alloc_string(msg.to_owned())))
+    vm.typed_error("AssertionError", msg)
 }
 
 /// 编译期锚定：处理器签名与注册表一致。

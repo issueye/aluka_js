@@ -8,6 +8,7 @@ use std::path::Path;
 
 use aluka_builtins::Registry;
 use aluka_bytecode::BytecodeModule;
+use aluka_compiler::module_kind::module_kind_for_source;
 use aluka_compiler::{compile, compile_source_unit, optimize_ast};
 use aluka_core::Heap;
 use aluka_module::Resolver;
@@ -161,14 +162,24 @@ impl Runtime {
         args: &[String],
         optimize: bool,
     ) -> Result<Value, RuntimeError> {
+        // 入口路径绝对化：Node 语义下 `__dirname`/`__filename`/`import.meta`
+        // 对用户可见的面恒为绝对路径。相对入口还会让 ESM 编译期
+        // `__dirname + "/spec"` 演化出既非绝对、也无 `./` 前缀的说明符，
+        // 落进裸包解析链报 "Cannot find module"。
+        let entry_path = absolutize_entry(path);
+        let path = entry_path.as_path();
         let path_str = path.to_string_lossy();
-        // 按扩展名推断模块种类：.mjs/.mts → ESM（alukac 同款判定）
-        let module_kind = match path.extension().and_then(|e| e.to_str()) {
-            Some("mjs") | Some("mts") => ModuleKind::Esm,
-            _ => ModuleKind::Script,
+        // 模块种类按 Node 语义判定（扩展名优先 → 显式 `"type"` → ESM 语法
+        // 探测）；入口一律带 CommonJS 包装语境，故非 ESM 时用 CommonJs
+        // 而非裸 Script。
+        let entry_src = std::fs::read_to_string(path)
+            .map_err(|e| RuntimeError::Io(format!("{}: {e}", path.display())))?;
+        let module_kind = match module_kind_for_source(path, &entry_src) {
+            ModuleKind::Esm => ModuleKind::Esm,
+            _ => ModuleKind::CommonJs,
         };
         let mut unit = LanguageRegistry::global()
-            .parse_file(&path_str, module_kind)
+            .parse_source(&entry_src, &path_str, module_kind)
             .map_err(|e| match e {
                 SourceUnitError::ReadError { message, .. } => RuntimeError::Io(message),
                 other => RuntimeError::Parse(other.to_string()),
@@ -182,7 +193,7 @@ impl Runtime {
 
         let module = if self.coverage_compile {
             let program = unit.program.take().expect("coverage 编译需要保留 program");
-            aluka_compiler::compile_module_with_coverage(&program)
+            aluka_compiler::compile_module_with_coverage(&program, module_kind == ModuleKind::Esm)
         } else {
             compile_source_unit(&mut unit).map_err(|e| RuntimeError::Compile(e.to_string()))?
         };
@@ -193,6 +204,7 @@ impl Runtime {
 
         let mut vm = Vm::new(0);
         install_eval_provider(&mut vm);
+        install_source_module_provider(&mut vm);
         install_worker_entry(&mut vm);
         inject_process_argv(&mut vm, path, args);
         vm.setup_cjs(path);
@@ -276,6 +288,7 @@ impl Runtime {
 
         let mut vm = Vm::new(0);
         install_eval_provider(&mut vm);
+        install_source_module_provider(&mut vm);
         install_worker_entry(&mut vm);
         inject_process_argv(&mut vm, script.unwrap_or(path), args);
         vm.setup_cjs(path);
@@ -472,6 +485,34 @@ fn auto_test_run(vm: &mut Vm, reporter: Option<ReporterKind>) -> Option<ReportCo
 
 /// 装配动态求值编译器 Hook（eval / new Function）：源码 → 编译 → 字节码。
 /// 动态产物在 VM 侧仍强制 Verifier 校验（compile_dynamic 门禁）。
+/// 装配源模块编译器 Hook：`require`/`import` 解析到源码文件（`.ts`/
+/// `.js`/...）时现场编译。
+///
+/// 与 eval provider 同构——后端仍只接收字节码；模块种类按 Node 语义判定
+/// （[`module_kind_for_path`]），TypeScript 类型剥离由前端在 AST 构建期完成。
+/// 未装配时 `aluka run` 只认预构建 `.bc` 镜像（`aluka build` 形态）。
+fn install_source_module_provider(vm: &mut Vm) {
+    vm.set_source_module_provider(|file: &std::path::Path| {
+        let path_str = file.to_string_lossy();
+        let src = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+        let kind = module_kind_for_source(file, &src);
+        let mut unit = LanguageRegistry::global()
+            .parse_source(&src, &path_str, kind)
+            .map_err(|e| e.to_string())?;
+        compile_source_unit(&mut unit).map_err(|e| e.to_string())
+    });
+}
+
+/// 入口路径绝对化（Node 语义：脚本路径对用户可见的面恒为绝对路径）。
+fn absolutize_entry(path: &Path) -> std::path::PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join(path)
+}
+
 fn install_eval_provider(vm: &mut Vm) {
     vm.set_eval_provider(|src: &str| {
         // 空源码：求值结果为 undefined（规范），无需编译

@@ -388,6 +388,9 @@ impl LanguageRegistry {
         if module_kind == ModuleKind::Esm {
             parser.set_esm_top_level_async();
         }
+        // TS 语境：泛型实参/非空断言等**歧义**形态只在 TypeScript 源码里按
+        // TS 解释（JS 里 `a < b`、换行后的 `!y` 都是合法表达式）
+        parser.set_typescript_mode(source_kind == SourceKind::TypeScript);
         let program = parser.parse_program();
         let errors = parser.take_errors();
         if !errors.is_empty() {

@@ -23,6 +23,13 @@ use aluka_bytecode::BytecodeModule;
 pub(crate) type EvalProvider =
     std::rc::Rc<std::cell::RefCell<dyn FnMut(&str) -> Result<BytecodeModule, String>>>;
 
+/// 源模块编译器 Hook：源码文件路径 → 字节码模块。
+///
+/// 与 [`EvalProvider`] 同构——后端仍只接收字节码，模块种类（ESM/CJS）与
+/// 类型剥离由宿主的前端装配决定，ISA 契约不受影响。
+pub(crate) type SourceModuleProvider =
+    std::rc::Rc<std::cell::RefCell<dyn FnMut(&std::path::Path) -> Result<BytecodeModule, String>>>;
+
 /// 直接求值调用的专管全局名（编译器把 `eval(...)` 改写到该名，
 /// 运行时据此区分直接/间接求值）。
 pub const DIRECT_EVAL_GLOBAL: &str = "%aluka_direct_eval%";
@@ -73,6 +80,15 @@ impl Vm {
         provider: impl FnMut(&str) -> Result<BytecodeModule, String> + 'static,
     ) {
         self.eval_provider = Some(std::rc::Rc::new(std::cell::RefCell::new(provider)));
+    }
+
+    /// 装配源模块编译器 Hook：`require`/`import` 解析到源码文件时由宿主
+    /// 现场编译（`aluka run` 的源码解析链；未装配时只认预构建 `.bc` 镜像）。
+    pub fn set_source_module_provider(
+        &mut self,
+        provider: impl FnMut(&std::path::Path) -> Result<BytecodeModule, String> + 'static,
+    ) {
+        self.source_module_provider = Some(std::rc::Rc::new(std::cell::RefCell::new(provider)));
     }
 
     /// 装配真实 worker 线程 spawn 钩子（装配层在执行前调用一次）。

@@ -30,7 +30,17 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
             r
         }
     };
-    for method in ["arch", "release", "type", "cpus", "userInfo"] {
+    for method in [
+        "arch",
+        "release",
+        "type",
+        "cpus",
+        "userInfo",
+        "hostname",
+        "loadavg",
+        "availableParallelism",
+        "machine",
+    ] {
         let fn_ref = vm.alloc_native_fn(&format!("os.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
     }
@@ -39,6 +49,15 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "os", "type", type_name);
     register_handler(registry, "os", "cpus", cpus);
     register_handler(registry, "os", "userInfo", user_info);
+    register_handler(registry, "os", "hostname", hostname);
+    register_handler(registry, "os", "loadavg", loadavg);
+    register_handler(
+        registry,
+        "os",
+        "availableParallelism",
+        available_parallelism,
+    );
+    register_handler(registry, "os", "machine", machine);
     Ok(obj)
 }
 
@@ -121,6 +140,42 @@ fn first_three_dotted(text: &str) -> String {
 }
 
 /// `os.cpus()`：简化实现——单 CPU 信息对象数组（对齐 Go `osCPUs` 的字段形态）。
+/// `os.hostname()`：主机名（Windows 取 `COMPUTERNAME`，POSIX 取 `HOSTNAME`）。
+fn hostname(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let name = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    Ok(Value::Object(vm.alloc_string(name)))
+}
+
+/// `os.loadavg()`：Windows 恒 `[0, 0, 0]`（Node 22 实测口径；libuv 无负载采样）。
+fn loadavg(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let elems = vec![Value::Number(0.0), Value::Number(0.0), Value::Number(0.0)];
+    Ok(Value::Object(vm.alloc_array(elems)))
+}
+
+/// `os.availableParallelism()`：可用并行度（`NUMBER_OF_PROCESSORS` / 兜底 1）。
+fn available_parallelism(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    let n = std::env::var("NUMBER_OF_PROCESSORS")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|n| *n > 0.0)
+        .unwrap_or(1.0);
+    Ok(Value::Number(n))
+}
+
+/// `os.machine()`：机器架构（Node 口径 `x86_64` / `aarch64`）。
+fn machine(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    sync_os_link(vm);
+    // Node 口径与 Rust 的架构串同形（x86_64 / aarch64）
+    Ok(Value::Object(
+        vm.alloc_string(std::env::consts::ARCH.to_owned()),
+    ))
+}
+
 fn cpus(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
     sync_os_link(vm);
     let cpu = vm.alloc_ordinary();

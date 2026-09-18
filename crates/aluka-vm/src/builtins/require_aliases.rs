@@ -23,7 +23,7 @@
 
 use crate::builtins::{BuiltinRegistry, ModuleDef, register_handler, set_module_prop};
 use crate::interpreter::{Vm, VmError};
-use crate::value::Value;
+use crate::value::{Value, ValueCase};
 use aluka_core::ObjectRef;
 
 /// `require("process")` / `require("node:process")`。
@@ -44,7 +44,100 @@ pub const URL_MODULE: ModuleDef = ModuleDef {
     build: build_url,
 };
 
+/// `process` 的元信息面：`version`/`versions`/`platform`/`arch`/`pid`/
+/// `execPath`/`title`/`uptime`/`hrtime`/`exitCode`。
+///
+/// 这些字段是真实生态的**能力探测入口**（包管理器、平台分支、特性开关、
+/// 计时器都先读它们）——此前 `process` 只有事件面与 argv/cwd/exit，
+/// `process.platform` 读出来是 undefined，任何 `if (process.platform === ...)`
+/// 分支都会静默走错路。
+fn install_process_metadata(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<(), VmError> {
+    let Some(process_obj) = vm.process_object else {
+        return Ok(());
+    };
+    let target = Value::Object(process_obj);
+    // `version`：与权威 oracle Node.js 22 LTS 对齐（v22.23.1）
+    let version = Value::Object(vm.alloc_string("v22.23.1".to_owned()));
+    let _ = vm.set_property(target, "version", version);
+    let versions = vm.alloc_ordinary();
+    for (k, v) in [
+        ("node", "22.23.1"),
+        ("aluka", env!("CARGO_PKG_VERSION")),
+        ("v8", "12.4.254.21-node.30"),
+    ] {
+        let s = vm.alloc_string(v.to_owned());
+        let _ = vm.set_property(Value::Object(versions), k, Value::Object(s));
+    }
+    let _ = vm.set_property(target, "versions", Value::Object(versions));
+    let platform = match std::env::consts::OS {
+        "windows" => "win32",
+        "macos" => "darwin",
+        other => other,
+    };
+    let s = vm.alloc_string(platform.to_owned());
+    let _ = vm.set_property(target, "platform", Value::Object(s));
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        "x86" => "ia32",
+        other => other,
+    };
+    let s = vm.alloc_string(arch.to_owned());
+    let _ = vm.set_property(target, "arch", Value::Object(s));
+    let _ = vm.set_property(target, "pid", Value::Number(f64::from(std::process::id())));
+    let s = vm.alloc_string(
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default(),
+    );
+    let _ = vm.set_property(target, "execPath", Value::Object(s));
+    let s = vm.alloc_string(String::new());
+    let _ = vm.set_property(target, "title", Value::Object(s));
+    let _ = vm.set_property(target, "exitCode", Value::Undefined);
+    let hrtime_fn = vm.alloc_native_fn("process.hrtime");
+    let bigint_fn = vm.alloc_native_fn("process.hrtime.bigint");
+    vm.set_native_fn_property(hrtime_fn, "bigint", Value::Object(bigint_fn));
+    let _ = vm.set_property(target, "hrtime", Value::Object(hrtime_fn));
+    register_handler(registry, "process", "hrtime", process_hrtime);
+    register_handler(registry, "process", "hrtime.bigint", process_hrtime_bigint);
+    Ok(())
+}
+
+/// 进程启动锚点（`hrtime`/`uptime` 的统一时基）。
+static PROCESS_START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn process_start() -> &'static std::time::Instant {
+    PROCESS_START.get_or_init(std::time::Instant::now)
+}
+
+/// `process.hrtime([prev])` → `[秒, 纳秒]`（相对进程启动；传 prev 时返回差值）。
+fn process_hrtime(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let now = process_start().elapsed();
+    let (secs, nanos) = if let Some(prev) = args.first().copied() {
+        let vals = match prev.as_object() {
+            Some(r) => vm.array_elements(r.0 as usize),
+            None => Vec::new(),
+        };
+        let psecs = vals.first().copied().map_or(0.0, |v| vm.to_number_value(v));
+        let pnanos = vals.get(1).copied().map_or(0.0, |v| vm.to_number_value(v));
+        let total = (now.as_secs_f64() - psecs) - pnanos / 1e9;
+        (total.trunc(), (total.fract() * 1e9).max(0.0))
+    } else {
+        (now.as_secs() as f64, f64::from(now.subsec_nanos()))
+    };
+    let elems = vec![Value::Number(secs), Value::Number(nanos.trunc())];
+    Ok(Value::Object(vm.alloc_array(elems)))
+}
+
+/// `process.hrtime.bigint()` → 进程启动以来的纳秒 BigInt。
+fn process_hrtime_bigint(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let nanos = process_start().elapsed().as_nanos();
+    let big = vm.alloc_bigint(nanos.to_string());
+    Ok(Value::Object(big))
+}
+
 fn build_process(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
+    install_process_metadata(vm, registry)?;
     register_handler(
         registry,
         "process",
@@ -280,14 +373,317 @@ fn build_console(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRe
 
 fn build_url(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let obj = vm.alloc_ordinary();
-    for name in ["parse", "resolve", "format", "URL"] {
+    for name in [
+        "parse",
+        "resolve",
+        "resolveObject",
+        "format",
+        "URL",
+        "Url",
+        "URLSearchParams",
+        "domainToASCII",
+        "domainToUnicode",
+        "fileURLToPath",
+        "fileURLToPathBuffer",
+        "pathToFileURL",
+        "urlToHttpOptions",
+    ] {
         let f = vm.alloc_native_fn(&format!("url.{name}"));
         set_module_prop(vm, obj, name, Value::Object(f))?;
     }
     register_handler(registry, "url", "parse", url_parse);
     register_handler(registry, "url", "resolve", url_resolve);
+    register_handler(registry, "url", "resolveObject", url_resolve);
     register_handler(registry, "url", "format", url_format);
+    register_handler(registry, "url", "fileURLToPath", url_file_url_to_path);
+    register_handler(registry, "url", "fileURLToPathBuffer", url_file_url_to_path);
+    register_handler(registry, "url", "pathToFileURL", url_path_to_file_url);
+    register_handler(registry, "url", "domainToASCII", url_domain_to_ascii);
+    register_handler(registry, "url", "domainToUnicode", url_domain_to_unicode);
+    register_handler(registry, "url", "urlToHttpOptions", url_to_http_options);
+    // URL / URLSearchParams：全局构造器复用（同一实例面）
+    if let Some(url_ctor) = vm.globals.get("URL").copied() {
+        set_module_prop(vm, obj, "URL", url_ctor)?;
+    }
+    // legacy `Url` 构造器（Node `require('url').Url`）：`new Url()` 产出**空**
+    // URL 记录，字段逐个赋值、`instanceof Url` 成立——parseurl 等包据此判型
+    // 并填充字段（此前误接为 WHATWG 构造器，`new Url()` 抛 "Invalid URL"，
+    // 使 express 的解析层直接抛错、路由全落 404）
+    let legacy_proto = {
+        let base = vm.object_prototype.unwrap_or_else(|| vm.alloc_ordinary());
+        vm.alloc_ordinary_with_exact_proto(Some(base))
+    };
+    let legacy_ctor = vm.alloc_native_ctor("Url", Some(legacy_proto));
+    set_module_prop(vm, obj, "Url", Value::Object(legacy_ctor))?;
+    registry.dispatch.insert("Url".to_owned(), url_legacy_ctor);
+    if let Some(usp_ctor) = vm.globals.get("URLSearchParams").copied() {
+        set_module_prop(vm, obj, "URLSearchParams", usp_ctor)?;
+    }
     Ok(obj)
+}
+
+/// legacy `Url` 构造：`new Url()` → 空 URL 记录（字段与 Node 的
+/// `Url.prototype` 初始面一致：协议/主机/端口等为 null，path/href 置空串）。
+fn url_legacy_ctor(vm: &mut Vm, _args: &[Value]) -> Result<Value, VmError> {
+    let inst = vm.alloc_ordinary();
+    // 原型链接：`parsed instanceof Url` 判型（parseurl 的 fresh() 依赖）
+    let ctor = vm
+        .builtin_registry
+        .module("url")
+        .and_then(|m| vm.get_property(Value::Object(m), "Url").ok())
+        .unwrap_or(Value::Undefined);
+    if let ValueCase::Object(c) = ctor.case() {
+        if let ValueCase::Object(proto) = vm.get_property(Value::Object(c), "prototype")?.case() {
+            vm.set_prototype_of(Value::Object(inst), Some(proto));
+        }
+    }
+    let target = Value::Object(inst);
+    for key in [
+        "protocol", "slashes", "auth", "host", "port", "hostname", "hash", "search", "query",
+    ] {
+        vm.set_property(target, key, Value::Null)?;
+    }
+    for key in ["pathname", "path", "href"] {
+        let empty = vm.alloc_string(String::new());
+        vm.set_property(target, key, Value::Object(empty))?;
+    }
+    Ok(target)
+}
+
+/// `url.domainToASCII(domain)`：IDNA ToASCII（小写化 + 逐标签 xn-- 编码）。
+fn url_domain_to_ascii(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let raw = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let lowered = raw.to_lowercase();
+    let out = crate::builtins::punycode::map_domain(&lowered, |label| {
+        if crate::builtins::punycode::has_non_ascii(label) {
+            if let Ok(enc) = crate::builtins::punycode::punycode_encode(label) {
+                return format!("xn--{enc}");
+            }
+        }
+        label.to_owned()
+    });
+    Ok(Value::Object(vm.alloc_string(out)))
+}
+
+/// `url.domainToUnicode(domain)`：xn-- 标签解码回 Unicode。
+fn url_domain_to_unicode(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let raw = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let out = crate::builtins::punycode::map_domain(&raw, |label| {
+        if let Some(rest) = label.strip_prefix("xn--") {
+            if let Ok(dec) = crate::builtins::punycode::punycode_decode(&rest.to_lowercase()) {
+                return dec;
+            }
+        }
+        label.to_owned()
+    });
+    Ok(Value::Object(vm.alloc_string(out)))
+}
+
+/// `url.urlToHttpOptions(url)`：URL 对象 → http.request 选项对象。
+fn url_to_http_options(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let source = args.first().copied().unwrap_or(Value::Undefined);
+    let out = vm.alloc_ordinary();
+    if source.as_object().is_none() {
+        return Ok(Value::Object(out));
+    }
+    for key in ["protocol", "hostname", "hash", "search", "pathname", "href"] {
+        let v = vm.get_property(source, key)?;
+        vm.set_property(Value::Object(out), key, v)?;
+    }
+    let port = vm.get_property(source, "port")?;
+    let port_text = vm.format_value(port);
+    let port_num = if port == Value::Undefined || port_text.is_empty() {
+        Value::Undefined
+    } else {
+        Value::Number(vm.to_number_value(port))
+    };
+    vm.set_property(Value::Object(out), "port", port_num)?;
+    let pathname = vm.get_property(source, "pathname")?;
+    let search = vm.get_property(source, "search")?;
+    let path_text = format!("{}{}", vm.format_value(pathname), vm.format_value(search));
+    let path_val = vm.alloc_string(path_text);
+    vm.set_property(Value::Object(out), "path", Value::Object(path_val))?;
+    if let Ok(auth) = vm.get_property(source, "username") {
+        let user = vm.format_value(auth);
+        if !user.is_empty() {
+            let pass_value = vm.get_property(source, "password")?;
+            let pass = vm.format_value(pass_value);
+            let auth_text = if pass.is_empty() {
+                user
+            } else {
+                format!("{user}:{pass}")
+            };
+            let auth_val = vm.alloc_string(auth_text);
+            vm.set_property(Value::Object(out), "auth", Value::Object(auth_val))?;
+        }
+    }
+    Ok(Value::Object(out))
+}
+
+/// 取 `file:` URL 的路径文本：接受 URL 实例（读 `href`）或字符串。
+///
+/// 注意堆字符串在 Value 层同样是「对象」——必须按堆对象种类区分，否则
+/// `fileURLToPath(import.meta.url)` 会被当作 URL 实例去读 `href`
+/// （读到 undefined，报 "The URL must be of scheme file: undefined"）。
+fn file_url_text(vm: &mut Vm, value: Value) -> Result<String, VmError> {
+    if let Some(r) = value.as_object() {
+        let is_string = matches!(
+            vm.heap.get(r.0 as usize),
+            Some(crate::heap::HeapObject::String(_))
+        );
+        if !is_string {
+            let href = vm.get_property(value, "href")?;
+            return Ok(vm.format_value(href));
+        }
+    }
+    Ok(vm.format_value(value))
+}
+
+/// `file:` URL → 本地路径（Node `fileURLToPath` 语义）。
+///
+/// - 仅接受 `file:` 协议（其余抛 `ERR_INVALID_URL_SCHEME` 的 TypeError）；
+/// - 百分号解码；Windows 盘符形态 `/C:/x` 还原为 `C:\x`；
+/// - 含编码斜杠（`%2F`/`%5C`）或未定义主机的 URL 抛错（Node 同款诊断）。
+fn file_url_to_path_text(raw: &str) -> Result<String, String> {
+    let rest: String = match raw.strip_prefix("file://") {
+        Some(r) => r.to_owned(),
+        None => {
+            if raw.starts_with("file:") {
+                raw.trim_start_matches("file:").to_owned()
+            } else {
+                return Err(format!("The URL must be of scheme file: {raw}"));
+            }
+        }
+    };
+    let (host, path) = match rest.find('/') {
+        Some(0) => (String::new(), rest.clone()),
+        Some(i) => (rest[..i].to_owned(), rest[i..].to_owned()),
+        None => (rest.clone(), String::new()),
+    };
+    if !host.is_empty() && host != "localhost" {
+        return Err(format!(
+            "File URL host must be \"localhost\" or empty: {raw}"
+        ));
+    }
+    let decoded = percent_decode(&path);
+    if decoded.contains('/') && path.contains("%2F") {
+        return Err(format!(
+            "File URL path must not include encoded / characters: {raw}"
+        ));
+    }
+    if cfg!(windows) {
+        // `/C:/dir/file` → `C:\dir\file`（盘符在首段且为单字母）
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3 && decoded.starts_with('/') && bytes[2] == b':' {
+            let drive = decoded[1..2].to_owned();
+            let tail = decoded[3..].replace('/', "\\");
+            return Ok(format!("{drive}:{tail}"));
+        }
+    }
+    Ok(decoded)
+}
+
+/// 轻量百分号解码（`fileURLToPath` 只需处理路径中的转义字节）。
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// `fileURLToPath(url)` → 路径字符串。
+fn url_file_url_to_path(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let value = args.first().copied().unwrap_or(Value::Undefined);
+    let raw = file_url_text(vm, value)?;
+    match file_url_to_path_text(&raw) {
+        Ok(path) => {
+            let s = vm.alloc_string(path);
+            Ok(Value::Object(s))
+        }
+        Err(message) => {
+            let msg = vm.alloc_string(message);
+            Err(VmError::Thrown(Value::Object(msg)))
+        }
+    }
+}
+
+/// `pathToFileURL(path)` → URL 对象（`href` 为 `file:///...`，已转义）。
+fn url_path_to_file_url(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let raw = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let href = path_text_to_file_url(&raw);
+    // 复用 URL 构造器实体（`new URL(href)` 同源），保证返回的是真正的
+    // URL 实例（`instanceof URL` / `href` 访问器 / `searchParams` 齐备）
+    let url_arg = Value::Object(vm.alloc_string(href));
+    crate::builtins::global::url_obj::url_ctor(vm, &[url_arg])
+}
+
+/// 路径文本 → `file:` URL（Node `pathToFileURL` 语义：绝对化、反斜杠转正斜杠、
+/// 逐段百分号转义；目录路径补尾斜杠）。
+fn path_text_to_file_url(raw: &str) -> String {
+    let path = std::path::Path::new(raw);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+    let mut text = absolute.to_string_lossy().replace('\\', "/");
+    if !text.starts_with('/') {
+        text.insert(0, '/');
+    }
+    let mut encoded = String::from("file://");
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b'!'
+            | b'$'
+            | b'&'
+            | b'\''
+            | b'('
+            | b')'
+            | b'*'
+            | b'+'
+            | b','
+            | b';'
+            | b'='
+            | b':'
+            | b'@' => encoded.push(byte as char),
+            other => encoded.push_str(&format!("%{other:02X}")),
+        }
+    }
+    if absolute.is_dir() && !encoded.ends_with('/') {
+        encoded.push('/');
+    }
+    encoded
 }
 
 /// `console.log/info/debug/trace(...)`：格式化并追加进 stdout 记录。

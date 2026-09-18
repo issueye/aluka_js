@@ -91,7 +91,7 @@ fn ucs2_encode(code_points: &[i64]) -> String {
 }
 
 /// `decode`：Punycode → Unicode。按**字节**扫描输入（对齐 Go `len`/下标语义）。
-fn punycode_decode(input: &str) -> Result<String, String> {
+pub(crate) fn punycode_decode(input: &str) -> Result<String, String> {
     let bytes = input.as_bytes();
     let input_length = bytes.len() as i64;
     let mut output: Vec<i64> = Vec::new();
@@ -160,7 +160,7 @@ fn punycode_decode(input: &str) -> Result<String, String> {
 }
 
 /// `encode`：Unicode → Punycode。
-fn punycode_encode(input: &str) -> Result<String, String> {
+pub(crate) fn punycode_encode(input: &str) -> Result<String, String> {
     let code_points = ucs2_decode(input);
     let input_length = code_points.len() as i64;
 
@@ -238,7 +238,7 @@ fn punycode_encode(input: &str) -> Result<String, String> {
 }
 
 /// `mapDomain`：邮箱 local part 不动；Unicode 句点统一为 `.` 后逐标签应用 fn。
-fn map_domain<F>(domain: &str, f: F) -> String
+pub(crate) fn map_domain<F>(domain: &str, f: F) -> String
 where
     F: FnMut(&str) -> String,
 {
@@ -255,7 +255,7 @@ where
 }
 
 /// 判断字符串是否含非 ASCII 字符（>= 0x80 才需要 Punycode 编码）。
-fn has_non_ascii(s: &str) -> bool {
+pub(crate) fn has_non_ascii(s: &str) -> bool {
     s.bytes().any(|b| b >= 0x80)
 }
 

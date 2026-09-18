@@ -413,7 +413,9 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // ---- WHATWG URL（M4.1 补齐）：访问器面 + 与 searchParams 双向联动 ----
     // 构造器句柄写进 globals（`new URL(...)` 经 call.rs 的 NativeCtor 分支
     // 派发到 url_obj::url_ctor）。
-    let url_ctor = vm.alloc_native_ctor("URL", None);
+    let base_proto = vm.object_prototype.unwrap_or_else(|| vm.alloc_ordinary());
+    let url_proto = vm.alloc_ordinary_with_exact_proto(Some(base_proto));
+    let url_ctor = vm.alloc_native_ctor("URL", Some(url_proto));
     vm.globals.insert("URL".to_owned(), Value::Object(url_ctor));
     registry
         .dispatch
@@ -451,6 +453,16 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         .dispatch
         .insert("TextDecoder".to_owned(), web::text_decoder_ctor);
     register_handler(registry, "TextDecoder", "decode", web::text_decoder_decode);
+
+    // ---- atob / btoa（Base64 全局面；Node 22 全局语义） ----
+    for (name, handler) in [
+        ("atob", web::atob as crate::builtins::BuiltinHandler),
+        ("btoa", web::btoa as crate::builtins::BuiltinHandler),
+    ] {
+        let fn_ref = vm.alloc_native_fn(name);
+        vm.globals.insert(name.to_owned(), Value::Object(fn_ref));
+        registry.dispatch.insert(name.to_owned(), handler);
+    }
 
     let bq_ctor = vm.alloc_native_ctor("ByteLengthQueuingStrategy", None);
     vm.globals.insert(

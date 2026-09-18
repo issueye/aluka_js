@@ -529,3 +529,41 @@ fn opt_str(vm: &mut Vm, obj: Value, key: &str) -> Option<String> {
     let s = vm.format_value(val);
     if s.is_empty() { None } else { Some(s) }
 }
+
+// ===== atob / btoa（window.atob 的 Node 等价面） =====
+
+/// `atob(input)`：Base64 → Latin1 二进制串。
+pub(crate) fn atob(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let text = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    // Node：先做 ASCII 空白剥离再校验
+    let cleaned: String = text
+        .chars()
+        .filter(|c| !matches!(c, '\t' | '\n' | '\u{0c}' | '\r' | ' '))
+        .collect();
+    let Some(bytes) = crate::builtins::crypto::enc::base64_decode(&cleaned) else {
+        return Err(vm.typed_error("InvalidCharacterError", "Invalid character"));
+    };
+    let latin1: String = bytes.iter().map(|&b| b as char).collect();
+    Ok(Value::Object(vm.alloc_string(latin1)))
+}
+
+/// `btoa(input)`：Latin1 串 → Base64（含 U+00FF 以上字符 → InvalidCharacterError）。
+pub(crate) fn btoa(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let text = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    if text.chars().any(|c| (c as u32) > 0xFF) {
+        return Err(vm.typed_error(
+            "InvalidCharacterError",
+            "The string to be encoded contains characters outside of the Latin1 range.",
+        ));
+    }
+    let bytes: Vec<u8> = text.chars().map(|c| c as u32 as u8).collect();
+    Ok(Value::Object(vm.alloc_string(
+        crate::builtins::crypto::enc::base64_encode(&bytes),
+    )))
+}

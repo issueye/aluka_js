@@ -227,6 +227,9 @@ pub struct Vm {
     /// 运行时编译器 Hook（eval / new Function 动态求值；宿主经
     /// `set_eval_provider` 装配，后端仅接收字节码，保持 ISA 解耦）
     pub(crate) eval_provider: Option<crate::eval::EvalProvider>,
+    /// 源模块编译器 Hook（宿主装配；`require`/`import` 的字节码镜像缺位时
+    /// 按源码现场编译——`aluka run` 的多文件源码项目与运行期动态导入依赖它）。
+    pub(crate) source_module_provider: Option<crate::eval::SourceModuleProvider>,
     /// 最近一次模块入口异步完成时的未完成 Promise（`__aluka_import__`
     /// 依赖完成链用；M2.2）
     pub(crate) last_entry_async_promise: Option<Value>,
@@ -435,6 +438,7 @@ impl Vm {
             proxy_ctor: None,
             reflect_object: None,
             eval_provider: None,
+            source_module_provider: None,
             last_entry_async_promise: None,
             gc_pinned: Vec::new(),
             gc_suspended: 0,
@@ -876,31 +880,242 @@ impl Vm {
     ///
     /// 数组呈现为 `[ a, b ]`（空数组 `[]`，元素 `, ` 分隔、递归同规则），
     /// BigInt 呈现为带 `n` 后缀的字面量（例如 `123n`），其余值与 [`Vm::format_value`] 一致。
-    pub fn format_console_value(&self, val: Value) -> String {
-        if let Some(r) = val.as_object() {
-            let idx = r.0 as usize;
-            if let Some(obj) = self.heap.get(idx) {
-                match obj {
-                    HeapObject::Array { elements, .. } => {
-                        if elements.is_empty() {
-                            return "[]".to_owned();
-                        }
-                        let items: Vec<String> = elements
-                            .iter()
-                            .map(|e| self.format_console_value(*e))
-                            .collect();
-                        return format!("[ {} ]", items.join(", "));
-                    }
-                    HeapObject::BigInt(s) => {
-                        return format!("{s}n");
-                    }
-                    _ => {}
+    pub fn format_console_value(&mut self, val: Value) -> String {
+        let mut seen: Vec<u32> = Vec::new();
+        self.inspect_for_console(val, 0, true, &mut seen)
+    }
+
+    /// `util.inspect` 的值格式化：与 console 同源，差别仅在**顶层字符串
+    /// 也带引号**（Node 实测：`util.inspect('abc') === "'abc'"`，
+    /// 而 `console.log('abc')` 输出裸文本）。
+    pub fn format_inspect_value(&mut self, val: Value) -> String {
+        let mut seen: Vec<u32> = Vec::new();
+        self.inspect_for_console(val, 0, false, &mut seen)
+    }
+
+    /// console 家族的值格式化（Node 22 `console.log` 输出形态）。
+    ///
+    /// 与 `util.inspect` 的 **Go String 形态**（`inspect_value`，以 Go oracle
+    /// 为验收基准）刻意区分：容器内字符串带单引号、对象渲染键值对、
+    /// Map/Set/函数/Date/TypedArray 各按 Node 形态、深度 3 起显示
+    /// `[Object]`/`[Array]`、循环引用显示 `[Circular *1]`。
+    fn inspect_for_console(
+        &mut self,
+        val: Value,
+        depth: usize,
+        top: bool,
+        seen: &mut Vec<u32>,
+    ) -> String {
+        match val.case() {
+            ValueCase::Undefined => "undefined".to_owned(),
+            ValueCase::Null => "null".to_owned(),
+            ValueCase::Boolean(b) => format!("{b}"),
+            ValueCase::Number(n) => crate::ops::js_number_to_string(n),
+            ValueCase::Object(r) => {
+                if seen.contains(&r.0) {
+                    return "[Circular *1]".to_owned();
                 }
-            } else if let Some(Constant::BigInt(s)) = self.current_constants.get(idx) {
-                return format!("{s}n");
+                seen.push(r.0);
+                let out = self.inspect_object_for_console(r, depth, top, seen);
+                seen.pop();
+                out
             }
         }
-        self.format_value(val)
+    }
+
+    fn inspect_object_for_console(
+        &mut self,
+        r: aluka_core::ObjectRef,
+        depth: usize,
+        top: bool,
+        seen: &mut Vec<u32>,
+    ) -> String {
+        let idx = r.0 as usize;
+        // 先把堆内数据拷出（避免递归格式化与堆读借用冲突）
+        enum Shaped {
+            Str(String),
+            Big(String),
+            Sym(String),
+            Arr(Vec<Value>),
+            Map(Vec<(Value, Value)>),
+            Re(String, String),
+            Fn(String),
+            Typed(String, usize),
+            Other,
+        }
+        let shaped = match self.heap.get(idx) {
+            Some(HeapObject::String(s)) => Shaped::Str(s.clone()),
+            Some(HeapObject::BigInt(s)) => Shaped::Big(s.clone()),
+            Some(HeapObject::Symbol { description, .. }) => Shaped::Sym(description.clone()),
+            Some(HeapObject::Array { elements, .. }) => Shaped::Arr(elements.clone()),
+            Some(HeapObject::Map { entries }) => Shaped::Map(entries.clone()),
+            Some(HeapObject::RegExp { pattern, flags }) => {
+                Shaped::Re(pattern.clone(), flags.clone())
+            }
+            Some(HeapObject::Closure { func_idx, .. }) => Shaped::Fn(
+                self.module_functions
+                    .get(*func_idx)
+                    .map(|t| t.name.clone())
+                    .unwrap_or_default(),
+            ),
+            Some(HeapObject::NativeFn { name, .. }) => Shaped::Fn(name.clone()),
+            Some(HeapObject::TypedArray { kind, length, .. }) => {
+                Shaped::Typed(kind.ctor_name().to_owned(), *length)
+            }
+            _ => Shaped::Other,
+        };
+        match shaped {
+            Shaped::Str(s) => {
+                return if top { s } else { inspect_quote_single(&s) };
+            }
+            Shaped::Big(s) => return format!("{s}n"),
+            Shaped::Sym(desc) => return crate::symbol::symbol_display(&desc),
+            Shaped::Arr(elements) => {
+                if depth >= 3 {
+                    return "[Array]".to_owned();
+                }
+                if elements.is_empty() {
+                    return "[]".to_owned();
+                }
+                let items: Vec<String> = elements
+                    .iter()
+                    .map(|e| self.inspect_for_console(*e, depth + 1, false, seen))
+                    .collect();
+                return format!("[ {} ]", items.join(", "));
+            }
+            Shaped::Map(entries) => {
+                if depth >= 3 {
+                    return "[Object]".to_owned();
+                }
+                if self.is_set_instance(Value::Object(r)) {
+                    // Set 实例复用 Map 变体（value 槽存原值）
+                    if entries.is_empty() {
+                        return "Set(0) {}".to_owned();
+                    }
+                    let items: Vec<String> = entries
+                        .iter()
+                        .map(|(_, v)| self.inspect_for_console(*v, depth + 1, false, seen))
+                        .collect();
+                    return format!("Set({}) {{ {} }}", entries.len(), items.join(", "));
+                }
+                if entries.is_empty() {
+                    return "Map(0) {}".to_owned();
+                }
+                let items: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "{} => {}",
+                            self.inspect_for_console(*k, depth + 1, false, seen),
+                            self.inspect_for_console(*v, depth + 1, false, seen)
+                        )
+                    })
+                    .collect();
+                return format!("Map({}) {{ {} }}", entries.len(), items.join(", "));
+            }
+            Shaped::Re(pattern, flags) => return format!("/{pattern}/{flags}"),
+            Shaped::Fn(name) => {
+                return if name.is_empty() || name == "main" {
+                    "[Function (anonymous)]".to_owned()
+                } else {
+                    format!("[Function: {name}]")
+                };
+            }
+            Shaped::Typed(name, length) => {
+                if depth >= 3 {
+                    return format!("{name}({length}) [Array]");
+                }
+                let values = self.ta_to_values(r).unwrap_or_default();
+                let items: Vec<String> = values
+                    .iter()
+                    .map(|e| self.inspect_for_console(*e, depth + 1, false, seen))
+                    .collect();
+                return format!("{name}({length}) [ {} ]", items.join(", "));
+            }
+            Shaped::Other => {}
+        }
+        // Date / Error / 普通对象（含类实例）走属性面渲染
+        self.inspect_ordinary_for_console(r, depth, seen)
+    }
+
+    /// Ordinary 对象的 Node 形态渲染：`Name { k: v }` / `{}`
+    /// （Date 取 ISO 串、Error 取 stack、类实例带构造器名前缀）。
+    fn inspect_ordinary_for_console(
+        &mut self,
+        r: aluka_core::ObjectRef,
+        depth: usize,
+        seen: &mut Vec<u32>,
+    ) -> String {
+        let idx = r.0 as usize;
+        // Date：`_timeValue` 数值槽 → ISO 串
+        if let Some(ValueCase::Number(t)) = self.own_value(idx, "_timeValue").map(|v| v.case()) {
+            if t.is_finite() {
+                return crate::builtins::global::date::to_iso_string(t);
+            }
+            return "Invalid Date".to_owned();
+        }
+        // Error：有 stack 则原样（Node 形态为 name: message + at 行）
+        if let Some(stack) = self
+            .own_value(idx, "stack")
+            .and_then(|v| self.string_value_of(v))
+        {
+            if !stack.is_empty() {
+                return stack;
+            }
+        }
+        if depth >= 3 {
+            return "[Object]".to_owned();
+        }
+        let entries = self.own_properties(Value::Object(r));
+        // 构造器名前缀：原型不是 Object.prototype 时取 proto.constructor.name
+        let mut prefix = String::new();
+        if let Some(HeapObject::Ordinary { proto: Some(p), .. }) = self.heap.get(idx) {
+            let is_object_proto = self.object_prototype.is_some_and(|op| op.0 == p.0);
+            if !is_object_proto {
+                if let Some(ctor) = self.own_value(p.0 as usize, "constructor") {
+                    let ctor_ref = match ctor.case() {
+                        ValueCase::Object(c) => c,
+                        _ => aluka_core::ObjectRef(u32::MAX),
+                    };
+                    let ctor_name = self
+                        .own_value(ctor_ref.0 as usize, "name")
+                        .and_then(|v| self.string_value_of(v))
+                        .unwrap_or_default();
+                    if !ctor_name.is_empty() && ctor_name != "Object" {
+                        prefix = format!("{ctor_name} ");
+                    }
+                }
+            }
+        }
+        if entries.is_empty() {
+            return format!("{prefix}{{}}");
+        }
+        let items: Vec<String> = entries
+            .iter()
+            .map(|(k, v)| {
+                let key = if is_identifier_like_key(k) {
+                    k.clone()
+                } else {
+                    inspect_quote_single(k)
+                };
+                format!(
+                    "{key}: {}",
+                    self.inspect_for_console(*v, depth + 1, false, seen)
+                )
+            })
+            .collect();
+        format!("{prefix}{{ {} }}", items.join(", "))
+    }
+
+    /// 堆字符串值提取（非字符串返回 None）。
+    fn string_value_of(&self, val: Value) -> Option<String> {
+        match val.case() {
+            ValueCase::Object(r) => match self.heap.get(r.0 as usize) {
+                Some(HeapObject::String(s)) => Some(s.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// JS `typeof` 语义的字符串化。
@@ -1265,6 +1480,17 @@ impl Vm {
             // ESM import 加载器（M2.2）：__aluka_import__(source)
             "__aluka_import__" => {
                 let f = self.alloc_native_fn("moduleLoader.import");
+                Value::Object(f)
+            }
+            // 动态导入 `import(...)`（编译器改写的专管全局）：与静态导入
+            // 共用加载链路，但**恒**兑现为 Promise（Node 语义）
+            "__aluka_dynamic_import__" => {
+                let f = self.alloc_native_fn("moduleLoader.dynamicImport");
+                Value::Object(f)
+            }
+            // 对象 rest 解构的剩余属性拷贝（编译器发射的专管全局）
+            "__aluka_object_rest__" => {
+                let f = self.alloc_native_fn("objectOps.rest");
                 Value::Object(f)
             }
             "__importMeta" => Value::Object(
@@ -2136,7 +2362,16 @@ impl Vm {
         if let Some(res) = crate::builtins::try_dispatch(self, receiver, method_name, args) {
             let val = res?;
             Ok(val)
-        } else if method_name == "log" {
+        } else if method_name == "log"
+            && self
+                .builtin_registry
+                .module("console")
+                .is_some_and(|c| receiver == Value::Object(c))
+        {
+            // 仅 console 单例的 `.log` 落此处。此前无 receiver 约束，等价于
+            // 「任意对象的 .log() 都是 console.log」——用户对象自有 `log`
+            // 回调被静默改写为打印（实测：服务端 `this.log = opts.log ?? noop`
+            // 后每个请求都被打进 stdout）。
             let line = args
                 .iter()
                 .map(|v| self.format_console_value(*v))
@@ -4266,6 +4501,23 @@ impl Vm {
                     let res = crate::builtins::surface::bool_method_dispatch(self, args)?;
                     Ok(res)
                 }
+                // undefined/null 上调用方法：JS 语义抛 TypeError（Node 22
+                // 消息形态）——此前落 `_ => Ok(Undefined)` 静默吞掉，
+                // `undefined.f()` 不抛错且整条语句无效。
+                ValueCase::Undefined | ValueCase::Null => {
+                    let kind = if receiver == Value::Null {
+                        "null"
+                    } else {
+                        "undefined"
+                    };
+                    let err = self.alloc_error_instance(&format!(
+                        "Cannot read properties of {kind} (reading '{method_name}')"
+                    ));
+                    self.attach_error_proto(err, "TypeError");
+                    let name = self.alloc_string("TypeError".to_owned());
+                    let _ = self.set_property(Value::Object(err), "name", Value::Object(name));
+                    Err(VmError::Thrown(Value::Object(err)))
+                }
                 _ => Ok(Value::Undefined),
             }
         }
@@ -5743,6 +5995,36 @@ fn normalize_slice_range(args: &[Value], len: usize) -> (usize, usize) {
         None => len,
     };
     (start, end.max(start))
+}
+
+/// console 渲染里字符串的单引号包裹（含常用转义）。
+fn inspect_quote_single(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('\'');
+    for ch in text.chars() {
+        match ch {
+            '\'' => out.push_str("\\'"),
+            '\\' => out.push_str("\\\\"),
+            '\u{0a}' => out.push_str("\\n"),
+            '\u{0d}' => out.push_str("\\r"),
+            '\u{09}' => out.push_str("\\t"),
+            other => out.push(other),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// 对象渲染键的引号判定：标识符形键裸写，其余单引号包裹（Node 形态）。
+fn is_identifier_like_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 fn constant_string(constants: &std::rc::Rc<Vec<Constant>>, idx: usize) -> Cow<'_, str> {

@@ -14,6 +14,8 @@ pub mod error;
 pub mod max_stack;
 /// 模块级函数与类模板编译器
 pub mod module;
+/// 源码文件的模块种类判定（Node 语义；前端与装配层共用的单一事实源）
+pub mod module_kind;
 /// AST 与指令级优化器
 pub mod opt;
 /// 词法作用域分析与符号管理
@@ -28,6 +30,7 @@ pub use max_stack::compute_max_stack;
 pub use module::{
     ModuleCompiler, compile_esm_module, compile_module, compile_module_with_coverage,
 };
+pub use module_kind::{module_kind_for_path, package_type_is_module};
 pub use opt::{optimize_ast, optimize_jumps};
 pub use scope::{CompiledUnit, ResolvedSymbol, Scope, ScopeKind, ScopeTree};
 pub use source_unit::{compile_source_unit, parse_json_to_expr};

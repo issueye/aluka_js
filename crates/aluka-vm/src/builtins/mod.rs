@@ -325,6 +325,31 @@ pub fn register_all(vm: &mut Vm) -> Result<(), VmError> {
     for (m, handler) in path_methods {
         register_handler(&mut registry, "path", m, *handler);
     }
+    materialize_handler_properties(vm, &registry);
+
+    // 主 `path` 对象是解释器**预建**的（不在 registry.modules），物化遍
+    // 覆盖不到——平台方法表新增的方法（parse/format）在此补挂属性。
+    if let Some(path_mod) = vm.path_module {
+        for (m, _) in path_methods {
+            let exists = vm
+                .get_property(Value::Object(path_mod), m)
+                .is_ok_and(|v| v != Value::Undefined);
+            if exists {
+                continue;
+            }
+            let f = vm.alloc_native_fn(&format!("path.{m}"));
+            let _ = vm.set_property(Value::Object(path_mod), m, Value::Object(f));
+        }
+    }
+
+    // 全局裸名（queueMicrotask / structuredClone）的间接调用分派——
+    // 直接调用走 Op::Call 硬编码链，取值后调用经分派表（与定时器裸名同规）
+    registry
+        .dispatch
+        .insert("queueMicrotask".to_owned(), global_queue_microtask);
+    registry
+        .dispatch
+        .insert("structuredClone".to_owned(), global_structured_clone);
     // `path` 对象面：`posix`/`win32` 子模块对象 + sep/delimiter 常量
     if let Some(path_mod) = vm.path_module {
         for (sub, methods, sep, delim) in [
@@ -449,6 +474,50 @@ pub fn register_handler(
     handler: BuiltinHandler,
 ) {
     registry.dispatch.insert(join_key(module, method), handler);
+}
+
+/// 把分派表里的每一项补成模块对象的**自有属性**。
+///
+/// Node 语义：`fs.readFileSync` 是可取值存槽、可 `typeof`、可被 ESM 命名
+/// 导入、可展开的一等属性。此前只有各模块 `build` 里硬编码的一小部分名字
+/// 挂了属性，其余仅能经**直接成员调用**（`fs.readFileSync(p)`）由解释器
+/// 拦截分派——`import { readFileSync } from "node:fs"` 与
+/// `const { existsSync } = fs` 一律拿到 undefined。
+///
+/// 此处按注册表统一补齐：已存在的属性（含常量与手工挂载项）保持原值，
+/// 缺失者挂同名 `NativeFn` 占位——调用经解释器的原生函数分派回到同一
+/// handler，属性读取/判存/展开则与 Node 一致。
+fn materialize_handler_properties(vm: &mut Vm, registry: &BuiltinRegistry) {
+    for (module_name, module_obj) in &registry.modules {
+        // 只处理**公开模块名**（Node `builtinModules` 清单）：注册表里还挂着
+        // 内部槽位——`events:instance`（实例原型面）、`fs.stat`、`moduleLoader`
+        // 等。往那些槽位补属性会污染实例原型链（`for (const k in server)`
+        // 突然枚举出 15 个 EventEmitter 方法），故按清单白名单收口。
+        if !crate::builtins::module::is_public_module_name(module_name) {
+            continue;
+        }
+        let prefix = format!("{module_name}.");
+        for key in registry.dispatch.keys() {
+            let Some(method) = key.strip_prefix(&prefix) else {
+                continue;
+            };
+            // 只补模块直系方法（`fs.stat.isFile` 这类复合键留给各自槽位）
+            if method.is_empty() || method.contains('.') {
+                continue;
+            }
+            if vm
+                .get_property(Value::Object(*module_obj), method)
+                .is_ok_and(|existing| existing != Value::Undefined)
+            {
+                continue;
+            }
+            if std::env::var("ALUKA_MAT_DEBUG").is_ok() {
+                eprintln!("[mat] {module_name}.{method} <- {key}");
+            }
+            let fn_ref = vm.alloc_native_fn(key);
+            let _ = vm.set_property(Value::Object(*module_obj), method, Value::Object(fn_ref));
+        }
+    }
 }
 
 fn join_key(module: &str, method: &str) -> String {
@@ -631,4 +700,17 @@ pub fn set_module_prop(
 pub fn is_module_heap_obj(vm: &Vm, r: ObjectRef) -> bool {
     // 只是形状辅助：模块对象都是 Ordinary；不做额外区分
     matches!(vm.heap.get(r.index()), Some(HeapObject::Ordinary { .. }))
+}
+
+/// `queueMicrotask(cb)`：微任务入队（与 Op::Call 硬编码链同源）。
+fn global_queue_microtask(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let cb = args.first().copied().unwrap_or(Value::Undefined);
+    vm.microtask_queue
+        .push_back(crate::builtins::Job::Call(cb, Value::Undefined));
+    Ok(Value::Undefined)
+}
+
+/// `structuredClone(value[, options])`：结构化克隆（与 worker postMessage 同源）。
+fn global_structured_clone(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    vm.structured_clone(args)
 }

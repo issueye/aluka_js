@@ -13,7 +13,7 @@
 //! 镜像，两侧需同步演化。
 
 use crate::{compile_source_unit, optimize_ast};
-use aluka_parser::source_unit::{LanguageRegistry, ModuleKind};
+use aluka_parser::source_unit::LanguageRegistry;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
@@ -162,23 +162,6 @@ pub fn entry_bc_path(input: &Path, output: Option<&Path>) -> PathBuf {
 
 /// 最近 `package.json` 的 `"type"` 是否为 `"module"`（Node ESM 判定：
 /// 自文件目录向上找首个含 package.json 的目录；无 package.json 按 CJS）。
-fn package_type_is_module(file: &Path) -> bool {
-    let mut dir = file.parent().map(Path::to_path_buf);
-    while let Some(d) = dir {
-        let pkg = d.join("package.json");
-        if pkg.is_file()
-            && let Ok(text) = std::fs::read_to_string(&pkg)
-            && let Some(parsed) = aluka_module::parse_json(&text)
-            && let Some(t) = parsed.get("type")
-            && t.as_str() == Some("module")
-        {
-            return true;
-        }
-        dir = d.parent().map(Path::to_path_buf);
-    }
-    false
-}
-
 /// 编译单个源文件到镜像 .bc 路径。
 fn compile_one(file: &Path, outdir: &Path, root: &Path, optimize: bool) -> Result<(), String> {
     let rel = rel_from(file, root);
@@ -186,28 +169,15 @@ fn compile_one(file: &Path, outdir: &Path, root: &Path, optimize: bool) -> Resul
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {e}"))?;
     }
-    let module_kind = match file
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("mjs" | "mts") => ModuleKind::Esm,
-        Some("cjs" | "cts") => ModuleKind::CommonJs,
-        // `.js`/`.ts` 按最近 package.json 的 `"type"` 判定（Node 语义）——
-        // 此前恒按 CJS，真实 ESM 包（pi 全 workspace `"type": "module"`）
-        // 的命名导入全数落空
-        _ => {
-            if package_type_is_module(file) {
-                ModuleKind::Esm
-            } else {
-                ModuleKind::CommonJs
-            }
-        }
-    };
+    // `.js`/`.ts` 按最近 package.json 的 `"type"` 判定（Node 语义）——
+    // 此前恒按 CJS，真实 ESM 包（pi 全 workspace `"type": "module"`）的
+    // 命名导入全数落空。判定收敛在 `crate::module_kind`（与 `aluka run`
+    // 的入口/依赖解析共用同一事实源）。
     let path_str = file.to_string_lossy();
+    let src = std::fs::read_to_string(file).map_err(|e| format!("读取失败: {e}"))?;
+    let module_kind = crate::module_kind::module_kind_for_source(file, &src);
     let mut unit = LanguageRegistry::global()
-        .parse_file(&path_str, module_kind)
+        .parse_source(&src, &path_str, module_kind)
         .map_err(|e| format!("解析失败: {e}"))?;
     if optimize {
         if let Some(prog) = &mut unit.program {

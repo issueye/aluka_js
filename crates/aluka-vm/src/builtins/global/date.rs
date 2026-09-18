@@ -500,7 +500,7 @@ fn fmt_year(y: i64) -> String {
 }
 
 /// `YYYY-MM-DDTHH:mm:ss.sssZ`（调用方须先排除 Invalid Date）。
-fn to_iso_string(t: f64) -> String {
+pub(crate) fn to_iso_string(t: f64) -> String {
     let p = date_parts(t).expect("调用方已排除 Invalid Date");
     format!(
         "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",

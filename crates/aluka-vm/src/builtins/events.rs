@@ -165,6 +165,10 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // 循环引用导出：events.EventEmitter === events
     set_module_prop(vm, ee_class, "EventEmitter", Value::Object(ee_class))?;
 
+    // Node 22 模块级导出：`events.getEventListeners(emitter, name)`
+    let gel_fn = vm.alloc_native_fn("events.getEventListeners");
+    set_module_prop(vm, ee_class, "getEventListeners", Value::Object(gel_fn))?;
+
     // 实例原型对象
     let proto = vm.alloc_ordinary();
     set_module_prop(vm, proto, "constructor", Value::Object(ee_class))?;
@@ -208,6 +212,7 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     // 注册静态方法处理器
     register_handler(registry, "events", "on", events_static_on);
     register_handler(registry, "events", "once", events_static_once);
+    register_handler(registry, "events", "getEventListeners", get_event_listeners);
     register_handler(
         registry,
         "events",
@@ -247,6 +252,7 @@ fn build_class(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef,
         "listenerCount",
         "setMaxListeners",
         "getMaxListeners",
+        "getEventListeners",
     ] {
         if let Some(h) = registry.lookup(&format!("events.{method}")) {
             register_handler(registry, "EventEmitter", method, h);
@@ -683,6 +689,7 @@ fn events_static_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     ensure_emitter_state(vm, r.0);
 
     if args.len() >= 3 {
+        // 旧式三参形态（Node 已弃用但保留）
         let event_name = vm.format_value(args[1]);
         let callback = args[2];
         with_emitter_mut(r.0, |state| {
@@ -697,7 +704,93 @@ fn events_static_once(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
         });
         return Ok(*emitter_val);
     }
+    // Node 22 主形态：`once(emitter, name)` → Promise，以事件实参数组兑现；
+    // `name !== 'error'` 时同时监听 'error' 并以之拒绝（规范特殊处理）
+    let Some(name_val) = args.get(1) else {
+        return Ok(Value::Undefined);
+    };
+    let event_name = vm.format_value(*name_val);
+    let promise = vm.alloc_pending_promise();
+    let on_event = vm.alloc_native_fn("events.once.onEvent");
+    vm.set_native_fn_property(on_event, "_promise", Value::Object(promise));
+    register_handler(
+        &mut vm.builtin_registry,
+        "events",
+        "once.onEvent",
+        once_on_event,
+    );
+    with_emitter_mut(r.0, |state| {
+        state
+            .listeners
+            .entry(event_name.clone())
+            .or_default()
+            .push(ListenerItem {
+                callback: Value::Object(on_event),
+                once: true,
+            });
+    });
+    if event_name != "error" {
+        let on_error = vm.alloc_native_fn("events.once.onError");
+        vm.set_native_fn_property(on_error, "_promise", Value::Object(promise));
+        register_handler(
+            &mut vm.builtin_registry,
+            "events",
+            "once.onError",
+            once_on_error,
+        );
+        with_emitter_mut(r.0, |state| {
+            state
+                .listeners
+                .entry("error".to_owned())
+                .or_default()
+                .push(ListenerItem {
+                    callback: Value::Object(on_error),
+                    once: true,
+                });
+        });
+    }
+    Ok(Value::Object(promise))
+}
+
+/// `once` 的 Promise 兑现侧：以事件实参数组 resolve。
+fn once_on_event(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let callee = crate::builtins::pending_callee();
+    if let ValueCase::Object(r) = vm.get_property(callee, "_promise")?.case() {
+        let list = vm.alloc_array(args.to_vec());
+        vm.fulfill_promise(r, Value::Object(list))?;
+    }
     Ok(Value::Undefined)
+}
+
+/// `once` 的 Promise 拒绝侧：'error' 事件以首参拒绝。
+fn once_on_error(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let callee = crate::builtins::pending_callee();
+    if let ValueCase::Object(r) = vm.get_property(callee, "_promise")?.case() {
+        let reason = args.first().copied().unwrap_or(Value::Undefined);
+        vm.reject_promise(r, reason)?;
+    }
+    Ok(Value::Undefined)
+}
+
+/// `events.getEventListeners(emitter, name)`：监听器数组（Node 22 新增的
+/// 模块级与 `EventEmitter` 静态度）。
+fn get_event_listeners(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(ValueCase::Object(r)) = args.first().map(|v| v.case()) else {
+        return Ok(Value::Object(vm.alloc_array(Vec::new())));
+    };
+    ensure_emitter_state(vm, r.0);
+    let Some(name_val) = args.get(1) else {
+        return Ok(Value::Object(vm.alloc_array(Vec::new())));
+    };
+    let event_name = vm.format_value(*name_val);
+    let list: Vec<Value> = with_emitter(r.0, |state| {
+        state
+            .listeners
+            .get(&event_name)
+            .map(|l| l.iter().map(|item| item.callback).collect())
+            .unwrap_or_default()
+    });
+    Ok(Value::Object(vm.alloc_array(list)))
 }
 
 /// `events.setMaxListeners(n, ...emitters)`

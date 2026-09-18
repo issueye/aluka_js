@@ -89,7 +89,19 @@ fn compile_bind_pattern_assign(pattern: &VarPattern, src_slot: usize, unit: &mut
             }
         }
         VarPattern::Object(props) => {
+            let excluded: Vec<String> = props
+                .iter()
+                .filter(|p| !p.is_rest)
+                .map(|p| p.key.clone())
+                .collect();
             for prop in props {
+                if prop.is_rest {
+                    emit_object_rest(src_slot, &excluded, unit);
+                    if let VarPattern::Ident(n) = &prop.value {
+                        store_by_name(n, unit);
+                    }
+                    continue;
+                }
                 unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
                 let name_idx = add_constant(unit, Constant::String(prop.key.clone()));
                 unit.code.push(Instr::new(Op::GetProp, name_idx));
@@ -183,7 +195,20 @@ fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut Compil
             }
         }
         VarPattern::Object(props) => {
+            let excluded: Vec<String> = props
+                .iter()
+                .filter(|p| !p.is_rest)
+                .map(|p| p.key.clone())
+                .collect();
             for prop in props {
+                if prop.is_rest {
+                    // rest：剩余自有可枚举属性拷贝（排除键 = 前面已取的键）
+                    emit_object_rest(src_slot, &excluded, unit);
+                    if let VarPattern::Ident(n) = &prop.value {
+                        store_by_name(n, unit);
+                    }
+                    continue;
+                }
                 let prop_tmp = unit.locals;
                 unit.locals += 1;
                 unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
@@ -200,6 +225,25 @@ fn compile_bind_pattern(pattern: &VarPattern, src_slot: usize, unit: &mut Compil
             }
         }
     }
+}
+
+/// 对象 rest 的剩余属性拷贝：发射
+/// `__aluka_object_rest__(src, 排除键…)` 调用（结果留栈顶）。
+///
+/// 排除键 = rest 之前**按字面键**取过的属性（当前对象模式只支持字面键，
+/// 计算键形态由解析层不支持兜住）；符号键不在排除面——与规范
+/// CopyDataProperties 的「排除已取字面键、保留其余键」一致。
+fn emit_object_rest(src_slot: usize, excluded: &[String], unit: &mut CompiledUnit) {
+    // Op::Call 的栈约定：callee 先入栈，其后按实参顺序入栈
+    let fn_idx = add_constant(unit, Constant::String("__aluka_object_rest__".to_owned()));
+    unit.code.push(Instr::new(Op::LoadGlobal, fn_idx));
+    unit.code.push(Instr::new(Op::LoadLocal, src_slot as u32));
+    for key in excluded {
+        let idx = add_constant(unit, Constant::String(key.clone()));
+        unit.code.push(Instr::new(Op::PushConst, idx));
+    }
+    let num_args = (excluded.len() + 1) as u32;
+    unit.code.push(Instr::new(Op::Call, num_args));
 }
 
 /// 循环回边行表补登记：cond/update 指令物理位于 body 之后，

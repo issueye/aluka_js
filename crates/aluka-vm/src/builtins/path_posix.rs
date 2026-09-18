@@ -38,6 +38,88 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     Ok(obj)
 }
 
+/// `path.parse(p)` → `{ root, dir, base, ext, name }`。
+///
+/// 由既有 dirname/basename/extname 助手组装（同平台语义单一来源）：
+/// `dir` 为 `.` 时按 Node 语义归空串；`name` = `base` 去除 `ext` 尾。
+fn parse(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let p = match args.first() {
+        Some(v) => vm.format_value(*v),
+        None => String::new(),
+    };
+    let root = if p.starts_with('/') { "/" } else { "" }.to_owned();
+    let dir = {
+        let src_val = Value::Object(vm.alloc_string(p.clone()));
+        let d = dirname(vm, &[src_val])?;
+        let text = vm.format_value(d);
+        if text == "." { String::new() } else { text }
+    };
+    let base_src = Value::Object(vm.alloc_string(p.clone()));
+    let base_val = basename(vm, &[base_src])?;
+    let base = vm.format_value(base_val);
+    let ext = if base.is_empty() {
+        String::new()
+    } else {
+        let ext_src = Value::Object(vm.alloc_string(base.clone()));
+        let e = extname(vm, &[ext_src])?;
+        vm.format_value(e)
+    };
+    let name = base.strip_suffix(ext.as_str()).unwrap_or(&base).to_owned();
+
+    let out = vm.alloc_ordinary();
+    let set = |vm: &mut Vm, k: &str, v: String| -> Result<(), VmError> {
+        let s = vm.alloc_string(v);
+        vm.set_property(Value::Object(out), k, Value::Object(s))?;
+        Ok(())
+    };
+    set(vm, "root", root)?;
+    set(vm, "dir", dir)?;
+    set(vm, "base", base)?;
+    set(vm, "ext", ext)?;
+    set(vm, "name", name)?;
+    Ok(Value::Object(out))
+}
+
+/// `path.format(obj)`：`dir`/`root` + `base`（或 `name` + `ext`）重组。
+///
+/// Node 算法：`dir` 优先（未以分隔符收尾则补一个），否则用 `root`；
+/// `base` 优先于 `name` + `ext`。
+fn format(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let Some(obj) = args.first().copied() else {
+        return Ok(Value::Object(vm.alloc_string(String::new())));
+    };
+    let text_of = |vm: &mut Vm, key: &str| -> Result<String, VmError> {
+        let v = vm.get_property(obj, key)?;
+        Ok(vm.format_value(v))
+    };
+    let dir = text_of(vm, "dir")?;
+    let root = text_of(vm, "root")?;
+    let base = text_of(vm, "base")?;
+    let name = text_of(vm, "name")?;
+    let ext = text_of(vm, "ext")?;
+
+    let mut out = String::new();
+    if !dir.is_empty() {
+        out.push_str(&dir);
+        if !dir.ends_with('/') {
+            out.push('/');
+        }
+    } else if !root.is_empty() {
+        out.push_str(&root);
+    }
+    if !base.is_empty() {
+        out.push_str(&base);
+    } else {
+        if !name.is_empty() {
+            out.push_str(&name);
+        }
+        if !ext.is_empty() && (ext.starts_with('.') || !name.is_empty()) {
+            out.push_str(&ext);
+        }
+    }
+    Ok(Value::Object(vm.alloc_string(out)))
+}
+
 /// POSIX 分隔符语义的方法表（`path/posix` 与 `path.posix` 共用同一实现）。
 pub(crate) const METHODS: &[(&str, BuiltinHandler)] = &[
     ("join", join),
@@ -48,6 +130,8 @@ pub(crate) const METHODS: &[(&str, BuiltinHandler)] = &[
     ("extname", extname),
     ("resolve", resolve),
     ("isAbsolute", is_absolute),
+    ("parse", parse),
+    ("format", format),
 ];
 
 /// `isAbsolute(p)`：POSIX 语义——首字符为 `/`。

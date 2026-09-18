@@ -537,12 +537,14 @@ pub struct ArrayPatternElem {
 /// 对象解构属性项
 #[derive(Debug, Clone, PartialEq)]
 pub struct ObjectPatternProp {
-    /// 属性键名
+    /// 属性键名（rest 项为绑定名本身）
     pub key: String,
     /// 绑定目标模式
     pub value: VarPattern,
     /// 缺省默认值表达式（可选）
     pub default_value: Option<Expr>,
+    /// 是否为 rest 项（`{ a, ...rest }` 的 rest；恒为最后一项，且无默认值）
+    pub is_rest: bool,
 }
 
 /// 变量解构模式

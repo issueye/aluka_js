@@ -115,24 +115,30 @@ fn util_format_inspect_types_e2e_matches_go() {
     )
     .unwrap();
     let out = common::assert_e2e_matches_go(&work, "probe.js");
+    // 权威口径：Node.js 22 LTS（AGENTS.md §1）。以下文本逐行取自
+    // `node probe.js` 实测——`%j` 为 JSON.stringify、`%d` 不截断、
+    // 参数不足的占位符原样保留、`util.inspect` 与 console 同源（顶层字符串
+    // 带单引号）、`util.isArray` 存在（legacy 面）。`t1`~`t4` 是 Aluka 侧
+    // 额外的 `util.types` 谓词（Node 的 util.types 无 isArray/isString/
+    // isNumber/isObject，登记为超集面）。
     assert_eq!(
         out,
         concat!(
-            "f1: abc 42 { a: 1 }\n",
-            "f2: x|3|[ 1, 2 ]|%\n",
+            "f1: abc 42 {\"a\":1}\n",
+            "f2: x|3.5|[1,2]|%\n",
             "f3: no placeholder 1 2\n",
-            "f4: \n",
-            "f5: a mid b \n",
-            "i1: abc\n",
+            "f4: %s\n",
+            "f5: a mid b %s\n",
+            "i1: 'abc'\n",
             "i2: 42\n",
-            "i3: [ 1, x, true ]\n",
-            "i4: { a: 1, b: yz }\n",
+            "i3: [ 1, 'x', true ]\n",
+            "i4: { a: 1, b: 'yz' }\n",
             "i5: null undefined true\n",
             "t1: true false\n",
             "t2: true false\n",
             "t3: true false\n",
             "t4: true false\n",
-            "d1: undefined"
+            "d1: function"
         )
     );
 }

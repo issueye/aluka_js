@@ -52,11 +52,19 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
         "copyFileSync",
         "appendFileSync",
         "realpathSync",
+        "existsSync",
+        "exists",
+        "readFileSync",
+        "writeFileSync",
     ] {
         let fn_ref = vm.alloc_native_fn(&format!("fs.{method}"));
         set_module_prop(vm, obj, method, Value::Object(fn_ref))?;
     }
     register_handler(registry, "fs", "readdirSync", readdir_sync);
+    register_handler(registry, "fs", "existsSync", exists_sync);
+    register_handler(registry, "fs", "exists", exists_async);
+    register_handler(registry, "fs", "readFileSync", read_file_sync);
+    register_handler(registry, "fs", "writeFileSync", write_file_sync);
     register_handler(registry, "fs", "statSync", stat_sync);
     register_handler(registry, "fs", "mkdirSync", mkdir_sync);
     register_handler(registry, "fs", "rmSync", rm_sync);
@@ -69,6 +77,61 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 }
 
 /// 建立 `statSync` 返回值的共享槽位并登记其方法分派（isFile/isDirectory 等）。
+/// `fs.existsSync(path)` → boolean（不抛错：任何失败一律 false，Node 语义）。
+fn exists_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let _ = vm;
+    let path = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    Ok(Value::Boolean(std::path::Path::new(&path).exists()))
+}
+
+/// `fs.exists(path, callback)` → `callback(boolean)`（回调形态，Node 语义：
+/// 已弃用但保留，同样不抛错）。
+fn exists_async(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let exists = std::path::Path::new(&path).exists();
+    if let Some(cb) = args.get(1).copied() {
+        vm.invoke_callable(cb, Value::Undefined, &[Value::Boolean(exists)])?;
+    }
+    Ok(Value::Undefined)
+}
+
+/// `fs.readFileSync(path[, options])`：解释器的成员调用拦截只在
+/// `fs.readFileSync(...)` 直呼形态生效；本 handler 让**取值存槽后的间接
+/// 调用**（`const read = fs.readFileSync; read(p)`）与 ESM 命名导入落回同一
+/// 语义面。
+fn read_file_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let s = vm.alloc_string(content);
+            Ok(Value::Object(s))
+        }
+        Err(e) => Err(fs_error(vm, &e, "open", &path, None)),
+    }
+}
+
+/// `fs.writeFileSync(path, data[, options])`（间接调用形态，同 read 侧）。
+fn write_file_sync(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let path = args
+        .first()
+        .map(|v| vm.format_value(*v))
+        .unwrap_or_default();
+    let data = args.get(1).map(|v| vm.format_value(*v)).unwrap_or_default();
+    match std::fs::write(&path, data) {
+        Ok(()) => Ok(Value::Undefined),
+        Err(e) => Err(fs_error(vm, &e, "open", &path, None)),
+    }
+}
+
 fn build_stat_slot(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmError> {
     let slot = vm.alloc_ordinary();
     register_handler(registry, "fs.stat", "isFile", stat_is_file);

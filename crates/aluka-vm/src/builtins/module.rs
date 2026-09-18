@@ -31,6 +31,13 @@ const NS_PROTO: &str = "module:proto";
 const NS_KEY: &str = "_builtinNs";
 
 /// 与 Node 22 / Node.js 22 LTS 标准 完全一致的内置模块名表（68 项，顺序敏感）。
+/// 模块名是否为公开内置模块（Node `builtinModules` 清单口径；内部槽位如
+/// `events:instance` / `fs.stat` / `moduleLoader` 不在其中）。
+#[must_use]
+pub(crate) fn is_public_module_name(name: &str) -> bool {
+    BUILTIN_MODULES.contains(&name)
+}
+
 const BUILTIN_MODULES: &[&str] = &[
     "_http_agent",
     "_http_client",
@@ -150,6 +157,15 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
     register_handler(registry, "importMeta", "resolve", import_meta_resolve);
     // __aluka_import__(source)：ESM import 加载器（M2.2 异步 DAG）
     register_handler(registry, "moduleLoader", "import", module_import);
+    // __aluka_object_rest__(src, ...excluded)：对象 rest 解构的剩余拷贝
+    register_handler(registry, "objectOps", "rest", object_rest_copy);
+    // __aluka_dynamic_import__(source)：动态 `import()`（恒返回 Promise）
+    register_handler(
+        registry,
+        "moduleLoader",
+        "dynamicImport",
+        module_dynamic_import,
+    );
 
     // builtinModules：Node 22 完整列表（数组元素为堆字符串）
     let elems: Vec<Value> = BUILTIN_MODULES
@@ -282,6 +298,58 @@ fn build(vm: &mut Vm, registry: &mut BuiltinRegistry) -> Result<ObjectRef, VmErr
 /// `import _ from 'lodash'` 的 `_` 为 undefined（`ns.default` 落空），
 /// 属性访问 TypeError 后被顶层静默吞掉。TLA 异步目标必为 ESM（带
 /// `__esModule`），Promise 原样透传不二次包装。
+/// `import(specifier)`：动态导入（Node 语义）。
+///
+/// 与 `__aluka_import__` 的差别只在**返回形态**：静态导入允许同步拿到
+/// exports（模块无 TLA 时），动态导入**恒**返回 Promise——同步完成的模块
+/// 包成已兑现 Promise，TLA 模块的完成链原样透传。命名空间合成（CJS → ESM
+/// 互操作的 `default` + 命名导出）复用 [`module_import`]。
+fn module_dynamic_import(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let entry = module_import(vm, args)?;
+    let ValueCase::Object(r) = entry.case() else {
+        // 非对象完成值（内置模块等）同样兑现为 Promise
+        let promise = vm.alloc_fulfilled_promise(entry);
+        return Ok(Value::Object(promise));
+    };
+    if matches!(
+        vm.heap.get(r.0 as usize),
+        Some(crate::heap::HeapObject::Promise { .. })
+    ) {
+        return Ok(entry);
+    }
+    let promise = vm.alloc_fulfilled_promise(entry);
+    Ok(Value::Object(promise))
+}
+
+/// `__aluka_object_rest__(src, ...excluded)`：对象 rest 解构语义。
+///
+/// 规范 CopyDataProperties：拷贝 `src` 的**自有可枚举**属性（字符串与符号
+/// 键都保留），排除列表只匹配字符串键。`src` 为 null/undefined 时按规范
+/// 抛 TypeError（解构已在编译期先行 RequireObjectCoercible，此处兜底）。
+fn object_rest_copy(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
+    let source = args.first().copied().unwrap_or(Value::Undefined);
+    if matches!(source, Value::Undefined | Value::Null) {
+        return Err(vm.type_error(&format!(
+            "Cannot destructure '{}' as it is {}.",
+            vm.format_value(source),
+            if source == Value::Null {
+                "null"
+            } else {
+                "undefined"
+            }
+        )));
+    }
+    let excluded: Vec<String> = args.iter().skip(1).map(|v| vm.format_value(*v)).collect();
+    let out = vm.alloc_ordinary();
+    for (key, value) in vm.own_properties(source) {
+        if excluded.contains(&key) {
+            continue;
+        }
+        vm.set_property(Value::Object(out), &key, value)?;
+    }
+    Ok(Value::Object(out))
+}
+
 fn module_import(vm: &mut Vm, args: &[Value]) -> Result<Value, VmError> {
     let spec = args.first().copied().unwrap_or(Value::Undefined);
     let entry = vm.import_module_entry(spec)?;

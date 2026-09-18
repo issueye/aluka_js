@@ -27,7 +27,7 @@ mod async_cb;
 pub(crate) use async_cb::store_roots as async_cb_roots;
 mod der;
 mod digest;
-mod enc;
+pub(crate) mod enc;
 mod hmac;
 mod inst_cipher;
 mod inst_digest;

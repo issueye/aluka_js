@@ -139,9 +139,15 @@ impl Vm {
             );
             return Ok(m);
         }
-        let resolved = self
-            .resolve_module(&spec)
-            .ok_or_else(|| self.module_not_found(&spec))?;
+        // 字节码镜像优先；镜像缺位时回退源码（宿主已装配编译器 Hook 才
+        // 成立——未装配时保持既有 "Cannot find module" 诊断）
+        let resolved = match self.resolve_module(&spec) {
+            Some(p) => p,
+            None => match self.resolve_source_module(&spec) {
+                Some(p) if self.source_module_provider.is_some() => p,
+                _ => return Err(self.module_not_found(&spec)),
+            },
+        };
         if std::env::var("ALUKA_REQ_DEBUG").is_ok() {
             eprintln!("[req-debug] spec={spec:?} -> {:?}", resolved);
         }
@@ -163,15 +169,27 @@ impl Vm {
             return Ok(parsed);
         }
 
-        // 读文件 → 反序列化 → 校验
-        let data = std::fs::read(&resolved).map_err(|e| {
-            let msg = self.alloc_string(format!("Cannot read module '{spec}': {e}"));
-            VmError::Thrown(Value::Object(msg))
-        })?;
-        let module = BytecodeModule::deserialize(&data).map_err(|e| {
-            let msg = self.alloc_string(format!("module '{spec}' deserialize: {e}"));
-            VmError::Thrown(Value::Object(msg))
-        })?;
+        // 读文件 → 反序列化 → 校验；源码模块由宿主 Hook 现场编译，产出的
+        // 字节码同样**强制**过 verify()（与 eval 路径同一安全契约）
+        let module = if resolved.extension().and_then(|e| e.to_str()) == Some("bc") {
+            let data = std::fs::read(&resolved).map_err(|e| {
+                let msg = self.alloc_string(format!("Cannot read module '{spec}': {e}"));
+                VmError::Thrown(Value::Object(msg))
+            })?;
+            BytecodeModule::deserialize(&data).map_err(|e| {
+                let msg = self.alloc_string(format!("module '{spec}' deserialize: {e}"));
+                VmError::Thrown(Value::Object(msg))
+            })?
+        } else {
+            let provider = self
+                .source_module_provider
+                .clone()
+                .ok_or_else(|| self.module_not_found(&spec))?;
+            (provider.borrow_mut())(&resolved).map_err(|e| {
+                let msg = self.alloc_string(format!("module '{spec}' compile: {e}"));
+                VmError::Thrown(Value::Object(msg))
+            })?
+        };
         module.verify().map_err(|e| {
             let msg = self.alloc_string(format!("module '{spec}' verify: {e}"));
             VmError::Thrown(Value::Object(msg))
@@ -458,6 +476,18 @@ impl Vm {
         self.resolve_specifier_from(&base, specifier)
     }
 
+    /// 源码形态的模块解析（字节码候选全落空后的回退；见
+    /// [`ModuleFlavor::Source`]）。
+    fn resolve_source_module(&self, specifier: &str) -> Option<PathBuf> {
+        let base = self
+            .require_base_stack
+            .last()
+            .cloned()
+            .or_else(|| self.base_dir.clone())
+            .unwrap_or_else(|| PathBuf::from("."));
+        self.resolve_specifier_flavored(&base, specifier, ModuleFlavor::Source)
+    }
+
     /// `__aluka_import__(source)` 加载器入口：同步完成返回 exports；
     /// 依赖模块为异步完成（TLA）时返回其完成 Promise（M2.2）。
     pub(crate) fn import_module_entry(&mut self, spec_val: Value) -> Result<Value, VmError> {
@@ -476,12 +506,43 @@ impl Vm {
     }
 
     fn resolve_specifier_from(&self, base: &Path, specifier: &str) -> Option<PathBuf> {
+        self.resolve_specifier_flavored(base, specifier, ModuleFlavor::Bytecode)
+    }
+
+    /// 解析的形态参数化实现：候选路径按 `flavor` 生成，其余（相对/裸包/
+    /// `#alias`/`exports` 条件映射）规则完全一致。
+    fn resolve_specifier_flavored(
+        &self,
+        base: &Path,
+        specifier: &str,
+        flavor: ModuleFlavor,
+    ) -> Option<PathBuf> {
+        // `file:` URL 说明符（ESM 的 `import(pathToFileURL(p).href)` 惯用法）：
+        // 解码后按绝对路径处理，与 Node 的 file URL 解析同构
+        if let Some(rest) = specifier.strip_prefix("file://") {
+            let path = file_url_specifier_to_path(rest);
+            let abs = normalize_path(Path::new(&path));
+            if let Some(hit) = candidates(flavor, &abs) {
+                return Some(hit);
+            }
+            let mut ancestor = abs.parent().map(Path::to_path_buf);
+            while let Some(a) = ancestor {
+                if let Ok(rel) = abs.strip_prefix(&a) {
+                    let cand = a.join("aluka_build").join(rel).with_extension("bc");
+                    if cand.is_file() {
+                        return Some(cand);
+                    }
+                }
+                ancestor = a.parent().map(Path::to_path_buf);
+            }
+            return None;
+        }
         // 绝对路径说明符（ESM 相对源在编译期改写为 `__dirname + "/" + spec`
         // 后的形态——await 挂起会弹 require 基准栈，恢复后相对解析的基准
         // 不再可靠）：直接按字节码候选解析
         if Path::new(specifier).is_absolute() {
             let abs = normalize_path(Path::new(specifier));
-            if let Some(hit) = module_candidates(&abs) {
+            if let Some(hit) = candidates(flavor, &abs) {
                 return Some(hit);
             }
             // 镜像回退：入口以**源码目录**为 `__dirname` 基准，而字节码
@@ -505,7 +566,7 @@ impl Vm {
             || specifier.starts_with('/');
         if is_relative {
             let joined = normalize_path(&base.join(specifier));
-            module_candidates(&joined)
+            candidates(flavor, &joined)
         } else if specifier.starts_with('#') {
             // `#alias`：`imports` 内部子路径别名 —— 自当前包根向上找最近
             // 的 package.json，经 `imports` 条件映射解析（M2.1）
@@ -523,7 +584,7 @@ impl Vm {
                                 aluka_module::ConditionKind::Require,
                             ) {
                                 let joined = normalize_path(&dir.join(target));
-                                if let Some(p) = module_candidates(&joined) {
+                                if let Some(p) = candidates(flavor, &joined) {
                                     return Some(p);
                                 }
                             }
@@ -564,7 +625,7 @@ impl Vm {
                                     )
                                 }) {
                                     let joined = normalize_path(&pkg_root.join(target));
-                                    if let Some(p) = module_candidates(&joined) {
+                                    if let Some(p) = candidates(flavor, &joined) {
                                         return Some(p);
                                     }
                                     // exports 明确拒绝或目标缺失：不回退
@@ -584,7 +645,7 @@ impl Vm {
                 } else {
                     normalize_path(&pkg_root.join(subpath.strip_prefix("./").unwrap_or(&subpath)))
                 };
-                if let Some(p) = module_candidates(&normalize_path(&pkg_dir)) {
+                if let Some(p) = candidates(flavor, &normalize_path(&pkg_dir)) {
                     return Some(p);
                 }
             }
@@ -621,6 +682,80 @@ impl Vm {
         let msg = self.alloc_string(format!("Cannot find module '{spec}'"));
         VmError::Thrown(Value::Object(msg))
     }
+}
+
+/// 模块候选形态：
+/// - [`ModuleFlavor::Bytecode`]——预构建镜像（`aluka build` / `aluka run` 的
+///   node_modules 镜像，`.bc` 文件树）；
+/// - [`ModuleFlavor::Source`]——**源码**（`.ts/.js/.mjs/...`）。字节码候选
+///   全部落空时按源码再解析一次，命中则交宿主装配的编译器 Hook 现场编译，
+///   使 `aluka run` 与 Node 一样「源码进、源码出」，多文件项目与运行期
+///   动态 `import()` 无需预构建镜像。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModuleFlavor {
+    /// 预构建字节码镜像
+    Bytecode,
+    /// 源码（在途编译）
+    Source,
+}
+
+/// 按形态取候选路径。
+fn candidates(flavor: ModuleFlavor, p: &Path) -> Option<PathBuf> {
+    match flavor {
+        ModuleFlavor::Bytecode => module_candidates(p),
+        ModuleFlavor::Source => source_candidates(p),
+    }
+}
+
+/// 源码候选：显式扩展名优先命中原文件；无扩展名按
+/// `.ts` → `.js` → `.mjs` → `.cjs` → `.mts` → `.cts` → `index.*` →
+/// `package.json` `main` 顺序解析（Node 的扩展名搜索语义 + TS 扩展名）。
+fn source_candidates(p: &Path) -> Option<PathBuf> {
+    const SOURCE_EXTENSIONS: [&str; 6] = ["ts", "js", "mjs", "cjs", "mts", "cts"];
+    if p.is_dir() {
+        for ext in SOURCE_EXTENSIONS {
+            let index = p.join(format!("index.{ext}"));
+            if index.is_file() {
+                return Some(index);
+            }
+        }
+        let pkg = p.join("package.json");
+        if pkg.is_file() {
+            if let Ok(text) = std::fs::read_to_string(&pkg) {
+                if let Some(main_field) = extract_json_string_field(&text, "main") {
+                    let main_path = normalize_path(&p.join(main_field.trim()));
+                    return source_candidates(&main_path);
+                }
+            }
+        }
+        return None;
+    }
+    if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+        if SOURCE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) && p.is_file() {
+            return Some(p.to_path_buf());
+        }
+    }
+    for ext in SOURCE_EXTENSIONS {
+        let cand = PathBuf::from(format!("{}.{}", p.display(), ext));
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    for ext in SOURCE_EXTENSIONS {
+        let index = p.join(format!("index.{ext}"));
+        if index.is_file() {
+            return Some(index);
+        }
+    }
+    let pkg = p.join("package.json");
+    if pkg.is_file() {
+        if let Ok(text) = std::fs::read_to_string(&pkg) {
+            if let Some(main_field) = extract_json_string_field(&text, "main") {
+                return source_candidates(&normalize_path(&p.join(main_field.trim())));
+            }
+        }
+    }
+    None
 }
 
 /// `require` 目标的字节码候选：`.json` 原样；`X.js/cjs/mjs` → `X.bc`；
@@ -695,6 +830,40 @@ fn module_candidates(p: &Path) -> Option<PathBuf> {
             None
         }
     }
+}
+
+/// `file://` 之后的路径文本 → 本地路径（Windows 盘符 `/C:/x` 还原）。
+fn file_url_specifier_to_path(rest: &str) -> String {
+    let decoded = percent_decode_specifier(rest);
+    if cfg!(windows) && decoded.len() >= 3 && decoded.starts_with('/') {
+        let bytes = decoded.as_bytes();
+        if bytes[2] == b':' {
+            // `/C:/dir` → `C:/dir`（盘符与冒号都在首段：[1..2] 为字母，
+            // [2..] 自带冒号，不能跳过头一个字符）
+            return format!("{}{}", &decoded[1..2], &decoded[2..]);
+        }
+    }
+    decoded
+}
+
+/// 说明符的百分号解码（同 `url.fileURLToPath` 的路径侧规则）。
+fn percent_decode_specifier(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// 从 JSON 文本提取顶层字符串字段（轻量扫描；与 alukac build 侧同款）。
